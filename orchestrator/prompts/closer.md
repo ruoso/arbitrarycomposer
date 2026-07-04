@@ -112,7 +112,10 @@ from the diff (`git diff --stat` to confirm).
 
 Add `complete 100` immediately after `allocate team` in the matching task
 block in `tasks/<NN>-<area>.tji` (the area is the first dot-segment of
-`$task_id`).
+`$task_id`). While there, if the task's `note` line does not yet end with
+`Refinement: $refinement_path`, append that pointer to the note string
+(keeping the existing design-doc citations) — the WBS is the index into
+the refinements.
 
 ### 3. Milestone propagation
 

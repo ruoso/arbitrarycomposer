@@ -9,19 +9,19 @@ task color "Color and pixel formats" {
   task format_set "Pixel format set + surface tags" {
     effort 1d
     allocate team
-    note "Rgba16fLinearPremul (default working format) and Rgba8Srgb join Rgba32f; every surface tagged with format + color space + premultiplication. Doc 07."
+    note "Rgba16fLinearPremul (default working format) and Rgba8Srgb join Rgba32f; every surface tagged with format + color space + premultiplication. Doc 07. Refinement: tasks/refinements/color/format_set.md"
   }
   task working_space "Per-composition working space" {
     effort 1d
     allocate team
     depends !format_set
-    note "Working space as composition configuration (primaries, transfer, format); nesting boundaries convert; homogeneous trees pay nothing. Doc 07."
+    note "Working space as composition configuration (primaries, transfer, format); nesting boundaries convert; homogeneous trees pay nothing. Doc 07. Refinement: tasks/refinements/color/working_space.md"
   }
   task kernels "Templated kernels + variant dispatch" {
     effort 3d
     allocate team
     depends !format_set
-    note "Format-templated blend/premultiply/convert kernels, monomorphized; one std::visit per tile-sized operation; typed span accessors checked against tags. Doc 07."
+    note "Format-templated blend/premultiply/convert kernels, monomorphized; one std::visit per tile-sized operation; typed span accessors checked against tags. Doc 07. Refinement: tasks/refinements/color/kernels.md"
   }
   task resampling "Filtered resampling" {
     effort 2d

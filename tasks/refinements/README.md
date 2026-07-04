@@ -54,9 +54,13 @@ When a task ships, these happen in the **same commit**:
    deltas). Don't edit the prior sections — Decisions and Acceptance
    criteria are the historical record of why the task existed; the Status
    section is the historical record of how it landed.
-2. **`complete 100` in the `.tji`.** Add `complete 100` immediately after
-   the `allocate team` line of the matching task block in the relevant
-   `tasks/*.tji` file. After editing, run
+2. **`complete 100` in the `.tji` — and the note back-link.** Add
+   `complete 100` immediately after the `allocate team` line of the
+   matching task block in the relevant `tasks/*.tji` file, and make sure
+   the task's `note` ends with
+   `Refinement: tasks/refinements/<area>/<task_name>.md` (appended after
+   the design-doc citations; refinements written ahead of implementation
+   add the pointer when they land). After editing, run
    `tj3 project.tjp 2>&1 | grep -iE "error|warning"` and confirm silence —
    there is no pre-commit hook; this manual check is the WBS gate. The
    `complete 100` marker is what tj3's scheduler (and
