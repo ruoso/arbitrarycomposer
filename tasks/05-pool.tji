@@ -27,8 +27,15 @@ task pool "Memory pool" {
   task mmap_backing "mmap workspace backing" {
     effort 3d
     allocate team
+    complete 100
     depends !arena_core
     note "Arena backing policy: anonymous | file-backed workspace file. Chunk-at-a-time file growth, hole-punch release of emptied chunks, refcount/freelist state stays anonymous and is rebuilt on open. Doc 15. Refinement: tasks/refinements/pool/mmap_backing.md"
+  }
+  task mmap_backing_win32 "mmap workspace backing — Windows port" {
+    effort 2d
+    allocate team
+    depends !mmap_backing
+    note "MapViewOfFile port of WorkspaceFileChunkSource for MSVC/Windows builds; enables ARBC_HAS_WORKSPACE_FILES on non-POSIX. Source-of-debt: tasks/refinements/pool/mmap_backing.md. Doc 15."
   }
   task checkpoints "Checkpoint protocol" {
     effort 3d

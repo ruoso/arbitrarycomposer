@@ -117,7 +117,7 @@ private:
 // efficiency).
 class Arena {
 public:
-  Arena();                          // owns a default AnonymousChunkSource
+  Arena();                             // owns a default AnonymousChunkSource
   explicit Arena(ChunkSource& source); // borrows an external source
   ~Arena();
   Arena(const Arena&) = delete;
@@ -125,8 +125,7 @@ public:
 
   // The store for a size class, created on first use. `chunk_bits == 0`
   // derives the chunk size from the slot size; pass nonzero to override.
-  SlotStore& store_for(std::size_t slot_size, std::size_t slot_align,
-                       std::uint32_t chunk_bits = 0);
+  SlotStore& store_for(std::size_t slot_size, std::size_t slot_align, std::uint32_t chunk_bits = 0);
 
   std::size_t store_count() const noexcept { return d_stores.size(); }
   std::size_t total_slots_live() const noexcept;

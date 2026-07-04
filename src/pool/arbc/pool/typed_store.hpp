@@ -37,9 +37,7 @@ public:
   }
 
   // Typed address of a live slot. Any thread.
-  T* resolve(SlotIndex index) const noexcept {
-    return static_cast<T*>(d_store->resolve(index));
-  }
+  T* resolve(SlotIndex index) const noexcept { return static_cast<T*>(d_store->resolve(index)); }
 
   // Mark the slot reusable WITHOUT destroying the object (caller's obligation).
   void release(SlotIndex index) { d_store->release(index); }

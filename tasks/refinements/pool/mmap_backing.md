@@ -122,4 +122,12 @@ the prerequisite of `pool.checkpoints`, which gates M1.
 
 ## Status
 
-_pending implementation_
+**Done** — 2026-07-04.
+
+- Created `src/pool/arbc/pool/workspace_file.hpp`: `WorkspaceFileChunkSource` — chunk-per-`MAP_SHARED`-mapping growth, `fallocate` hole-punch release, file header with zeroed A/B root slots for `pool.checkpoints`.
+- Created `src/pool/workspace_file.cpp`: POSIX implementation; `ARBC_HAS_WORKSPACE_FILES` compiles it out on non-POSIX, with anonymous backing as the universal fallback.
+- Created `src/pool/t/workspace_file.t.cpp`: 17 unit tests covering create/grow/release lifecycle, address stability under growth, header round-trip + bad-magic reject, disk-full via `RLIMIT_FSIZE` → `expected` error (not death), free-list traffic never grows file (bookkeeping stays anonymous), position-independence debug hook.
+- Edited `src/pool/slot_store.cpp`: replaced placeholder `AnonymousChunkSource` with real `mmap(MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE)` / `munmap`.
+- Edited `src/pool/CMakeLists.txt`: wired new source files into build; `src/pool/arbc/pool/slot_store.hpp`, `src/pool/arbc/pool/typed_store.hpp` minor adjustments.
+- Edited `tests/claims/registry.tsv`: registered + enforced claim `15-memory-model#hole-punch-returns-storage` (Linux-guarded `st_blocks` drop after hole-punch).
+- Tech-debt registered: `pool.mmap_backing_win32` (`MapViewOfFile` Windows port, est. 2d), wired into `m9_release`.

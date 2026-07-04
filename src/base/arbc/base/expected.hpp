@@ -30,9 +30,7 @@ public:
   expected(const T& value) : d_has_value(true) { ::new (&d_value) T(value); }
   expected(T&& value) : d_has_value(true) { ::new (&d_value) T(std::move(value)); }
 
-  expected(const unexpected<E>& error) : d_has_value(false) {
-    ::new (&d_error) E(error.error());
-  }
+  expected(const unexpected<E>& error) : d_has_value(false) { ::new (&d_error) E(error.error()); }
   expected(unexpected<E>&& error) : d_has_value(false) {
     ::new (&d_error) E(std::move(error).error());
   }
@@ -66,8 +64,8 @@ public:
     }
     return *this;
   }
-  expected& operator=(expected&& other) noexcept(
-      std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_constructible_v<E>) {
+  expected& operator=(expected&& other) noexcept(std::is_nothrow_move_constructible_v<T> &&
+                                                 std::is_nothrow_move_constructible_v<E>) {
     if (this != &other) {
       destroy();
       d_has_value = other.d_has_value;

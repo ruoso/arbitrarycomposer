@@ -1,12 +1,16 @@
-#include <arbc/pool/slot_store.hpp>
-
 #include <arbc/pool/chunk_source.hpp>
 #include <arbc/pool/slab_directory.hpp>
+#include <arbc/pool/slot_store.hpp>
+#include <arbc/pool/workspace_file.hpp> // ARBC_HAS_WORKSPACE_FILES
 
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <new>
+
+#if ARBC_HAS_WORKSPACE_FILES
+#include <sys/mman.h>
+#endif
 
 namespace arbc {
 
@@ -24,26 +28,42 @@ expected<ChunkSpan, PoolError> AnonymousChunkSource::acquire(std::size_t size,
   assert(alignment <= k_page_alignment);
   (void)alignment;
   const std::size_t rounded = align_up(size, k_page_alignment);
+#if ARBC_HAS_WORKSPACE_FILES
+  // Real anonymous mapping, not heap: MAP_NORESERVE keeps larger-than-RAM
+  // reservations from pre-committing swap (doc 15's demand-paging framing), and
+  // pages return to the OS on munmap — the universal fallback that mirrors the
+  // file-backed source without a file.
+  void* base = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  if (base == MAP_FAILED) {
+    return unexpected(PoolError::OutOfMemory);
+  }
+  return ChunkSpan{base, rounded};
+#else
   void* base = ::operator new(rounded, std::align_val_t{k_page_alignment}, std::nothrow);
   if (base == nullptr) {
     return unexpected(PoolError::OutOfMemory);
   }
   return ChunkSpan{base, rounded};
+#endif
 }
 
 void AnonymousChunkSource::release(ChunkSpan span) noexcept {
+#if ARBC_HAS_WORKSPACE_FILES
+  // munmap rounds the length up to a page multiple, so passing the store's
+  // chunk bytes (which acquire rounded up) unmaps the whole region.
+  ::munmap(span.base, span.size);
+#else
   ::operator delete(span.base, std::align_val_t{k_page_alignment});
+#endif
 }
 
 SlotStore::SlotStore(std::size_t slot_size, std::size_t slot_align, std::uint32_t chunk_bits,
                      ChunkSource& source)
-    : d_slot_size(slot_size),
-      d_slot_align(slot_align),
+    : d_slot_size(slot_size), d_slot_align(slot_align),
       d_slot_stride(align_up(std::max<std::size_t>(slot_size, 1), slot_align)),
-      d_chunk_bits(chunk_bits),
-      d_slot_mask((std::uint32_t{1} << chunk_bits) - 1),
-      d_chunk_slots(std::size_t{1} << chunk_bits),
-      d_chunk_bytes(d_chunk_slots * d_slot_stride),
+      d_chunk_bits(chunk_bits), d_slot_mask((std::uint32_t{1} << chunk_bits) - 1),
+      d_chunk_slots(std::size_t{1} << chunk_bits), d_chunk_bytes(d_chunk_slots * d_slot_stride),
       d_source(&source) {}
 
 SlotStore::~SlotStore() {
