@@ -148,4 +148,11 @@ it is the deepest incomplete leaf in the plan, gating M1 through M9.
 
 ## Status
 
-_pending implementation_
+**Done** — 2026-07-04.
+
+- `arbc::expected<T,E>` (minimal value-or-error) added to `base`: `src/base/arbc/base/expected.hpp` with unit tests at `src/base/t/expected.t.cpp`; `src/base/CMakeLists.txt` updated.
+- `arbc::pool` component created at `src/pool/` and registered in `src/CMakeLists.txt` between `base` and `media`.
+- Public headers under `src/pool/arbc/pool/`: `chunk_source.hpp`, `slab_directory.hpp`, `slot_store.hpp`, `typed_store.hpp`; implementation at `src/pool/slot_store.cpp`; build wiring in `src/pool/CMakeLists.txt`.
+- Unit tests at `src/pool/t/pool.t.cpp`: distinct slots, accounting, multi-store coexistence, `expected` error path on refusing `ChunkSource`, `TypedStore` round-trip, concurrent resolve-during-growth (TSan covered by asan/ubsan gate).
+- Claims registered in `tests/claims/registry.tsv`: `15-memory-model#slots-recycle-in-place` and `15-memory-model#chunk-growth-preserves-addresses` (both with `enforces:` tags).
+- Gate green under dev and ASan/UBSan presets (driver-verified).

@@ -4,3 +4,5 @@
 14-data-model-and-editing#pinned-version-never-observes-later-edit	A pinned DocState is unaffected by later transactions
 07-color-and-pixel-formats#premultiplied-source-over	Compositing is source-over on premultiplied alpha in the working space
 16-sdlc-and-quality#byte-exact-goldens	CPU backend rendering is byte-exact deterministic
+15-memory-model#slots-recycle-in-place	A released slot is the next same-class allocation's perfect hole; fixed slabs make fragmentation impossible
+15-memory-model#chunk-growth-preserves-addresses	Slot pointers taken before growth stay valid and unchanged across arbitrary chunk growth

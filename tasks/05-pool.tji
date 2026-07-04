@@ -9,6 +9,7 @@ task pool "Memory pool" {
   task arena_core "Typed slab arenas" {
     effort 3d
     allocate team
+    complete 100
     note "Instance arenas (not cpioo's statics): per-type fixed-size slots in two-level buffer tables, monotonic chunk growth, per-arena accounting. Doc 15. Refinement: tasks/refinements/pool/arena_core.md"
   }
   task refs "Counted references" {
