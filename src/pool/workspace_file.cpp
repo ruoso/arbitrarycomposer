@@ -4,9 +4,8 @@
 #define _GNU_SOURCE 1
 #endif
 
-#include <arbc/pool/workspace_file.hpp>
-
 #include <arbc/pool/slot_store.hpp> // align_up
+#include <arbc/pool/workspace_file.hpp>
 
 #include <cassert>
 #include <cstddef>
@@ -14,11 +13,12 @@
 #include <cstring>
 
 #if ARBC_HAS_WORKSPACE_FILES
-#include <cerrno>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <cerrno>
 #if defined(__linux__)
 #include <linux/falloc.h>
 #endif

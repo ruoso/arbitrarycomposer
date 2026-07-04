@@ -33,13 +33,13 @@ inline bool workspace_files_supported() noexcept { return ARBC_HAS_WORKSPACE_FIL
 // the syscall-level detail (with errno) that the store interface cannot express.
 enum class WorkspaceFileErrc {
   Ok,
-  Unsupported,        // built without ARBC_HAS_WORKSPACE_FILES
-  OpenFailed,         // open(2) of the workspace file failed
-  HeaderIoFailed,     // ftruncate/mmap/pread of the header region failed
-  BadMagic,           // reopened file is not a workspace file
-  UnsupportedFormat,  // format-major mismatch
-  GrowFailed,         // ftruncate/mmap while appending a chunk (incl. disk-full)
-  DirectoryFull,      // exceeded the file's chunk-directory capacity
+  Unsupported,       // built without ARBC_HAS_WORKSPACE_FILES
+  OpenFailed,        // open(2) of the workspace file failed
+  HeaderIoFailed,    // ftruncate/mmap/pread of the header region failed
+  BadMagic,          // reopened file is not a workspace file
+  UnsupportedFormat, // format-major mismatch
+  GrowFailed,        // ftruncate/mmap while appending a chunk (incl. disk-full)
+  DirectoryFull,     // exceeded the file's chunk-directory capacity
 };
 
 // Errors as values, never thrown (doc 10). `sys_errno` is the errno captured at
@@ -55,18 +55,18 @@ struct WorkspaceFileError {
 // fresh file's header round-trips; content/bookkeeping rebuild on reopen belongs
 // to `pool.checkpoints`.
 struct WorkspaceHeader {
-  std::uint64_t magic;         // k_workspace_magic
-  std::uint32_t format_major;  // k_workspace_format_major
-  std::uint32_t format_minor;  // k_workspace_format_minor
-  std::uint32_t page_size;     // sysconf(_SC_PAGESIZE) at create time
-  std::uint32_t max_chunks;    // chunk-directory capacity
-  std::uint64_t data_offset;   // file offset where chunk 0 begins (page-aligned)
-  std::uint64_t chunk_count;   // high-water number of chunks ever appended
+  std::uint64_t magic;        // k_workspace_magic
+  std::uint32_t format_major; // k_workspace_format_major
+  std::uint32_t format_minor; // k_workspace_format_minor
+  std::uint32_t page_size;    // sysconf(_SC_PAGESIZE) at create time
+  std::uint32_t max_chunks;   // chunk-directory capacity
+  std::uint64_t data_offset;  // file offset where chunk 0 begins (page-aligned)
+  std::uint64_t chunk_count;  // high-water number of chunks ever appended
   // Two root slots reserved for pool.checkpoints' A/B protocol. This task owns
   // the layout (written zero); the protocol that flips them is pool.checkpoints.
   std::uint64_t root_slot_a;
   std::uint64_t root_slot_b;
-  std::uint64_t reserved[7];   // zeroed padding, room for future header fields
+  std::uint64_t reserved[7]; // zeroed padding, room for future header fields
 };
 
 // One chunk-directory entry, laid out immediately after the header on disk. The
@@ -170,7 +170,7 @@ private:
 // smuggled pointer. Scans pointer-width aligned words in [record, record+size)
 // and asserts none fall within [map_base, map_base+map_bytes). No-op under
 // NDEBUG.
-void debug_assert_position_independent(const void* record, std::size_t size,
-                                       const void* map_base, std::size_t map_bytes) noexcept;
+void debug_assert_position_independent(const void* record, std::size_t size, const void* map_base,
+                                       std::size_t map_bytes) noexcept;
 
 } // namespace arbc

@@ -7,3 +7,4 @@
 15-memory-model#slots-recycle-in-place	A released slot is the next same-class allocation's perfect hole; fixed slabs make fragmentation impossible
 15-memory-model#chunk-growth-preserves-addresses	Slot pointers taken before growth stay valid and unchanged across arbitrary chunk growth
 15-memory-model#hole-punch-returns-storage	Releasing a file-backed chunk hole-punches it, dropping the workspace file's allocated block count
+15-memory-model#refcounts-outside-data-pages	Pin/unpin traffic touches only the parallel count tables, never a data page, so data chunks mprotected read-only never fault under arbitrary reference churn

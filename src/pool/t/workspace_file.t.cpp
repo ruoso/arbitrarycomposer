@@ -26,13 +26,14 @@ TEST_CASE("workspace-file support is reported honestly") {
 
 #if ARBC_HAS_WORKSPACE_FILES
 
-#include <cerrno>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <cerrno>
 
 namespace {
 

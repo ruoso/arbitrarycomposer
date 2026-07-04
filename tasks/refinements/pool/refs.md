@@ -117,4 +117,10 @@ workspace, where data pages have no stable virtual address across runs).
 
 ## Status
 
-_pending implementation_
+**Done** — 2026-07-04.
+
+- `src/pool/arbc/pool/refs.hpp` (new) — `Ref<T>`, `SlotRef<T>`, `RefStore<T>`, `ZeroCountSink`, `RefError`; inside-out refcounts in anonymous parallel tables, 4-byte position-independent `SlotRef`, overflow-checked pin, debug generation tags.
+- `src/pool/t/refs.t.cpp` (new) — unit tests: copy/move/assign + count lifecycle to zero-sink, sink-defers-reclaim seam, `SlotRef` record round-trip, retain/resolve overflow error path, `sizeof(SlotRef)==4` static_assert; debug-only stale-`SlotRef` generation-tag test via `generation_matches` assert-hook predicate; concurrent pin/unpin smoke.
+- `src/pool/CMakeLists.txt` — registered `refs.hpp` and `t/refs.t.cpp`.
+- `tests/claims/registry.tsv` — registered claim `15-memory-model#refcounts-outside-data-pages` (mprotect data pages read-only; `__linux__`-guarded).
+- `src/pool/arbc/pool/workspace_file.hpp`, `src/pool/workspace_file.cpp`, `src/pool/t/workspace_file.t.cpp` — clang-format normalization from gate run.
