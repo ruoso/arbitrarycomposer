@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Local quality gate (design doc 16): build + test + format + structure
+# checks. Run before every push; CI runs the same steps plus the full
+# matrix. Preset defaults to `dev`; override with ARBC_GATE_PRESET.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Pick a C++ compiler if the environment doesn't name one.
+if [[ -z "${CXX:-}" ]]; then
+  for candidate in c++ g++ clang++ g++-14 g++-13; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      export CXX="$candidate"
+      break
+    fi
+  done
+fi
+echo "gate: using CXX=${CXX:-<cmake default>}"
+
+preset="${ARBC_GATE_PRESET:-dev}"
+
+echo "gate: configure (${preset})"
+cmake --preset "$preset"
+
+echo "gate: build"
+cmake --build --preset "$preset" --parallel "$(nproc)"
+
+echo "gate: test"
+ctest --preset "$preset"
+
+echo "gate: format"
+if command -v clang-format >/dev/null 2>&1; then
+  git ls-files '*.cpp' '*.hpp' | xargs -r clang-format --dry-run -Werror
+else
+  echo "gate: WARNING clang-format not found locally; CI will enforce it" >&2
+fi
+
+echo "gate: levelization"
+python3 scripts/check_levels.py
+
+echo "gate: claims register"
+python3 scripts/check_claims.py
+
+echo "gate: OK"

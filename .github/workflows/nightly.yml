@@ -1,0 +1,39 @@
+# Nightly long-form checks (design doc 16).
+# TODO as the codebase grows: fuzzing (long-form), stress/schedule
+# perturbation, Valgrind, benchmark runs with tracked history, and the
+# full claims-register audit.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  # clang-tidy runs nightly until the baseline is clean, then promotes to
+  # per-push (doc 16).
+  tidy:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install clang-tidy==19.1.0
+      - name: configure
+        run: CXX=clang++ cmake --preset dev
+      - name: tidy
+        run: |
+          git ls-files 'src/**/*.cpp' | xargs -r clang-tidy -p build/dev
+
+  asan-full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: configure
+        run: CXX=clang++ cmake --preset asan
+      - name: build
+        run: cmake --build --preset asan --parallel 4
+      - name: test
+        run: ctest --preset asan

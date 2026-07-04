@@ -1,0 +1,89 @@
+# Per-push CI (design doc 16). Trunk-based: this is the net, not the gate —
+# a red main is fix-forward-within-the-hour or revert.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # clang-format pinned to the same version as local tooling (doc 16).
+      - run: pip install clang-format==19.1.7
+      - name: format
+        run: git ls-files '*.cpp' '*.hpp' | xargs -r clang-format --dry-run -Werror
+      - name: levelization
+        run: python3 scripts/check_levels.py
+      - name: claims register
+        run: python3 scripts/check_claims.py
+
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gcc-debug, os: ubuntu-latest, cxx: g++, preset: dev }
+          - { name: gcc-release, os: ubuntu-latest, cxx: g++, preset: release }
+          - { name: clang-debug, os: ubuntu-latest, cxx: clang++, preset: dev }
+          - { name: clang-asan, os: ubuntu-latest, cxx: clang++, preset: asan }
+          - { name: msvc-debug, os: windows-latest, cxx: "", preset: win-dev }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: MSVC dev environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: install ninja (Windows)
+        if: runner.os == 'Windows'
+        run: pip install ninja
+      - name: configure
+        shell: bash
+        run: |
+          if [[ -n "${{ matrix.cxx }}" ]]; then export CXX="${{ matrix.cxx }}"; fi
+          cmake --preset ${{ matrix.preset }}
+      - name: build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel 4
+      - name: test
+        run: ctest --preset ${{ matrix.preset }}
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gcovr diff-cover
+      - name: configure
+        run: CXX=g++ cmake --preset coverage
+      - name: build
+        run: cmake --build --preset coverage --parallel 4
+      - name: test
+        run: ctest --preset coverage
+      - name: coverage report
+        run: gcovr --root . --filter 'src/' --xml -o coverage.xml build/coverage
+      # Hard diff-coverage gate on changed lines (doc 16). Skipped when no
+      # comparable base exists (first push, forced push).
+      - name: diff coverage gate
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="origin/${{ github.base_ref }}"
+          elif [[ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]] \
+               && git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+            base="${{ github.event.before }}"
+          else
+            echo "no comparable base; skipping diff-coverage gate"
+            exit 0
+          fi
+          diff-cover coverage.xml --compare-branch="$base" --fail-under=90
