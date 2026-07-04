@@ -34,10 +34,13 @@ if(ARBC_SANITIZERS)
   add_link_options(-fsanitize=${ARBC_SANITIZERS})
 endif()
 
+# Coverage rides arbc_build_flags so only project code is instrumented —
+# fetched dependencies (Catch2) stay clean, which also keeps gcovr away
+# from _deps object directories.
 option(ARBC_COVERAGE "Instrument for coverage" OFF)
 if(ARBC_COVERAGE)
-  add_compile_options(--coverage)
-  add_link_options(--coverage)
+  target_compile_options(arbc_build_flags INTERFACE --coverage)
+  target_link_options(arbc_build_flags INTERFACE --coverage)
 endif()
 
 include(CTest)

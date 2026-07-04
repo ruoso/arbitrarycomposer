@@ -71,7 +71,8 @@ jobs:
       - name: test
         run: ctest --preset coverage
       - name: coverage report
-        run: gcovr --root . --filter 'src/' --xml -o coverage.xml build/coverage
+        run: gcovr --root . --filter 'src/' --xml -o coverage.xml
+          build/coverage/src build/coverage/tests
       # Hard diff-coverage gate on changed lines (doc 16). Skipped when no
       # comparable base exists (first push, forced push).
       - name: diff coverage gate
