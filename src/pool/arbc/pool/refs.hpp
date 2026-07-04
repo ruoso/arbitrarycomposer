@@ -246,6 +246,7 @@ public:
 
   ~RefStore() {
     d_refcounts.for_each_chunk([](std::atomic<std::uint32_t>* base) { delete[] base; });
+    d_reclaim_links.for_each_chunk([](std::atomic<SlotIndex>* base) { delete[] base; });
 #ifndef NDEBUG
     d_generations.for_each_chunk([](std::atomic<std::uint32_t>* base) { delete[] base; });
 #endif
@@ -349,7 +350,44 @@ public:
 
   // Swap the zero-count sink (pool.reclamation installs a deferred queue).
   // Passing nullptr restores the built-in immediate sink.
-  void set_zero_sink(ZeroCountSink* sink) noexcept { d_sink = sink != nullptr ? sink : &d_immediate; }
+  void set_zero_sink(ZeroCountSink* sink) noexcept {
+    d_sink = sink != nullptr ? sink : &d_immediate;
+  }
+
+  // Lock-free, allocation-free push of a slot onto this store's anonymous
+  // reclaim-link stack (pool.reclamation). This is what a deferred sink's
+  // `on_zero` calls: a single CAS onto the parallel link table (published at
+  // create), touching no data page and taking no lock -- RT-thread-safe. The
+  // slot is NOT destroyed here; a later drain runs `~T`. Any thread.
+  void enqueue_reclaim(SlotIndex index) noexcept {
+    std::atomic<SlotIndex>& link = link_ref(index);
+    SlotIndex head = d_reclaim_head.load(std::memory_order_relaxed);
+    do {
+      link.store(head, std::memory_order_relaxed);
+    } while (!d_reclaim_head.compare_exchange_weak(head, index, std::memory_order_acq_rel,
+                                                   std::memory_order_relaxed));
+  }
+
+  // Detach this store's reclaim stack with a single `exchange` (single-consumer
+  // pop -- no CAS-pop loop, so no Treiber-stack ABA hazard) and `reclaim` every
+  // slot on it. Each `reclaim` runs `~T`, whose member Ref/SlotRef releases
+  // decrement child counts and re-enter the sink, pushing children onto this (or
+  // another registered store's) fresh stack -- the iterative cascade, unrolled
+  // through the queue so the C++ stack stays O(1) in subtree depth. Reclaims one
+  // detached batch; the ReclamationQueue loops across stores to quiescence.
+  // Returns whether it reclaimed anything. Writer-thread-only.
+  bool drain_pending() {
+    SlotIndex head = d_reclaim_head.exchange(k_reclaim_nil, std::memory_order_acquire);
+    if (head == k_reclaim_nil) {
+      return false;
+    }
+    while (head != k_reclaim_nil) {
+      const SlotIndex next = link_ref(head).load(std::memory_order_relaxed);
+      reclaim(head);
+      head = next;
+    }
+    return true;
+  }
 
 #ifndef NDEBUG
   // Debug-only predicate the resolution asserts are built on: does `ref` carry
@@ -364,10 +402,19 @@ public:
   // Accounting passthrough (doc 15 debug discipline).
   std::size_t slots_live() const noexcept { return d_typed.store().slots_live(); }
 
+  // How many times a parallel chunk (refcount + reclaim-link, and in debug the
+  // generation table) has been published. Advances only on the writer-only
+  // `create` path, never on the RT enqueue path -- the counter a behavioral
+  // assertion checks to prove enqueue allocates no table storage.
+  std::size_t reclaim_chunks_published() const noexcept { return d_reclaim_chunks; }
+
 private:
   friend class Ref<T>;
 
   static constexpr std::uint32_t k_max_count = std::numeric_limits<std::uint32_t>::max();
+  // Empty-stack sentinel for the reclaim-link table. Slot 0 is a valid index, so
+  // the sentinel is the max SlotIndex (0xFFFFFFFF), never a real slot.
+  static constexpr SlotIndex k_reclaim_nil = std::numeric_limits<SlotIndex>::max();
 
   struct ImmediateSink final : ZeroCountSink {
     RefStore* store{nullptr};
@@ -382,9 +429,14 @@ private:
     const std::uint32_t chunk_number = index >> d_chunk_bits;
     if (d_refcounts.chunk(chunk_number) == nullptr) {
       d_refcounts.publish(chunk_number, new std::atomic<std::uint32_t>[d_chunk_slots]());
+      // The reclaim-link table is published in lock-step with the refcount
+      // table (release builds included -- deferred reclamation is production
+      // behavior), so the RT enqueue path never publishes a chunk or allocates.
+      d_reclaim_links.publish(chunk_number, new std::atomic<SlotIndex>[d_chunk_slots]());
 #ifndef NDEBUG
       d_generations.publish(chunk_number, new std::atomic<std::uint32_t>[d_chunk_slots]());
 #endif
+      ++d_reclaim_chunks;
     }
   }
 
@@ -392,6 +444,15 @@ private:
     const std::uint32_t chunk_number = index >> d_chunk_bits;
     const std::uint32_t slot_in_chunk = index & d_slot_mask;
     return d_refcounts.chunk(chunk_number)[slot_in_chunk];
+  }
+
+  // The reclaim-link "next" slot for `index` in the anonymous parallel table
+  // (the inside-out sibling of the refcount/generation tables). Backed by the
+  // chunk published at create; never touches a data page.
+  std::atomic<SlotIndex>& link_ref(SlotIndex index) const noexcept {
+    const std::uint32_t chunk_number = index >> d_chunk_bits;
+    const std::uint32_t slot_in_chunk = index & d_slot_mask;
+    return d_reclaim_links.chunk(chunk_number)[slot_in_chunk];
   }
 
   // Unchecked-return atomic increment used by Ref copy/assign. Never silently
@@ -434,12 +495,18 @@ private:
 
   TypedStore<T> d_typed;
   SlabDirectory<std::atomic<std::uint32_t>> d_refcounts;
+  // Anonymous per-store reclaim-link stack: a parallel table of "next" indices
+  // plus one head. Producers CAS-push (enqueue_reclaim); the writer detaches and
+  // walks it (drain_pending). Empty is k_reclaim_nil.
+  SlabDirectory<std::atomic<SlotIndex>> d_reclaim_links;
+  std::atomic<SlotIndex> d_reclaim_head{k_reclaim_nil};
 #ifndef NDEBUG
   SlabDirectory<std::atomic<std::uint32_t>> d_generations;
 #endif
   std::uint32_t d_chunk_bits{0};
   std::uint32_t d_slot_mask{0};
   std::size_t d_chunk_slots{0};
+  std::size_t d_reclaim_chunks{0};
   ImmediateSink d_immediate{};
   ZeroCountSink* d_sink{nullptr};
 };

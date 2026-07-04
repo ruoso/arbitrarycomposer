@@ -288,8 +288,8 @@ public:
   arbc::expected<arbc::ChunkSpan, arbc::PoolError> acquire(std::size_t size,
                                                            std::size_t /*alignment*/) override {
     const std::size_t rounded = (size + 4095) & ~std::size_t{4095};
-    void* base = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* base =
+        ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED) {
       return arbc::unexpected(arbc::PoolError::OutOfMemory);
     }

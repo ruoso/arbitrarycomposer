@@ -28,8 +28,15 @@ task pool "Memory pool" {
   task reclamation "Deferred reclamation" {
     effort 2d
     allocate team
+    complete 100
     depends !refs
-    note "Release enqueues on a type-erased reclamation queue; housekeeping runs destructor cascades iteratively (fixes the cpioo missing-destructor gap); thread-local free pools; RT threads only pin/unpin/enqueue. Doc 15."
+    note "Release enqueues on a type-erased reclamation queue; housekeeping runs destructor cascades iteratively (fixes the cpioo missing-destructor gap); thread-local free pools; RT threads only pin/unpin/enqueue. Doc 15. Refinement: tasks/refinements/pool/reclamation.md"
+  }
+  task free_pools "Thread-local free pools" {
+    effort 2d
+    allocate team
+    depends !reclamation
+    note "Thread-local LIFO free lists in SlotStore with global spill; relaxes writer-only-release assert to admit cross-thread release, unlocking runtime.housekeeping's low-priority-thread drain mode. Source-of-debt: tasks/refinements/pool/reclamation.md. Doc 15."
   }
   task mmap_backing "mmap workspace backing" {
     effort 3d

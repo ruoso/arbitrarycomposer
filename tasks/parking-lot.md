@@ -29,3 +29,8 @@ Append one `###` block per item, newest at the bottom:
 - **Question**: the decision the loop could not make.
 - **Why parked**: judgment call / preconditions unmet / scope decision.
 ```
+
+### 2026-07-04 — TSan CI lane for pool reclamation concurrent enqueue-while-draining
+- **Source**: closer for `pool.reclamation` (commit TBD — see commit immediately after this entry's merge).
+- **Question**: Should a ThreadSanitizer lane be added to CI (`.github/workflows/`) to cover the 8-producer concurrent enqueue-while-draining smoke test in `src/pool/t/reclamation.t.cpp`? The test runs under the gate's dev+asan lanes today, but no TSan preset/lane exists in this repo.
+- **Why parked**: Editing `.github/workflows/` is out of the permitted scope for `pool.reclamation`. Requires a human decision on CI resource cost and the right preset configuration for TSan.
