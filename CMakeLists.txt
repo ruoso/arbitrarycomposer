@@ -40,12 +40,9 @@ if(ARBC_COVERAGE)
   add_link_options(--coverage)
 endif()
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/CMakeLists.txt")
-  add_subdirectory(src)
-endif()
-
 include(CTest)
 if(BUILD_TESTING)
+  # Test dependencies come before src/ so component unit tests can use them.
   include(FetchContent)
   FetchContent_Declare(
     Catch2
@@ -59,5 +56,12 @@ if(BUILD_TESTING)
     list(APPEND CMAKE_MODULE_PATH "${Catch2_DIR}")
   endif()
   include(Catch)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/CMakeLists.txt")
+  add_subdirectory(src)
+endif()
+
+if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()

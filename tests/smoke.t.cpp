@@ -2,6 +2,4 @@
 
 // The doc 16 bootstrap sequence, commit 1: the harness exists and passes
 // before any feature code does.
-TEST_CASE("test harness is alive") {
-  REQUIRE(true);
-}
+TEST_CASE("test harness is alive") { REQUIRE(true); }

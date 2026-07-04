@@ -1,3 +1,6 @@
 # Claims register (design doc 16): <claim-id><TAB><description>
 # A claim id is <doc-file-stem>#<slug>; each entry must be referenced by a
 # test comment `enforces: <claim-id>`.
+14-data-model-and-editing#pinned-version-never-observes-later-edit	A pinned DocState is unaffected by later transactions
+07-color-and-pixel-formats#premultiplied-source-over	Compositing is source-over on premultiplied alpha in the working space
+16-sdlc-and-quality#byte-exact-goldens	CPU backend rendering is byte-exact deterministic
