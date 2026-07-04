@@ -35,9 +35,10 @@ core must never transitively impose codecs, GPU SDKs, or a GUI toolkit.
 
 ## Build and packaging
 
-- **CMake** with presets (`CMakePresets.json`) as the canonical build;
-  target-based, no global state, `arbc::core` / `arbc::backend-cpu` /
-  per-plugin targets.
+- **CMake ≥ 3.24** with presets (`CMakePresets.json`) as the canonical
+  build; target-based, no global state; internal object-library components
+  per doc 17, with public headers declared as `FILE_SET HEADERS`
+  (single-tree layout, `VERIFY_INTERFACE_HEADER_SETS` in CI).
 - Install exports: CMake package config files, pkg-config files, and **CPS**
   (Common Package Specification) metadata as it becomes consumable by
   tooling — this library is a good early adopter candidate and the metadata
@@ -50,20 +51,13 @@ core must never transitively impose codecs, GPU SDKs, or a GUI toolkit.
   (`ARBC_PLUGIN_PATH` + platform-conventional locations) for
   application-style hosts.
 
-## Repository layout (planned)
+## Repository layout
 
-```
-include/arbc/          public headers (core API, doc 03 interface)
-src/core/              scene model, compositor, cache, damage
-src/backend-cpu/       reference backend + kernels (doc 07)
-plugins/solid/         reference kinds (doc 03) — built as real plugins
-plugins/raster/
-plugins/nested/        (nested may live in core if the plugin boundary
-                        proves insufficient — that would itself be a
-                        design signal to fix the boundary)
-tests/
-docs/design/
-```
+Superseded by doc 17 (internal components): the library ships as a single
+`libarbc` composed of levelized CMake object libraries, one directory per
+component under `src/`, with reference kinds linked in-lib (and dual-built
+as `dlopen` plugins in CI) except the codec-carrying imageseq plugin,
+which stays a separate artifact.
 
 ## Testing strategy (sketch)
 

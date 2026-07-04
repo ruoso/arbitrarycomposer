@@ -143,6 +143,12 @@ Initially-open questions, now decided in their own docs:
   claims register; contract conformance suite shipped as public API;
   levelization enforced in CI; configs-as-style-guide formatting/linting.
   Decided in doc 16.
+- **Internal components**: one shipped `libarbc` composed of levelized
+  CMake object libraries (base → pool/media → surface/model → contract/
+  cache/backend-cpu → engines/serialize/kinds → runtime → umbrella), with
+  CI-enforced dependency edges; built-in kinds are codec-free and
+  dual-built as dlopen plugins in CI; imageseq ships as a separate plugin
+  artifact carrying the codec dependency. Decided in doc 17.
 - **Memory model**: inside-out slab arenas (refcounts stored apart from
   immutable data, per the `poc-inside-out-objects` prototype) for document
   records and content state nodes, reimplemented inside arbc core and

@@ -41,3 +41,4 @@ Design phase. No code yet. See the design documents:
 | [14-data-model-and-editing](docs/design/14-data-model-and-editing.md) | Versioned document, transactions, undo journal, Editable facet |
 | [15-memory-model](docs/design/15-memory-model.md) | Memory populations, inside-out slab arenas, version reclamation, thread rules |
 | [16-sdlc-and-quality](docs/design/16-sdlc-and-quality.md) | Test taxonomy, claims register, CI, coverage gate, formatting/linting, maintainability |
+| [17-internal-components](docs/design/17-internal-components.md) | Levelized object libraries, shipped artifacts, the codec line, repo layout |
