@@ -67,6 +67,10 @@ docs/design/
 
 ## Testing strategy (sketch)
 
+Superseded in depth by doc 16 (SDLC and quality: full test taxonomy, CI
+structure, claims register, formatting/linting); the sketch below remains
+as the original outline.
+
 - **Contract tests**: a reusable suite any `Content` implementation runs
   against (bounds honesty, scale honesty, damage correctness, async
   completion, cancellation) — shipped so plugin authors get it too.

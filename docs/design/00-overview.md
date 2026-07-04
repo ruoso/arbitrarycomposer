@@ -137,6 +137,12 @@ Initially-open questions, now decided in their own docs:
   document-wide journal for cross-kind undo/redo, and the `Editable`
   content facet with the cheap-capture/structural-sharing discipline.
   Collaboration and delta-based journals deferred. Decided in doc 14.
+- **SDLC and quality**: GitHub-hosted, trunk-based with a mechanized local
+  gate and a red-main protocol; hard diff-coverage gate (≥90% changed
+  lines); the design docs as an executable specification via a
+  claims register; contract conformance suite shipped as public API;
+  levelization enforced in CI; configs-as-style-guide formatting/linting.
+  Decided in doc 16.
 - **Memory model**: inside-out slab arenas (refcounts stored apart from
   immutable data, per the `poc-inside-out-objects` prototype) for document
   records and content state nodes, reimplemented inside arbc core and
