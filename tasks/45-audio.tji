@@ -1,0 +1,53 @@
+# 45 — Audio (doc 12)
+
+task audio "Audio" {
+  depends contract.audio_facet, timeline.transport
+
+  task audio_types "Audio block types + working format" {
+    effort 1d
+    allocate team
+    note "Float32 blocks, channel layouts, per-composition working sample rate/layout; conversions at edges, nesting boundaries convert. Doc 12."
+  }
+  task mix_engine "Pull-based mix engine" {
+    effort 3d
+    allocate team
+    depends !audio_types
+    note "Additive mixing through the layer graph: gain/audible placement, time maps applied as varispeed resampling (exact rational rates), facet-less content costs nothing. Doc 12."
+  }
+  task lookahead "Lookahead scheduler" {
+    effort 4d
+    allocate team
+    depends !mix_engine
+    note "Render-ahead ring of prepared blocks; workers run all plugin code; transport changes flush and re-prime; audio never renders against a deadline. Doc 12."
+  }
+  task device_monitor "Device monitor + clock mastering" {
+    effort 3d
+    allocate team
+    depends !lookahead
+    note "Device sink interface with a reference implementation as a separate plugin artifact (device APIs stay out of libarbc per the doc 17 codec-line policy); the device clock masters the transport; video chases audio. Doc 12."
+  }
+  task export_monitor "Export monitor" {
+    effort 2d
+    allocate team
+    depends !mix_engine
+    note "Sample-exact mix over a time range, driven by the offline frame loop under snapshots; muxing stays host territory. Doc 12."
+  }
+  task latency "Declared-latency pre-roll" {
+    effort 1d
+    allocate team
+    depends !lookahead
+    note "Constant latency() honored by the scheduler (pre-roll requests earlier); full PDC deferred. Doc 12."
+  }
+  task spatial_policy "Spatialization monitor policy" {
+    effort 2d
+    allocate team
+    depends !mix_engine
+    note "Flat (default) and Spatial (camera-as-listener pan/attenuation, sub-audible cull terminating recursion); gain<1 cycles converge in flat mode. Doc 12."
+  }
+  task rt_safety "RT-safety enforcement" {
+    effort 1d
+    allocate team
+    depends !device_monitor
+    note "RealtimeSanitizer annotations on the callback chain + debug allocator/refcount hooks asserting nothing forbidden on RT threads; build-failing, not conventional. Docs 12/16."
+  }
+}

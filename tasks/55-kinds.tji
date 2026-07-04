@@ -1,0 +1,33 @@
+# 55 — Reference kinds (docs 03/05/11/12/17)
+
+task kinds "Reference kinds" {
+  depends contract.conformance_suite
+
+  task tone "org.arbc.tone" {
+    effort 1d
+    allocate team
+    note "Audio-only content — the hello world of the audio facet: empty visual bounds, procedural tone at any requested rate. Doc 12."
+  }
+  task raster "org.arbc.raster" {
+    effort 4d
+    allocate team
+    note "Decoded-buffer raster: persistent CoW tile table (the Editable reference proof), mip/tile pyramid, bounded scale range, achieved_scale below requests past native. Docs 03/14/15."
+  }
+  task nested "org.arbc.nested" {
+    effort 4d
+    allocate team
+    depends compositor.pull_service, color.working_space
+    note "Recursive composition on PullService: synthetic viewport/monitor, both facets, bounds/extent/stability aggregation memoized on aggregate revision, two-level caching, snapshot consistency for Droste scenes. Doc 05."
+  }
+  task imageseq_plugin "arbc-plugin-imageseq" {
+    effort 2d
+    allocate team
+    depends timeline.temporal_cache
+    note "Out-of-lib plugin artifact carrying the decode dependency (doc 17 codec line): Timed visual content, spans, achieved_time on source frames, temporal prefetch; the permanent end-to-end test of the runtime plugin path. Docs 11/17."
+  }
+  task dual_build "Dual-build dlopen proof" {
+    effort 1d
+    allocate team
+    note "Each in-lib kind also links into a CI-only shared library loaded via the extern C entry point, keeping the plugin path honest. Docs 03/17."
+  }
+}

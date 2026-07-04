@@ -1,0 +1,26 @@
+# 00 — Bootstrap (done)
+#
+# Design docs 00–17, quality infrastructure, and the walking skeleton.
+
+task bootstrap "Bootstrap" {
+  task design_docs "Design documents 00-17" {
+    effort 5d
+    allocate team
+    complete 100
+    note "The full design: contract, zoom, recursion, color, serialization, surfaces, time, audio, operators, editing, memory, SDLC, components."
+  }
+  task infra "Build system, gate, CI" {
+    effort 2d
+    allocate team
+    complete 100
+    depends !design_docs
+    note "Doc 16 commit 1: CMake presets + component helper (doc 17), gate script, check_levels/check_claims, GitHub Actions matrix + nightly."
+  }
+  task walking_skeleton "Walking skeleton" {
+    effort 2d
+    allocate team
+    complete 100
+    depends !infra
+    note "Doc 16 commit 2: solid layer through model -> compositor -> CPU backend -> byte-exact golden; nine components; first three claims enforced."
+  }
+}

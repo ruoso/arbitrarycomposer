@@ -1,0 +1,29 @@
+# 30 — Cache (docs 02/11/12)
+
+task cache "Cache" {
+  depends surfaces.surface_pool
+
+  task keyed_store "Budgeted keyed store" {
+    effort 3d
+    allocate team
+    note "Byte-budgeted store, LRU within priority classes (visible > adjacent > recent > speculative); values are backend surfaces/blocks with metadata. Doc 02."
+  }
+  task key_shapes "Tile and block key shapes" {
+    effort 1d
+    allocate team
+    depends !keyed_store
+    note "2D tiles keyed (content, revision, scale rung, tile coords, achieved_time); 1D audio blocks keyed (content, revision, block index, rate). Docs 02/11/12."
+  }
+  task invalidation "Damage/revision invalidation" {
+    effort 1d
+    allocate team
+    depends !key_shapes
+    note "Invalidate by (content, region) across rungs; revision bumps orphan old keys; aggregate revisions for composite content. Docs 02/05."
+  }
+  task prefetch "Prefetch rings" {
+    effort 2d
+    allocate team
+    depends !key_shapes
+    note "Spatial pan-prefetch ring + temporal playback-direction ring bounded by playback-hint horizon; priority-class integration. Docs 02/11."
+  }
+}

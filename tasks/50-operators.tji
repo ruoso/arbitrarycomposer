@@ -1,0 +1,26 @@
+# 50 — Effects as operators (doc 13)
+#
+# The mechanism lands in the compositor stream (operator_graph,
+# pull_service); this stream is the reference operator kinds proving it.
+
+task operators "Operators" {
+  depends compositor.pull_service, contract.operator_members
+
+  task fade "org.arbc.fade" {
+    effort 2d
+    allocate team
+    note "Single-input operator, both facets (alpha + gain envelope), Timed-over-Static stability aggregation, identity() pass-through outside the envelope window. Doc 13."
+  }
+  task crossfade "org.arbc.crossfade" {
+    effort 1d
+    allocate team
+    depends !fade
+    note "Two-input operator: extent union, per-input time handling — the temporal transition primitive; with spans this is cuts-and-dissolves. Doc 13."
+  }
+  task operator_conformance "Operator conformance additions" {
+    effort 1d
+    allocate team
+    depends !fade
+    note "Suite entries for operators: identity honesty, damage-mapping honesty, input pulls only via PullService. Docs 13/16."
+  }
+}

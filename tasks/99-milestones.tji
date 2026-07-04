@@ -1,0 +1,67 @@
+# 99 — Milestones
+#
+# Zero-duration milestones marking when major capability is in place; each
+# depends on the work that has to exist first.
+
+task milestones "Milestones" {
+  task m0_bootstrap "M0: Bootstrap" {
+    milestone
+    complete 100
+    depends bootstrap.walking_skeleton
+    note "Design docs 00-17, gate + CI, and the walking skeleton golden test all in place."
+  }
+
+  task m1_memory "M1: Memory foundation" {
+    milestone
+    depends pool.checkpoints, pool.crash_tests, pool.benchmarks
+    note "Slab arenas with deferred reclamation and the mmapped workspace file surviving kill-injection sweeps. Doc 15 realized."
+  }
+
+  task m2_editing "M2: Versioned editing" {
+    milestone
+    depends model.journal, model.editable_facet, quality.stress_harness, runtime.housekeeping
+    note "Transactions, cross-kind undo/redo, Editable capture/restore, lock-free pins under stress. Doc 14 realized."
+  }
+
+  task m3_still_compositor "M3: Interactive still compositor" {
+    milestone
+    depends compositor.damage_planning, compositor.anchored_viewports, compositor.refinement, compositor.counters, runtime.interactive, kinds.raster, color.kernel_goldens
+    note "Pan/zoom at frame rate over mixed solid/raster scenes: tile cache, scale ladder, damage-driven frames, progressive refinement, deep-zoom rebasing. Docs 02/04 realized for stills."
+  }
+
+  task m4_recursion "M4: Recursive composition" {
+    milestone
+    depends kinds.nested, compositor.operator_graph
+    note "Compositions embed compositions through PullService with two-level caching and cycle termination. Doc 05 realized."
+  }
+
+  task m5_video "M5: Video" {
+    milestone
+    depends timeline.transport, timeline.temporal_cache, timeline.playback_hints, kinds.imageseq_plugin, runtime.offline_sequences, surfaces.provided_surfaces
+    note "Timeline, spans, transport, achieved_time coalescing, playback hints, image-sequence playback (content-provided surfaces exercised), and offline frame sequences. Doc 11 realized."
+  }
+
+  task m6_audio "M6: Audio" {
+    milestone
+    depends audio.device_monitor, audio.export_monitor, audio.rt_safety, audio.latency, audio.spatial_policy, kinds.tone
+    note "Glitch-free device playback mastering the transport clock, sample-exact export, RT-safety enforced by build. Doc 12 realized."
+  }
+
+  task m7_effects "M7: Effects" {
+    milestone
+    depends operators.fade, operators.crossfade, operators.operator_conformance, serialize.sharing
+    note "Fade and crossfade over both facets with identity pass-through; operator graphs serialize. Doc 13 realized — cuts-and-dissolves editing works end to end."
+  }
+
+  task m8_persistence "M8: Documents as files" {
+    milestone
+    depends serialize.format_tests, runtime.plugin_loading
+    note "Canonical .arbc round-trips with unknown-kind preservation; external nested projects load; plugins load by path. Doc 08 realized."
+  }
+
+  task m9_release "M9: v0.1 release" {
+    milestone
+    depends packaging.release_01, packaging.plugin_helper, quality.testing_artifact, quality.tidy_promotion, quality.benchmark_history, quality.claims_audit, quality.repo_linters, quality.request_fuzz, kinds.dual_build, surfaces.import
+    note "The single library + arbc-testing + imageseq plugin, installable with package metadata, examples building, quality bars promoted, external-import surface contract complete."
+  }
+}

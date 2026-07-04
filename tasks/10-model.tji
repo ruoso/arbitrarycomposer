@@ -1,0 +1,44 @@
+# 10 — Versioned model (doc 14)
+#
+# The real DocState on arenas, transactions, the journal, and the Editable
+# discipline. Replaces the walking skeleton's whole-copy stand-in.
+
+task model "Versioned model" {
+  depends pool.refs
+
+  task persistent_state "Persistent DocState on arenas" {
+    effort 3d
+    allocate team
+    note "Path-copying persistent map from ObjectId to immutable records (composition/layer/content), records as fixed-size slab types, atomic publish, pins as root refs. Docs 14/15."
+  }
+  task transactions "Transactions + coalescing" {
+    effort 2d
+    allocate team
+    depends !persistent_state
+    note "Atomic multi-mutation commits; gesture coalescing keys; damage rides the transaction and flushes once per commit. Doc 14."
+  }
+  task journal "Journal, undo/redo" {
+    effort 3d
+    allocate team
+    depends !transactions
+    note "Document-wide history: per-entry placement deltas + (before, after) state handle pairs + damage sets; undo/redo as ordinary forward publishes; byte budget via state_cost, tail trimming. Doc 14."
+  }
+  task damage "Damage records + propagation" {
+    effort 2d
+    allocate team
+    depends !transactions
+    note "Damage as (ObjectId, region, time-range) values; placement changes auto-damage; propagation up nesting to viewports. Docs 01/14."
+  }
+  task editable_facet "Editable facet plumbing" {
+    effort 2d
+    allocate team
+    depends !journal
+    note "capture()/restore()/state_cost() contract; pinned StateHandle travels with render requests (purity refinement); capture-once-per-gesture discipline; conformance suite entries. Docs 14/03."
+  }
+  task content_binding "Content records in DocState" {
+    effort 1d
+    allocate team
+    depends !persistent_state
+    note "Migrate the runtime Document's side-map binding into versioned content records (kind id + state handle), closing the walking-skeleton TODO. Docs 14/17."
+  }
+}

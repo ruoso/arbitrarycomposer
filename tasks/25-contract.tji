@@ -1,0 +1,45 @@
+# 25 — The layer contract, complete (docs 03/11/12/13/14)
+#
+# Everything the walking skeleton's sync-only subset deferred, plus the
+# public conformance suite.
+
+task contract "Layer contract" {
+  depends model.editable_facet, surfaces.capabilities
+
+  task async_render "Async rendering path" {
+    effort 3d
+    allocate team
+    note "One code path for sync and async: render returns inline or completes via RenderCompletion; cancellation query; deadline/exactness disciplines. Doc 03."
+  }
+  task snapshot_pins "Snapshot pins in requests" {
+    effort 1d
+    allocate team
+    note "RenderRequest carries the pinned version / content StateHandle; rendering becomes a pure function of (state, region, scale, time). Docs 03/14."
+  }
+  task temporal_fields "Temporal contract fields" {
+    effort 1d
+    allocate team
+    note "time honored end to end, achieved_time reporting, time_extent(), three-way stability driving cacheability. Doc 11."
+  }
+  task audio_facet "Audio facet interface" {
+    effort 1d
+    allocate team
+    note "AudioFacet: audio_extent, audio_stability, latency, render_audio over blocks; facet discovery via null-default virtual. Doc 12."
+  }
+  task operator_members "Operator graph members" {
+    effort 1d
+    allocate team
+    note "inputs(), map_input_damage(), identity(); PullService interface (implementation lives in the compositor). Doc 13."
+  }
+  task registry "Kind registry" {
+    effort 1d
+    allocate team
+    note "Reverse-DNS kind ids -> factories + metadata; the persistent identifier contract serialization references. Doc 03."
+  }
+  task conformance_suite "Contract conformance suite (arbc-testing)" {
+    effort 4d
+    allocate team
+    depends !async_render, !temporal_fields, !operator_members
+    note "Property-based public suite: render purity, scale/time honesty, bounds honesty, damage soundness, capture/restore round-trips, async completion + cancellation, facet consistency. Shipped artifact. Doc 16."
+  }
+}

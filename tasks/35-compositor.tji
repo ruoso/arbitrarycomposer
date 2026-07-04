@@ -1,0 +1,55 @@
+# 35 — Compositor (docs 02/04/05/13)
+#
+# From the skeleton's naive frame to the real planner: tiles, ladder,
+# damage, deep zoom, operator graph awareness.
+
+task compositor "Compositor" {
+  depends contract.async_render, cache.key_shapes, color.resampling
+
+  task scale_ladder "Scale ladder" {
+    effort 2d
+    allocate team
+    note "Quantize interactive request scales to power-of-two rungs; composite applies the <=1-octave remainder; prefer-downsample convention. Doc 04."
+  }
+  task tile_planning "Tile-based request planning" {
+    effort 4d
+    allocate team
+    depends !scale_ladder, contract.snapshot_pins
+    note "Visible-region planning into local-space-aligned tiles per rung, cache lookups, misses become deadline-carrying requests; stale/coarser/placeholder preference order. Doc 02."
+  }
+  task damage_planning "Damage-driven frames" {
+    effort 2d
+    allocate team
+    depends !tile_planning, model.damage, cache.invalidation
+    note "No damage, no work: map model damage to dirty device regions per viewport; clock advance as the temporal damage axis. Docs 02/11."
+  }
+  task operator_graph "Operator graph awareness" {
+    effort 3d
+    allocate team
+    note "Core-visible inputs(): aggregate revisions, damage routing via map_input_damage, cycle detection + recursion-depth budget, identity() short-circuit in planning. Docs 05/13."
+  }
+  task pull_service "PullService implementation" {
+    effort 3d
+    allocate team
+    depends !tile_planning, !operator_graph
+    note "The request/cache/snapshot/budget machinery behind a public seam: pulls hit the cache first, schedule on workers, inherit deadline + snapshot. Doc 13."
+  }
+  task anchored_viewports "Anchored viewports + rebasing" {
+    effort 4d
+    allocate team
+    depends !tile_planning
+    note "Camera = (anchor node, matrix); re-anchor past the 2^16 scale threshold; culling walks viewport-outward with sub-pixel cull; deep-nesting numeric property tests across rebase thresholds. Doc 04."
+  }
+  task refinement "Progressive refinement" {
+    effort 2d
+    allocate team
+    depends !tile_planning
+    note "Async tile arrivals emit damage scheduling follow-up frames; speculative next-rung requests during zoom gestures. Docs 02/04."
+  }
+  task counters "Behavioral counters" {
+    effort 1d
+    allocate team
+    depends !tile_planning
+    note "Debug counters (requests, cache hits, composites) exposed for claims tests: still-scene playback issues zero renders, identity fades issue zero operator renders, etc. Doc 16."
+  }
+}

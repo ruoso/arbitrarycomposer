@@ -1,0 +1,35 @@
+# 40 — Time and video (doc 11)
+
+task timeline "Time and video" {
+  depends model.transactions, contract.temporal_fields
+
+  task rational_time "Rational time math" {
+    effort 2d
+    allocate team
+    note "Flicks instants, exact rational rates, per-edge time maps composed in rational arithmetic with one rounding at the leaf; half-open span culling. Doc 11."
+  }
+  task temporal_placement "Temporal placement in the model" {
+    effort 1d
+    allocate team
+    depends !rational_time
+    note "span + time_map on layer records beside the spatial transform; default (-inf, +inf) keeps stills the degenerate case. Docs 01/11."
+  }
+  task transport "Transport" {
+    effort 2d
+    allocate team
+    depends !temporal_placement
+    note "Per-viewport clock: play/pause/seek/rate (negative allowed), loop bounds; multiple transports observing one composition at different times. Doc 11."
+  }
+  task temporal_cache "achieved_time coalescing" {
+    effort 2d
+    allocate team
+    depends !rational_time, cache.key_shapes
+    note "Time-keyed cache entries for Timed content; achieved_time coalescing serves whole inter-frame intervals from one entry (24fps content on 60fps output). Doc 11."
+  }
+  task playback_hints "Playback hints" {
+    effort 1d
+    allocate team
+    depends !transport
+    note "Advisory (direction, rate, horizon) from the transport to decoder-backed content; feeds the temporal prefetch ring. Doc 11."
+  }
+}

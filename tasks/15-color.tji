@@ -1,0 +1,38 @@
+# 15 — Color and pixel formats (doc 07)
+#
+# The real working-space machinery: format set, tags, templated kernels
+# behind the type-erased boundary.
+
+task color "Color and pixel formats" {
+  depends bootstrap.walking_skeleton
+
+  task format_set "Pixel format set + surface tags" {
+    effort 1d
+    allocate team
+    note "Rgba16fLinearPremul (default working format) and Rgba8Srgb join Rgba32f; every surface tagged with format + color space + premultiplication. Doc 07."
+  }
+  task working_space "Per-composition working space" {
+    effort 1d
+    allocate team
+    depends !format_set
+    note "Working space as composition configuration (primaries, transfer, format); nesting boundaries convert; homogeneous trees pay nothing. Doc 07."
+  }
+  task kernels "Templated kernels + variant dispatch" {
+    effort 3d
+    allocate team
+    depends !format_set
+    note "Format-templated blend/premultiply/convert kernels, monomorphized; one std::visit per tile-sized operation; typed span accessors checked against tags. Doc 07."
+  }
+  task resampling "Filtered resampling" {
+    effort 2d
+    allocate team
+    depends !kernels
+    note "Bilinear minification/magnification for the composite pass (replacing skeleton nearest); box-filtered downsample for scale-ladder rung generation. Docs 04/07."
+  }
+  task kernel_goldens "Per-format golden kernel tests" {
+    effort 1d
+    allocate team
+    depends !kernels
+    note "Byte-exact goldens per format for blend/convert/resample; the doc 16 determinism discipline applied at kernel granularity."
+  }
+}

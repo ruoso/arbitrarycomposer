@@ -1,0 +1,46 @@
+# 70 — Quality infrastructure (doc 16)
+#
+# Continuous, but with concrete deliverables beyond the bootstrap gate/CI.
+
+task quality "Quality infrastructure" {
+  depends bootstrap.infra
+
+  task testing_artifact "arbc-testing shipped artifact" {
+    effort 1d
+    allocate team
+    depends contract.conformance_suite
+    note "Package the conformance suite as the second shipped artifact, linkable by plugin-author test binaries. Docs 16/17."
+  }
+  task stress_harness "Stress + schedule perturbation" {
+    effort 2d
+    allocate team
+    depends model.persistent_state
+    note "Seeded randomized-yield stress for publish/pin and the reclamation queue; litmus tests for the arena growth handshake; TSan job coverage. Docs 15/16."
+  }
+  task request_fuzz "Request-stream fuzzing" {
+    effort 1d
+    allocate team
+    depends contract.conformance_suite
+    note "libFuzzer over request parameters against contract properties; nightly long-form, per-push brief. Doc 16."
+  }
+  task benchmark_history "Benchmark tracked history" {
+    effort 1d
+    allocate team
+    note "github-action-benchmark (or equivalent) wiring: per-commit upload, regression alerts, no wall-clock merge gates. Doc 16."
+  }
+  task repo_linters "Repo-wide linters in gate + CI" {
+    effort 1d
+    allocate team
+    note "gersemi/cmake-lint, markdownlint + doc link checker (claims anchors), typos, shellcheck/shfmt, .arbc schema validation of examples. Doc 16."
+  }
+  task tidy_promotion "clang-tidy baseline + promotion" {
+    effort 2d
+    allocate team
+    note "Clean the baseline against the curated profile, then promote tidy from nightly continue-on-error to per-push blocking. Doc 16."
+  }
+  task claims_audit "Claims-register audit automation" {
+    effort 1d
+    allocate team
+    note "Nightly audit: registered claims map to living doc anchors and passing tests; enforces-tags without registry entries already fail the gate. Doc 16."
+  }
+}

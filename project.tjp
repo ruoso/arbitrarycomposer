@@ -1,0 +1,46 @@
+# arbitrarycomposer — Work Breakdown Structure
+#
+# This TaskJuggler project file is the structured decomposition of the v1
+# scope defined by docs/design/00–17. It is not used for real scheduling —
+# a single placeholder resource, no calendars. tj3 parses it so structure
+# and dependencies stay valid, and writes one HTML report to `report/`
+# (gitignored).
+#
+# Conventions: one include per work stream, numbered so listings sort in
+# rough build order; numeric gaps allow inserting streams later. Leaf task
+# notes reference the governing design doc.
+
+project arbc "arbitrarycomposer" 2026-07-04 +5y {
+  timezone "America/New_York"
+  numberformat "-" "" "," "." 1
+  currencyformat "(" ")" "," "." 0
+  outputdir "report"
+}
+
+taskreport gantt "Gantt Chart" {
+  formats html
+  headline "arbitrarycomposer Work Breakdown"
+  columns bsi, name, status, chart
+  loadunit hours
+}
+
+# Single placeholder resource; effort-based tasks need one to be valid.
+resource team "Team"
+
+include "tasks/00-bootstrap.tji"
+include "tasks/05-pool.tji"
+include "tasks/10-model.tji"
+include "tasks/15-color.tji"
+include "tasks/20-surfaces.tji"
+include "tasks/25-contract.tji"
+include "tasks/30-cache.tji"
+include "tasks/35-compositor.tji"
+include "tasks/40-time.tji"
+include "tasks/45-audio.tji"
+include "tasks/50-operators.tji"
+include "tasks/55-kinds.tji"
+include "tasks/60-serialize.tji"
+include "tasks/65-runtime.tji"
+include "tasks/70-quality.tji"
+include "tasks/75-packaging.tji"
+include "tasks/99-milestones.tji"

@@ -1,0 +1,29 @@
+# 20 — Surfaces and backend contract (doc 09)
+
+task surfaces "Surfaces and backends" {
+  depends color.format_set
+
+  task capabilities "Backend capability flags" {
+    effort 1d
+    allocate team
+    note "CPU access, import handle types, sync primitive support; typed access checked against capability + tag. Doc 09."
+  }
+  task provided_surfaces "Content-provided surfaces" {
+    effort 2d
+    allocate team
+    depends !capabilities
+    note "RenderResult.provided: refcounted with release callback, transient marking (consume-within-frame, copy-to-cache), compositor path honoring it. Doc 09."
+  }
+  task import "External import (wrap-or-copy)" {
+    effort 2d
+    allocate team
+    depends !capabilities
+    note "Import of caller memory as surfaces in the CPU backend (wrap; copy for anything else), sync token API shaped for GPU fences later. Doc 09."
+  }
+  task surface_pool "Surface pooling" {
+    effort 1d
+    allocate team
+    depends !capabilities
+    note "Compositor-owned allocation through backend pools; temp-surface reuse in the render path (the skeleton allocates per request). Docs 02/09."
+  }
+}

@@ -1,0 +1,50 @@
+# 05 — Memory pool (doc 15)
+#
+# Inside-out slab arenas, the reference-counted GC model, and the mmapped
+# workspace file. Foundation for the real model component.
+
+task pool "Memory pool" {
+  depends bootstrap.walking_skeleton
+
+  task arena_core "Typed slab arenas" {
+    effort 3d
+    allocate team
+    note "Instance arenas (not cpioo's statics): per-type fixed-size slots in two-level buffer tables, monotonic chunk growth, per-arena accounting. Doc 15."
+  }
+  task refs "Counted references" {
+    effort 2d
+    allocate team
+    depends !arena_core
+    note "Inside-out refcounts (parallel buffers, uint32, overflow-checked); index-only position-independent refs for in-record use; pointer-carrying transient variant; generation tags in debug builds. Doc 15."
+  }
+  task reclamation "Deferred reclamation" {
+    effort 2d
+    allocate team
+    depends !refs
+    note "Release enqueues on a type-erased reclamation queue; housekeeping runs destructor cascades iteratively (fixes the cpioo missing-destructor gap); thread-local free pools; RT threads only pin/unpin/enqueue. Doc 15."
+  }
+  task mmap_backing "mmap workspace backing" {
+    effort 3d
+    allocate team
+    depends !arena_core
+    note "Arena backing policy: anonymous | file-backed workspace file. Chunk-at-a-time file growth, hole-punch release of emptied chunks, refcount/freelist state stays anonymous and is rebuilt on open. Doc 15."
+  }
+  task checkpoints "Checkpoint protocol" {
+    effort 3d
+    allocate team
+    depends !mmap_backing, !reclamation
+    note "A/B root slots + ordered msync (LMDB-style); durability-epoch quarantine of freed slots; recovery = map, read root, resume; debug mprotect of published chunks. Doc 15."
+  }
+  task crash_tests "Crash-recovery test sweep" {
+    effort 2d
+    allocate team
+    depends !checkpoints
+    note "Fault-injection shim over msync/write/mmap; kill-at-every-syscall sweeps verifying a consistent root after every injected death; disk-full and short-file paths. Doc 16."
+  }
+  task benchmarks "Allocator benchmarks" {
+    effort 1d
+    allocate team
+    depends !reclamation
+    note "Honest rerun of the cpioo-vs-shared_ptr comparison (const& traversal baseline) plus arena churn/reclaim microbenchmarks, wired to tracked history. Docs 15/16."
+  }
+}

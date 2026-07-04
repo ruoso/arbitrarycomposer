@@ -1,0 +1,42 @@
+# 65 — Runtime (docs 01/02/14/15)
+#
+# The drivers and host-facing objects over the engines.
+
+task runtime "Runtime" {
+  depends compositor.tile_planning
+
+  task threading "Worker pool + threading structure" {
+    effort 3d
+    allocate team
+    note "Render-thread frame planning, worker pool for layer rendering, per-content serialization queues for non-thread-safe content, async completion plumbing. Doc 02."
+  }
+  task interactive "Interactive renderer" {
+    effort 4d
+    allocate team
+    depends !threading, compositor.refinement, cache.prefetch
+    note "Frame loop with deadlines: collect damage, plan, render misses within budget, composite, refine; placeholder policy (stale > coarser > transparent). Doc 02."
+  }
+  task offline_sequences "Offline sequence renderer + export" {
+    effort 2d
+    allocate team
+    depends !threading, timeline.temporal_placement
+    note "Frame-sequence loop: snapshot per frame time, exact renders, revision-consistent output while editing continues; pairs with the audio export monitor. Docs 02/11/12."
+  }
+  task host_objects "Viewport/transport/monitor API" {
+    effort 2d
+    allocate team
+    depends !interactive, model.content_binding
+    note "The host-facing object model: anchored cameras as (anchor, matrix) pairs with re-anchor events surfaced, transports, monitor attachment. Docs 01/04."
+  }
+  task plugin_loading "dlopen plugin loading" {
+    effort 2d
+    allocate team
+    note "extern C registration entry point, explicit host registration first, opt-in ARBC_PLUGIN_PATH scan; errors as values across the boundary. Docs 03/10."
+  }
+  task housekeeping "Housekeeping" {
+    effort 1d
+    allocate team
+    depends pool.reclamation
+    note "Reclamation-queue draining between transactions / low-priority thread; checkpoint cadence policy; version GC observability. Docs 14/15."
+  }
+}

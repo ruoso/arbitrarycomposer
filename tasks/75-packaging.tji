@@ -1,0 +1,34 @@
+# 75 — Packaging and release (docs 10/17)
+
+task packaging "Packaging and release" {
+  depends runtime.host_objects, kinds.raster, serialize.kind_params
+
+  task install "Install + package metadata" {
+    effort 2d
+    allocate team
+    note "FILE_SET aggregation onto the umbrella install, CMake package config, pkg-config, CPS metadata; VERIFY_INTERFACE_HEADER_SETS in CI. Docs 10/17."
+  }
+  task plugin_helper "arbc_add_plugin() helper" {
+    effort 1d
+    allocate team
+    depends !install
+    note "One-line third-party plugin builds shipped with the package; plugin template directory compiled in CI. Doc 10."
+  }
+  task version_api "Version API + changelog discipline" {
+    effort 0.5d
+    allocate team
+    note "Real version symbols/macros, semver from first tag, hand-kept CHANGELOG.md. Docs 10/16."
+  }
+  task examples "Host examples" {
+    effort 2d
+    allocate team
+    depends !install
+    note "A minimal embedding example (offline render to PNG via a tiny writer) and an interactive pan/zoom example; examples compile and run in CI. Doc 16."
+  }
+  task release_01 "0.1 release checklist" {
+    effort 0.5d
+    allocate team
+    depends !install, !version_api, !examples
+    note "Tag, release notes, README quickstart reflecting the shipped surface."
+  }
+}
