@@ -12,6 +12,12 @@ hand-inspection matter during the design phase, and every ecosystem that
 might embed the library can read it. A binary profile is a later
 optimization, gated on evidence.
 
+Distinct from this: the mmapped per-document *workspace* file (doc 15) — a
+same-machine session artifact holding the live arenas for crash recovery
+and demand paging. The JSON document is the interchange, archival, and
+version-control format; the workspace is the database file to JSON's dump,
+and never a substitute for it.
+
 ```jsonc
 {
   "arbc": { "format": 1 },                 // format major version

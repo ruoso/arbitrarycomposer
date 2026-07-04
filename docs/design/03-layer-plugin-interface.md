@@ -84,8 +84,11 @@ public:
   render(const RenderRequest&, std::shared_ptr<RenderCompletion> done) = 0;
 
   // --- optional facets ---
-  virtual AudioFacet* audio() { return nullptr; }  // audio capability
-                                                   //  (doc 12)
+  virtual AudioFacet* audio() { return nullptr; }    // audio capability
+                                                     //  (doc 12)
+  virtual Editable* editable() { return nullptr; }   // document-state
+                                                     //  editing (doc 14);
+                                                     //  Live content omits
 
   // --- operator graph (doc 13) ---
   // Content may consume other content (effects, nested compositions).
@@ -129,11 +132,12 @@ Points worth calling out:
   optional field on `RenderResult` — rather than filling the target; the
   adoption, lifetime, and sync rules are in doc 09.
 - **Parameters and editing**: content objects are constructed and mutated
-  through their concrete types (a `RasterContent` has `set_image(...)`), not
-  through the interface. The interface only needs mutation to be *visible*
-  (damage + revision), not *expressible*. A generic property/parameter system
-  can layer on later for editors and serialization without touching the
-  render contract.
+  through their concrete types (a `RasterContent` has `paint(...)`), not
+  through the interface — but mutation follows the transactional discipline
+  of doc 14 (mutations take a transaction; editable kinds implement the
+  `Editable` facet with cheap structurally-shared state capture). The
+  render contract itself only needs mutation to be *visible* (damage +
+  revision) and rendering to be pure over the pinned state.
 
 ## Plugin mechanism
 
@@ -158,7 +162,10 @@ data; the `std::optional`/`shared_ptr` conveniences shown above get C
 equivalents), and all allocation ownership one-directional.
 
 Out-of-process isolation (a crashing plugin not taking down the host) is
-explicitly deferred; the async render path is the natural seam for it later.
+explicitly deferred; the async render path is the natural seam for it
+later, and the file-backed arena model (doc 15) supplies the substrate — a
+plugin process can map the document workspace read-only and render from a
+pinned version it cannot corrupt.
 
 ## Registry
 

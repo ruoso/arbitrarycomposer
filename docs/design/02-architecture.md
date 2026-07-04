@@ -101,10 +101,11 @@ current-revision entries qualify.
 ## Threading model
 
 - The **scene model** is single-writer. The host mutates it from one thread
-  (typically the UI thread); mutations are cheap (set fields, bump revisions,
-  queue damage).
+  (typically the UI thread), through transactions that publish immutable
+  document versions (doc 14).
 - The **compositor** runs frame planning on the render thread. It reads the
-  scene under a snapshot (revision fence), so planning never races edits.
+  scene under a snapshot — concretely, a pinned document version (doc 14) —
+  so planning never races edits and never takes a lock.
 - **Layer rendering** runs on a worker pool. Requests carry everything the
   layer needs (region, scale, deadline, target surface); layer
   implementations declare whether they are internally thread-safe or need

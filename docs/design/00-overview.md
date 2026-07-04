@@ -57,6 +57,11 @@ Everything else follows from taking that contract seriously:
    core's pull machinery, with pass-through optimization and damage
    routing; fade and crossfade ship as reference kinds (see
    [13-effects-as-operators](13-effects-as-operators.md)).
+10. An editing data model fit for a multi-disciplinary editor: immutable
+    document versions with structural sharing, transactions with gesture
+    coalescing, a document-wide undo journal spanning all content kinds,
+    and lock-free consistent reads for live outputs (see
+    [14-data-model-and-editing](14-data-model-and-editing.md)).
 
 ## Non-goals (for now)
 
@@ -127,6 +132,21 @@ Initially-open questions, now decided in their own docs:
   and `identity()` pass-through; `org.arbc.fade` and `org.arbc.crossfade`
   ship as reference kinds; the effect library stays in plugins. Decided in
   doc 13.
+- **Editing model**: full in v1 — immutable versioned `DocState` (the
+  concrete form of the snapshot token), transactions with coalescing, a
+  document-wide journal for cross-kind undo/redo, and the `Editable`
+  content facet with the cheap-capture/structural-sharing discipline.
+  Collaboration and delta-based journals deferred. Decided in doc 14.
+- **Memory model**: inside-out slab arenas (refcounts stored apart from
+  immutable data, per the `poc-inside-out-objects` prototype) for document
+  records and content state nodes, reimplemented inside arbc core and
+  offered to plugins; version reclamation is pure refcount reachability
+  with deferred cascades, so "GC policy" reduces to the existing journal
+  and cache budgets. Arenas are mmapped from a per-document workspace file
+  by default (crash recovery, demand paging, hole-punch release, a path to
+  shared-mapping process isolation); records are index-only /
+  position-independent; JSON (doc 08) remains the interchange format.
+  Decided in doc 15.
 
 ## Open questions
 

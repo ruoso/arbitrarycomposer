@@ -146,3 +146,8 @@ Every content object and every layer instance carries a monotonically
 increasing **revision**, bumped on any change. Cache keys are
 `(content identity, revision, region, quantized scale)`. This keeps caching
 correct without the cache needing to understand what changed.
+
+Identity is a stable per-object `ObjectId`, and "any change" is concretely
+a transaction publishing a new immutable document version — the editing
+data model, including undo/redo and the `Editable` content facet, is
+doc 14.

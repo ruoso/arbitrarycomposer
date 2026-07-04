@@ -38,3 +38,5 @@ Design phase. No code yet. See the design documents:
 | [11-time-and-video](docs/design/11-time-and-video.md) | Timeline, layer time spans, transport, timed content, video in v1 |
 | [12-audio](docs/design/12-audio.md) | Audio facet, mixing, working format, monitors, clocking, lookahead engine |
 | [13-effects-as-operators](docs/design/13-effects-as-operators.md) | Effects as content operators, PullService, pass-through, fade/crossfade |
+| [14-data-model-and-editing](docs/design/14-data-model-and-editing.md) | Versioned document, transactions, undo journal, Editable facet |
+| [15-memory-model](docs/design/15-memory-model.md) | Memory populations, inside-out slab arenas, version reclamation, thread rules |
