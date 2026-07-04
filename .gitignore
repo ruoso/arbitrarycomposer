@@ -1,3 +1,7 @@
 build/
 __pycache__/
 .cache/
+report/
+orchestrator/logs/
+orchestrator/state/
+.unblocked-report.tjp
