@@ -20,3 +20,8 @@ add_executable(arbc_scale_ladder_golden_t scale_ladder_golden.t.cpp)
 target_link_libraries(arbc_scale_ladder_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_scale_ladder_golden_t)
+
+add_executable(arbc_tile_planning_golden_t tile_planning_golden.t.cpp)
+target_link_libraries(arbc_tile_planning_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_tile_planning_golden_t)

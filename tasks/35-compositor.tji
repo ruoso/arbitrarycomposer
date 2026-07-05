@@ -15,8 +15,9 @@ task compositor "Compositor" {
   task tile_planning "Tile-based request planning" {
     effort 4d
     allocate team
+    complete 100
     depends !scale_ladder, contract.snapshot_pins
-    note "Visible-region planning into local-space-aligned tiles per rung, cache lookups, misses become deadline-carrying requests; stale/coarser/placeholder preference order. Doc 02."
+    note "Visible-region planning into local-space-aligned tiles per rung, cache lookups, misses become deadline-carrying requests; stale/coarser/placeholder preference order. Doc 02. Refinement: tasks/refinements/compositor/tile_planning.md"
   }
   task damage_planning "Damage-driven frames" {
     effort 2d
