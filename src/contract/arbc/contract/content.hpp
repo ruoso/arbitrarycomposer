@@ -15,11 +15,18 @@
 
 namespace arbc {
 
-// Cacheability of content output (docs 01/11).
+// Cacheability of content output (docs 01/11): stability governs how the tile
+// cache keys a content's output on the playback (time) axis (doc 11:138-143).
+// `Static` ignores `request.time` and reports no `achieved_time`, so it adds no
+// time dimension to the cache key -- a still grows no cache across a clock
+// advance. `Timed` reports the quantized `achieved_time` it actually rendered
+// and is cacheable per achieved_time. `Live` is non-deterministic, cacheable
+// only within a single frame/snapshot.
 enum class Stability {
-  Static, // time-invariant; same request -> same pixels until damage
-  Timed,  // deterministic function of request time
-  Live,   // non-deterministic; cache only within a frame
+  Static, // time-invariant; ignores request.time, reports no achieved_time
+  Timed,  // deterministic function of request time; reports the quantized
+          //  achieved_time it rendered, cacheable per achieved_time (doc 11)
+  Live,   // non-deterministic; cacheable only within a frame/snapshot
 };
 
 // The two request disciplines (doc 03:12-13,48). `BestEffort` (interactive)
@@ -79,6 +86,16 @@ struct RenderRequest {
 struct RenderResult {
   double achieved_scale{1.0};
   bool exact{true};
+  // The local media time actually rendered, if the content quantized the
+  // requested `time` to a native instant -- a 24 fps clip asked for `t=0.31 s`
+  // renders `7/24 s` and says so (doc 11:110-114). This is the temporal analog
+  // of `achieved_scale`. `nullopt` means the requested time was honored exactly
+  // or the content is time-invariant (`Static`), mirroring
+  // `achieved_scale == request.scale`; `Static` content reports `nullopt`, so
+  // it contributes no time dimension to the tile-cache key (doc 11:138-143).
+  // `std::optional<Time>` over the trivially copyable `Time` keeps
+  // `RenderResult` a cheap by-value descriptor -- no allocation or atomic.
+  std::optional<Time> achieved_time{};
 };
 
 // A thread-safe, one-shot completion handle (doc 03:62-67). The renderer
@@ -154,6 +171,17 @@ public:
 
   virtual std::optional<Rect> bounds() const = 0;
   virtual Stability stability() const = 0;
+  // The temporal analog of `bounds()` (doc 03:77-78, doc 11:67-79): the local
+  // media-time range over which this content varies or exists, or `nullopt` for
+  // time-invariant (`Static`) content -- exactly as `bounds()` returns
+  // `nullopt` for unbounded content. A pure virtual, deliberately grouped with
+  // the description methods rather than null-defaulted like the operator-graph
+  // members below: every author must consciously declare a content's temporal
+  // extent, because a silent `nullopt` default would misclassify an un-migrated
+  // `Timed` content as time-invariant and let its tiles be served stale across
+  // a clock advance. The common `Static` case is a one-line
+  // `return std::nullopt;`.
+  virtual std::optional<TimeRange> time_extent() const = 0;
   // Render `request.region` into `request.target`. For content with editable
   // state, `render` must be a PURE function of `(request.snapshot, region,
   // scale, time)` (docs 03:138-140, 14:181-187): two calls with an identical

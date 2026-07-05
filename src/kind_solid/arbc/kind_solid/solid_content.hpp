@@ -23,6 +23,7 @@ public:
 
   std::optional<Rect> bounds() const override;
   Stability stability() const override;
+  std::optional<TimeRange> time_extent() const override;
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion> done) override;
 

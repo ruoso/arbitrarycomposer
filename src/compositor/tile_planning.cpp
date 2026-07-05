@@ -26,9 +26,8 @@ std::int32_t floor_div(std::int32_t numerator, std::int32_t divisor) {
 // `compositor.cpp:95-99`. At an integer-aligned power-of-two rung the composite
 // tap collapses to the byte-exact nearest tap (doc 02:66-68).
 Affine surface_to_device(const Affine& local_to_device, const Rect& local_rect, double scale) {
-  return compose(local_to_device,
-                 compose(Affine::translation(local_rect.x0, local_rect.y0),
-                         Affine::scaling(1.0 / scale, 1.0 / scale)));
+  return compose(local_to_device, compose(Affine::translation(local_rect.x0, local_rect.y0),
+                                          Affine::scaling(1.0 / scale, 1.0 / scale)));
 }
 
 // Composite a `Coarser` fallback (doc 02:64). The coarser source covers a
@@ -58,9 +57,8 @@ void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
 
   // coarser-surface px -> local -> fine-temp px, so the whole temp is filled
   // from the coarser tile's covering sub-region.
-  const Affine coarser_to_local =
-      compose(Affine::translation(coarser_rect.x0, coarser_rect.y0),
-              Affine::scaling(1.0 / coarser_px, 1.0 / coarser_px));
+  const Affine coarser_to_local = compose(Affine::translation(coarser_rect.x0, coarser_rect.y0),
+                                          Affine::scaling(1.0 / coarser_px, 1.0 / coarser_px));
   const Affine local_to_temp =
       compose(Affine::scaling(rung_px, rung_px),
               Affine::translation(-tile.local_rect.x0, -tile.local_rect.y0));
@@ -255,10 +253,9 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
           // Matches `render_frame`'s walking-skeleton request (compositor.cpp:71):
           // Time::zero() and the inert default snapshot until runtime binding
           // wires content_state through. `deadline` is stamped as a value.
-          const RenderRequest request{tile.local_rect, rung_px,
-                                       Time::zero(),    StateHandle{},
-                                       tile_surface,    Exactness::BestEffort,
-                                       deadline};
+          const RenderRequest request{tile.local_rect, rung_px,      Time::zero(),
+                                      StateHandle{},   tile_surface, Exactness::BestEffort,
+                                      deadline};
           // The single settle path (doc 03:117-121), exactly as `render_frame`.
           auto done = std::make_shared<RenderCompletion>();
           const std::optional<RenderResult> inline_result = content->render(request, done);

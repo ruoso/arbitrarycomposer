@@ -52,6 +52,7 @@ class DeterministicContent : public arbc::Content {
 public:
   std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
   arbc::Stability stability() const override { return arbc::Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
 
   std::optional<arbc::RenderResult> render(const arbc::RenderRequest& request,
                                            std::shared_ptr<arbc::RenderCompletion>) override {
@@ -73,6 +74,7 @@ class RecordingContent : public arbc::Content {
 public:
   std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
   arbc::Stability stability() const override { return arbc::Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
 
   std::optional<arbc::RenderResult> render(const arbc::RenderRequest& request,
                                            std::shared_ptr<arbc::RenderCompletion>) override {

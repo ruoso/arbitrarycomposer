@@ -35,6 +35,7 @@ class LeafContent : public arbc::Content {
 public:
   std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
   arbc::Stability stability() const override { return arbc::Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
   std::optional<arbc::RenderResult> render(const arbc::RenderRequest&,
                                            std::shared_ptr<arbc::RenderCompletion>) override {
     return arbc::RenderResult{};
@@ -49,11 +50,13 @@ class OperatorContent : public arbc::Content {
 public:
   OperatorContent(std::vector<arbc::ContentRef> inputs, std::size_t identity_idx,
                   arbc::Time passthrough_at, double inflate)
-      : d_inputs(std::move(inputs)), d_identity_idx(identity_idx),
-        d_passthrough_at(passthrough_at), d_inflate(inflate) {}
+      : d_inputs(std::move(inputs)), d_identity_idx(identity_idx), d_passthrough_at(passthrough_at),
+        d_inflate(inflate) {}
 
   std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
   arbc::Stability stability() const override { return arbc::Stability::Timed; }
+  // The union of its (Static, nullopt) inputs' extents: temporally unbounded.
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
   std::optional<arbc::RenderResult> render(const arbc::RenderRequest&,
                                            std::shared_ptr<arbc::RenderCompletion>) override {
     return arbc::RenderResult{};
@@ -124,8 +127,9 @@ private:
 
 // A `PullService` is an abstract interface: it cannot be instantiated, only
 // implemented (doc 17:53). The implementation lands at L4.
-static_assert(std::is_abstract_v<arbc::PullService>,
-              "PullService is an abstract L3 interface (implementation is compositor.pull_service)");
+static_assert(
+    std::is_abstract_v<arbc::PullService>,
+    "PullService is an abstract L3 interface (implementation is compositor.pull_service)");
 
 } // namespace
 
@@ -146,8 +150,8 @@ TEST_CASE("a Content overriding none of the operator-graph members is a graph le
   // identity(): nullopt for every request -- a leaf is never a pass-through.
   const arbc::RenderRequest req_a{arbc::Rect::from_size(2.0, 2.0), 1.0, arbc::Time::zero(),
                                   arbc::StateHandle{}, target};
-  const arbc::RenderRequest req_b{arbc::Rect::from_size(4.0, 4.0), 2.0, arbc::Time{999},
-                                  arbc::StateHandle{3U}, target, arbc::Exactness::Exact};
+  const arbc::RenderRequest req_b{arbc::Rect::from_size(4.0, 4.0), 2.0,    arbc::Time{999},
+                                  arbc::StateHandle{3U},           target, arbc::Exactness::Exact};
   REQUIRE(leaf.identity(req_a) == std::nullopt);
   REQUIRE(leaf.identity(req_b) == std::nullopt);
 }
@@ -169,7 +173,8 @@ TEST_CASE("inputs() returns the operator's input edges in order, viewing its own
   REQUIRE(op.inputs().data() == op.inputs().data());
 }
 
-TEST_CASE("identity() is request-scoped: the configured input for a pass-through request, else nullopt") {
+TEST_CASE(
+    "identity() is request-scoped: the configured input for a pass-through request, else nullopt") {
   LeafContent a;
   LeafContent b;
   StubSurface target;
@@ -203,9 +208,9 @@ TEST_CASE("map_input_damage() over-approximates: the output rect covers the inpu
 TEST_CASE("PullService::pull forwards the exact ref, request, and completion unchanged") {
   LeafContent leaf;
   StubSurface target;
-  const arbc::RenderRequest request{arbc::Rect::from_size(4.0, 4.0), 2.0, arbc::Time{123},
-                                    arbc::StateHandle{5U},        target,
-                                    arbc::Exactness::Exact,       arbc::Deadline::none()};
+  const arbc::RenderRequest request{arbc::Rect::from_size(4.0, 4.0), 2.0,    arbc::Time{123},
+                                    arbc::StateHandle{5U},           target, arbc::Exactness::Exact,
+                                    arbc::Deadline::none()};
   auto done = std::make_shared<arbc::RenderCompletion>();
   const arbc::ContentRef ref = &leaf;
 

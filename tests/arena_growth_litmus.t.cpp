@@ -20,9 +20,9 @@
 #include <arbc/pool/slot_store.hpp>
 #include <arbc/pool/typed_store.hpp>
 
-#include "support/schedule_perturb.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/schedule_perturb.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -63,8 +63,7 @@ void run_arena_growth_litmus(std::uint32_t seed_begin, std::uint32_t seed_end, i
     std::vector<std::thread> readers;
     for (int r = 0; r < reader_count; ++r) {
       readers.emplace_back([&, r] {
-        arbc::test::Perturber perturb(
-            arbc::test::derive_seed(seed, static_cast<std::uint32_t>(r)));
+        arbc::test::Perturber perturb(arbc::test::derive_seed(seed, static_cast<std::uint32_t>(r)));
         while (!go.load(std::memory_order_acquire)) {
         }
         while (!stop.load(std::memory_order_acquire)) {

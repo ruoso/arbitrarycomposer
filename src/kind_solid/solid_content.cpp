@@ -14,6 +14,11 @@ std::optional<Rect> SolidContent::bounds() const { return d_bounds; }
 
 Stability SolidContent::stability() const { return Stability::Static; }
 
+// Time-invariant: a solid fill varies over no local-time range, so it declares
+// no temporal extent (doc 11:69-71), exactly as `Static` content reports no
+// `achieved_time`.
+std::optional<TimeRange> SolidContent::time_extent() const { return std::nullopt; }
+
 // Trivial content settles INLINE (doc 03:14,117-121): it fills the target and
 // returns a `RenderResult`, never `nullopt`, so it pays no async ceremony and
 // ignores the supplied completion.

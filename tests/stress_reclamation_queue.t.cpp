@@ -22,9 +22,9 @@
 #include <arbc/pool/refs.hpp>
 #include <arbc/pool/slot_store.hpp>
 
-#include "support/schedule_perturb.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/schedule_perturb.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -110,9 +110,9 @@ void run_reclamation_stress(std::uint32_t seed_begin, std::uint32_t seed_end, in
       const int before = destructions;
       store.release(blocks[0].back());
       blocks[0].pop_back();
-      REQUIRE(destructions == before);              // ~T has NOT run yet
-      REQUIRE(store.slots_live() == built);         // the slot is still live
-      queue.drain();                                // now the cascade runs
+      REQUIRE(destructions == before);               // ~T has NOT run yet
+      REQUIRE(store.slots_live() == built);          // the slot is still live
+      queue.drain();                                 // now the cascade runs
       REQUIRE(destructions == before + chain_depth); // whole subtree, once each
       REQUIRE(store.slots_live() == built - static_cast<std::size_t>(chain_depth));
     }
@@ -123,8 +123,7 @@ void run_reclamation_stress(std::uint32_t seed_begin, std::uint32_t seed_end, in
     std::vector<std::thread> producers;
     for (int p = 0; p < producer_count; ++p) {
       producers.emplace_back([&, p] {
-        arbc::test::Perturber perturb(
-            arbc::test::derive_seed(seed, static_cast<std::uint32_t>(p)));
+        arbc::test::Perturber perturb(arbc::test::derive_seed(seed, static_cast<std::uint32_t>(p)));
         while (!go.load(std::memory_order_acquire)) {
         }
         for (arbc::SlotRef<Tracked> s : blocks[p]) {
@@ -182,7 +181,7 @@ void run_shared_column_stress(std::uint32_t seed_begin, std::uint32_t seed_end, 
     arbc::Arena arena;
     arbc::RefStore<CellA> a(arena);
     arbc::RefStore<CellB> b(arena);
-    REQUIRE(&a.store() == &b.store());     // one store => one shared count column
+    REQUIRE(&a.store() == &b.store()); // one store => one shared count column
     REQUIRE(arena.store_count() == 1);
 
     arbc::Ref<CellA> ra = *a.create(CellA{0xA1A1A1A1u});

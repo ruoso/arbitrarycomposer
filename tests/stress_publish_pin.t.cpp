@@ -28,9 +28,9 @@
 #include <arbc/pool/slot_store.hpp>
 #include <arbc/runtime/housekeeping_thread.hpp>
 
-#include "support/schedule_perturb.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/schedule_perturb.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -93,8 +93,8 @@ arbc::Ref<VerNode> build_chain(arbc::RefStore<VerNode>& store, int depth, std::u
 // Publish a fresh version (writer thread). `make_shared` gives the version its
 // control block; the `Ref` root moves in.
 VersionPtr make_version(arbc::RefStore<VerNode>& store, int depth, std::uint32_t revision) {
-  return std::make_shared<const Version>(Version{build_chain(store, depth, revision), revision,
-                                                 revision});
+  return std::make_shared<const Version>(
+      Version{build_chain(store, depth, revision), revision, revision});
 }
 
 // A tick period short enough that the background thread is an active

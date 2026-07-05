@@ -37,6 +37,7 @@ public:
 
   std::optional<arbc::Rect> bounds() const override { return d_solid.bounds(); }
   arbc::Stability stability() const override { return d_solid.stability(); }
+  std::optional<arbc::TimeRange> time_extent() const override { return d_solid.time_extent(); }
   std::optional<arbc::RenderResult> render(const arbc::RenderRequest& request,
                                            std::shared_ptr<arbc::RenderCompletion> done) override {
     ++d_renders;
@@ -61,7 +62,8 @@ bool byte_identical(const arbc::Surface& lhs, const arbc::Surface& rhs) {
 } // namespace
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
-TEST_CASE("render_frame_interactive: tiled composite equals the whole render at a power-of-two rung") {
+TEST_CASE(
+    "render_frame_interactive: tiled composite equals the whole render at a power-of-two rung") {
   // Identity camera, unit-scale layer -> composed scale 1.0 -> rung 0,
   // remainder 1.0. A 512x512 content splits into a 2x2 grid of 256^2 tiles.
   arbc::Document document;
@@ -89,7 +91,8 @@ TEST_CASE("render_frame_interactive: tiled composite equals the whole render at 
   REQUIRE(byte_identical(*whole, **tiled));
 }
 
-TEST_CASE("render_frame_interactive: a warm second frame issues zero renders, byte-identical output") {
+TEST_CASE(
+    "render_frame_interactive: a warm second frame issues zero renders, byte-identical output") {
   auto counting = std::make_shared<CountingContent>(arbc::Rgba{0.5F, 0.25F, 0.125F, 1.0F},
                                                     arbc::Rect{0.0, 0.0, 512.0, 512.0});
   arbc::Document document;

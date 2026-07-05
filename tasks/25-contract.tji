@@ -21,7 +21,8 @@ task contract "Layer contract" {
   task temporal_fields "Temporal contract fields" {
     effort 1d
     allocate team
-    note "time honored end to end, achieved_time reporting, time_extent(), three-way stability driving cacheability. Doc 11."
+    complete 100
+    note "time honored end to end, achieved_time reporting, time_extent(), three-way stability driving cacheability. Doc 11. Refinement: tasks/refinements/contract/temporal_fields.md"
   }
   task audio_facet "Audio facet interface" {
     effort 1d

@@ -1,11 +1,10 @@
-#include <arbc/compositor/tile_planning.hpp>
-
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/cache/key_shapes.hpp>
 #include <arbc/cache/keyed_store.hpp>
+#include <arbc/compositor/tile_planning.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
@@ -89,7 +88,8 @@ LayerTilePlan plan_static(TileCache& cache, const RungSelection& sel, const Rect
 
 TEST_CASE("tiles_covering: a region spanning 2.5 cells covers 3 columns") {
   // rung 0 -> cell edge 256 local units. x in [0, 640) = 2.5 cells.
-  const std::vector<TileCoord> tiles = arbc::tiles_covering(ScaleRung{0}, Rect{0.0, 0.0, 640.0, 256.0});
+  const std::vector<TileCoord> tiles =
+      arbc::tiles_covering(ScaleRung{0}, Rect{0.0, 0.0, 640.0, 256.0});
   REQUIRE(tiles.size() == 3);
   CHECK(tiles[0] == TileCoord{0, 0});
   CHECK(tiles[1] == TileCoord{1, 0});
@@ -98,7 +98,8 @@ TEST_CASE("tiles_covering: a region spanning 2.5 cells covers 3 columns") {
 
 TEST_CASE("tiles_covering: a region exactly on cell boundaries does not double-cover") {
   // [0, 512) x [0, 512) is exactly a 2x2 block of rung-0 cells, not 3x3.
-  const std::vector<TileCoord> tiles = arbc::tiles_covering(ScaleRung{0}, Rect{0.0, 0.0, 512.0, 512.0});
+  const std::vector<TileCoord> tiles =
+      arbc::tiles_covering(ScaleRung{0}, Rect{0.0, 0.0, 512.0, 512.0});
   CHECK(tiles.size() == 4);
   for (const TileCoord coord : tiles) {
     CHECK(coord.col >= 0);
@@ -115,7 +116,8 @@ TEST_CASE("tiles_covering: an empty region covers no cells") {
 
 TEST_CASE("tile_local_rect round-trips through tiles_covering, incl. negative coords") {
   for (const ScaleRung rung : {ScaleRung{-2}, ScaleRung{0}, ScaleRung{3}}) {
-    for (const TileCoord coord : {TileCoord{0, 0}, TileCoord{3, 5}, TileCoord{-2, -4}, TileCoord{-1, 2}}) {
+    for (const TileCoord coord :
+         {TileCoord{0, 0}, TileCoord{3, 5}, TileCoord{-2, -4}, TileCoord{-1, 2}}) {
       const Rect rect = arbc::tile_local_rect(rung, coord);
       const std::vector<TileCoord> covering = arbc::tiles_covering(rung, rect);
       // A single cell's own rect covers exactly that cell.
@@ -126,7 +128,8 @@ TEST_CASE("tile_local_rect round-trips through tiles_covering, incl. negative co
 }
 
 TEST_CASE("tile_local_rect: cell edge is k_tile_size / rung_scale across rungs") {
-  for (const ScaleRung rung : {ScaleRung{-2}, ScaleRung{-1}, ScaleRung{0}, ScaleRung{1}, ScaleRung{3}}) {
+  for (const ScaleRung rung :
+       {ScaleRung{-2}, ScaleRung{-1}, ScaleRung{0}, ScaleRung{1}, ScaleRung{3}}) {
     const Rect rect = arbc::tile_local_rect(rung, TileCoord{0, 0});
     const double expected_edge = static_cast<double>(arbc::k_tile_size) / arbc::rung_scale(rung);
     CHECK(rect.width() == expected_edge);
@@ -188,13 +191,9 @@ TEST_CASE("plan_layer: an empty cache marks every tile a miss owing a deadline r
 
     // A miss materializes into exactly the tile's footprint at rung_scale, a
     // BestEffort request stamped with the frame deadline and pinned snapshot.
-    const arbc::RenderRequest request{tile.local_rect,
-                                      arbc::rung_scale(plan.rung),
-                                      plan.time,
-                                      plan.snapshot,
-                                      target,
-                                      arbc::Exactness::BestEffort,
-                                      plan.deadline};
+    const arbc::RenderRequest request{
+        tile.local_rect, arbc::rung_scale(plan.rung), plan.time,    plan.snapshot,
+        target,          arbc::Exactness::BestEffort, plan.deadline};
     CHECK(request.exactness == arbc::Exactness::BestEffort);
     CHECK(request.deadline == deadline);
     CHECK(request.snapshot == snapshot);
@@ -242,7 +241,8 @@ TEST_CASE("plan_layer: a best-effort or wrong-scale hit at the fresh key is not 
 // --- Degradation preference order -------------------------------------------
 
 // enforces: 02-architecture#degraded-fallback-preference-order
-TEST_CASE("plan_layer: the degraded fallback preference order is fresh -> stale -> coarser -> placeholder") {
+TEST_CASE("plan_layer: the degraded fallback preference order is fresh -> stale -> coarser -> "
+          "placeholder") {
   const RungSelection sel = rung0();
   const Rect region{0.0, 0.0, 256.0, 256.0}; // 1 rung-0 tile
   const TileCoord coord{0, 0};
@@ -317,10 +317,9 @@ TEST_CASE("plan_layer: Static keys omit achieved_time and survive a clock advanc
     for (const PlannedTile& tile : still.tiles) {
       CHECK_FALSE(tile.key.achieved_time.has_value());
     }
-    const LayerTilePlan timed =
-        arbc::plan_layer(cache, k_content, k_revision, std::nullopt, sel, region,
-                         arbc::Affine::identity(), Stability::Timed, t1, arbc::StateHandle{},
-                         arbc::Deadline::none());
+    const LayerTilePlan timed = arbc::plan_layer(cache, k_content, k_revision, std::nullopt, sel,
+                                                 region, arbc::Affine::identity(), Stability::Timed,
+                                                 t1, arbc::StateHandle{}, arbc::Deadline::none());
     for (const PlannedTile& tile : timed.tiles) {
       REQUIRE(tile.key.achieved_time.has_value());
       CHECK(*tile.key.achieved_time == t1);
