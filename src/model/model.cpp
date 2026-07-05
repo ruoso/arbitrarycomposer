@@ -354,6 +354,13 @@ const ContentRecord* DocRoot::find_content(ObjectId id) const {
   return r->kind == RecordKind::Content ? &r->as.content : nullptr;
 }
 
+StateHandle DocRoot::content_state(ObjectId id) const {
+  // Pure peek traversal: resolve the content record and read its captured handle;
+  // absent / non-content resolves to the inert sentinel. No refcount page touched.
+  const ContentRecord* c = find_content(id);
+  return c != nullptr ? c->state : StateHandle{};
+}
+
 const CompositionRecord* DocRoot::find_composition(ObjectId id) const {
   SlotRef<ObjectRecord> edge;
   if (!hamt_lookup(d_stores, d_root, id.value, edge)) {
@@ -388,6 +395,11 @@ Model::Model()
   // a pin) only enqueues -- never a destructor storm inline (doc 15:129-136).
   d_queue.register_store(d_nodes, d_node_sink);
   d_queue.register_store(d_records, d_record_sink);
+  // Override the records' plain deferred zero sink with one that first releases a
+  // reclaimed content record's embedded StateHandle through the L3 seam, then
+  // defers the slot the same way (refinement Decision 2). register_store already
+  // recorded the drain thunk; this only swaps the zero sink.
+  d_records.set_zero_sink(&d_content_reclaim_sink);
   d_current.store(std::make_shared<const DocRoot>(d_bundle, Ref<HamtNode>{}, 0));
 }
 
@@ -568,6 +580,16 @@ void Model::Transaction::set_content_state(ObjectId content, StateHandle after) 
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override the handle
   nr.as.content.state = after;
+
+  // Retain the captured handle for THIS newly-created record slot (one retain per
+  // distinct content ObjectRecord instance, doc 14:133-136). The matching release
+  // fires when the slot is reclaimed (ContentStateReclaimSink). If the insert
+  // below fails, `rec` drops here and its zero-count reclaim releases it -- so the
+  // pairing holds even on the error path. The `before` handle keeps the retain it
+  // took when the base record was created; this call touches only `after`.
+  if (after.has_state() && d_model->d_state_ref_sink != nullptr) {
+    d_model->d_state_ref_sink->retain(after);
+  }
 
   expected<Ref<HamtNode>, PoolError> next =
       hamt_insert(d_model->d_bundle, d_root, content.value, rec->slot());

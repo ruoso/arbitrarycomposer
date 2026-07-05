@@ -48,8 +48,9 @@ task model "Versioned model" {
   task editable_facet "Editable facet plumbing" {
     effort 2d
     allocate team
+    complete 100
     depends !journal
-    note "capture()/restore()/state_cost() contract; pinned StateHandle travels with render requests (purity refinement); capture-once-per-gesture discipline; conformance suite entries. Docs 14/03."
+    note "capture()/restore()/state_cost() contract; pinned StateHandle travels with render requests (purity refinement); capture-once-per-gesture discipline; conformance suite entries. Docs 14/03. Refinement: tasks/refinements/model/editable_facet.md"
   }
   task content_binding "Content records in DocState" {
     effort 1d

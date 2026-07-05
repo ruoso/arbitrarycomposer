@@ -62,6 +62,15 @@ public:
   // untouched-structure). Returns false when absent.
   bool record_edge(ObjectId id, SlotRef<ObjectRecord>& out) const;
 
+  // Resolve `id`'s captured content `StateHandle` as of THIS pinned version --
+  // the L2 half of the render-purity refinement (doc 14:155-161). A lock-free
+  // `peek` that touches no refcount page (15-memory-model#const-ref-traversal-
+  // touches-no-refcount-page), so a pinned render worker resolves the frozen
+  // handle a version was published with, even while the writer captures newer
+  // ones. `contract.snapshot_pins` (L3) consumes this to place the handle on a
+  // `RenderRequest`. Returns `k_state_none` when `id` is absent or not content.
+  StateHandle content_state(ObjectId id) const;
+
   // Internal: the owning root reference a new transaction forks from.
   const Ref<HamtNode>& root_ref() const noexcept { return d_root; }
 
@@ -72,6 +81,51 @@ private:
 };
 
 using DocStatePtr = std::shared_ptr<const DocRoot>;
+
+// Abstract, model-defined seam (pure retain/release, doc 02): the reference
+// lifecycle of a content object's editable `StateHandle`. Type-erased -- the
+// model knows only the opaque `StateHandle`; the kind (L3, via runtime binding)
+// owns the state's store and adjusts its per-slot count (doc 17:66-72,
+// refinement Decision 3). The writer retains a non-`none` handle when its
+// embedding content `ObjectRecord` slot is CREATED and releases it when that
+// slot is RECLAIMED, so doc 14's two promises come true: "a pinned version pins
+// content state too" (doc 14:133-136) and "version GC releases ... unreferenced
+// state handles by refcount" (doc 14:173-176). Registered via
+// `Model::set_state_ref_sink`; while none is registered retain/release are
+// no-ops and behavior is byte-identical to inert handles. WRITER-THREAD ONLY.
+class StateRefSink {
+public:
+  virtual ~StateRefSink() = default;
+  virtual void retain(StateHandle handle) = 0;
+  virtual void release(StateHandle handle) = 0;
+};
+
+// The ObjectRecord store's zero-count sink: at the zero-count-reclaim boundary of
+// a content `ObjectRecord`, release its embedded `StateHandle` through the
+// registered `StateRefSink` (the record is still readable -- reclamation is
+// deferred), then hand the slot to the deferred reclamation queue exactly as the
+// plain `DeferredReclaimSink` would. This is what makes the `StateHandle`
+// lifecycle ride the record slot without a non-trivial `~ObjectRecord`
+// (records.hpp:12-19, refinement Decision 2). Reached only on the single drain
+// thread (every ObjectRecord count decrement is writer/drain-thread), so the
+// L3 `release` stays writer-thread-only.
+class ContentStateReclaimSink final : public ZeroCountSink {
+public:
+  ContentStateReclaimSink(RefStore<ObjectRecord>& records, StateRefSink** sink) noexcept
+      : d_records(&records), d_sink(sink) {}
+
+  void on_zero(SlotIndex index) override {
+    const ObjectRecord* r = d_records->peek_index(index);
+    if (r->kind == RecordKind::Content && r->as.content.state.has_state() && *d_sink != nullptr) {
+      (*d_sink)->release(r->as.content.state);
+    }
+    d_records->enqueue_reclaim(index);
+  }
+
+private:
+  RefStore<ObjectRecord>* d_records;
+  StateRefSink** d_sink;
+};
 
 // The versioned scene model (doc 14): single writer, lock-free pinned reads.
 // `DocState` is a path-copying persistent HAMT over `ObjectId`; records live as
@@ -109,6 +163,12 @@ public:
   // from above at wiring time (doc 17:66-72). Null clears. WRITER-THREAD ONLY.
   void set_commit_sink(CommitSink* sink) noexcept { d_commit_sink = sink; }
   void set_damage_sink(DamageSink* sink) noexcept { d_damage_sink = sink; }
+
+  // Install the writer-owned content-state retain/release seam. Lifecycle rides
+  // the record store the `Model` owns, so it registers here (not on `Journal`,
+  // where cost/restore live -- refinement Decision 4). Null clears (inert).
+  // WRITER-THREAD ONLY.
+  void set_state_ref_sink(StateRefSink* sink) noexcept { d_state_ref_sink = sink; }
 
   // Direction of a navigation publish: undo restores each edit's *before* edge,
   // redo re-applies its *after* edge (doc 14:168-172).
@@ -230,6 +290,14 @@ private:
   // through these; the journal / damage-propagation consumers register above.
   CommitSink* d_commit_sink{nullptr};
   DamageSink* d_damage_sink{nullptr};
+  // L3 content-state retain/release seam (writer-thread only; null == inert).
+  StateRefSink* d_state_ref_sink{nullptr};
+  // The ObjectRecord zero-count sink that releases a reclaimed content record's
+  // embedded `StateHandle` before deferring the slot. Constructed with the record
+  // store and the address of `d_state_ref_sink`, and installed over the plain
+  // deferred sink in the constructor. Declared last so the members it references
+  // are already alive.
+  ContentStateReclaimSink d_content_reclaim_sink{d_records, &d_state_ref_sink};
 };
 
 } // namespace arbc

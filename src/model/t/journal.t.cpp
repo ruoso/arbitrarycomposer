@@ -175,7 +175,8 @@ TEST_CASE("undo/redo never rewrite entries; a fresh commit drops the redo tail")
 
   // Capture entry A's byte-identity witnesses (name + its object's after edge).
   const std::string a_name = journal.entry_at(0).name;
-  const arbc::SlotRef<arbc::ObjectRecord> a_after = journal.entry_at(0).objects.front().after.slot();
+  const arbc::SlotRef<arbc::ObjectRecord> a_after =
+      journal.entry_at(0).objects.front().after.slot();
 
   // Undo twice: only the cursor moves; the stored entries are unchanged.
   REQUIRE(journal.undo());
@@ -283,9 +284,9 @@ TEST_CASE("the journal trims oldest entries to the byte budget; superseded recor
   const auto tight = run(3 * rec);
   const auto loose = run(arbc::Journal::k_no_budget);
 
-  REQUIRE(tight.depth >= 1);           // never trims below one entry
-  REQUIRE(tight.depth < loose.depth);  // the bound really dropped entries
-  REQUIRE(tight.cost <= 3 * rec);      // and stayed within budget
+  REQUIRE(tight.depth >= 1);          // never trims below one entry
+  REQUIRE(tight.depth < loose.depth); // the bound really dropped entries
+  REQUIRE(tight.cost <= 3 * rec);     // and stayed within budget
   // Fewer retained entries pin fewer uniquely-superseded records: the bounded
   // journal's live-slot count is strictly lower after trimming + drain.
   REQUIRE(tight.live < loose.live);
