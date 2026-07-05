@@ -1,7 +1,6 @@
+#include <arbc/base/expected.hpp>
 #include <arbc/surface/capabilities.hpp>
 #include <arbc/surface/surface_error.hpp>
-
-#include <arbc/base/expected.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 

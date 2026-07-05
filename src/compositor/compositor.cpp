@@ -5,7 +5,7 @@
 namespace arbc {
 
 void render_frame(const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
-                  Backend& backend, Surface& target) {
+                  Backend& backend, SurfacePool& pool, Surface& target) {
   backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
 
   const Rect device_rect =
@@ -50,12 +50,17 @@ void render_frame(const DocRoot& state, const ContentResolver& resolve, const Vi
       return; // sub-pixel: cull (doc 04)
     }
 
-    const expected<std::unique_ptr<Surface>, SurfaceError> temp_result =
-        backend.make_surface(temp_width, temp_height, target.format());
+    // Acquire the per-layer temp from the pool (doc 09): a free-list hit
+    // recycles a released same-key surface, a miss allocates through the
+    // backend. The handle's lambda-body scope releases it back to the pool.
+    expected<PooledSurface, SurfaceError> temp_result =
+        pool.acquire(temp_width, temp_height, target.format());
     if (!temp_result.has_value()) {
       return; // backend cannot store the target's working format: cull (doc 09)
     }
-    Surface& temp = **temp_result;
+    // Recycled surfaces carry undefined contents (doc 09): clear before use so
+    // output stays byte-identical regardless of a prior frame's residue.
+    Surface& temp = temp_result->get();
     backend.clear(temp, 0.0F, 0.0F, 0.0F, 0.0F);
 
     const RenderRequest request{region, scale, Time::zero(), temp};

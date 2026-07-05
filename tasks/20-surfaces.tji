@@ -24,7 +24,8 @@ task surfaces "Surfaces and backends" {
   task surface_pool "Surface pooling" {
     effort 1d
     allocate team
+    complete 100
     depends !capabilities
-    note "Compositor-owned allocation through backend pools; temp-surface reuse in the render path (the skeleton allocates per request). Docs 02/09."
+    note "Compositor-owned allocation through backend pools; temp-surface reuse in the render path (the skeleton allocates per request). Docs 02/09. Refinement: tasks/refinements/surfaces/surface_pool.md"
   }
 }

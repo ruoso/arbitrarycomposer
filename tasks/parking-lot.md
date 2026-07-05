@@ -40,6 +40,11 @@ Append one `###` block per item, newest at the bottom:
 - **Question**: Should a per-push TSan CI lane be added to cover the concurrent writer-allocate / low-priority-drain smoke test in `src/pool/t/free_pools.t.cpp`? The test now runs under the gate's dev+asan lanes but the repo still has no TSan preset/lane.
 - **Why parked**: Wiring a `.github/workflows/` TSan job is an infrastructure edit outside the implementable scope of `pool.free_pools`. Requires a human decision on CI resource cost and TSan preset configuration.
 
+### 2026-07-05 — SurfacePool byte-budget / one-frame-trim eviction policy
+- **Source**: closer for `surfaces.surface_pool` (see accompanying commit); flagged in refinement Open questions.
+- **Question**: Should a byte-budget or one-frame-trim eviction policy be added to `SurfacePool`? A long-lived cross-frame pool under sustained camera motion (many distinct temp sizes) could accumulate stale entries, but the only cross-frame caller — the interactive/video renderer — does not exist yet. Whether accumulation matters is a profiling-dependent judgment.
+- **Why parked**: Trigger is interactive-renderer profiling evidence that doesn't exist yet. Adding a policy now is speculative; the refinement explicitly defers this until that renderer's profiling reveals a real problem. Human call once the interactive renderer is built and profiled.
+
 ### 2026-07-05 — HAMT interior nodes not trivially destructible (model.persistent_state design deviation)
 - **Source**: closer for `model.persistent_state` (see accompanying commit); flagged by implementer.
 - **Question**: Docs 14/15 require records to be trivially destructible so `ReclamationQueue::drain` walks them explicitly. The three *object* record types (composition, layer, content) satisfy this and pass the `static_assert` in acceptance criteria. However HAMT interior nodes are **not** trivially destructible — they own child `SlotRef` edges and the drain cascade releases children through `~T`, with nodes reaching their stores via a thread-local `ReclaimContext` the drainer publishes. Should docs 14/15 be amended to distinguish between object records (trivially destructible, mmap-compatible) and map-node records (allowed non-trivial dtor via sink-routed cascade)? Or should the HAMT implementation be redesigned to make interior nodes also trivially destructible?

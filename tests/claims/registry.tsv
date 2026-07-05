@@ -25,6 +25,7 @@
 07-color-and-pixel-formats#surfaces-carry-tags	Every surface exposes its complete tag triple (pixel format, color space, premultiplication) from creation, and the reference backend refuses to composite across mismatched tags
 09-surfaces-and-backends#make-surface-faults-as-value	A backend that cannot store a requested SurfaceFormat returns a SurfaceError value, never null and never aborting; a supported format returns a live surface carrying that exact tag triple
 09-surfaces-and-backends#capabilities-are-honest	A backend's advertised BackendCaps match its behavior: the reference backend advertises cpu_access and its stored surfaces yield a non-empty CPU span, while import_handles is empty and sync_primitives false until surfaces.import / GPU backends land the machinery
+09-surfaces-and-backends#surface-pool-recycles	A released pooled surface is reused for a subsequent same-(size, format) acquisition rather than reallocated; the backend allocates once per distinct (size, format), not once per request
 16-sdlc-and-quality#byte-exact-goldens	CPU backend rendering is byte-exact deterministic
 15-memory-model#slots-recycle-in-place	A released slot is the next same-class allocation's perfect hole; fixed slabs make fragmentation impossible
 15-memory-model#chunk-growth-preserves-addresses	Slot pointers taken before growth stay valid and unchanged across arbitrary chunk growth

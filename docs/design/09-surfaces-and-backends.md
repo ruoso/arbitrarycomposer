@@ -59,6 +59,24 @@ abort), so a capability-negotiating caller sees the reason. The closed,
 core-owned format set (doc 07) makes the answer a decision over an
 enumerable universe.
 
+**Surface pooling is a core-owned reuse layer.** Reconciling the two
+statements above ("pooling by the core only," "a backend implements …
+pooling"): the backend owns *allocation* (`make_surface`); the core owns the
+*recycling policy* over it. Recycling is a core-owned `SurfacePool` that
+composes over `make_surface`, not a per-backend virtual. The compositor
+render path *acquires* a temp target from the pool — keyed by size +
+`SurfaceFormat` — and the acquired RAII handle *releases* it when the frame
+is done; release returns the surface to the pool's free list instead of
+freeing it, so a subsequent same-key request reuses it rather than
+reallocating (this is what "returned to the pool untouched," below, returns
+it *to*). `acquire` is errors-as-values like `make_surface`, forwarding its
+`SurfaceError` on a free-list miss. Recycled surfaces carry **undefined
+contents** — a caller must clear or fully overwrite before reading (the
+compositor already clears each temp). The pool is render-thread-confined
+(see the Threading note): acquire/release run only where allocation runs, so
+it needs no locking. A backend may still specialize allocation behind
+`make_surface` (a GPU transient allocator, say) without changing this seam.
+
 ## Content-provided surfaces (texture adoption)
 
 Doc 03's contract has the compositor allocate the target and content fill
