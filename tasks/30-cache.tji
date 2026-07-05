@@ -12,8 +12,9 @@ task cache "Cache" {
   task key_shapes "Tile and block key shapes" {
     effort 1d
     allocate team
+    complete 100
     depends !keyed_store
-    note "2D tiles keyed (content, revision, scale rung, tile coords, achieved_time); 1D audio blocks keyed (content, revision, block index, rate). Docs 02/11/12."
+    note "2D tiles keyed (content, revision, scale rung, tile coords, achieved_time); 1D audio blocks keyed (content, revision, block index, rate). Docs 02/11/12. Refinement: tasks/refinements/cache/key_shapes.md"
   }
   task invalidation "Damage/revision invalidation" {
     effort 1d

@@ -14,8 +14,7 @@ const std::array<PriorityClass, k_priority_class_count>& cache_eviction_order() 
       PriorityClass::Adjacent,
       PriorityClass::Visible,
   };
-  static_assert(k_priority_class_count == 4,
-                "eviction order must list every PriorityClass");
+  static_assert(k_priority_class_count == 4, "eviction order must list every PriorityClass");
   return order;
 }
 

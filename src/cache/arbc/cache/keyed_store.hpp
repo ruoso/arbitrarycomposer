@@ -75,8 +75,7 @@ public:
   CacheHold(const CacheHold&) = delete;
   CacheHold& operator=(const CacheHold&) = delete;
 
-  CacheHold(CacheHold&& other) noexcept
-      : d_owner(other.d_owner), d_entry(other.d_entry) {
+  CacheHold(CacheHold&& other) noexcept : d_owner(other.d_owner), d_entry(other.d_entry) {
     other.d_owner = nullptr;
     other.d_entry = nullptr;
   }
@@ -104,8 +103,7 @@ public:
 private:
   template <class K, class V> friend class KeyedStore;
 
-  CacheHold(detail::CacheHoldOwner<Value>& owner,
-            detail::CacheEntry<Value>* entry) noexcept
+  CacheHold(detail::CacheHoldOwner<Value>& owner, detail::CacheEntry<Value>* entry) noexcept
       : d_owner(&owner), d_entry(entry) {}
 
   void release() noexcept {
@@ -138,8 +136,7 @@ private:
 // holds no lock; concurrent reader-lookup vs. worker-fill is a designed future
 // mode whose hardening is deferred. Not copyable or movable -- CacheHolds
 // reference it by pointer, so callers hold it by reference.
-template <class Key, class Value>
-class KeyedStore : private detail::CacheHoldOwner<Value> {
+template <class Key, class Value> class KeyedStore : private detail::CacheHoldOwner<Value> {
 public:
   using hold_type = CacheHold<Value>;
 
@@ -257,15 +254,13 @@ private:
 };
 
 template <class Key, class Value>
-CacheHold<Value> KeyedStore<Key, Value>::insert(Key key, Value value,
-                                                std::size_t bytes,
+CacheHold<Value> KeyedStore<Key, Value>::insert(Key key, Value value, std::size_t bytes,
                                                 PriorityClass klass) {
   if (auto existing = d_map.find(key); existing != d_map.end()) {
     detach(existing);
   }
   evict_to_fit(bytes);
-  auto entry = std::make_unique<Entry>(
-      Entry{std::move(value), bytes, klass, ++d_tick, 1u, false});
+  auto entry = std::make_unique<Entry>(Entry{std::move(value), bytes, klass, ++d_tick, 1u, false});
   Entry* raw = entry.get();
   d_resident += bytes;
   d_map.emplace(std::move(key), std::move(entry));
@@ -295,8 +290,7 @@ void KeyedStore<Key, Value>::reclassify(const Key& key, PriorityClass klass) {
   it->second->klass = klass;
 }
 
-template <class Key, class Value>
-void KeyedStore<Key, Value>::remove(const Key& key) {
+template <class Key, class Value> void KeyedStore<Key, Value>::remove(const Key& key) {
   auto it = d_map.find(key);
   if (it == d_map.end()) {
     return;

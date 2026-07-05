@@ -22,14 +22,12 @@ struct Tracked {
   int id;
   std::shared_ptr<int> released;
 
-  Tracked(int the_id, std::shared_ptr<int> counter)
-      : id(the_id), released(std::move(counter)) {}
+  Tracked(int the_id, std::shared_ptr<int> counter) : id(the_id), released(std::move(counter)) {}
 
   Tracked(const Tracked&) = delete;
   Tracked& operator=(const Tracked&) = delete;
 
-  Tracked(Tracked&& other) noexcept
-      : id(other.id), released(std::move(other.released)) {}
+  Tracked(Tracked&& other) noexcept : id(other.id), released(std::move(other.released)) {}
   Tracked& operator=(Tracked&& other) noexcept {
     id = other.id;
     released = std::move(other.released);
@@ -45,9 +43,7 @@ struct Tracked {
 
 using Store = KeyedStore<int, Tracked>;
 
-Tracked make(int id, const std::shared_ptr<int>& released) {
-  return Tracked(id, released);
-}
+Tracked make(int id, const std::shared_ptr<int>& released) { return Tracked(id, released); }
 
 } // namespace
 
@@ -116,7 +112,9 @@ TEST_CASE("LRU within a class: least-recently-used goes first, lookup flips it")
   store.insert(2, make(2, released), 40, PriorityClass::Recent);
 
   // Touch key 1 so key 2 is now least-recently-used.
-  { auto touch = store.lookup(1); }
+  {
+    auto touch = store.lookup(1);
+  }
 
   store.insert(3, make(3, released), 40, PriorityClass::Recent);
 
@@ -224,8 +222,7 @@ TEST_CASE("CacheHold move transfers the unpin obligation: exactly-once release, 
   Store store(1000);
 
   {
-    CacheHold<Tracked> a = store.insert(1, make(1, released), 10,
-                                        PriorityClass::Visible);
+    CacheHold<Tracked> a = store.insert(1, make(1, released), 10, PriorityClass::Visible);
     CacheHold<Tracked> b = std::move(a); // move-construct: a is now empty
     CHECK_FALSE(a.valid());
     CHECK(b.valid());
@@ -276,8 +273,12 @@ TEST_CASE("behavioral counters: exact hits/misses/evictions over a script") {
   CHECK(store.misses() == 0);
   CHECK(store.evictions() == 0);
 
-  { auto h = store.lookup(1); } // hit
-  { auto m = store.lookup(9); } // miss
+  {
+    auto h = store.lookup(1);
+  } // hit
+  {
+    auto m = store.lookup(9);
+  } // miss
   CHECK(store.hits() == 1);
   CHECK(store.misses() == 1);
 
@@ -285,7 +286,9 @@ TEST_CASE("behavioral counters: exact hits/misses/evictions over a script") {
   store.insert(3, make(3, released), 40, PriorityClass::Speculative);
   CHECK(store.evictions() == 1);
 
-  { auto m2 = store.lookup(2); } // evicted -> miss
+  {
+    auto m2 = store.lookup(2);
+  } // evicted -> miss
   CHECK(store.misses() == 2);
   CHECK(store.hits() == 1);
 }
