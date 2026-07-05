@@ -14,8 +14,9 @@ task quality "Quality infrastructure" {
   task stress_harness "Stress + schedule perturbation" {
     effort 2d
     allocate team
+    complete 100
     depends model.persistent_state
-    note "Seeded randomized-yield stress for publish/pin and the reclamation queue; litmus tests for the arena growth handshake; TSan job coverage. Docs 15/16."
+    note "Seeded randomized-yield stress for publish/pin and the reclamation queue; litmus tests for the arena growth handshake; TSan job coverage. Docs 15/16. Refinement: tasks/refinements/quality/stress_harness.md"
   }
   task request_fuzz "Request-stream fuzzing" {
     effort 1d

@@ -25,3 +25,24 @@ add_executable(arbc_tile_planning_golden_t tile_planning_golden.t.cpp)
 target_link_libraries(arbc_tile_planning_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_tile_planning_golden_t)
+
+# Cross-component concurrency stress + litmus (design doc 16 tier 6). These
+# combine model publish/pin (L2), pool reclamation/arena (L1), and runtime
+# housekeeping (L5), so per doc 17:153 they live here in top-level tests/ and
+# link the umbrella `arbc`. The brief TEST_CASEs run per-push (also under the
+# `tsan` preset short-form); the `[.nightly]` sweeps are hidden and run only when
+# a nightly job invokes the binary with the `[.nightly]` tag.
+add_executable(arbc_stress_publish_pin_t stress_publish_pin.t.cpp)
+target_link_libraries(arbc_stress_publish_pin_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_stress_publish_pin_t)
+
+add_executable(arbc_stress_reclamation_queue_t stress_reclamation_queue.t.cpp)
+target_link_libraries(arbc_stress_reclamation_queue_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_stress_reclamation_queue_t)
+
+add_executable(arbc_arena_growth_litmus_t arena_growth_litmus.t.cpp)
+target_link_libraries(arbc_arena_growth_litmus_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_arena_growth_litmus_t)

@@ -1,7 +1,6 @@
 # Nightly long-form checks (design doc 16).
-# TODO as the codebase grows: fuzzing (long-form), stress/schedule
-# perturbation, Valgrind, benchmark runs with tracked history, and the
-# full claims-register audit.
+# TODO as the codebase grows: fuzzing (long-form), Valgrind, benchmark runs
+# with tracked history, and the full claims-register audit.
 name: Nightly
 
 on:
@@ -37,3 +36,24 @@ jobs:
         run: cmake --build --preset asan --parallel 4
       - name: test
         run: ctest --preset asan
+
+  # Long-form ThreadSanitizer stress (doc 16:104-105). The full suite runs
+  # short-form under TSan per-push (ci.yml gcc-tsan); here the seeded
+  # schedule-perturbation stress/litmus binaries run their hidden `[.nightly]`
+  # wide seed-sweeps, which catch_discover_tests does not register with ctest.
+  tsan-full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: configure
+        run: CXX=g++ cmake --preset tsan
+      - name: build
+        run: cmake --build --preset tsan --parallel 4
+      - name: test (full suite short-form)
+        run: ctest --preset tsan
+      - name: long-form seeded schedule-perturbation sweep
+        run: |
+          for t in stress_publish_pin stress_reclamation_queue arena_growth_litmus; do
+            echo "== $t [.nightly] =="
+            ./build/tsan/tests/arbc_${t}_t "[.nightly]"
+          done

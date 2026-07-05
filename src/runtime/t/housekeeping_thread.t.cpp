@@ -1,10 +1,9 @@
-#include <arbc/runtime/housekeeping_thread.hpp>
-
 #include <arbc/pool/checkpoint.hpp>
 #include <arbc/pool/reclamation.hpp>
 #include <arbc/pool/refs.hpp>
 #include <arbc/pool/slot_store.hpp>
 #include <arbc/pool/workspace_file.hpp>
+#include <arbc/runtime/housekeeping_thread.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -18,11 +17,12 @@
 #include <vector>
 
 #if ARBC_HAS_WORKSPACE_FILES
+#include <unistd.h>
+
 #include <cerrno>
 #include <cstdlib>
 #include <memory>
 #include <string>
-#include <unistd.h>
 #endif
 
 namespace {
@@ -115,8 +115,10 @@ TEST_CASE("stop wakes the parked loop, runs a final drain, and joins cleanly") {
   SECTION("construct and immediately destroy does not hang") {
     arbc::HousekeepingThreadConfig tc;
     tc.tick_period = kNoTimeout;
-    { arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{},
-                                   std::move(tc)); }
+    {
+      arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{},
+                                   std::move(tc));
+    }
     SUCCEED("destructor returned -- the join did not hang");
   }
 }
@@ -259,7 +261,7 @@ TEST_CASE("a background checkpoint failure is captured and surfaced, never abort
   // header msync (a clean scene skips the data msync) -> HeaderIoFailed.
   arbc::Ref<Rec> node = *fx.store.create();
   REQUIRE(hkt.after_commit(node.index()).has_value());
-  REQUIRE(hkt.request_checkpoint().has_value());     // commit -> clean, durable
+  REQUIRE(hkt.request_checkpoint().has_value());       // commit -> clean, durable
   REQUIRE(hkt.after_commit(node.index()).has_value()); // a dirty-count txn, scene still clean
 
   ErrnoInjector inj(arbc::WorkspaceSyscall::Msync, EIO);
@@ -274,8 +276,8 @@ TEST_CASE("a background checkpoint failure is captured and surfaced, never abort
   REQUIRE(err->code == arbc::WorkspaceFileErrc::HeaderIoFailed);
   REQUIRE(err->sys_errno == EIO);
   REQUIRE(callback_hits.load(std::memory_order_acquire) == 1);
-  REQUIRE(fx.ckpt.commit_count() == 1);                 // only the earlier good commit
-  REQUIRE(hkt.stats().checkpoints_committed == 1);      // the failed commit was not counted
+  REQUIRE(fx.ckpt.commit_count() == 1);            // only the earlier good commit
+  REQUIRE(hkt.stats().checkpoints_committed == 1); // the failed commit was not counted
 }
 
 #endif // ARBC_HAS_WORKSPACE_FILES
@@ -315,8 +317,7 @@ TEST_CASE("stress: RT producers enqueue while the background thread and writer b
   {
     arbc::HousekeepingThreadConfig tc;
     tc.tick_period = std::chrono::microseconds(50); // an active low-priority drainer
-    arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{},
-                                 std::move(tc));
+    arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{}, std::move(tc));
 
     for (int p = 0; p < producer_count; ++p) {
       producers.emplace_back([&, p] {

@@ -1,10 +1,9 @@
-#include <arbc/runtime/housekeeping.hpp>
-
 #include <arbc/pool/checkpoint.hpp>
 #include <arbc/pool/reclamation.hpp>
 #include <arbc/pool/refs.hpp>
 #include <arbc/pool/slot_store.hpp>
 #include <arbc/pool/workspace_file.hpp>
+#include <arbc/runtime/housekeeping.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -14,11 +13,12 @@
 #include <vector>
 
 #if ARBC_HAS_WORKSPACE_FILES
+#include <unistd.h>
+
 #include <cerrno>
 #include <cstdlib>
 #include <memory>
 #include <string>
-#include <unistd.h>
 #endif
 
 namespace {
@@ -185,8 +185,8 @@ struct WsFixture {
   arbc::DeferredReclaimSink<Rec> sink;
   arbc::ReclamationQueue queue;
 
-  WsFixture() : source(make_source(path)), arena(*source), store(arena), ckpt(*source, arena),
-                sink(store) {
+  WsFixture()
+      : source(make_source(path)), arena(*source), store(arena), ckpt(*source, arena), sink(store) {
     store.store().set_release_fence(&ckpt.slot_fence());
     queue.register_store(store, sink);
   }

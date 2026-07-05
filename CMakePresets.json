@@ -30,6 +30,15 @@
       }
     },
     {
+      "name": "tsan",
+      "displayName": "Debug + ThreadSanitizer",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/tsan",
+      "cacheVariables": {
+        "ARBC_SANITIZERS": "thread"
+      }
+    },
+    {
       "name": "coverage",
       "displayName": "Debug + coverage instrumentation",
       "inherits": "dev",
@@ -59,6 +68,7 @@
     { "name": "dev", "configurePreset": "dev" },
     { "name": "release", "configurePreset": "release" },
     { "name": "asan", "configurePreset": "asan" },
+    { "name": "tsan", "configurePreset": "tsan" },
     { "name": "coverage", "configurePreset": "coverage" },
     { "name": "win-dev", "configurePreset": "win-dev" },
     { "name": "bench", "configurePreset": "bench" }
@@ -67,6 +77,7 @@
     { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
     { "name": "asan", "configurePreset": "asan", "output": { "outputOnFailure": true } },
+    { "name": "tsan", "configurePreset": "tsan", "output": { "outputOnFailure": true } },
     { "name": "coverage", "configurePreset": "coverage", "output": { "outputOnFailure": true } },
     { "name": "win-dev", "configurePreset": "win-dev", "output": { "outputOnFailure": true } },
     { "name": "bench", "configurePreset": "bench", "output": { "outputOnFailure": true } }

@@ -33,6 +33,12 @@ jobs:
           - { name: gcc-release, os: ubuntu-latest, cxx: g++, preset: release }
           - { name: clang-debug, os: ubuntu-latest, cxx: clang++, preset: dev }
           - { name: clang-asan, os: ubuntu-latest, cxx: clang++, preset: asan }
+          # TSan lane (doc 16:66,101-103): the full suite short-form under
+          # ThreadSanitizer -- ASan cannot detect data races. gcc's TSan is
+          # complete and composes with the mprotect/SIGSEGV/fork crash harness
+          # (validated green), so no test is excluded; the hidden `[.nightly]`
+          # wide seed-sweeps are auto-excluded from ctest and run in nightly.
+          - { name: gcc-tsan, os: ubuntu-latest, cxx: g++, preset: tsan }
           - { name: msvc-debug, os: windows-latest, cxx: "", preset: win-dev }
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

@@ -52,13 +52,13 @@ struct HousekeepingConfig {
 // arena's live-slot count and pass-through Checkpointer counters -- no new
 // counting mechanism, just a composed view of numbers the mechanisms publish.
 struct HousekeepingStats {
-  std::uint64_t transactions_seen{0};        // total after_commit calls
-  std::uint64_t drains_run{0};               // reclamation drains issued
-  std::uint64_t checkpoints_committed{0};    // commits issued (auto + explicit)
+  std::uint64_t transactions_seen{0};         // total after_commit calls
+  std::uint64_t drains_run{0};                // reclamation drains issued
+  std::uint64_t checkpoints_committed{0};     // commits issued (auto + explicit)
   std::uint64_t checkpoints_skipped_clean{0}; // auto triggers gated by dirtiness
-  std::size_t live_slots{0};                 // Arena::total_slots_live(), 0 if unbound
-  std::uint64_t slots_freed_to_list{0};      // Checkpointer pass-through, 0 if unbound
-  std::uint32_t durable_epoch{0};            // Checkpointer pass-through, 0 if unbound
+  std::size_t live_slots{0};                  // Arena::total_slots_live(), 0 if unbound
+  std::uint64_t slots_freed_to_list{0};       // Checkpointer pass-through, 0 if unbound
+  std::uint32_t durable_epoch{0};             // Checkpointer pass-through, 0 if unbound
 };
 
 class Housekeeper {
@@ -105,7 +105,7 @@ private:
 
   ReclamationQueue* d_queue;
   Checkpointer* d_checkpointer; // nullable
-  Arena* d_arena;              // nullable
+  Arena* d_arena;               // nullable
   HousekeepingConfig d_config;
 
   SlotIndex d_tip{0}; // the last root handed to after_commit -- the commit target

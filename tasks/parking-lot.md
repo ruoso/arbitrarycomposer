@@ -30,16 +30,6 @@ Append one `###` block per item, newest at the bottom:
 - **Why parked**: judgment call / preconditions unmet / scope decision.
 ```
 
-### 2026-07-04 — TSan CI lane for pool reclamation concurrent enqueue-while-draining
-- **Source**: closer for `pool.reclamation` (commit TBD — see commit immediately after this entry's merge).
-- **Question**: Should a ThreadSanitizer lane be added to CI (`.github/workflows/`) to cover the 8-producer concurrent enqueue-while-draining smoke test in `src/pool/t/reclamation.t.cpp`? The test runs under the gate's dev+asan lanes today, but no TSan preset/lane exists in this repo.
-- **Why parked**: Editing `.github/workflows/` is out of the permitted scope for `pool.reclamation`. Requires a human decision on CI resource cost and the right preset configuration for TSan.
-
-### 2026-07-04 — TSan CI lane for pool.free_pools concurrent writer-allocate/drain path
-- **Source**: closer for `pool.free_pools` (see accompanying commit).
-- **Question**: Should a per-push TSan CI lane be added to cover the concurrent writer-allocate / low-priority-drain smoke test in `src/pool/t/free_pools.t.cpp`? The test now runs under the gate's dev+asan lanes but the repo still has no TSan preset/lane.
-- **Why parked**: Wiring a `.github/workflows/` TSan job is an infrastructure edit outside the implementable scope of `pool.free_pools`. Requires a human decision on CI resource cost and TSan preset configuration.
-
 ### 2026-07-05 — SurfacePool byte-budget / one-frame-trim eviction policy
 - **Source**: closer for `surfaces.surface_pool` (see accompanying commit); flagged in refinement Open questions.
 - **Question**: Should a byte-budget or one-frame-trim eviction policy be added to `SurfacePool`? A long-lived cross-frame pool under sustained camera motion (many distinct temp sizes) could accumulate stale entries, but the only cross-frame caller — the interactive/video renderer — does not exist yet. Whether accumulation matters is a profiling-dependent judgment.
