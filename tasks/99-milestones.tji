@@ -20,7 +20,7 @@ task milestones "Milestones" {
 
   task m2_editing "M2: Versioned editing" {
     milestone
-    depends model.journal, model.editable_facet, model.composition_membership, quality.stress_harness, runtime.housekeeping, pool.refcounts_in_store, pool.free_pools
+    depends model.journal, model.editable_facet, model.composition_membership, quality.stress_harness, runtime.housekeeping, runtime.housekeeping_thread, pool.refcounts_in_store, pool.free_pools
     note "Transactions, cross-kind undo/redo, Editable capture/restore, lock-free pins under stress. Doc 14 realized."
   }
 

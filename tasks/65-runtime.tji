@@ -36,7 +36,14 @@ task runtime "Runtime" {
   task housekeeping "Housekeeping" {
     effort 1d
     allocate team
+    complete 100
     depends pool.reclamation
-    note "Reclamation-queue draining between transactions / low-priority thread; checkpoint cadence policy; version GC observability. Docs 14/15."
+    note "Reclamation-queue draining between transactions / low-priority thread; checkpoint cadence policy; version GC observability. Docs 14/15. Refinement: tasks/refinements/runtime/housekeeping.md"
+  }
+  task housekeeping_thread "Low-priority housekeeping thread" {
+    effort 2d
+    allocate team
+    depends !housekeeping
+    note "Low-priority background housekeeping thread: a std::thread that parks/wakes on a condition variable and periodically calls Housekeeper::tick(), serializing as the single drainer against writer-thread drains, with graceful stop/join; stress + TSan coverage of RT-thread enqueue-while-draining. Docs 14/15. Refinement: tasks/refinements/runtime/housekeeping.md"
   }
 }
