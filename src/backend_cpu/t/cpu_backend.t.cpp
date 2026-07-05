@@ -37,6 +37,109 @@ void require_close(const arbc::WorkingPixel& got, const arbc::WorkingPixel& want
   }
 }
 
+// Encode a premultiplied linear working sample into pixel `idx` of `surface`,
+// and decode it back -- so a resampling test can lay out a known source and
+// read the interpolated destination in the same working coordinates for every
+// format (idx is the row-major pixel index, y*width + x).
+template <PixelFormat F>
+void write_px(arbc::Surface& surface, int idx, const arbc::WorkingPixel& w) {
+  const std::span<typename arbc::PixelTraits<F>::Storage> px = surface.span<F>();
+  arbc::PixelTraits<F>::encode(w, &px[static_cast<std::size_t>(idx) * 4]);
+}
+
+template <PixelFormat F> arbc::WorkingPixel read_px(const arbc::Surface& surface, int idx) {
+  const std::span<const typename arbc::PixelTraits<F>::Storage> px = surface.span<F>();
+  return arbc::PixelTraits<F>::decode(&px[static_cast<std::size_t>(idx) * 4]);
+}
+
+// A red ramp in x (columns 0 and 1), opaque, laid out on a 2x2 source: the
+// canonical fixture for exercising the bilinear tap's x interpolation with a
+// per-channel value the four taps make analytic.
+template <PixelFormat F> void fill_red_ramp_2x2(arbc::Surface& src) {
+  write_px<F>(src, 0, {0.0F, 0.0F, 0.0F, 1.0F}); // (0,0)
+  write_px<F>(src, 1, {1.0F, 0.0F, 0.0F, 1.0F}); // (1,0)
+  write_px<F>(src, 2, {0.0F, 0.0F, 0.0F, 1.0F}); // (0,1)
+  write_px<F>(src, 3, {1.0F, 0.0F, 0.0F, 1.0F}); // (1,1)
+}
+
+// Bilinear magnification: a 2x upscale of the red ramp resolves interior
+// destination pixels to interpolated reds a nearest tap could never produce
+// (dst(1,1) samples texel-space x=0.25, dst(2,1) samples x=0.75).
+template <PixelFormat F> void check_magnification(arbc::SurfaceFormat fmt, float tol) {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(2, 2, fmt);
+  fill_red_ramp_2x2<F>(src);
+  arbc::CpuSurface dst(4, 4, fmt);
+
+  backend.composite(dst, src, arbc::Affine::scaling(2.0, 2.0), 1.0);
+
+  const arbc::WorkingPixel p11 = read_px<F>(dst, 1 * 4 + 1);
+  const arbc::WorkingPixel p21 = read_px<F>(dst, 1 * 4 + 2);
+  CAPTURE(p11[0], p21[0], tol);
+  REQUIRE(std::fabs(p11[0] - 0.25F) <= tol); // (1 - 0.25) * 0 + 0.25 * 1 in x
+  REQUIRE(std::fabs(p21[0] - 0.75F) <= tol);
+  REQUIRE(std::fabs(p11[3] - 1.0F) <= tol); // opaque throughout the interior
+  // A genuine blend, not a snapped texel: nearest would land exactly on 0 or 1.
+  REQUIRE(p11[0] > tol);
+  REQUIRE(p11[0] < 1.0F - tol);
+}
+
+// Fractional offset: a half-texel shift makes an interior destination pixel the
+// exact two-tap average (frac == 0.5), not a snapped source texel.
+template <PixelFormat F> void check_fractional_offset(arbc::SurfaceFormat fmt, float tol) {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(2, 2, fmt);
+  fill_red_ramp_2x2<F>(src);
+  arbc::CpuSurface dst(2, 2, fmt);
+
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0);
+
+  // dst(1,0) maps to texel-space x = 0.5: the exact mean of texels 0 and 1.
+  const arbc::WorkingPixel p10 = read_px<F>(dst, 1);
+  CAPTURE(p10[0], tol);
+  REQUIRE(std::fabs(p10[0] - 0.5F) <= tol);
+}
+
+// Identity and pure-integer composites map every destination center to frac 0,
+// where the bilinear weights collapse to the single incumbent texel -- the
+// output reproduces the pre-filter nearest tap byte-for-byte (the mechanism
+// that keeps the walking-skeleton golden intact).
+template <PixelFormat F> void check_integer_is_byte_exact(arbc::SurfaceFormat fmt) {
+  arbc::CpuBackend backend;
+  // Distinct opaque per-pixel colors so a snapped identity is a byte compare.
+  arbc::CpuSurface src(3, 1, fmt);
+  write_px<F>(src, 0, {0.20F, 0.40F, 0.60F, 1.0F});
+  write_px<F>(src, 1, {0.80F, 0.10F, 0.30F, 1.0F});
+  write_px<F>(src, 2, {0.05F, 0.90F, 0.50F, 1.0F});
+
+  using Storage = typename arbc::PixelTraits<F>::Storage;
+  const std::span<const Storage> src_px = std::as_const(src).span<F>();
+
+  SECTION("identity reproduces the source bytes") {
+    arbc::CpuSurface dst(3, 1, fmt);
+    backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+    const std::span<const Storage> dst_px = std::as_const(dst).span<F>();
+    for (std::size_t i = 0; i < src_px.size(); ++i) {
+      CAPTURE(i);
+      REQUIRE(dst_px[i] == src_px[i]);
+    }
+  }
+
+  SECTION("integer translation snaps to the shifted texel, byte-exact") {
+    arbc::CpuSurface dst(3, 1, fmt);
+    backend.composite(dst, src, arbc::Affine::translation(1.0, 0.0), 1.0);
+    const std::span<const Storage> dst_px = std::as_const(dst).span<F>();
+    // dst(0) is fully off the shifted source (transparent, zero bytes); dst(x>=1)
+    // reproduces src(x-1) byte-for-byte.
+    for (std::size_t k = 0; k < 4; ++k) {
+      CAPTURE(k);
+      REQUIRE(dst_px[k] == Storage{0});
+      REQUIRE(dst_px[1 * 4 + k] == src_px[0 * 4 + k]);
+      REQUIRE(dst_px[2 * 4 + k] == src_px[1 * 4 + k]);
+    }
+  }
+}
+
 TEST_CASE("identity composite over transparent copies the source") {
   arbc::CpuBackend backend;
   arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
@@ -379,6 +482,158 @@ TEST_CASE("convert routes format -> working -> format (rgba8 <-> rgba32f round-t
   REQUIRE(out[1] == 100);
   REQUIRE(out[2] == 50);
   REQUIRE(out[3] == 255);
+}
+
+TEST_CASE("bilinear magnification interpolates in premultiplied linear floats") {
+  check_magnification<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f, 1e-6F);
+  check_magnification<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f, 0.005F);
+  check_magnification<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb, 0.02F);
+}
+
+TEST_CASE("a fractional composite offset yields the two-tap average, not a snap") {
+  check_fractional_offset<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f, 1e-6F);
+  check_fractional_offset<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f, 0.005F);
+  check_fractional_offset<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb, 0.02F);
+}
+
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+TEST_CASE("integer-aligned composites reduce to the nearest tap byte-for-byte") {
+  check_integer_is_byte_exact<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f);
+  check_integer_is_byte_exact<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f);
+  check_integer_is_byte_exact<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb);
+}
+
+TEST_CASE("edge taps blend toward the transparent border, no clamp smear") {
+  arbc::CpuBackend backend;
+  // Opaque white 2x2 shifted half a texel into a larger destination: a corner
+  // pixel straddles the source border, an interior pixel is fully covered, and a
+  // far pixel's whole footprint is outside.
+  arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
+  for (int i = 0; i < 4; ++i) {
+    write_px<PixelFormat::Rgba32fLinearPremul>(src, i, {1.0F, 1.0F, 1.0F, 1.0F});
+  }
+  arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
+
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.5), 1.0);
+
+  // dst(1,1) sits at texel-space (0.5,0.5): all four taps in range -> fully opaque.
+  const arbc::WorkingPixel interior = read_px<PixelFormat::Rgba32fLinearPremul>(dst, 1 * 4 + 1);
+  require_close(interior, {1.0F, 1.0F, 1.0F, 1.0F}, 1e-6F);
+
+  // dst(0,0) straddles the corner: only the (0,0) tap is in range with weight
+  // 0.25, so the premultiplied sample falls off toward transparent (0.25), never
+  // a clamped opaque edge (which would read 1.0).
+  const arbc::WorkingPixel corner = read_px<PixelFormat::Rgba32fLinearPremul>(dst, 0);
+  require_close(corner, {0.25F, 0.25F, 0.25F, 0.25F}, 1e-6F);
+  REQUIRE(corner[3] < 0.9F); // decisively not clamp-to-edge
+
+  // dst(3,3) is fully outside the shifted source: it contributes nothing and the
+  // cleared destination stays transparent (matching the old nearest cull).
+  const arbc::WorkingPixel outside = read_px<PixelFormat::Rgba32fLinearPremul>(dst, 3 * 4 + 3);
+  require_close(outside, {0.0F, 0.0F, 0.0F, 0.0F}, 0.0F);
+}
+
+TEST_CASE("box downsample is the four-tap mean in premultiplied linear floats") {
+  arbc::CpuBackend backend;
+
+  SECTION("2x2 -> 1x1 equals the mean of the four source taps") {
+    arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
+    write_px<PixelFormat::Rgba32fLinearPremul>(src, 0, {0.1F, 0.2F, 0.3F, 1.0F});
+    write_px<PixelFormat::Rgba32fLinearPremul>(src, 1, {0.5F, 0.6F, 0.7F, 1.0F});
+    write_px<PixelFormat::Rgba32fLinearPremul>(src, 2, {0.9F, 0.1F, 0.2F, 1.0F});
+    write_px<PixelFormat::Rgba32fLinearPremul>(src, 3, {0.3F, 0.4F, 0.5F, 1.0F});
+    arbc::CpuSurface dst(1, 1, arbc::k_working_rgba32f);
+
+    backend.downsample(dst, src);
+
+    const arbc::WorkingPixel mean{(0.1F + 0.5F + 0.9F + 0.3F) * 0.25F,
+                                  (0.2F + 0.6F + 0.1F + 0.4F) * 0.25F,
+                                  (0.3F + 0.7F + 0.2F + 0.5F) * 0.25F, 1.0F};
+    require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 0), mean, 1e-6F);
+  }
+
+  SECTION("a uniform surface downsamples to the same uniform value") {
+    arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
+    const arbc::WorkingPixel uniform{0.4F, 0.2F, 0.1F, 0.8F};
+    for (int i = 0; i < 4; ++i) {
+      write_px<PixelFormat::Rgba32fLinearPremul>(src, i, uniform);
+    }
+    arbc::CpuSurface dst(1, 1, arbc::k_working_rgba32f);
+
+    backend.downsample(dst, src);
+
+    require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 0), uniform, 1e-6F);
+  }
+}
+
+// enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
+TEST_CASE("box downsample averages in linear light, not on the sRGB bytes") {
+  arbc::CpuBackend backend;
+  // A 2x2 sRGB block, half black, half white, all opaque: the linear-light mean
+  // of two 0.0 and two 1.0 samples is 0.5, decisively brighter than the naive
+  // mean of the stored sRGB bytes (0/255).
+  arbc::CpuSurface src(2, 2, arbc::k_fast_rgba8srgb);
+  {
+    const std::span<std::uint8_t> px = src.span<PixelFormat::Rgba8Srgb>();
+    const std::array<std::uint8_t, 4> black{0, 0, 0, 255};
+    const std::array<std::uint8_t, 4> white{255, 255, 255, 255};
+    for (std::size_t k = 0; k < 4; ++k) {
+      px[0 * 4 + k] = black[k]; // (0,0)
+      px[1 * 4 + k] = white[k]; // (1,0)
+      px[2 * 4 + k] = white[k]; // (0,1)
+      px[3 * 4 + k] = black[k]; // (1,1)
+    }
+  }
+  arbc::CpuSurface dst(1, 1, arbc::k_fast_rgba8srgb);
+
+  backend.downsample(dst, src);
+  const std::span<const std::uint8_t> out = std::as_const(dst).span<PixelFormat::Rgba8Srgb>();
+
+  const float linear_mean =
+      (arbc::srgb8_to_linear(0) + arbc::srgb8_to_linear(255)) * 0.5F; // two of each -> 0.5
+  const std::uint8_t linear_expected = arbc::linear_to_srgb8(linear_mean);
+  // The gamma-space wrong answer just averages the stored bytes: (0+255)/2.
+  const auto gamma_wrong = static_cast<std::uint8_t>(std::lround((0.0 + 255.0) / 2.0));
+
+  REQUIRE(out[0] == linear_expected);
+  REQUIRE(out[0] != gamma_wrong);         // decisively not a byte-space average
+  REQUIRE(linear_expected > gamma_wrong); // linear light is markedly brighter
+  REQUIRE(out[3] == 255);                 // opaque preserved
+}
+
+// enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
+TEST_CASE("the bilinear tap resamples in linear light, not on the sRGB bytes") {
+  arbc::CpuBackend backend;
+  // A black|white sRGB column pair; a half-texel-shifted composite makes an
+  // interior destination pixel the 50/50 blend. In linear light that is 0.5
+  // (~188 sRGB), decisively not the gamma-space byte average (~128).
+  arbc::CpuSurface src(2, 2, arbc::k_fast_rgba8srgb);
+  {
+    const std::span<std::uint8_t> px = src.span<PixelFormat::Rgba8Srgb>();
+    const std::array<std::uint8_t, 4> black{0, 0, 0, 255};
+    const std::array<std::uint8_t, 4> white{255, 255, 255, 255};
+    for (std::size_t k = 0; k < 4; ++k) {
+      px[0 * 4 + k] = black[k]; // (0,0)
+      px[1 * 4 + k] = white[k]; // (1,0)
+      px[2 * 4 + k] = black[k]; // (0,1)
+      px[3 * 4 + k] = white[k]; // (1,1)
+    }
+  }
+  arbc::CpuSurface dst(2, 2, arbc::k_fast_rgba8srgb);
+
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.5), 1.0);
+  const std::span<const std::uint8_t> out = std::as_const(dst).span<PixelFormat::Rgba8Srgb>();
+
+  // dst(1,1) sits at texel-space (0.5,0.5): a 50/50 blend of black and white.
+  const std::size_t at = (1 * 2 + 1) * 4;
+  const float linear_mean = (arbc::srgb8_to_linear(0) + arbc::srgb8_to_linear(255)) * 0.5F;
+  const std::uint8_t linear_expected = arbc::linear_to_srgb8(linear_mean);
+  const auto gamma_wrong = static_cast<std::uint8_t>(std::lround((0.0 + 255.0) / 2.0));
+
+  REQUIRE(out[at + 0] == linear_expected);
+  REQUIRE(out[at + 0] != gamma_wrong);
+  REQUIRE(linear_expected > gamma_wrong);
+  REQUIRE(out[at + 3] == 255); // opaque after the blend of two opaque taps
 }
 
 } // namespace

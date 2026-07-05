@@ -14,8 +14,7 @@ namespace arbc {
 // (doc 07's `TypedSpan<F>` sketch). The kernel a visitor selects is
 // monomorphized on `TypedSpan::format`, so the per-pixel loop never branches on
 // format -- the one runtime decision is the visit below, once per operation.
-template <PixelFormat F>
-struct TypedSpan {
+template <PixelFormat F> struct TypedSpan {
   static constexpr PixelFormat format = F;
   std::span<typename PixelTraits<F>::Storage> data;
 };
@@ -25,9 +24,9 @@ struct TypedSpan {
 // case in `typed()` below, is a compile error (-Wswitch on the exhaustive
 // switch, and std::visit rejecting an unhandled alternative) -- never a silent
 // runtime hole.
-using AnySurfaceRef = std::variant<TypedSpan<PixelFormat::Rgba32fLinearPremul>,
-                                   TypedSpan<PixelFormat::Rgba16fLinearPremul>,
-                                   TypedSpan<PixelFormat::Rgba8Srgb>>;
+using AnySurfaceRef =
+    std::variant<TypedSpan<PixelFormat::Rgba32fLinearPremul>,
+                 TypedSpan<PixelFormat::Rgba16fLinearPremul>, TypedSpan<PixelFormat::Rgba8Srgb>>;
 
 // Resolve a surface's runtime format tag to its compile-time typed span. The
 // switch is exhaustive with no default arm, so a new format forces a case here.
@@ -52,8 +51,7 @@ inline AnySurfaceRef typed(Surface& surface) {
 // visitor is a generic lambda `[](auto typed) { ... }` whose body is
 // instantiated per format; `decltype(typed)::format` recovers the compile-time
 // format inside.
-template <class Visitor>
-decltype(auto) visit_surface(Surface& surface, Visitor&& visitor) {
+template <class Visitor> decltype(auto) visit_surface(Surface& surface, Visitor&& visitor) {
   return std::visit(std::forward<Visitor>(visitor), typed(surface));
 }
 

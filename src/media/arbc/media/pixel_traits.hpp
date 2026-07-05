@@ -47,8 +47,8 @@ inline float srgb8_to_linear(std::uint8_t sample) {
 
 inline std::uint8_t linear_to_srgb8(float value) {
   const float clamped = std::clamp(value, 0.0F, 1.0F);
-  const float s = clamped <= 0.0031308F ? clamped * 12.92F
-                                        : 1.055F * std::pow(clamped, 1.0F / 2.4F) - 0.055F;
+  const float s =
+      clamped <= 0.0031308F ? clamped * 12.92F : 1.055F * std::pow(clamped, 1.0F / 2.4F) - 0.055F;
   return static_cast<std::uint8_t>(std::lround(s * 255.0F));
 }
 
@@ -153,11 +153,9 @@ inline std::uint16_t f16_from_float(float value) {
 // (doc 07's "conversions route through the working space"). Primary template
 // is left undefined so an unhandled format is a hard compile error, never a
 // runtime hole.
-template <PixelFormat F>
-struct PixelTraits;
+template <PixelFormat F> struct PixelTraits;
 
-template <>
-struct PixelTraits<PixelFormat::Rgba32fLinearPremul> {
+template <> struct PixelTraits<PixelFormat::Rgba32fLinearPremul> {
   using Storage = float;
   static constexpr PixelFormat format = PixelFormat::Rgba32fLinearPremul;
   static constexpr std::size_t channels = 4;
@@ -173,8 +171,7 @@ struct PixelTraits<PixelFormat::Rgba32fLinearPremul> {
   }
 };
 
-template <>
-struct PixelTraits<PixelFormat::Rgba16fLinearPremul> {
+template <> struct PixelTraits<PixelFormat::Rgba16fLinearPremul> {
   using Storage = std::uint16_t;
   static constexpr PixelFormat format = PixelFormat::Rgba16fLinearPremul;
   static constexpr std::size_t channels = 4;
@@ -191,8 +188,7 @@ struct PixelTraits<PixelFormat::Rgba16fLinearPremul> {
   }
 };
 
-template <>
-struct PixelTraits<PixelFormat::Rgba8Srgb> {
+template <> struct PixelTraits<PixelFormat::Rgba8Srgb> {
   using Storage = std::uint8_t;
   static constexpr PixelFormat format = PixelFormat::Rgba8Srgb;
   static constexpr std::size_t channels = 4;

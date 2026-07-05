@@ -28,13 +28,14 @@ task color "Color and pixel formats" {
   task resampling "Filtered resampling" {
     effort 2d
     allocate team
+    complete 100
     depends !kernels
-    note "Bilinear minification/magnification for the composite pass (replacing skeleton nearest); box-filtered downsample for scale-ladder rung generation. Docs 04/07."
+    note "Bilinear minification/magnification for the composite pass (replacing skeleton nearest); box-filtered downsample for scale-ladder rung generation. Docs 04/07. Refinement: tasks/refinements/color/resampling.md"
   }
   task kernel_goldens "Per-format golden kernel tests" {
     effort 1d
     allocate team
-    depends !kernels
+    depends !kernels, !resampling
     note "Byte-exact goldens per format for blend/convert/resample; the doc 16 determinism discipline applied at kernel granularity."
   }
 }

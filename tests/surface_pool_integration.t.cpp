@@ -33,6 +33,9 @@ public:
                  double opacity) override {
     d_inner.composite(dst, src, src_to_dst, opacity);
   }
+  void downsample(arbc::Surface& dst, const arbc::Surface& src) override {
+    d_inner.downsample(dst, src);
+  }
 
   int make_surface_calls = 0;
 

@@ -60,6 +60,7 @@ public:
 
   void clear(arbc::Surface&, float, float, float, float) override {}
   void composite(arbc::Surface&, const arbc::Surface&, const arbc::Affine&, double) override {}
+  void downsample(arbc::Surface&, const arbc::Surface&) override {}
 
   int make_surface_calls = 0; // total backend allocations
   int live = 0;               // StubSurfaces currently constructed

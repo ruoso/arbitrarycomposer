@@ -94,4 +94,31 @@ void CpuBackend::composite(Surface& dst, const Surface& src, const Affine& src_t
   });
 }
 
+void CpuBackend::downsample(Surface& dst, const Surface& src) {
+  // Same-format rung generation (doc 07 rule 2): a rung shares its source's
+  // working format, so cross-format downsampling is not a thing -- a tag
+  // mismatch is a caller error, debug-asserted and culled in release, mirroring
+  // composite. The 2:1 geometry is exact: dst dims are src dims / 2 with even
+  // source dims (rung tiles are power-of-two device pixels, doc 02:59).
+  assert(dst.format() == src.format());
+  if (!(dst.format() == src.format())) {
+    return;
+  }
+  assert(src.width() % 2 == 0 && src.height() % 2 == 0);
+  assert(dst.width() == src.width() / 2 && dst.height() == src.height() / 2);
+  if (dst.width() != src.width() / 2 || dst.height() != src.height() / 2) {
+    return;
+  }
+  // One dispatch per operation (doc 07), never per pixel: resolve the shared
+  // runtime tag to a compile-time format once, then run the monomorphized box
+  // mean in decoded premultiplied linear working floats.
+  visit_surface(dst, [&](auto dst_typed) {
+    constexpr PixelFormat F = decltype(dst_typed)::format;
+    const std::span<const typename PixelTraits<F>::Storage> src_span = src.span<F>();
+    assert(!dst_typed.data.empty() && !src_span.empty());
+    downsample_box_kernel<F>(dst_typed, dst.width(), dst.height(), src_span, src.width(),
+                             src.height());
+  });
+}
+
 } // namespace arbc
