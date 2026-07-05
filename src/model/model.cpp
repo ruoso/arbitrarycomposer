@@ -685,4 +685,46 @@ expected<std::monostate, PoolError> Model::Transaction::commit() {
   return std::monostate{};
 }
 
+// ---- Navigation publish (undo/redo) -----------------------------------------
+
+expected<std::monostate, PoolError> Model::navigate(const JournalEntry& entry, NavDirection dir) {
+  // Fork the current version's root and rebind every touched object to its
+  // target-direction edge. Path-copies through the same primitives a commit uses,
+  // so navigation is an ordinary forward publish (doc 14:170-172). Assemble the
+  // whole new root BEFORE the atomic store so an allocation failure aborts with
+  // nothing observed (the partial tree drops here and cascades on the next drain).
+  const DocStatePtr base = d_current.load();
+  Ref<HamtNode> root = base->root_ref(); // owning: forked, retained
+  for (const ObjectEdit& oe : entry.objects) {
+    const Ref<ObjectRecord>& target = (dir == NavDirection::Undo) ? oe.before : oe.after;
+    if (target) {
+      // Reuse the stored owning edge by identity: the new leaf takes its own count.
+      expected<Ref<HamtNode>, PoolError> next =
+          hamt_insert(d_bundle, root, oe.object.value, target.slot());
+      if (!next) {
+        return unexpected(next.error());
+      }
+      root = std::move(*next);
+    } else {
+      // Empty target: the object did not exist in that direction -- erase it.
+      expected<Ref<HamtNode>, PoolError> next = hamt_erase(d_bundle, root, oe.object.value);
+      if (!next) {
+        return unexpected(next.error());
+      }
+      root = std::move(*next);
+    }
+  }
+
+  // Publish: one atomic store, revision +1 -- exactly like a commit.
+  d_current.store(std::make_shared<const DocRoot>(d_bundle, std::move(root), base->revision() + 1));
+
+  // Replay the entry's damage once (doc 14: invalidation is exactly right without
+  // diffing); the commit sink is deliberately untouched -- history is never
+  // mutated (doc 14:43).
+  if (d_damage_sink != nullptr) {
+    d_damage_sink->flush(entry.damage);
+  }
+  return std::monostate{};
+}
+
 } // namespace arbc

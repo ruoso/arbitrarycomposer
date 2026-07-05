@@ -54,9 +54,9 @@ TEST_CASE("a named commit notifies the commit sink once with the assembled entry
 
   REQUIRE(sink.calls == 1);
   const arbc::JournalEntry& e = sink.entries.front();
-  REQUIRE(e.name == "Add layer");        // the transact() name round-trips into the entry
+  REQUIRE(e.name == "Add layer"); // the transact() name round-trips into the entry
   REQUIRE(e.coalesce_key == arbc::k_no_coalesce);
-  REQUIRE(e.objects.size() == 2);        // content + layer, both freshly added
+  REQUIRE(e.objects.size() == 2); // content + layer, both freshly added
   for (const arbc::ObjectEdit& oe : e.objects) {
     REQUIRE_FALSE(static_cast<bool>(oe.before)); // add: no prior record edge
     REQUIRE(static_cast<bool>(oe.after));        // owning edge keeps the record live
@@ -81,7 +81,7 @@ TEST_CASE("a multi-mutation transaction publishes exactly one version at commit"
 
   REQUIRE(txn.commit().has_value());
   REQUIRE(model.current()->revision() == rev0 + 1); // exactly +1 for N mutations
-  REQUIRE(sink.calls == 1);                          // exactly one entry
+  REQUIRE(sink.calls == 1);                         // exactly one entry
   REQUIRE(model.current()->contains(l1));
   REQUIRE(model.current()->contains(l2));
 }
@@ -252,8 +252,8 @@ TEST_CASE("commit flushes the deduped damage union once; abort flushes none") {
     txn.set_transform(layer, arbc::Affine::translation(1.0, 0.0)); // touches `layer` twice
     REQUIRE(txn.commit().has_value());
   }
-  REQUIRE(dsink.calls == 1);         // exactly one flush for a multi-mutation commit
-  REQUIRE(dsink.last.size() == 2);   // union deduped by object: {content, layer}
+  REQUIRE(dsink.calls == 1);       // exactly one flush for a multi-mutation commit
+  REQUIRE(dsink.last.size() == 2); // union deduped by object: {content, layer}
 
   const int calls = dsink.calls;
   {
@@ -261,7 +261,7 @@ TEST_CASE("commit flushes the deduped damage union once; abort flushes none") {
     txn.add_content(0);
     txn.abort();
   }
-  REQUIRE(dsink.calls == calls);     // abort flushes nothing
+  REQUIRE(dsink.calls == calls); // abort flushes nothing
 }
 
 // enforces: 14-data-model-and-editing#coalesced-commits-merge-to-one-entry
@@ -302,11 +302,11 @@ TEST_CASE("consecutive keyed commits each publish, and merge to one journal entr
     REQUIRE(sink.entries[i].coalesce_key == key);
     arbc::coalesce_entries(merged, sink.entries[i]);
   }
-  REQUIRE(merged.objects.size() == 1);            // every commit touched the same layer
+  REQUIRE(merged.objects.size() == 1); // every commit touched the same layer
   REQUIRE(merged.objects.front().object == layer);
   REQUIRE(merged.objects.front().before == sink.entries.front().objects.front().before);
   REQUIRE(merged.objects.front().after == sink.entries.back().objects.front().after);
-  REQUIRE(merged.damage.size() == 1);             // damage unioned by object
+  REQUIRE(merged.damage.size() == 1); // damage unioned by object
 }
 
 TEST_CASE("behavioral counters: commit fires each sink once, abort fires neither") {

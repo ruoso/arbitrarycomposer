@@ -35,8 +35,9 @@ task model "Versioned model" {
   task journal "Journal, undo/redo" {
     effort 3d
     allocate team
+    complete 100
     depends !transactions
-    note "Document-wide history: per-entry placement deltas + (before, after) state handle pairs + damage sets; undo/redo as ordinary forward publishes; byte budget via state_cost, tail trimming. Doc 14."
+    note "Document-wide history: per-entry placement deltas + (before, after) state handle pairs + damage sets; undo/redo as ordinary forward publishes; byte budget via state_cost, tail trimming. Doc 14. Refinement: tasks/refinements/model/journal.md"
   }
   task damage "Damage records + propagation" {
     effort 2d

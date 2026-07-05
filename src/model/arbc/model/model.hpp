@@ -110,6 +110,25 @@ public:
   void set_commit_sink(CommitSink* sink) noexcept { d_commit_sink = sink; }
   void set_damage_sink(DamageSink* sink) noexcept { d_damage_sink = sink; }
 
+  // Direction of a navigation publish: undo restores each edit's *before* edge,
+  // redo re-applies its *after* edge (doc 14:168-172).
+  enum class NavDirection { Undo, Redo };
+
+  // Publish an undo/redo version (WRITER-THREAD ONLY). The navigation primitive
+  // `model.journal` drives: rebind each of `entry`'s touched objects to the
+  // target-direction stored owning edge -- an EMPTY target `Ref` erases the id
+  // (it did not exist in that direction); a non-empty target `hamt_insert`s its
+  // slot, REUSING the entry's owning edge by `SlotRef` identity (the new leaf
+  // takes its own count, the entry keeps its `Ref`; never a deep copy,
+  // doc 14:175-178). Builds a `DocRoot` at revision +1 and swaps `d_current`
+  // atomically -- an ordinary forward publish, so outputs/viewports need no
+  // special path (doc 14:170-172) -- then flushes `entry.damage` once through the
+  // installed `DamageSink`. It NEVER notifies the `CommitSink`: navigation moves a
+  // cursor, it does not re-journal itself, so "history is never mutated"
+  // (doc 14:43). Returns the sticky writer-path status; an allocation failure
+  // leaves the current version in place (nothing observed).
+  expected<std::monostate, PoolError> navigate(const JournalEntry& entry, NavDirection dir);
+
   class Transaction {
   public:
     Transaction(const Transaction&) = delete;
