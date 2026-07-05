@@ -6,7 +6,8 @@ task surfaces "Surfaces and backends" {
   task capabilities "Backend capability flags" {
     effort 1d
     allocate team
-    note "CPU access, import handle types, sync primitive support; typed access checked against capability + tag. Doc 09."
+    complete 100
+    note "CPU access, import handle types, sync primitive support; typed access checked against capability + tag. Doc 09. Refinement: tasks/refinements/surfaces/capabilities.md"
   }
   task provided_surfaces "Content-provided surfaces" {
     effort 2d

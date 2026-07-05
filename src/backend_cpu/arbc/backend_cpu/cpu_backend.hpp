@@ -31,7 +31,9 @@ class CpuBackend final : public Backend {
 public:
   CpuBackend() = default;
 
-  std::unique_ptr<Surface> make_surface(int width, int height, SurfaceFormat format) override;
+  BackendCaps capabilities() const override;
+  expected<std::unique_ptr<Surface>, SurfaceError> make_surface(int width, int height,
+                                                                SurfaceFormat format) override;
   void clear(Surface& surface, float r, float g, float b, float a) override;
   void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                  double opacity) override;

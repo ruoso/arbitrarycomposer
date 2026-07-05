@@ -50,11 +50,15 @@ void render_frame(const DocRoot& state, const ContentResolver& resolve, const Vi
       return; // sub-pixel: cull (doc 04)
     }
 
-    const std::unique_ptr<Surface> temp =
+    const expected<std::unique_ptr<Surface>, SurfaceError> temp_result =
         backend.make_surface(temp_width, temp_height, target.format());
-    backend.clear(*temp, 0.0F, 0.0F, 0.0F, 0.0F);
+    if (!temp_result.has_value()) {
+      return; // backend cannot store the target's working format: cull (doc 09)
+    }
+    Surface& temp = **temp_result;
+    backend.clear(temp, 0.0F, 0.0F, 0.0F, 0.0F);
 
-    const RenderRequest request{region, scale, Time::zero(), *temp};
+    const RenderRequest request{region, scale, Time::zero(), temp};
     const RenderResult result = content->render(request);
 
     // temp pixel (i, j) covers local (region origin + (i, j) / achieved):
@@ -63,7 +67,7 @@ void render_frame(const DocRoot& state, const ContentResolver& resolve, const Vi
         compose(composed,
                 compose(Affine::translation(region.x0, region.y0),
                         Affine::scaling(1.0 / result.achieved_scale, 1.0 / result.achieved_scale)));
-    backend.composite(target, *temp, temp_to_dst, layer.opacity);
+    backend.composite(target, temp, temp_to_dst, layer.opacity);
   });
 }
 

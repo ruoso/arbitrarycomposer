@@ -64,8 +64,8 @@ TEST_CASE("to_string names every format in the closed set") {
 }
 
 TEST_CASE("ColorSpace equality is member-wise") {
-  REQUIRE(arbc::k_linear_srgb == arbc::ColorSpace{arbc::Primaries::Srgb,
-                                                  arbc::TransferFunction::Linear});
+  REQUIRE(arbc::k_linear_srgb ==
+          arbc::ColorSpace{arbc::Primaries::Srgb, arbc::TransferFunction::Linear});
   REQUIRE_FALSE(arbc::k_linear_srgb == arbc::k_srgb);
   REQUIRE(arbc::k_srgb.transfer == arbc::TransferFunction::Srgb);
   static_assert(arbc::k_linear_srgb == arbc::ColorSpace{});

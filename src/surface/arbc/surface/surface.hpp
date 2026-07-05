@@ -21,10 +21,14 @@ public:
   // and premultiplication, carried from creation.
   virtual SurfaceFormat format() const = 0;
 
-  // Typed CPU access where the backend supports it (doc 09); empty when
-  // unavailable. Walking-skeleton subset: the float span is premultiplied
-  // linear-light rgba32f only (the reference backend's sole stored format
-  // until color.kernels); f16/8-bit access lands with the typed accessors.
+  // Typed CPU access, gated on capability *and* tag (doc 09): a CPU span is
+  // available iff the owning backend advertises `cpu_access` in its
+  // BackendCaps and the requested view matches this surface's SurfaceFormat
+  // tag; empty when unavailable (e.g. a GPU surface without readback).
+  // Walking-skeleton subset: the float span is premultiplied linear-light
+  // rgba32f only (the reference backend's sole stored format until
+  // color.kernels); the multi-format `span<Format>()` accessors land with
+  // color.kernels and slot into the same capability-plus-tag check.
   virtual std::span<float> cpu_pixels() = 0;
   virtual std::span<const float> cpu_pixels() const = 0;
 

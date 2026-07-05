@@ -14,18 +14,35 @@ CpuSurface::CpuSurface(int width, int height, SurfaceFormat format)
                  channels_per_pixel(format.pixel_format),
              0.0F) {}
 
-std::unique_ptr<Surface> CpuBackend::make_surface(int width, int height, SurfaceFormat format) {
+BackendCaps CpuBackend::capabilities() const {
+  // Honest current caps (doc 07/09): the reference backend serves typed CPU
+  // access, imports no external handles, and offers no sync primitives. The
+  // import bits flip on when surfaces.import lands wrap-or-copy; sync arrives
+  // with GPU backends. Advertising them before the machinery exists would be
+  // exactly the dishonesty capability honesty forbids.
+  return BackendCaps{
+      .cpu_access = true,
+      .import_handles = {},
+      .sync_primitives = false,
+  };
+}
+
+expected<std::unique_ptr<Surface>, SurfaceError> CpuBackend::make_surface(int width, int height,
+                                                                          SurfaceFormat format) {
   // Capability honesty (doc 07): the reference backend stores and composites
   // only the premultiplied linear-light rgba32f working format today. f16 /
   // 8-bit storage and the tag conversions arrive with color.kernels; a
   // configurable working space with color.working_space. Anything else is
-  // honestly unsupported -> null. (Migrates to arbc::expected once
-  // pool.arena_core lands it in base -- a one-line signature change scoped
-  // to surfaces.capabilities, not this task.)
+  // honestly unsupported -> SurfaceError, surfaced as a value (doc 10), never
+  // a null handle and never an abort.
   if (format != k_working_rgba32f) {
-    return nullptr;
+    return unexpected(SurfaceError::UnsupportedFormat);
   }
-  return std::make_unique<CpuSurface>(width, height, format);
+  // Convert to the base handle first: expected's value ctor takes exactly
+  // unique_ptr<Surface>, and a direct unique_ptr<CpuSurface> argument would
+  // need two user-defined conversions (derived->base, then into expected).
+  std::unique_ptr<Surface> surface = std::make_unique<CpuSurface>(width, height, format);
+  return surface;
 }
 
 void CpuBackend::clear(Surface& surface, float r, float g, float b, float a) {

@@ -42,6 +42,23 @@ One composition tree renders through one backend at a time; mixing backends
 (CPU-rendered content composited on GPU) is handled by import at the
 boundary, not by multi-backend surfaces.
 
+**Capability descriptor.** A backend advertises the flags above through a
+value `BackendCaps` — `cpu_access` (is typed CPU access available?),
+`import_handles` (a bitmask over the handle set: CPU memory, GL texture,
+Vulkan image, DMA-BUF), and `sync_primitives` — queried through
+`Backend::capabilities()`. A backend advertises only what it currently
+implements: the CPU reference backend reports `cpu_access` and no import or
+sync support until those land. Typed CPU access is gated on capability *and*
+tag: a surface hands out a span only when its backend advertises
+`cpu_access` and the requested view matches the surface's tag.
+
+**Surface creation is errors-as-values (doc 10).** Allocation returns
+`expected<Surface, SurfaceError>`, not a null handle: a backend that cannot
+store a requested format yields a `SurfaceError` value (never null, never an
+abort), so a capability-negotiating caller sees the reason. The closed,
+core-owned format set (doc 07) makes the answer a decision over an
+enumerable universe.
+
 ## Content-provided surfaces (texture adoption)
 
 Doc 03's contract has the compositor allocate the target and content fill

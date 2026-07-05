@@ -61,43 +61,72 @@ TEST_CASE("degenerate mappings composite nothing") {
 }
 
 // enforces: 07-color-and-pixel-formats#surfaces-carry-tags
+// enforces: 09-surfaces-and-backends#make-surface-faults-as-value
 TEST_CASE("a created surface echoes its full tag triple") {
   arbc::CpuBackend backend;
-  const std::unique_ptr<arbc::Surface> s = backend.make_surface(4, 3, arbc::k_working_rgba32f);
-  REQUIRE(s != nullptr);
-  REQUIRE(s->width() == 4);
-  REQUIRE(s->height() == 3);
+  const arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> s =
+      backend.make_surface(4, 3, arbc::k_working_rgba32f);
+  REQUIRE(s.has_value());
+  REQUIRE(*s != nullptr);
+  REQUIRE((*s)->width() == 4);
+  REQUIRE((*s)->height() == 3);
 
-  const arbc::SurfaceFormat f = s->format();
+  const arbc::SurfaceFormat f = (*s)->format();
   REQUIRE(f == arbc::k_working_rgba32f);
   REQUIRE(f.pixel_format == arbc::PixelFormat::Rgba32fLinearPremul);
   REQUIRE(f.color_space == arbc::k_linear_srgb);
   REQUIRE(f.premultiplied == arbc::Premultiplied::Yes);
 }
 
-TEST_CASE("make_surface reports formats it cannot store as null") {
+// enforces: 09-surfaces-and-backends#make-surface-faults-as-value
+TEST_CASE("make_surface faults on formats it cannot store as a SurfaceError value") {
   arbc::CpuBackend backend;
-  // Supported: the premultiplied linear-light rgba32f working format.
-  REQUIRE(backend.make_surface(2, 2, arbc::k_working_rgba32f) != nullptr);
+  // Supported: the premultiplied linear-light rgba32f working format returns a
+  // live surface, never an error.
+  REQUIRE(backend.make_surface(2, 2, arbc::k_working_rgba32f).has_value());
 
   // Unsupported storage until color.kernels: f16 and 8-bit are describable
-  // but creatable nowhere yet.
+  // but creatable nowhere yet -- surfaced as a value, never null, never abort.
   const arbc::SurfaceFormat f16{arbc::PixelFormat::Rgba16fLinearPremul, arbc::k_linear_srgb,
                                 arbc::Premultiplied::Yes};
-  REQUIRE(backend.make_surface(2, 2, f16) == nullptr);
+  const arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> f16_result =
+      backend.make_surface(2, 2, f16);
+  REQUIRE_FALSE(f16_result.has_value());
+  REQUIRE(f16_result.error() == arbc::SurfaceError::UnsupportedFormat);
+
   const arbc::SurfaceFormat srgb8{arbc::PixelFormat::Rgba8Srgb, arbc::k_srgb,
                                   arbc::Premultiplied::Yes};
-  REQUIRE(backend.make_surface(2, 2, srgb8) == nullptr);
+  REQUIRE(backend.make_surface(2, 2, srgb8).error() == arbc::SurfaceError::UnsupportedFormat);
 
   // Unsupported working space until color.working_space: rgba32f storage but
   // a non-default color-space or premultiplication tag the backend has no
   // kernel to honor.
   const arbc::SurfaceFormat nonlinear{arbc::PixelFormat::Rgba32fLinearPremul, arbc::k_srgb,
                                       arbc::Premultiplied::Yes};
-  REQUIRE(backend.make_surface(2, 2, nonlinear) == nullptr);
+  REQUIRE(backend.make_surface(2, 2, nonlinear).error() == arbc::SurfaceError::UnsupportedFormat);
   const arbc::SurfaceFormat straight{arbc::PixelFormat::Rgba32fLinearPremul, arbc::k_linear_srgb,
                                      arbc::Premultiplied::No};
-  REQUIRE(backend.make_surface(2, 2, straight) == nullptr);
+  REQUIRE(backend.make_surface(2, 2, straight).error() == arbc::SurfaceError::UnsupportedFormat);
+}
+
+// enforces: 09-surfaces-and-backends#capabilities-are-honest
+TEST_CASE("the reference backend advertises its honest current capabilities") {
+  arbc::CpuBackend backend;
+  const arbc::BackendCaps caps = backend.capabilities();
+
+  // CPU access is advertised, and a stored surface honors it with a non-empty
+  // CPU span consistent with the advertised bit.
+  REQUIRE(caps.cpu_access == true);
+  const arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> s =
+      backend.make_surface(2, 2, arbc::k_working_rgba32f);
+  REQUIRE(s.has_value());
+  REQUIRE_FALSE((*s)->cpu_pixels().empty());
+
+  // No import or sync machinery exists yet, so neither is advertised until
+  // surfaces.import / GPU backends land it.
+  REQUIRE(caps.import_handles.empty());
+  REQUIRE_FALSE(caps.import_handles.test(arbc::ImportHandle::CpuMemory));
+  REQUIRE(caps.sync_primitives == false);
 }
 
 // enforces: 07-color-and-pixel-formats#surfaces-carry-tags

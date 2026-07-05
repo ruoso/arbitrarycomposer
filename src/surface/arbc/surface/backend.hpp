@@ -1,7 +1,10 @@
 #pragma once
 
+#include <arbc/base/expected.hpp>
 #include <arbc/base/transform.hpp>
+#include <arbc/surface/capabilities.hpp>
 #include <arbc/surface/surface.hpp>
+#include <arbc/surface/surface_error.hpp>
 
 #include <memory>
 
@@ -16,9 +19,17 @@ public:
   Backend& operator=(const Backend&) = delete;
   virtual ~Backend();
 
-  // Allocate a surface carrying `format`'s full tag triple. Returns null if
-  // the backend cannot store that format (capability honesty, doc 07).
-  virtual std::unique_ptr<Surface> make_surface(int width, int height, SurfaceFormat format) = 0;
+  // Advertise the backend's capability flags (doc 09): whether typed CPU
+  // access is available, which external handle types it can import, and
+  // whether it offers sync primitives. A backend reports only what it
+  // currently implements (capability honesty, doc 07/09).
+  virtual BackendCaps capabilities() const = 0;
+
+  // Allocate a surface carrying `format`'s full tag triple. Errors as values
+  // (doc 10): a backend that cannot store that format returns a SurfaceError,
+  // never a null handle and never an abort (capability honesty, doc 07).
+  virtual expected<std::unique_ptr<Surface>, SurfaceError> make_surface(int width, int height,
+                                                                        SurfaceFormat format) = 0;
 
   // Premultiplied working-space color (doc 07).
   virtual void clear(Surface& surface, float r, float g, float b, float a) = 0;
