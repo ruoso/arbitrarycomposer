@@ -23,7 +23,8 @@ public:
 
   std::optional<Rect> bounds() const override;
   Stability stability() const override;
-  RenderResult render(const RenderRequest& request) override;
+  std::optional<RenderResult> render(const RenderRequest& request,
+                                     std::shared_ptr<RenderCompletion> done) override;
 
   static constexpr const char* kind_id = "org.arbc.solid";
 

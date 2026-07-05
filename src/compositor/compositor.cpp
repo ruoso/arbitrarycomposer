@@ -69,7 +69,26 @@ void render_frame(const DocRoot& state, const ContentResolver& resolve, const Vi
     // frame's pinned version rides `model.content_binding` + the runtime
     // renderers (refinement Decision 2).
     const RenderRequest request{region, scale, Time::zero(), StateHandle{}, temp};
-    const RenderResult result = content->render(request);
+
+    // One code path (doc 03:117-121): drive the render through a
+    // `RenderCompletion`. A returned-inline result is folded in via
+    // `complete` and read back through `take` exactly as a deferred settlement
+    // would be, so composite always reads the single settle path.
+    auto done = std::make_shared<RenderCompletion>();
+    const std::optional<RenderResult> inline_result = content->render(request, done);
+    if (!inline_result.has_value()) {
+      // Async content answered `nullopt`: the synchronous single pass cannot
+      // service a pending completion (holding `temp` alive across a frame loop
+      // is runtime.interactive, doc 17:39-41). Release `temp` and skip this
+      // layer this pass.
+      return;
+    }
+    done->complete(*inline_result);
+    const std::optional<expected<RenderResult, RenderError>> settled = done->take();
+    if (!settled.has_value() || !settled->has_value()) {
+      return; // inline content failed to produce pixels: cull this layer
+    }
+    const RenderResult result = **settled;
 
     // temp pixel (i, j) covers local (region origin + (i, j) / achieved):
     // map temp space through local space to device space.

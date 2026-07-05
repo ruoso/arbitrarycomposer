@@ -9,7 +9,8 @@ task contract "Layer contract" {
   task async_render "Async rendering path" {
     effort 3d
     allocate team
-    note "One code path for sync and async: render returns inline or completes via RenderCompletion; cancellation query; deadline/exactness disciplines. Doc 03."
+    complete 100
+    note "One code path for sync and async: render returns inline or completes via RenderCompletion; cancellation query; deadline/exactness disciplines. Doc 03. Refinement: tasks/refinements/contract/async_render.md"
   }
   task snapshot_pins "Snapshot pins in requests" {
     effort 1d

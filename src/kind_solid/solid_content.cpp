@@ -13,7 +13,11 @@ std::optional<Rect> SolidContent::bounds() const { return d_bounds; }
 
 Stability SolidContent::stability() const { return Stability::Static; }
 
-RenderResult SolidContent::render(const RenderRequest& request) {
+// Trivial content settles INLINE (doc 03:14,117-121): it fills the target and
+// returns a `RenderResult`, never `nullopt`, so it pays no async ceremony and
+// ignores the supplied completion.
+std::optional<RenderResult> SolidContent::render(const RenderRequest& request,
+                                                 std::shared_ptr<RenderCompletion>) {
   // The compositor only requests regions within declared bounds (doc 03),
   // so the whole target is ours to fill.
   std::span<float> pixels = request.target.cpu_pixels();

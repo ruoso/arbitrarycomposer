@@ -1,7 +1,6 @@
-#include <arbc/contract/content.hpp>
-
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/time.hpp>
+#include <arbc/contract/content.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
 #include <arbc/surface/surface.hpp>
@@ -9,6 +8,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -48,7 +49,8 @@ public:
   std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
   arbc::Stability stability() const override { return arbc::Stability::Static; }
 
-  arbc::RenderResult render(const arbc::RenderRequest& request) override {
+  std::optional<arbc::RenderResult> render(const arbc::RenderRequest& request,
+                                           std::shared_ptr<arbc::RenderCompletion>) override {
     const std::span<float> px = request.target.cpu_pixels();
     const float seed = static_cast<float>(request.snapshot.slot) +
                        static_cast<float>(request.region.x0) +
@@ -57,7 +59,7 @@ public:
     for (std::size_t i = 0; i < px.size(); ++i) {
       px[i] = seed + static_cast<float>(i);
     }
-    return {};
+    return arbc::RenderResult{};
   }
 };
 
@@ -68,9 +70,10 @@ public:
   std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
   arbc::Stability stability() const override { return arbc::Stability::Static; }
 
-  arbc::RenderResult render(const arbc::RenderRequest& request) override {
+  std::optional<arbc::RenderResult> render(const arbc::RenderRequest& request,
+                                           std::shared_ptr<arbc::RenderCompletion>) override {
     d_received = request.snapshot;
-    return {};
+    return arbc::RenderResult{};
   }
 
   arbc::StateHandle received() const { return d_received; }
@@ -87,7 +90,7 @@ std::vector<float> render_pixels(arbc::Content& content, arbc::StateHandle snaps
   MemSurface target(2, 2, k_fmt);
   const arbc::Rect region = arbc::Rect::from_size(2.0, 2.0);
   const arbc::RenderRequest request{region, 1.0, arbc::Time::zero(), snapshot, target};
-  content.render(request);
+  content.render(request, std::make_shared<arbc::RenderCompletion>());
   return target.pixels();
 }
 
