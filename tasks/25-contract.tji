@@ -14,7 +14,8 @@ task contract "Layer contract" {
   task snapshot_pins "Snapshot pins in requests" {
     effort 1d
     allocate team
-    note "RenderRequest carries the pinned version / content StateHandle; rendering becomes a pure function of (state, region, scale, time). Docs 03/14."
+    complete 100
+    note "RenderRequest carries the pinned version / content StateHandle; rendering becomes a pure function of (state, region, scale, time). Docs 03/14. Refinement: tasks/refinements/contract/snapshot_pins.md"
   }
   task temporal_fields "Temporal contract fields" {
     effort 1d

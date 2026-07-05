@@ -1,9 +1,8 @@
-#include <arbc/surface/surface_pool.hpp>
-
 #include <arbc/media/surface_format.hpp>
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
+#include <arbc/surface/surface_pool.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -173,7 +172,7 @@ TEST_CASE("move-assignment releases the overwritten surface to the pool") {
   REQUIRE(backend.make_surface_calls == 2);
   REQUIRE(backend.live == 2);
 
-  *a = std::move(*b); // a's 16x8 surface returns to the pool; a now holds 32x8
+  *a = std::move(*b);         // a's 16x8 surface returns to the pool; a now holds 32x8
   REQUIRE(backend.live == 2); // one live (32x8), one parked (16x8)
   REQUIRE(a->get().width() == 32);
 

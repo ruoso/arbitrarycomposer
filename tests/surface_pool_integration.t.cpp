@@ -50,13 +50,16 @@ TEST_CASE("a persistent pool reuses temps within and across frames") {
   const arbc::Rect unit{0.0, 0.0, 1.0, 1.0};
   const arbc::ObjectId a = document.add_content(
       std::make_shared<arbc::SolidContent>(arbc::Rgba{1.0F, 0.0F, 0.0F, 1.0F}, unit));
-  document.add_layer(a, compose(arbc::Affine::translation(0.0, 0.0), arbc::Affine::scaling(4.0, 4.0)));
+  document.add_layer(a,
+                     compose(arbc::Affine::translation(0.0, 0.0), arbc::Affine::scaling(4.0, 4.0)));
   const arbc::ObjectId b = document.add_content(
       std::make_shared<arbc::SolidContent>(arbc::Rgba{0.0F, 1.0F, 0.0F, 1.0F}, unit));
-  document.add_layer(b, compose(arbc::Affine::translation(4.0, 0.0), arbc::Affine::scaling(4.0, 4.0)));
+  document.add_layer(b,
+                     compose(arbc::Affine::translation(4.0, 0.0), arbc::Affine::scaling(4.0, 4.0)));
   const arbc::ObjectId c = document.add_content(
       std::make_shared<arbc::SolidContent>(arbc::Rgba{0.0F, 0.0F, 1.0F, 1.0F}, unit));
-  document.add_layer(c, compose(arbc::Affine::translation(0.0, 5.0), arbc::Affine::scaling(2.0, 2.0)));
+  document.add_layer(c,
+                     compose(arbc::Affine::translation(0.0, 5.0), arbc::Affine::scaling(2.0, 2.0)));
 
   arbc::CpuBackend cpu;
   CountingBackend backend(cpu);

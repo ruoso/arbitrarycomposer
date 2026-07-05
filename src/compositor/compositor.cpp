@@ -63,7 +63,12 @@ void render_frame(const DocRoot& state, const ContentResolver& resolve, const Vi
     Surface& temp = temp_result->get();
     backend.clear(temp, 0.0F, 0.0F, 0.0F, 0.0F);
 
-    const RenderRequest request{region, scale, Time::zero(), temp};
+    // No pinned DocState is threaded through `compose()` in the walking
+    // skeleton (Time::zero() is hard-coded the same way): supply the inert
+    // default snapshot explicitly. Resolving `content_state(id)` from the
+    // frame's pinned version rides `model.content_binding` + the runtime
+    // renderers (refinement Decision 2).
+    const RenderRequest request{region, scale, Time::zero(), StateHandle{}, temp};
     const RenderResult result = content->render(request);
 
     // temp pixel (i, j) covers local (region origin + (i, j) / achieved):
