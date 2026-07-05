@@ -1,7 +1,6 @@
-#include <arbc/contract/content.hpp>
-
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/time.hpp>
+#include <arbc/contract/content.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
 #include <arbc/surface/surface.hpp>
@@ -51,9 +50,8 @@ constexpr arbc::SurfaceFormat k_fmt = arbc::k_working_rgba32f;
 // golden.
 arbc::RenderResult paint(const arbc::RenderRequest& request) {
   const std::span<float> px = request.target.cpu_pixels();
-  const float seed = static_cast<float>(request.region.x0) +
-                     static_cast<float>(request.region.y0) + static_cast<float>(request.scale) +
-                     static_cast<float>(request.time.flicks);
+  const float seed = static_cast<float>(request.region.x0) + static_cast<float>(request.region.y0) +
+                     static_cast<float>(request.scale) + static_cast<float>(request.time.flicks);
   for (std::size_t i = 0; i < px.size(); ++i) {
     px[i] = seed + static_cast<float>(i);
   }
@@ -128,8 +126,7 @@ TEST_CASE("one code path: sync-inline and async-deferred renders settle byte-ide
                                          sync_target};
   SyncContent sync_content;
   arbc::RenderResult sync_result{};
-  const std::vector<float> sync_pixels =
-      drive(sync_content, sync_request, [] {}, sync_result);
+  const std::vector<float> sync_pixels = drive(sync_content, sync_request, [] {}, sync_result);
 
   MemSurface async_target(2, 2, k_fmt);
   const arbc::RenderRequest async_request{region, 1.5, arbc::Time::zero(), arbc::StateHandle{},

@@ -6,7 +6,8 @@ task cache "Cache" {
   task keyed_store "Budgeted keyed store" {
     effort 3d
     allocate team
-    note "Byte-budgeted store, LRU within priority classes (visible > adjacent > recent > speculative); values are backend surfaces/blocks with metadata. Doc 02."
+    complete 100
+    note "Byte-budgeted store, LRU within priority classes (visible > adjacent > recent > speculative); values are backend surfaces/blocks with metadata. Doc 02. Refinement: tasks/refinements/cache/keyed_store.md"
   }
   task key_shapes "Tile and block key shapes" {
     effort 1d

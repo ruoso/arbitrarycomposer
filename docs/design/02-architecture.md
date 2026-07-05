@@ -97,6 +97,23 @@ current-revision entries qualify.
   cache their own tiles, and the nested-composition layer may cache its
   *composed* result as ordinary tiles. The composed cache is what makes deep
   recursion affordable; doc 05 covers when it's safe.
+- **Residency pin vs. payload refcount.** An entry a frame is about to
+  composite from must not be evicted mid-frame, so a lookup (or a
+  just-completed insert) yields a *pinned* hold on the entry; eviction skips
+  pinned entries, and removing a pinned key (invalidation) defers the drop to
+  its last unpin. This residency pin is internal to the cache store — it is
+  distinct from, and layered above, the backend-pool refcount that owns the
+  value's pixel/sample payload (doc 15): the cache component depends only on
+  `base` + `surface` (doc 17), so it reconciles "cache values are refcounted
+  from the owning nodes" (doc 15) by owning its entries and holding those
+  values for as long as they are cached, releasing on eviction.
+- **The byte budget is a soft target, not a hard allocator cap.** Budgets are
+  the eviction *policy* (doc 15): an insert past budget evicts LRU within the
+  lowest priority class first and keeps climbing classes until it fits or only
+  pinned entries remain. The pinned working set is never dropped to honor the
+  budget — correctness (serving the tiles the current frame needs) outranks the
+  budget — so resident bytes may transiently exceed the budget when the pinned
+  set alone does.
 
 ## Threading model
 

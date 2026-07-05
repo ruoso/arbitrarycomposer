@@ -45,6 +45,16 @@ Append one `###` block per item, newest at the bottom:
 - **Question**: Should a byte-budget or one-frame-trim eviction policy be added to `SurfacePool`? A long-lived cross-frame pool under sustained camera motion (many distinct temp sizes) could accumulate stale entries, but the only cross-frame caller — the interactive/video renderer — does not exist yet. Whether accumulation matters is a profiling-dependent judgment.
 - **Why parked**: Trigger is interactive-renderer profiling evidence that doesn't exist yet. Adding a policy now is speculative; the refinement explicitly defers this until that renderer's profiling reveals a real problem. Human call once the interactive renderer is built and profiled.
 
+### 2026-07-05 — KeyedStore concurrency hardening for async worker-fill + render-thread lookup
+- **Source**: closer for `cache.keyed_store` (see accompanying commit); flagged in refinement Open questions.
+- **Question**: `KeyedStore` is single-threaded-confined at v1. When the async render/mix model (doc 02:101-117) drives cache fills from worker threads while the render thread does lookups, the store needs reader-safe lookup and synchronized insert/evict (plus TSan + schedule-perturbation stress, doc 16:64-73). Should `KeyedStore` be hardened for concurrent access at that point?
+- **Why parked**: Trigger is the async off-thread fill path landing — a runtime-architecture decision not yet made (doc 02:118-120 leaves it open). Hardening now would guess at the concurrent design and pay synchronization cost on the hot path meanwhile. Human call once the async fill model is decided.
+
+### 2026-07-05 — Recycling evicted backend surfaces back into SurfacePool
+- **Source**: closer for `cache.keyed_store` (see accompanying commit); flagged in refinement Open questions.
+- **Question**: On eviction `KeyedStore` drops the `Value`, freeing its backend surface. That surface could instead be returned to `surfaces::SurfacePool` for reuse. Should this recycling path be added?
+- **Why parked**: Whether the recycling pays is profiling-dependent and it couples the cache's eviction path to the pool's lifecycle. No interactive renderer exists yet to profile against. Human call once the interactive renderer is built and profiling reveals whether the optimization is worth the coupling.
+
 ### 2026-07-05 — HAMT interior nodes not trivially destructible (model.persistent_state design deviation)
 - **Source**: closer for `model.persistent_state` (see accompanying commit); flagged by implementer.
 - **Question**: Docs 14/15 require records to be trivially destructible so `ReclamationQueue::drain` walks them explicitly. The three *object* record types (composition, layer, content) satisfy this and pass the `static_assert` in acceptance criteria. However HAMT interior nodes are **not** trivially destructible — they own child `SlotRef` edges and the drain cascade releases children through `~T`, with nodes reaching their stores via a thread-local `ReclaimContext` the drainer publishes. Should docs 14/15 be amended to distinguish between object records (trivially destructible, mmap-compatible) and map-node records (allowed non-trivial dtor via sink-routed cascade)? Or should the HAMT implementation be redesigned to make interior nodes also trivially destructible?
