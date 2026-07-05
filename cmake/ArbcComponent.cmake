@@ -55,6 +55,24 @@ function(arbc_component_test)
   catch_discover_tests(${target})
 endfunction()
 
+# arbc_component_bench(COMPONENT <name> SOURCES <src...>)
+#
+# Peer to arbc_component_test: component benchmarks live in <component dir>/bench/
+# and link the umbrella `arbc` plus Google Benchmark. Built ONLY when
+# ARBC_BENCHMARKS is ON (the `bench` preset), so dev/asan/coverage builds neither
+# fetch Google Benchmark nor compile these -- benchmarks trend, they do not gate
+# (doc 16:225-226). The bodies still carry diff coverage via the bench-smoke
+# CTest, which drives the shared workload header in the normal test build.
+function(arbc_component_bench)
+  cmake_parse_arguments(ARG "" "COMPONENT" "SOURCES" ${ARGN})
+  if(NOT ARBC_BENCHMARKS)
+    return()
+  endif()
+  set(target "arbc_${ARG_COMPONENT}_bench")
+  add_executable(${target} ${ARG_SOURCES})
+  target_link_libraries(${target} PRIVATE arbc benchmark::benchmark arbc_build_flags)
+endfunction()
+
 # arbc_finalize_library()
 #
 # Creates the single shipped `arbc` library from all registered components.

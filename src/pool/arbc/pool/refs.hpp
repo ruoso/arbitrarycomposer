@@ -49,6 +49,29 @@ public:
   virtual void on_zero(SlotIndex index) = 0;
 };
 
+// Diagnostic backing seam for the REFCOUNT table (doc 15). Production leaves
+// this null and refcount chunks are plain anonymous `new[]`/`delete[]` heap --
+// the portable default. A harness installs a page-aligned, mprotectable backing
+// to machine-check the inside-out invariant that a `const&`/`peek` traversal
+// touches no refcount page (the honest-baseline premise,
+// 15-memory-model#const-ref-traversal-touches-no-refcount-page): with the
+// refcount chunks frozen read-only, a `peek` traversal must not fault, whereas a
+// by-value shared_ptr traversal -- which dirties a count per node per visit --
+// would. Only the refcount table routes here (that is the table the invariant is
+// about); the reclaim-link and generation tables keep their `new[]` backing.
+class RefcountTableBacking {
+public:
+  virtual ~RefcountTableBacking() = default;
+  RefcountTableBacking() = default;
+  RefcountTableBacking(const RefcountTableBacking&) = delete;
+  RefcountTableBacking& operator=(const RefcountTableBacking&) = delete;
+
+  // Storage for `count` live (constructed) `std::atomic<std::uint32_t>`, each
+  // holding 0 on return -- matching the value-initialized `new[]` default.
+  virtual std::atomic<std::uint32_t>* allocate(std::size_t count) = 0;
+  virtual void deallocate(std::atomic<std::uint32_t>* base, std::size_t count) noexcept = 0;
+};
+
 // 4-byte index-only reference. Position-independent and trivially copyable, so
 // it is the only reference form that may live inside a record (records are
 // mmapped and have no stable base address across runs, doc 15). It does NOT
@@ -235,7 +258,11 @@ private:
 // on_zero merely enqueues.
 template <class T> class RefStore {
 public:
-  explicit RefStore(Arena& arena) : d_typed(arena) {
+  // `refcount_backing` is null in production (portable `new[]` refcount chunks);
+  // a diagnostic harness passes a page-aligned, mprotectable backing to freeze
+  // the count table read-only and witness the zero-refcount-traffic traversal.
+  explicit RefStore(Arena& arena, RefcountTableBacking* refcount_backing = nullptr)
+      : d_typed(arena), d_refcount_backing(refcount_backing) {
     const SlotStore& store = d_typed.store();
     d_chunk_bits = store.chunk_bits();
     d_slot_mask = (std::uint32_t{1} << d_chunk_bits) - 1;
@@ -245,7 +272,13 @@ public:
   }
 
   ~RefStore() {
-    d_refcounts.for_each_chunk([](std::atomic<std::uint32_t>* base) { delete[] base; });
+    d_refcounts.for_each_chunk([this](std::atomic<std::uint32_t>* base) {
+      if (d_refcount_backing != nullptr) {
+        d_refcount_backing->deallocate(base, d_chunk_slots);
+      } else {
+        delete[] base;
+      }
+    });
     d_reclaim_links.for_each_chunk([](std::atomic<SlotIndex>* base) { delete[] base; });
 #ifndef NDEBUG
     d_generations.for_each_chunk([](std::atomic<std::uint32_t>* base) { delete[] base; });
@@ -464,7 +497,9 @@ private:
   void ensure_parallel_chunks(SlotIndex index) {
     const std::uint32_t chunk_number = index >> d_chunk_bits;
     if (d_refcounts.chunk(chunk_number) == nullptr) {
-      d_refcounts.publish(chunk_number, new std::atomic<std::uint32_t>[d_chunk_slots]());
+      d_refcounts.publish(chunk_number, d_refcount_backing != nullptr
+                                            ? d_refcount_backing->allocate(d_chunk_slots)
+                                            : new std::atomic<std::uint32_t>[d_chunk_slots]());
       // The reclaim-link table is published in lock-step with the refcount
       // table (release builds included -- deferred reclamation is production
       // behavior), so the RT enqueue path never publishes a chunk or allocates.
@@ -545,6 +580,9 @@ private:
   std::size_t d_reclaim_chunks{0};
   ImmediateSink d_immediate{};
   ZeroCountSink* d_sink{nullptr};
+  // Null in production (portable `new[]` refcount chunks); non-null only for the
+  // page-aligned, mprotectable count-table diagnostic harness.
+  RefcountTableBacking* d_refcount_backing{nullptr};
 };
 
 // SlotRef is the in-record reference form: standard-layout and trivially

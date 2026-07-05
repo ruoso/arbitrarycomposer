@@ -183,7 +183,8 @@ public:
   long points() const { return d_point; }
   bool captured() const { return d_captured; }
 
-  int before(arbc::WorkspaceSyscall kind, std::uint64_t file_offset, std::size_t) noexcept override {
+  int before(arbc::WorkspaceSyscall kind, std::uint64_t file_offset,
+             std::size_t) noexcept override {
     if (kind == arbc::WorkspaceSyscall::Msync || kind == arbc::WorkspaceSyscall::RootFlip) {
       const long idx = d_point++;
       d_pending_after = false;
@@ -198,7 +199,8 @@ public:
     return 0;
   }
 
-  void after(arbc::WorkspaceSyscall kind, std::uint64_t file_offset, std::size_t) noexcept override {
+  void after(arbc::WorkspaceSyscall kind, std::uint64_t file_offset,
+             std::size_t) noexcept override {
     if (kind == arbc::WorkspaceSyscall::Msync && file_offset == 0) {
       // Header msync completed: the flipped root is now durable.
       d_durable_a = d_source->root_slot(0);
@@ -346,7 +348,7 @@ long run_second_commit(long target, bool after, const std::string& snapshot) {
 // enforces: 15-memory-model#checkpoint-recovers-consistent-root
 TEST_CASE("commit-ordering kill sweep: old root before the header sync, new root after", "[pool]") {
   const long num_points = run_second_commit(0, false, {}); // count-only pass
-  REQUIRE(num_points >= 3);                                 // >=1 data msync + flip + header msync
+  REQUIRE(num_points >= 3);                                // >=1 data msync + flip + header msync
 
   for (long target = 0; target < num_points; ++target) {
     for (bool after : {false, true}) {
@@ -509,7 +511,8 @@ TEST_CASE("disk-full syscall failures surface as values and stay recoverable", "
   // pin the recovered graph (root value 100).
   TempPath recovered;
   copy_file(path.str(), recovered.str());
-  assert_recovers(recovered.str(), 0u, 100u, static_cast<std::uint32_t>(store.store().high_water()));
+  assert_recovers(recovered.str(), 0u, 100u,
+                  static_cast<std::uint32_t>(store.store().high_water()));
 }
 
 // enforces: 15-memory-model#workspace-io-faults-surface-as-values

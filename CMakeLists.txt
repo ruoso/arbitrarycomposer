@@ -43,6 +43,13 @@ if(ARBC_COVERAGE)
   target_link_options(arbc_build_flags INTERFACE --coverage)
 endif()
 
+# Benchmarks (design doc 15/16 tier 9) are OFF by default so no wall-clock cost
+# enters the per-push gate: dev/asan/coverage builds neither fetch Google
+# Benchmark nor compile the bench targets. The `bench` preset (Release) turns
+# this on; the benchmark bodies still get diff coverage via the bench-smoke
+# CTest in the normal build. CI tracked-history wiring is quality.benchmark_history.
+option(ARBC_BENCHMARKS "Fetch Google Benchmark and build the benchmark targets" OFF)
+
 include(CTest)
 if(BUILD_TESTING)
   # Test dependencies come before src/ so component unit tests can use them.
@@ -59,6 +66,29 @@ if(BUILD_TESTING)
     list(APPEND CMAKE_MODULE_PATH "${Catch2_DIR}")
   endif()
   include(Catch)
+endif()
+
+# Google Benchmark: fetched ONLY when benchmarks are enabled (mirrors the Catch2
+# declare above, at a pinned tag). Its headers are marked SYSTEM so our
+# -Werror -Wpedantic flags do not fire on third-party code.
+if(ARBC_BENCHMARKS)
+  include(FetchContent)
+  set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    benchmark
+    GIT_REPOSITORY https://github.com/google/benchmark.git
+    GIT_TAG v1.9.1
+    FIND_PACKAGE_ARGS)
+  FetchContent_MakeAvailable(benchmark)
+  if(TARGET benchmark)
+    get_target_property(_arbc_bm_incs benchmark INTERFACE_INCLUDE_DIRECTORIES)
+    if(_arbc_bm_incs)
+      set_target_properties(
+        benchmark PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_arbc_bm_incs}")
+    endif()
+  endif()
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/CMakeLists.txt")

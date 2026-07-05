@@ -46,7 +46,9 @@ What the prototype does (read from `src/cpioo/managed_entity.hpp`,
   push-to-local-queue, reuse is thread-affine.
 - Benchmarked against `shared_ptr` on exactly our topology — a producer
   thread publishing immutable tree versions while a consumer traverses:
-  ~2.4–3× version-production rate, ~16–18× traversal rate.
+  the prototype reported ~2.4–3× version-production rate, ~16–18×
+  traversal rate. **Those figures do not survive an honest rerun against
+  the shipped `arbc::pool`** — see caveat 3 and `src/pool/bench/`.
 
 **Fit assessment: this is the right model for the document records.** The
 correspondence is one-to-one — doc 14's writer is the producer, pinned
@@ -76,8 +78,28 @@ pins interference-free.
    visitor takes its argument *by value* (refcount traffic per node per
    visit) while the managed visitor takes `const&`. The architectural
    advantages (slab locality, undirtied pages, no control-block
-   interleaving) are real, but a fair baseline would shrink the 16× —
-   re-benchmark honestly before quoting numbers in arbc docs.
+   interleaving) are real — and the undirtied-pages one is now
+   machine-checked: `15-memory-model#const-ref-traversal-touches-no-refcount-page`
+   proves a `peek`/`const&` traversal never writes a count page (the
+   refcount table `mprotect`ed read-only does not fault), which a by-value
+   `shared_ptr` walk would. But the honest rerun
+   (`src/pool/bench/allocator_bench.cpp`, `arbc::pool` vs `std::shared_ptr`,
+   GCC 14 Release) shows the 16× was almost entirely the by-value artifact:
+   a by-value walk costs only ~3× a `const&` walk, and the managed `peek`
+   traversal lands at roughly *that same* by-value cost — i.e. ~2.8×
+   *slower* than a fair `const&` `shared_ptr` walk, single-threaded, not
+   faster. The reason is a real tradeoff, not a defect: arbc's in-record
+   reference is the 4-byte index-only `SlotRef` (doc 15 chose it to shrink
+   persistent-map nodes and stay mmap-portable), so `peek` pays a two-level
+   directory resolve per edge that cpioo's fat 24-byte (pointer+index)
+   `reference` — and the flattering by-value baseline — both hid. So no
+   traversal *speedup* is claimed: the design's read-path win is the
+   *interference-free concurrent pin* (a producer pinning/unpinning versions
+   never dirties the cache lines the consumer reads — the property caveat's
+   `const-ref` claim guards), plus fragmentation-free reuse and O(1) arena
+   teardown, none of which a single-threaded traversal ratio captures.
+   Numbers trend per-commit through the benchmark's JSON output, never a
+   quoted ratio in the docs (doc 16:82-87, 225-226).
 4. Production hardening: default `REFCNT_TYPE = short` (32 k pins
    overflows silently — needs `uint32_t` + overflow check), OOM handling
    by `std::abort`, racy capacity-growth handshake (works in practice,

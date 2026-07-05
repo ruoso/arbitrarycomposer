@@ -13,6 +13,7 @@ task milestones "Milestones" {
 
   task m1_memory "M1: Memory foundation" {
     milestone
+    complete 100
     depends pool.checkpoints, pool.crash_tests, pool.benchmarks
     note "Slab arenas with deferred reclamation and the mmapped workspace file surviving kill-injection sweeps. Doc 15 realized."
   }
@@ -61,7 +62,7 @@ task milestones "Milestones" {
 
   task m9_release "M9: v0.1 release" {
     milestone
-    depends packaging.release_01, packaging.plugin_helper, quality.testing_artifact, quality.tidy_promotion, quality.benchmark_history, quality.claims_audit, quality.repo_linters, quality.request_fuzz, kinds.dual_build, surfaces.import, pool.mmap_backing_win32, pool.checkpoints_win32, pool.crash_tests_win32
+    depends packaging.release_01, packaging.plugin_helper, quality.testing_artifact, quality.tidy_promotion, quality.benchmark_history, quality.claims_audit, quality.repo_linters, quality.request_fuzz, kinds.dual_build, surfaces.import, pool.mmap_backing_win32, pool.checkpoints_win32, pool.crash_tests_win32, pool.concurrent_pin_benchmark
     note "The single library + arbc-testing + imageseq plugin, installable with package metadata, examples building, quality bars promoted, external-import surface contract complete."
   }
 }

@@ -44,6 +44,15 @@
       "inherits": "dev",
       "binaryDir": "${sourceDir}/build/win-dev",
       "generator": "Ninja"
+    },
+    {
+      "name": "bench",
+      "displayName": "Release + Google Benchmark (opt-in, off the merge path)",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/bench",
+      "cacheVariables": {
+        "ARBC_BENCHMARKS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -51,13 +60,15 @@
     { "name": "release", "configurePreset": "release" },
     { "name": "asan", "configurePreset": "asan" },
     { "name": "coverage", "configurePreset": "coverage" },
-    { "name": "win-dev", "configurePreset": "win-dev" }
+    { "name": "win-dev", "configurePreset": "win-dev" },
+    { "name": "bench", "configurePreset": "bench" }
   ],
   "testPresets": [
     { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
     { "name": "asan", "configurePreset": "asan", "output": { "outputOnFailure": true } },
     { "name": "coverage", "configurePreset": "coverage", "output": { "outputOnFailure": true } },
-    { "name": "win-dev", "configurePreset": "win-dev", "output": { "outputOnFailure": true } }
+    { "name": "win-dev", "configurePreset": "win-dev", "output": { "outputOnFailure": true } },
+    { "name": "bench", "configurePreset": "bench", "output": { "outputOnFailure": true } }
   ]
 }
