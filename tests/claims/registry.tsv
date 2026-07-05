@@ -13,3 +13,4 @@
 15-memory-model#checkpoint-recovers-consistent-root	An ordered commit (msync data, flip the A/B root, msync the header) leaves recovery on the old root before the header sync and the new root after it, each resolving a consistent graph
 15-memory-model#freed-slot-quarantined-until-durable	A slot (or emptied chunk) freed after the last checkpoint is not re-allocated (nor hole-punched) until a commit makes the freeing durable, then becomes reusable
 15-memory-model#checkpoint-published-chunks-read-only	In a debug build, a write through a pointer into a data chunk published by a checkpoint faults, because the checkpoint mprotects published chunks read-only
+15-memory-model#workspace-io-faults-surface-as-values	Every workspace-file syscall failure (grow / msync / hole-punch / header I/O) and every truncated or short file surfaces as a WorkspaceFileErrc value, never an abort or UB; the file remains recoverable to its last durable root

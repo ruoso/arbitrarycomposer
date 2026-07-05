@@ -268,8 +268,7 @@ private:
   // net live change moves the live count, and any free bumps the quarantine
   // total -- so an all-three-unchanged scene issues no data msync.
   bool is_dirty() const {
-    return d_arena->total_slots_live() != d_snap_live ||
-           d_arena->total_high_water() != d_snap_hw ||
+    return d_arena->total_slots_live() != d_snap_live || d_arena->total_high_water() != d_snap_hw ||
            d_slot_fence.quarantined_total() != d_snap_quarantined;
   }
 
@@ -282,10 +281,10 @@ private:
   WorkspaceFileChunkSource* d_source;
   Arena* d_arena;
 
-  std::uint32_t d_epoch{1};          // current in-progress epoch (== generation + 1)
-  std::uint32_t d_generation{0};     // last published root generation
-  std::uint32_t d_durable_epoch{0};  // highest epoch made durable by a commit
-  int d_next_slot{0};                // header slot the next commit publishes into (0=A, 1=B)
+  std::uint32_t d_epoch{1};         // current in-progress epoch (== generation + 1)
+  std::uint32_t d_generation{0};    // last published root generation
+  std::uint32_t d_durable_epoch{0}; // highest epoch made durable by a commit
+  int d_next_slot{0};               // header slot the next commit publishes into (0=A, 1=B)
 
   DurabilityEpochFence d_slot_fence;
   ChunkFence d_chunk_fence{};

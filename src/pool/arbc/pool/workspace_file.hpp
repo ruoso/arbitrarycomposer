@@ -116,6 +116,52 @@ public:
                           std::uint64_t size, std::uint32_t index) = 0;
 };
 
+// The workspace-file syscalls the fault-injection shim can intercept
+// (pool.crash_tests). `RootFlip` is not a syscall but the A/B root-slot publish
+// store; it is routed through the same seam because it is a durability boundary
+// the kill-sweep enumerates alongside the msyncs.
+enum class WorkspaceSyscall {
+  Mmap,
+  Ftruncate,
+  Fallocate,
+  Msync,
+  Mprotect,
+  RootFlip,
+};
+
+// Installable fault-injection shim over WorkspaceFileChunkSource's I/O (doc 16's
+// sanctioned mocking exception, :227-229). Nullptr-default on the source: when
+// unset every syscall routes straight to the real `::` call behind one
+// predictable branch, so there is no behavior change and no measurable cost. A
+// test installs an injector to (a) count each syscall to enumerate injection
+// points, (b) inject an errno failure at a chosen call (disk-full sweeps), or
+// (c) capture a durable snapshot / terminate the process at a chosen call
+// (kill-at-every-syscall sweeps). This is the exact installable-hook idiom
+// `set_release_fence` established, kept inside the one class that owns the fd —
+// never process-global interposition (LD_PRELOAD), which cannot target a single
+// instance. The `pread` calls live in the static `open`/`read_header` factories
+// (no instance yet), so their fault paths are exercised by real truncated files
+// rather than this member seam.
+class SyscallInjector {
+public:
+  virtual ~SyscallInjector() = default;
+
+  // Consulted immediately before the real syscall. Return 0 to let the real
+  // call proceed, or a positive errno to inject as the call's failure (the
+  // helper returns the syscall's error sentinel with `errno` set and skips the
+  // real call). The injector may also snapshot the file or terminate the
+  // process here (kill-before-effect). `file_offset` is the targeted file
+  // offset (0 when the call has none).
+  virtual int before(WorkspaceSyscall kind, std::uint64_t file_offset,
+                     std::size_t len) noexcept = 0;
+
+  // Consulted immediately after a real syscall that actually ran (i.e. when
+  // `before` returned 0). Lets the injector observe the now-durable state (a
+  // header msync publishes the root) or terminate the process (kill-after).
+  virtual void after(WorkspaceSyscall kind, std::uint64_t file_offset,
+                     std::size_t len) noexcept = 0;
+};
+
 // File-backed ChunkSource (doc 15, "File-backed arenas"): only immutable data
 // chunks flow through here; bookkeeping (directory, free list) stays anonymous
 // because it never touches a ChunkSource at all — the inside-out split is the
@@ -190,6 +236,10 @@ public:
   // hole-punch until durable. Default is eager punch. Writer-only setup.
   void set_release_fence(ChunkReleaseFence* fence) noexcept { d_release_fence = fence; }
 
+  // Install (or clear, with nullptr) the fault-injection shim (pool.crash_tests).
+  // Default is no injector: every syscall runs directly. Writer/test-only setup.
+  void set_syscall_injector(SyscallInjector* injector) noexcept { d_injector = injector; }
+
   std::size_t live_chunk_count() const noexcept { return d_live.size(); }
   std::size_t page() const noexcept { return d_page; }
 
@@ -206,6 +256,16 @@ private:
 
   WorkspaceHeader* header() noexcept;
   WorkspaceChunkEntry* directory() noexcept;
+
+  // Syscall shims: each routes through `d_injector` when installed (one branch),
+  // else calls the real syscall directly. Defined only under
+  // ARBC_HAS_WORKSPACE_FILES; never ODR-used otherwise. `io_fallocate` is
+  // additionally Linux-only (matching `punch_now`).
+  int io_ftruncate(std::int64_t length) noexcept;
+  void* io_mmap(std::size_t len, int prot, int flags, std::int64_t offset) noexcept;
+  int io_fallocate(int mode, std::int64_t offset, std::int64_t len) noexcept;
+  int io_msync(void* addr, std::size_t len, int flags, std::uint64_t file_offset) noexcept;
+  int io_mprotect(void* addr, std::size_t len, int prot) noexcept;
 
   struct LiveChunk {
     std::uint64_t offset;
@@ -237,6 +297,7 @@ private:
   std::vector<ReopenedChunk> d_reopened;
   std::size_t d_reopened_cursor{0};
   ChunkReleaseFence* d_release_fence{nullptr};
+  SyscallInjector* d_injector{nullptr};
   WorkspaceFileError d_last_error{};
 };
 

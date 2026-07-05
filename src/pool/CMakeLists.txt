@@ -8,4 +8,4 @@ arbc_add_component(
   DEPENDS base)
 
 arbc_component_test(COMPONENT pool SOURCES t/pool.t.cpp t/refs.t.cpp t/reclamation.t.cpp
-                    t/workspace_file.t.cpp t/checkpoint.t.cpp)
+                    t/workspace_file.t.cpp t/checkpoint.t.cpp t/crash_tests.t.cpp)

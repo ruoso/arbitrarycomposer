@@ -4,12 +4,11 @@
 #include <arbc/pool/slot_store.hpp>
 #include <arbc/pool/workspace_file.hpp>
 
-#include <cstring>
-
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -21,14 +20,14 @@ TEST_CASE("checkpoint support tracks workspace-file support") {
 
 #if ARBC_HAS_WORKSPACE_FILES
 
-#include <csetjmp>
-#include <csignal>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <csetjmp>
+#include <csignal>
 #include <thread>
 
 namespace {
@@ -337,7 +336,9 @@ TEST_CASE("recovery free list is the below-high-water complement when a slot was
   // Allocate a throwaway node (grows the high-water) that is NOT part of the
   // committed graph, then build + commit the real graph. The freed scratch slot
   // is quarantined, so the graph keeps building above it.
-  { arbc::Ref<GraphNode> scratch = *store.create(); }
+  {
+    arbc::Ref<GraphNode> scratch = *store.create();
+  }
   arbc::Ref<GraphNode> root = build_graph(store);
   const arbc::SlotIndex root_index = root.index();
   const std::uint32_t high_water = static_cast<std::uint32_t>(store.store().high_water());
@@ -383,14 +384,14 @@ TEST_CASE("A/B root slots alternate and the newer generation wins on open") {
   REQUIRE(header.has_value());
   const arbc::WorkspaceRoot a = arbc::decode_root(header->root_slot_a);
   const arbc::WorkspaceRoot b = arbc::decode_root(header->root_slot_b);
-  REQUIRE(a.generation == 1);         // two successive commits wrote different
-  REQUIRE(b.generation == 2);         // slots
+  REQUIRE(a.generation == 1); // two successive commits wrote different
+  REQUIRE(b.generation == 2); // slots
   REQUIRE(a.root_index == first.index());
   REQUIRE(b.root_index == second.index());
 
   auto opened = arbc::Checkpointer::open(path.str());
   REQUIRE(opened.has_value());
-  REQUIRE(opened->generation == 2);   // the newer generation wins
+  REQUIRE(opened->generation == 2); // the newer generation wins
   REQUIRE(opened->root_index == second.index());
 }
 
@@ -510,7 +511,7 @@ TEST_CASE("behavioral counters: msyncs, fence releases, and epoch advance as spe
   // The fence's release counter advances only at commit, never on the free path.
   arbc::Ref<GraphNode> scratch = *store.create();
   const arbc::SlotIndex scratch_index = scratch.index();
-  scratch = arbc::Ref<GraphNode>{}; // free -> quarantined
+  scratch = arbc::Ref<GraphNode>{};         // free -> quarantined
   REQUIRE(ckpt.slots_freed_to_list() == 0); // free path advances nothing
   (void)scratch_index;
 
@@ -646,8 +647,8 @@ TEST_CASE("TSan smoke: RT producers enqueue while the writer drains and checkpoi
     th.join();
   }
 
-  REQUIRE(destructions.load() == total);       // every ~Tracked fired exactly once
-  REQUIRE(store.slots_live() == baseline);     // only the permanent root remains
+  REQUIRE(destructions.load() == total);   // every ~Tracked fired exactly once
+  REQUIRE(store.slots_live() == baseline); // only the permanent root remains
 
   // The resulting file still recovers the permanent root.
   auto header = arbc::WorkspaceFileChunkSource::read_header(path.str());
