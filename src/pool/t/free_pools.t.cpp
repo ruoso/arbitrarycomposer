@@ -13,9 +13,10 @@
 #include <vector>
 
 #if defined(__linux__)
-#include <csignal>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <csignal>
 #endif
 
 namespace {
@@ -104,10 +105,10 @@ TEST_CASE("round-trip recycle: a second thread frees a batch multiple, the write
     REQUIRE(idx.has_value());
     second.insert(*idx);
   }
-  REQUIRE(store.refill_count() >= 4);            // reuse went through the global pool
-  REQUIRE(store.high_water() == high_water);     // no growth beyond n
-  REQUIRE(store.slots_capacity() == capacity);   // capacity unchanged
-  REQUIRE(second.size() == n);                   // no duplication
+  REQUIRE(store.refill_count() >= 4);          // reuse went through the global pool
+  REQUIRE(store.high_water() == high_water);   // no growth beyond n
+  REQUIRE(store.slots_capacity() == capacity); // capacity unchanged
+  REQUIRE(second.size() == n);                 // no duplication
   REQUIRE(second == std::set<arbc::SlotIndex>(first.begin(), first.end())); // no loss
 }
 
@@ -131,9 +132,9 @@ TEST_CASE("a thread's just-released slot is its next same-thread allocation, bef
   const auto reused = store.allocate();
   REQUIRE(reused.has_value());
 
-  REQUIRE(*reused == *victim);                  // thread-affine: the same slot came back
-  REQUIRE(store.spill_count() == spills);       // no spill
-  REQUIRE(store.refill_count() == refills);     // no global-pool round-trip
+  REQUIRE(*reused == *victim);              // thread-affine: the same slot came back
+  REQUIRE(store.spill_count() == spills);   // no spill
+  REQUIRE(store.refill_count() == refills); // no global-pool round-trip
 }
 
 // The sub-batch hot path takes no global lock: spill/refill counters stay put for
@@ -158,7 +159,7 @@ TEST_CASE("a sub-batch churn burst takes no global lock; crossing the threshold 
   for (std::size_t i = 0; i < slots.size(); ++i) {
     REQUIRE(store.allocate().has_value()); // all served locally: no refill
   }
-  REQUIRE(store.spill_count() == spills);   // hot path took no global lock
+  REQUIRE(store.spill_count() == spills); // hot path took no global lock
   REQUIRE(store.refill_count() == refills);
 
   // Now push the local pool across the batch threshold: exactly one spill fires.

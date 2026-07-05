@@ -4,27 +4,29 @@
 
 namespace arbc {
 
-void render_frame(const DocState& state, const ContentResolver& resolve, const Viewport& viewport,
+void render_frame(const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
                   Backend& backend, Surface& target) {
   backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
 
   const Rect device_rect =
       Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
 
-  for (const LayerRecord& layer : state.layers) {
-    if (!layer.visible || layer.opacity <= 0.0) {
-      continue;
+  // Bottom-to-top over the pinned version's layers (doc 02). `return` culls the
+  // current layer (the per-layer body is a callback, not an inline loop).
+  state.for_each_layer([&](const LayerRecord& layer) {
+    if (!layer.visible() || layer.opacity <= 0.0) {
+      return;
     }
     Content* content = resolve(layer.content);
     if (content == nullptr) {
-      continue;
+      return;
     }
 
     // Compose per-edge transforms on demand (doc 04): local -> device.
     const Affine composed = compose(viewport.camera, layer.transform);
     const std::optional<Affine> inv = composed.inverse();
     if (!inv.has_value()) {
-      continue; // degenerate placement: cull (doc 04)
+      return; // degenerate placement: cull (doc 04)
     }
 
     // The pull contract (doc 03): map the visible device region into
@@ -35,17 +37,17 @@ void render_frame(const DocState& state, const ContentResolver& resolve, const V
       region = region.intersect(*bounds);
     }
     if (region.empty()) {
-      continue;
+      return;
     }
 
     const double scale = composed.max_scale();
     if (!(scale > 0.0) || !std::isfinite(scale)) {
-      continue;
+      return;
     }
     const int temp_width = static_cast<int>(std::ceil(region.width() * scale));
     const int temp_height = static_cast<int>(std::ceil(region.height() * scale));
     if (temp_width <= 0 || temp_height <= 0) {
-      continue; // sub-pixel: cull (doc 04)
+      return; // sub-pixel: cull (doc 04)
     }
 
     const std::unique_ptr<Surface> temp =
@@ -62,7 +64,7 @@ void render_frame(const DocState& state, const ContentResolver& resolve, const V
                 compose(Affine::translation(region.x0, region.y0),
                         Affine::scaling(1.0 / result.achieved_scale, 1.0 / result.achieved_scale)));
     backend.composite(target, *temp, temp_to_dst, layer.opacity);
-  }
+  });
 }
 
 } // namespace arbc

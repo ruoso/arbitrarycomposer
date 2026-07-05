@@ -25,7 +25,7 @@ using ContentResolver = std::function<Content*(ObjectId)>;
 // One frame under the offline discipline (doc 02): exact, synchronous,
 // bottom-to-top. The tile cache, culling refinements, deadlines, and
 // progressive refinement land with the interactive renderer.
-void render_frame(const DocState& state, const ContentResolver& resolve, const Viewport& viewport,
+void render_frame(const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
                   Backend& backend, Surface& target);
 
 } // namespace arbc

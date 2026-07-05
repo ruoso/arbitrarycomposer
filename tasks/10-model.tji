@@ -9,7 +9,15 @@ task model "Versioned model" {
   task persistent_state "Persistent DocState on arenas" {
     effort 3d
     allocate team
-    note "Path-copying persistent map from ObjectId to immutable records (composition/layer/content), records as fixed-size slab types, atomic publish, pins as root refs. Docs 14/15."
+    complete 100
+    note "Path-copying persistent map from ObjectId to immutable records (composition/layer/content), records as fixed-size slab types, atomic publish, pins as root refs. Docs 14/15. Refinement: tasks/refinements/model/persistent_state.md"
+  }
+
+  task workspace_backing "Workspace-file-backed DocState arena" {
+    effort 3d
+    allocate team
+    depends !persistent_state, pool.checkpoints
+    note "Allocate DocState records in a workspace-file-backed Arena; commit on autosave/publish via Checkpointer::commit; implement the typed reachability walk that Checkpointer::finalize_open (checkpoint.hpp:205) requires to rebuild counts on open — the walk pool.checkpoints left to the model layer. Source: tasks/refinements/model/persistent_state.md (deferred follow-up). Docs 14/15."
   }
   task transactions "Transactions + coalescing" {
     effort 2d

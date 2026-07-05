@@ -2,6 +2,8 @@
 # A claim id is <doc-file-stem>#<slug>; each entry must be referenced by a
 # test comment `enforces: <claim-id>`.
 14-data-model-and-editing#pinned-version-never-observes-later-edit	A pinned DocState is unaffected by later transactions
+14-data-model-and-editing#commit-shares-untouched-structure	A commit touching one object path-copies only the nodes on its path; every untouched record is shared by SlotRef identity between the pre- and post-commit versions, so live-slot growth is O(path depth), not O(document)
+14-data-model-and-editing#dropping-pin-reclaims-only-unique-nodes	Dropping the last pin to a superseded version and draining reclaims exactly that version's unique nodes and no node still shared with the live version
 07-color-and-pixel-formats#premultiplied-source-over	Compositing is source-over on premultiplied alpha in the working space
 16-sdlc-and-quality#byte-exact-goldens	CPU backend rendering is byte-exact deterministic
 15-memory-model#slots-recycle-in-place	A released slot is the next same-class allocation's perfect hole; fixed slabs make fragmentation impossible
