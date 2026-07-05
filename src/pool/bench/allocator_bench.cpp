@@ -24,7 +24,6 @@
 // so quality.benchmark_history can upload the results unreshaped.
 
 #include "pool_bench_workloads.hpp"
-
 #include <benchmark/benchmark.h>
 
 #include <cstdint>

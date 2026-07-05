@@ -21,7 +21,11 @@ namespace arbc {
 // run-the-destructor-then-release helper for callers that reclaim inline.
 template <class T> class TypedStore {
 public:
-  explicit TypedStore(Arena& arena) : d_store(&arena.store_for(sizeof(T), alignof(T))) {}
+  // `refcount_backing` is forwarded to the size-class store on first creation
+  // (it becomes the store's count-column allocator); later views over the same
+  // size class share the store already minted, so their backing arg is ignored.
+  explicit TypedStore(Arena& arena, RefcountTableBacking* refcount_backing = nullptr)
+      : d_store(&arena.store_for(sizeof(T), alignof(T), 0, refcount_backing)) {}
   explicit TypedStore(SlotStore& store) : d_store(&store) {}
 
   // Reserve a slot and construct a `T` in it, forwarding the arguments.

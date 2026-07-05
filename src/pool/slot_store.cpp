@@ -59,16 +59,41 @@ void AnonymousChunkSource::release(ChunkSpan span) noexcept {
 }
 
 SlotStore::SlotStore(std::size_t slot_size, std::size_t slot_align, std::uint32_t chunk_bits,
-                     ChunkSource& source)
+                     ChunkSource& source, RefcountTableBacking* refcount_backing)
     : d_slot_size(slot_size), d_slot_align(slot_align),
       d_slot_stride(align_up(std::max<std::size_t>(slot_size, 1), slot_align)),
       d_chunk_bits(chunk_bits), d_slot_mask((std::uint32_t{1} << chunk_bits) - 1),
       d_chunk_slots(std::size_t{1} << chunk_bits), d_chunk_bytes(d_chunk_slots * d_slot_stride),
-      d_source(&source) {}
+      d_source(&source), d_refcount_backing(refcount_backing) {}
 
 SlotStore::~SlotStore() {
   d_directory.for_each_chunk(
       [this](std::byte* base) { d_source->release(ChunkSpan{base, d_chunk_bytes}); });
+  // The inside-out columns are anonymous heap grown in lock-step with the data
+  // chunks: the refcount column routes through the optional backing, the
+  // generation column is always plain `new[]`.
+  d_refcounts.for_each_chunk([this](std::atomic<std::uint32_t>* base) {
+    if (d_refcount_backing != nullptr) {
+      d_refcount_backing->deallocate(base, d_chunk_slots);
+    } else {
+      delete[] base;
+    }
+  });
+#ifndef NDEBUG
+  d_generations.for_each_chunk([](std::atomic<std::uint32_t>* base) { delete[] base; });
+#endif
+}
+
+void SlotStore::publish_parallel_columns(std::uint32_t chunk_number) {
+  if (d_refcounts.chunk(chunk_number) != nullptr) {
+    return; // already minted in lock-step with this data chunk
+  }
+  d_refcounts.publish(chunk_number, d_refcount_backing != nullptr
+                                        ? d_refcount_backing->allocate(d_chunk_slots)
+                                        : new std::atomic<std::uint32_t>[d_chunk_slots]());
+#ifndef NDEBUG
+  d_generations.publish(chunk_number, new std::atomic<std::uint32_t>[d_chunk_slots]());
+#endif
 }
 
 void SlotStore::assert_writer_thread() noexcept {
@@ -108,6 +133,9 @@ expected<SlotIndex, PoolError> SlotStore::allocate() {
       return unexpected(span.error());
     }
     d_directory.publish(chunk_number, static_cast<std::byte*>(span->base));
+    // Mint the inside-out columns for this chunk in lock-step so a typed view's
+    // count/generation cell is always published before the slot is handed out.
+    publish_parallel_columns(chunk_number);
     d_slots_capacity += d_chunk_slots;
     d_bytes_reserved += span->size;
     // Reserve free-list headroom up front so release() never allocates.
@@ -145,6 +173,9 @@ expected<std::monostate, PoolError> SlotStore::reserve_restored(std::uint32_t hi
   }
   const std::uint32_t chunks_needed = ((high_water - 1) >> d_chunk_bits) + 1;
   for (std::uint32_t chunk_number = 0; chunk_number < chunks_needed; ++chunk_number) {
+    // The columns are anonymous runtime state rebuilt on open, so mint them for
+    // every restored chunk (idempotent) whether or not the data chunk is fresh.
+    publish_parallel_columns(chunk_number);
     if (d_directory.chunk(chunk_number) != nullptr) {
       continue; // already bound
     }
@@ -201,8 +232,8 @@ Arena::Arena(ChunkSource& source) : d_source(&source) {}
 
 Arena::~Arena() = default;
 
-SlotStore& Arena::store_for(std::size_t slot_size, std::size_t slot_align,
-                            std::uint32_t chunk_bits) {
+SlotStore& Arena::store_for(std::size_t slot_size, std::size_t slot_align, std::uint32_t chunk_bits,
+                            RefcountTableBacking* refcount_backing) {
   const std::size_t align = std::max<std::size_t>(slot_align, alignof(std::max_align_t));
   const std::size_t stride = align_up(std::max<std::size_t>(slot_size, 1), align);
   const std::uint32_t bits = chunk_bits != 0 ? chunk_bits : default_chunk_bits(stride);
@@ -210,7 +241,13 @@ SlotStore& Arena::store_for(std::size_t slot_size, std::size_t slot_align,
   const std::pair<std::size_t, std::size_t> key{stride, align};
   auto it = d_stores.find(key);
   if (it == d_stores.end()) {
-    it = d_stores.emplace(key, std::make_unique<SlotStore>(stride, align, bits, *d_source)).first;
+    // First typed view over this size class mints the store and installs its
+    // count-column backing; later views for the same class share this store
+    // (and its backing) -- one count column, one backing, per size class.
+    it = d_stores
+             .emplace(key,
+                      std::make_unique<SlotStore>(stride, align, bits, *d_source, refcount_backing))
+             .first;
   }
   return *it->second;
 }

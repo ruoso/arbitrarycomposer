@@ -49,28 +49,11 @@ public:
   virtual void on_zero(SlotIndex index) = 0;
 };
 
-// Diagnostic backing seam for the REFCOUNT table (doc 15). Production leaves
-// this null and refcount chunks are plain anonymous `new[]`/`delete[]` heap --
-// the portable default. A harness installs a page-aligned, mprotectable backing
-// to machine-check the inside-out invariant that a `const&`/`peek` traversal
-// touches no refcount page (the honest-baseline premise,
-// 15-memory-model#const-ref-traversal-touches-no-refcount-page): with the
-// refcount chunks frozen read-only, a `peek` traversal must not fault, whereas a
-// by-value shared_ptr traversal -- which dirties a count per node per visit --
-// would. Only the refcount table routes here (that is the table the invariant is
-// about); the reclaim-link and generation tables keep their `new[]` backing.
-class RefcountTableBacking {
-public:
-  virtual ~RefcountTableBacking() = default;
-  RefcountTableBacking() = default;
-  RefcountTableBacking(const RefcountTableBacking&) = delete;
-  RefcountTableBacking& operator=(const RefcountTableBacking&) = delete;
-
-  // Storage for `count` live (constructed) `std::atomic<std::uint32_t>`, each
-  // holding 0 on return -- matching the value-initialized `new[]` default.
-  virtual std::atomic<std::uint32_t>* allocate(std::size_t count) = 0;
-  virtual void deallocate(std::atomic<std::uint32_t>* base, std::size_t count) noexcept = 0;
-};
+// The refcount column's optional diagnostic backing (`RefcountTableBacking`)
+// now lives with the column it allocates, in `SlotStore` (slot_store.hpp): the
+// count column is store-owned, so its allocator is a store property supplied at
+// size-class-store creation. A `RefStore<T>` merely forwards the caller's
+// backing to the store on first creation.
 
 // 4-byte index-only reference. Position-independent and trivially copyable, so
 // it is the only reference form that may live inside a record (records are
@@ -241,12 +224,16 @@ private:
 #endif
 };
 
-// Owns the objects of one size class AND their inside-out parallel tables. The
-// refcount table (and, in debug, the generation table) are indexed by the same
-// SlotIndex as the data but allocated as anonymous heap chunks grown in
-// lock-step with the store at allocation time (writer-only). Because they are
-// separate from the data pages, arbitrary pin/unpin traffic never dirties a
-// data chunk.
+// A typed view over one size-class SlotStore: constructs/destroys `T`s in its
+// slots and owns the type-specific reclamation machinery (the zero-count sink
+// and the per-view reclaim-link stack that dispatch `~T`). The inside-out
+// refcount column and (debug) generation column are NOT owned here -- they live
+// in the shared SlotStore, physical-slot indexed, so several `RefStore<T>` /
+// `RefStore<U>` views over one size class share ONE count and ONE generation
+// column per slot (a slot has exactly one logical count wherever it is viewed
+// from). This view reads/writes those columns through the store's `count_ref` /
+// `generation_ref` accessors. Because the columns are separate from the data
+// pages, arbitrary pin/unpin traffic never dirties a data chunk.
 //
 // Threading (doc 15): `create` and `reclaim` are WRITER-THREAD-ONLY (they
 // allocate/release slots through the SlotStore, and grow the parallel tables).
@@ -260,9 +247,12 @@ template <class T> class RefStore {
 public:
   // `refcount_backing` is null in production (portable `new[]` refcount chunks);
   // a diagnostic harness passes a page-aligned, mprotectable backing to freeze
-  // the count table read-only and witness the zero-refcount-traffic traversal.
+  // the count column read-only and witness the zero-refcount-traffic traversal.
+  // It is forwarded to the size-class store on first creation (the store owns
+  // the column, so it owns the backing); a later view over the same size class
+  // shares the store already minted and its backing arg is ignored.
   explicit RefStore(Arena& arena, RefcountTableBacking* refcount_backing = nullptr)
-      : d_typed(arena), d_refcount_backing(refcount_backing) {
+      : d_typed(arena, refcount_backing) {
     const SlotStore& store = d_typed.store();
     d_chunk_bits = store.chunk_bits();
     d_slot_mask = (std::uint32_t{1} << d_chunk_bits) - 1;
@@ -272,17 +262,9 @@ public:
   }
 
   ~RefStore() {
-    d_refcounts.for_each_chunk([this](std::atomic<std::uint32_t>* base) {
-      if (d_refcount_backing != nullptr) {
-        d_refcount_backing->deallocate(base, d_chunk_slots);
-      } else {
-        delete[] base;
-      }
-    });
+    // The refcount + generation columns are now owned (and freed) by the shared
+    // SlotStore; this typed view only owns its per-view reclaim-link table.
     d_reclaim_links.for_each_chunk([](std::atomic<SlotIndex>* base) { delete[] base; });
-#ifndef NDEBUG
-    d_generations.for_each_chunk([](std::atomic<std::uint32_t>* base) { delete[] base; });
-#endif
   }
 
   RefStore(const RefStore&) = delete;
@@ -409,7 +391,9 @@ public:
   void reclaim(SlotIndex index) {
     d_typed.destroy(index);
 #ifndef NDEBUG
-    generation_ref(index).fetch_add(1, std::memory_order_acq_rel);
+    // Bump the STORE-owned generation so any surviving stale reference faults --
+    // including one held through a different typed view of this shared slot.
+    d_typed.store().generation_ref(index).fetch_add(1, std::memory_order_acq_rel);
 #endif
   }
 
@@ -490,31 +474,25 @@ private:
     void on_zero(SlotIndex index) override { store->reclaim(index); }
   };
 
-  // Publish the refcount (and, in debug, generation) chunk covering `index` if
-  // it is not yet backed. These chunks are ANONYMOUS heap, never the data
-  // ChunkSource -- the inside-out split that keeps data pages clean. Writer-only
-  // (called from create, in lock-step with the store's own growth).
+  // Publish this view's reclaim-link chunk covering `index` if it is not yet
+  // backed. The refcount + generation columns are now minted by the shared
+  // SlotStore in lock-step with the data chunk (SlotStore::allocate); this view
+  // only owns its per-type reclaim-link table, published here on the same
+  // writer-only create path so the RT enqueue path never allocates. Anonymous
+  // heap, never the data ChunkSource -- the inside-out split that keeps data
+  // pages clean.
   void ensure_parallel_chunks(SlotIndex index) {
     const std::uint32_t chunk_number = index >> d_chunk_bits;
-    if (d_refcounts.chunk(chunk_number) == nullptr) {
-      d_refcounts.publish(chunk_number, d_refcount_backing != nullptr
-                                            ? d_refcount_backing->allocate(d_chunk_slots)
-                                            : new std::atomic<std::uint32_t>[d_chunk_slots]());
-      // The reclaim-link table is published in lock-step with the refcount
-      // table (release builds included -- deferred reclamation is production
-      // behavior), so the RT enqueue path never publishes a chunk or allocates.
+    if (d_reclaim_links.chunk(chunk_number) == nullptr) {
       d_reclaim_links.publish(chunk_number, new std::atomic<SlotIndex>[d_chunk_slots]());
-#ifndef NDEBUG
-      d_generations.publish(chunk_number, new std::atomic<std::uint32_t>[d_chunk_slots]());
-#endif
       ++d_reclaim_chunks;
     }
   }
 
+  // The count for `index` is the STORE-owned column cell, shared across every
+  // typed view over this size class.
   std::atomic<std::uint32_t>& count_ref(SlotIndex index) const noexcept {
-    const std::uint32_t chunk_number = index >> d_chunk_bits;
-    const std::uint32_t slot_in_chunk = index & d_slot_mask;
-    return d_refcounts.chunk(chunk_number)[slot_in_chunk];
+    return d_typed.store().count_ref(index);
   }
 
   // The reclaim-link "next" slot for `index` in the anonymous parallel table
@@ -552,10 +530,10 @@ private:
   }
 
 #ifndef NDEBUG
+  // The generation tag for `index` is the STORE-owned column cell, so a bump made
+  // through any typed view of this shared slot is visible to every other view.
   std::atomic<std::uint32_t>& generation_ref(SlotIndex index) const noexcept {
-    const std::uint32_t chunk_number = index >> d_chunk_bits;
-    const std::uint32_t slot_in_chunk = index & d_slot_mask;
-    return d_generations.chunk(chunk_number)[slot_in_chunk];
+    return d_typed.store().generation_ref(index);
   }
   void assert_generation(SlotRef<T> ref) const noexcept {
     assert(generation_matches(ref) && "stale SlotRef: slot was recycled since this reference");
@@ -565,24 +543,18 @@ private:
 #endif
 
   TypedStore<T> d_typed;
-  SlabDirectory<std::atomic<std::uint32_t>> d_refcounts;
-  // Anonymous per-store reclaim-link stack: a parallel table of "next" indices
+  // Anonymous per-view reclaim-link stack: a parallel table of "next" indices
   // plus one head. Producers CAS-push (enqueue_reclaim); the writer detaches and
-  // walks it (drain_pending). Empty is k_reclaim_nil.
+  // walks it (drain_pending). Empty is k_reclaim_nil. This stays per typed view
+  // (it dispatches `~T`); the refcount + generation columns moved to SlotStore.
   SlabDirectory<std::atomic<SlotIndex>> d_reclaim_links;
   std::atomic<SlotIndex> d_reclaim_head{k_reclaim_nil};
-#ifndef NDEBUG
-  SlabDirectory<std::atomic<std::uint32_t>> d_generations;
-#endif
   std::uint32_t d_chunk_bits{0};
   std::uint32_t d_slot_mask{0};
   std::size_t d_chunk_slots{0};
   std::size_t d_reclaim_chunks{0};
   ImmediateSink d_immediate{};
   ZeroCountSink* d_sink{nullptr};
-  // Null in production (portable `new[]` refcount chunks); non-null only for the
-  // page-aligned, mprotectable count-table diagnostic harness.
-  RefcountTableBacking* d_refcount_backing{nullptr};
 };
 
 // SlotRef is the in-record reference form: standard-layout and trivially

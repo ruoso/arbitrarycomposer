@@ -12,13 +12,13 @@
 // refcount table frozen read-only, a full peek traversal must not fault --
 // whereas the by-value shared_ptr traversal the old numbers used would.
 
-#include "../bench/pool_bench_workloads.hpp"
-
 #include <arbc/pool/reclamation.hpp>
 #include <arbc/pool/refs.hpp>
 #include <arbc/pool/slot_store.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+
+#include "../bench/pool_bench_workloads.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -136,8 +136,8 @@ public:
   std::atomic<std::uint32_t>* allocate(std::size_t count) override {
     const std::size_t bytes = count * sizeof(std::atomic<std::uint32_t>);
     const std::size_t rounded = (bytes + 4095) & ~std::size_t{4095};
-    void* base = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1,
-                        0);
+    void* base =
+        ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     REQUIRE(base != MAP_FAILED);
     auto* arr = static_cast<std::atomic<std::uint32_t>*>(base);
     for (std::size_t i = 0; i < count; ++i) {

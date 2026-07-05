@@ -225,6 +225,15 @@ bug that silently corrupts documents under anonymous memory.
 - `DocState` map nodes and object records get fixed-size slab types —
   a constraint on how the persistent map is written (node arity chosen so
   records land in a small number of size classes), not on its interface.
+  Because several distinct record types can deliberately land in the *same*
+  size class, the parallel refcount and generation buffers are owned by the
+  size-class slab store and indexed by **physical slot**, not by the typed
+  view over it: the several typed views that share one size class share a
+  single count column (and one generation column) per slot rather than each
+  keeping a duplicate table. This is what lets the persistent map mix record
+  types within a size class without two typed views disagreeing about a
+  shared slot's count — a slot has exactly one logical reference count,
+  wherever it is viewed from.
 - `StateHandle` is a slab reference; `capture()`'s "O(small)" promise
   (doc 14) is realized as "copy the touched path into same-arena slots".
   Kinds get the slab/pool utilities as public API so their state nodes

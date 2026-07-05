@@ -8,7 +8,7 @@ arbc_add_component(
   DEPENDS base)
 
 arbc_component_test(COMPONENT pool SOURCES t/pool.t.cpp t/refs.t.cpp t/reclamation.t.cpp
-                    t/workspace_file.t.cpp t/checkpoint.t.cpp t/crash_tests.t.cpp
-                    t/bench_smoke.t.cpp)
+                    t/refcounts_in_store.t.cpp t/workspace_file.t.cpp t/checkpoint.t.cpp
+                    t/crash_tests.t.cpp t/bench_smoke.t.cpp)
 
 arbc_component_bench(COMPONENT pool SOURCES bench/allocator_bench.cpp)

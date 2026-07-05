@@ -22,8 +22,9 @@ task pool "Memory pool" {
   task refcounts_in_store "Refcount tables in SlotStore" {
     effort 1d
     allocate team
+    complete 100
     depends !refs
-    note "Move refcount and generation tables from per-RefStore<T> ownership into SlotStore so multiple RefStore instances over one shared same-size-class SlotStore (different types) share a single count-table column rather than colliding on the same slot indices. Prerequisite for multi-type-per-store sharing in model.persistent_state. Source-of-debt: tasks/refinements/pool/refs.md. Doc 15."
+    note "Move refcount and generation tables from per-RefStore<T> ownership into SlotStore so multiple RefStore instances over one shared same-size-class SlotStore (different types) share a single count-table column rather than colliding on the same slot indices. Prerequisite for multi-type-per-store sharing in model.persistent_state. Source-of-debt: tasks/refinements/pool/refs.md. Doc 15. Refinement: tasks/refinements/pool/refcounts_in_store.md"
   }
   task reclamation "Deferred reclamation" {
     effort 2d

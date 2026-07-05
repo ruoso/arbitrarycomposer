@@ -4,6 +4,7 @@
 #include <arbc/pool/chunk_source.hpp>
 #include <arbc/pool/slab_directory.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -58,11 +59,49 @@ public:
   virtual void on_release(SlotStore& store, SlotIndex index) = 0;
 };
 
+// Diagnostic backing seam for the REFCOUNT column (doc 15). Production leaves
+// this null and refcount chunks are plain anonymous `new[]`/`delete[]` heap --
+// the portable default. A harness installs a page-aligned, mprotectable backing
+// to machine-check the inside-out invariant that a `const&`/`peek` traversal
+// touches no refcount page (the honest-baseline premise,
+// 15-memory-model#const-ref-traversal-touches-no-refcount-page): with the
+// refcount chunks frozen read-only, a `peek` traversal must not fault, whereas a
+// by-value shared_ptr traversal -- which dirties a count per node per visit --
+// would. Only the refcount column routes here (that is the column the invariant
+// is about); the generation column keeps its `new[]` backing. Because the
+// column is owned by the size-class store, the backing is a store property
+// supplied at store creation: one backing per size class (the first typed view
+// to mint the store wins; later views over the same class share it).
+class RefcountTableBacking {
+public:
+  virtual ~RefcountTableBacking() = default;
+  RefcountTableBacking() = default;
+  RefcountTableBacking(const RefcountTableBacking&) = delete;
+  RefcountTableBacking& operator=(const RefcountTableBacking&) = delete;
+
+  // Storage for `count` live (constructed) `std::atomic<std::uint32_t>`, each
+  // holding 0 on return -- matching the value-initialized `new[]` default.
+  virtual std::atomic<std::uint32_t>* allocate(std::size_t count) = 0;
+  virtual void deallocate(std::atomic<std::uint32_t>* base, std::size_t count) noexcept = 0;
+};
+
 // Instance-owned fixed-slot storage for one size class (doc 15). Slots have
 // stable addresses for the life of the store; growth appends chunks through
 // the ChunkSource and never reallocates. Fragmentation is structurally
 // impossible: a released slot is a perfect hole reused by the next same-class
 // allocation.
+//
+// The store owns the inside-out parallel columns keyed by PHYSICAL slot index:
+// one `std::atomic<std::uint32_t>` refcount column and (debug only) one
+// generation column, grown in lock-step with the data chunks (writer-only, at
+// chunk-mint time) so a column can never be short of the data directory. These
+// columns are anonymous runtime state (never persisted, rebuilt on open) and
+// are read/written by the `pool.refs` typed views over this store. Because they
+// are keyed by physical slot -- not by the typed view -- several `RefStore<T>` /
+// `RefStore<U>` views that share one size class share ONE count column and ONE
+// generation column: a slot has exactly one logical reference count wherever it
+// is viewed from, and a slot recycled from `T` to `U` reuses the same count
+// entry and carries its generation bump across the views.
 //
 // Threading (doc 15): `allocate` and `release` are WRITER-THREAD-ONLY in this
 // task (a debug-build assert enforces it; thread-local free pools and
@@ -75,8 +114,11 @@ public:
 // pool.reclamation's deferred queue plugs into.
 class SlotStore {
 public:
+  // `refcount_backing` is null in production (portable `new[]` refcount chunks);
+  // a diagnostic harness passes a page-aligned, mprotectable backing to freeze
+  // the count column read-only and witness the zero-refcount-traffic traversal.
   SlotStore(std::size_t slot_size, std::size_t slot_align, std::uint32_t chunk_bits,
-            ChunkSource& source);
+            ChunkSource& source, RefcountTableBacking* refcount_backing = nullptr);
   ~SlotStore();
   SlotStore(const SlotStore&) = delete;
   SlotStore& operator=(const SlotStore&) = delete;
@@ -138,6 +180,30 @@ public:
   std::size_t slot_align() const noexcept { return d_slot_align; }
   std::uint32_t chunk_bits() const noexcept { return d_chunk_bits; }
 
+  // The store-owned refcount cell for physical slot `index` (the inside-out
+  // parallel column shared by every typed view over this size class). Backed by
+  // the chunk minted in lock-step with the slot's data chunk, so it is always
+  // published for any live index; never touches a data page. Any thread (a
+  // per-slot atomic). This is the hot-path accessor `pool.refs` retain/release
+  // read and write.
+  std::atomic<std::uint32_t>& count_ref(SlotIndex index) const noexcept {
+    const std::uint32_t chunk_number = index >> d_chunk_bits;
+    const std::uint32_t slot_in_chunk = index & d_slot_mask;
+    return d_refcounts.chunk(chunk_number)[slot_in_chunk];
+  }
+
+#ifndef NDEBUG
+  // The store-owned generation tag for physical slot `index` (debug only). Bumped
+  // when the slot is reclaimed so a stale typed reference faults on resolution --
+  // and because the column is store-owned, a bump made through one typed view is
+  // visible to a stale reference held through another view of the same slot.
+  std::atomic<std::uint32_t>& generation_ref(SlotIndex index) const noexcept {
+    const std::uint32_t chunk_number = index >> d_chunk_bits;
+    const std::uint32_t slot_in_chunk = index & d_slot_mask;
+    return d_generations.chunk(chunk_number)[slot_in_chunk];
+  }
+#endif
+
   // Per-store accounting (doc 15 debug discipline; hosts want a memory panel).
   std::size_t slots_live() const noexcept { return d_slots_live; }
   std::size_t slots_capacity() const noexcept { return d_slots_capacity; }
@@ -146,6 +212,13 @@ public:
 
 private:
   void assert_writer_thread() noexcept;
+
+  // Publish the refcount (and, in debug, generation) chunk covering
+  // `chunk_number` if it is not yet backed. Idempotent. Called in lock-step with
+  // data-chunk growth (allocate / reserve_restored) so the columns can never be
+  // short of the data directory. Writer-only. The refcount chunk routes through
+  // the optional `d_refcount_backing`; the generation chunk is always `new[]`.
+  void publish_parallel_columns(std::uint32_t chunk_number);
 
   std::size_t d_slot_size;
   std::size_t d_slot_align;
@@ -157,6 +230,15 @@ private:
   ChunkSource* d_source;
 
   SlabDirectory<std::byte> d_directory;
+  // Inside-out parallel columns, physical-slot indexed and grown in lock-step
+  // with the data directory (see class comment). Anonymous, never persisted.
+  SlabDirectory<std::atomic<std::uint32_t>> d_refcounts;
+#ifndef NDEBUG
+  SlabDirectory<std::atomic<std::uint32_t>> d_generations;
+#endif
+  // Null in production (portable `new[]` refcount chunks); non-null only for the
+  // page-aligned, mprotectable count-column diagnostic harness.
+  RefcountTableBacking* d_refcount_backing{nullptr};
   std::vector<SlotIndex> d_free; // LIFO free list, kept OUTSIDE data pages
   ReleaseFence* d_release_fence{nullptr};
   SlotIndex d_high_water{0};
@@ -185,7 +267,11 @@ public:
 
   // The store for a size class, created on first use. `chunk_bits == 0`
   // derives the chunk size from the slot size; pass nonzero to override.
-  SlotStore& store_for(std::size_t slot_size, std::size_t slot_align, std::uint32_t chunk_bits = 0);
+  // `refcount_backing` is consulted ONLY when the store is first minted (it
+  // becomes the size-class store's count-column allocator); a later call for an
+  // already-existing size class ignores it -- one backing per size class.
+  SlotStore& store_for(std::size_t slot_size, std::size_t slot_align, std::uint32_t chunk_bits = 0,
+                       RefcountTableBacking* refcount_backing = nullptr);
 
   std::size_t store_count() const noexcept { return d_stores.size(); }
   std::size_t total_slots_live() const noexcept;
