@@ -127,7 +127,7 @@ TEST_CASE("a commit path-copies only the touched path and shares untouched recor
 
   const std::size_t small = touched_growth(5);
   const std::size_t large = touched_growth(20);
-  REQUIRE(small == large);      // O(path depth), NOT O(document size)
+  REQUIRE(small == large);         // O(path depth), NOT O(document size)
   REQUIRE(small < std::size_t{5}); // far below whole-document copy
 }
 

@@ -1,5 +1,4 @@
 #include <arbc/model/records.hpp>
-
 #include <arbc/pool/refs.hpp>
 #include <arbc/pool/slot_store.hpp>
 

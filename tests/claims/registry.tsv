@@ -4,6 +4,11 @@
 14-data-model-and-editing#pinned-version-never-observes-later-edit	A pinned DocState is unaffected by later transactions
 14-data-model-and-editing#commit-shares-untouched-structure	A commit touching one object path-copies only the nodes on its path; every untouched record is shared by SlotRef identity between the pre- and post-commit versions, so live-slot growth is O(path depth), not O(document)
 14-data-model-and-editing#dropping-pin-reclaims-only-unique-nodes	Dropping the last pin to a superseded version and draining reclaims exactly that version's unique nodes and no node still shared with the live version
+14-data-model-and-editing#commit-publishes-once	A transaction with multiple mutations produces exactly one published version (revision +1) and calls the commit sink exactly once; current() is unchanged until commit
+14-data-model-and-editing#abort-publishes-nothing	A dropped or aborted transaction leaves current()/revision() unchanged, emits no journal entry or damage, and reclaims its working records after drain()
+14-data-model-and-editing#damage-flushes-once-per-commit	commit() flushes the union (deduped by object) of per-mutation damage to the DamageSink in exactly one call; abort() flushes none
+14-data-model-and-editing#commit-appends-one-journal-entry	A non-coalesced commit notifies the CommitSink exactly once with the assembled entry: name, per-object (before, after) record edges, per-content (before, after) state-handle pairs, and the damage set
+14-data-model-and-editing#coalesced-commits-merge-to-one-entry	N consecutive commits sharing a non-zero coalescing key merge into exactly one journal entry (first-before / last-after, unioned damage and object set) while each commit still publishes a new revision
 07-color-and-pixel-formats#premultiplied-source-over	Compositing is source-over on premultiplied alpha in the working space
 16-sdlc-and-quality#byte-exact-goldens	CPU backend rendering is byte-exact deterministic
 15-memory-model#slots-recycle-in-place	A released slot is the next same-class allocation's perfect hole; fixed slabs make fragmentation impossible

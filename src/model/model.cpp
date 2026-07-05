@@ -165,6 +165,87 @@ void collect_leaves(const StoreBundle& sb, SlotRef<HamtNode> node_slot,
   }
 }
 
+// Acquire a fresh owning `Ref` to an EXISTING node slot (structural sharing: the
+// untouched subtree is retained, not copied). Maps the count-overflow surface
+// onto the writer-path error channel like `retain_node`.
+expected<Ref<HamtNode>, PoolError> share_node(StoreBundle& sb, SlotRef<HamtNode> slot) {
+  expected<Ref<HamtNode>, RefError> r = sb.nodes->resolve(slot);
+  if (!r) {
+    return unexpected(PoolError::CapacityExhausted);
+  }
+  return std::move(*r);
+}
+
+// Build a new branch from `base` with child[`skip`] dropped; every OTHER present
+// child is shared (retained). Untouched siblings keep their `SlotRef` identity.
+expected<Ref<HamtNode>, PoolError> branch_without_child(StoreBundle& sb, const HamtNode* base,
+                                                        std::uint32_t skip) {
+  expected<Ref<HamtNode>, PoolError> node = sb.nodes->create();
+  if (!node) {
+    return node;
+  }
+  HamtNode& n = **node;
+  n.is_leaf = 0;
+  n.bitmap = 0;
+  std::uint32_t remaining = base->bitmap;
+  while (remaining != 0) {
+    const std::uint32_t i = static_cast<std::uint32_t>(std::countr_zero(remaining));
+    remaining &= remaining - 1;
+    if (i == skip) {
+      continue;
+    }
+    if (expected<std::monostate, PoolError> retained = retain_node(sb, base->children[i]);
+        !retained) {
+      return unexpected(retained.error());
+    }
+    n.children[i] = base->children[i];
+    n.bitmap |= (std::uint32_t{1} << i);
+  }
+  return node;
+}
+
+// Path-copy erase of `key` under `node_slot`. Returns the new (path-copied)
+// subtree, or an EMPTY `Ref` meaning "this subtree is now empty" (the parent
+// drops the child edge). A key absent below `node_slot` yields a shared
+// (retained) copy of the untouched subtree -- a structural no-op. Collapses a
+// branch left with a single leaf child back into that leaf.
+expected<Ref<HamtNode>, PoolError> erase_rec(StoreBundle& sb, SlotRef<HamtNode> node_slot,
+                                             std::uint64_t key, std::uint32_t shift) {
+  const HamtNode* node = sb.nodes->peek(node_slot);
+  if (node->is_leaf != 0) {
+    if (node->key == key) {
+      return Ref<HamtNode>{}; // removed -> empty subtree
+    }
+    return share_node(sb, node_slot); // absent: share unchanged
+  }
+  const std::uint32_t digit = static_cast<std::uint32_t>((key >> shift) & k_hamt_mask);
+  const std::uint32_t bit = std::uint32_t{1} << digit;
+  if ((node->bitmap & bit) == 0) {
+    return share_node(sb, node_slot); // absent under this branch
+  }
+  expected<Ref<HamtNode>, PoolError> child =
+      erase_rec(sb, node->children[digit], key, shift + k_hamt_bits);
+  if (!child) {
+    return child;
+  }
+  if (*child) {
+    return branch_with_child(sb, node, digit, std::move(*child)); // path-copy replace
+  }
+  // The child emptied: drop its edge, collapsing where possible.
+  const std::uint32_t new_bitmap = node->bitmap & ~bit;
+  if (new_bitmap == 0) {
+    return Ref<HamtNode>{}; // whole branch emptied
+  }
+  if (std::popcount(new_bitmap) == 1) {
+    const std::uint32_t only = static_cast<std::uint32_t>(std::countr_zero(new_bitmap));
+    const SlotRef<HamtNode> only_slot = node->children[only];
+    if (sb.nodes->peek(only_slot)->is_leaf != 0) {
+      return share_node(sb, only_slot); // collapse single-leaf branch into the leaf
+    }
+  }
+  return branch_without_child(sb, node, digit);
+}
+
 } // namespace
 
 expected<Ref<HamtNode>, PoolError> hamt_insert(StoreBundle& sb, const Ref<HamtNode>& root,
@@ -173,6 +254,14 @@ expected<Ref<HamtNode>, PoolError> hamt_insert(StoreBundle& sb, const Ref<HamtNo
     return make_leaf(sb, key, record);
   }
   return insert_rec(sb, root.slot(), key, record, 0);
+}
+
+expected<Ref<HamtNode>, PoolError> hamt_erase(StoreBundle& sb, const Ref<HamtNode>& root,
+                                              std::uint64_t key) {
+  if (!root) {
+    return Ref<HamtNode>{}; // empty map: erase is the empty map
+  }
+  return erase_rec(sb, root.slot(), key, 0);
 }
 
 bool hamt_lookup(const StoreBundle& sb, const Ref<HamtNode>& root, std::uint64_t key,
@@ -198,6 +287,41 @@ bool hamt_lookup(const StoreBundle& sb, const Ref<HamtNode>& root, std::uint64_t
     }
     cur = n->children[digit];
     shift += k_hamt_bits;
+  }
+}
+
+// ---- Coalescing (pure JournalEntry value operation) -------------------------
+
+void coalesce_entries(JournalEntry& base, const JournalEntry& follow) {
+  // First entry's *before* + last entry's *after*, unioned object/content sets.
+  for (const ObjectEdit& fe : follow.objects) {
+    bool merged = false;
+    for (ObjectEdit& be : base.objects) {
+      if (be.object == fe.object) {
+        be.after = fe.after; // keep the first before, take the last after
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) {
+      base.objects.push_back(fe);
+    }
+  }
+  for (const ContentStateEdit& fc : follow.contents) {
+    bool merged = false;
+    for (ContentStateEdit& bc : base.contents) {
+      if (bc.object == fc.object) {
+        bc.after = fc.after;
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) {
+      base.contents.push_back(fc);
+    }
+  }
+  for (const Damage& d : follow.damage) {
+    damage_add(base.damage, d);
   }
 }
 
@@ -287,14 +411,24 @@ void Model::drain() {
 
 std::size_t Model::live_slots() const noexcept { return d_arena.total_slots_live(); }
 
-Model::Transaction Model::transact() { return Transaction(*this); }
+Model::Transaction Model::transact(std::string name) { return Transaction(*this, std::move(name)); }
 
 // ---- Transaction ------------------------------------------------------------
 
-Model::Transaction::Transaction(Model& model) : d_model(&model), d_status(std::monostate{}) {
-  const DocStatePtr current = model.current();
-  d_root = current->root_ref(); // fork: pin the current version's root
-  d_base_revision = current->revision();
+Model::Transaction::Transaction(Model& model, std::string name)
+    : d_model(&model), d_name(std::move(name)), d_status(std::monostate{}) {
+  d_base = model.current(); // pin the base version: fork its root + the before-edges
+  d_root = d_base->root_ref();
+  d_base_revision = d_base->revision();
+}
+
+void Model::Transaction::touch(ObjectId id) {
+  for (const ObjectId seen : d_touched) {
+    if (seen == id) {
+      return;
+    }
+  }
+  d_touched.push_back(id);
 }
 
 ObjectId Model::Transaction::add_layer(ObjectId content, const Affine& transform, double opacity) {
@@ -319,6 +453,8 @@ ObjectId Model::Transaction::add_layer(ObjectId content, const Affine& transform
     return ObjectId{};
   }
   d_root = std::move(*next);
+  touch(id);
+  add_damage(Damage{id, {}, {}, {}});
   return id;
 }
 
@@ -344,6 +480,8 @@ ObjectId Model::Transaction::add_content(std::uint64_t kind) {
     return ObjectId{};
   }
   d_root = std::move(*next);
+  touch(id);
+  add_damage(Damage{id, {}, {}, {}});
   return id;
 }
 
@@ -371,6 +509,8 @@ ObjectId Model::Transaction::add_composition(double canvas_w, double canvas_h) {
     return ObjectId{};
   }
   d_root = std::move(*next);
+  touch(id);
+  add_damage(Damage{id, {}, {}, {}});
   return id;
 }
 
@@ -402,15 +542,146 @@ void Model::Transaction::set_transform(ObjectId layer, const Affine& transform) 
     return;
   }
   d_root = std::move(*next);
+  touch(layer);
+  add_damage(Damage{layer, {}, {}, {}});
+}
+
+void Model::Transaction::set_content_state(ObjectId content, StateHandle after) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, content.value, old_edge)) {
+    return; // absent: no-op
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Content) {
+    return; // not a content object: no-op
+  }
+  const StateHandle before = old->as.content.state;
+
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return;
+  }
+  ObjectRecord& nr = **rec;
+  nr = *old; // trivial copy of the immutable old record, then override the handle
+  nr.as.content.state = after;
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, content.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(content);
+  add_damage(Damage{content, {}, {}, {}});
+
+  // Record the (before, after) handle pair; first-before / last-after within a
+  // single transaction (a second set on the same object keeps the first before).
+  for (ContentStateEdit& e : d_contents) {
+    if (e.object == content) {
+      e.after = after;
+      return;
+    }
+  }
+  d_contents.push_back(ContentStateEdit{content, before, after});
+}
+
+void Model::Transaction::remove(ObjectId id) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, id.value, edge)) {
+    return; // absent: no-op
+  }
+  expected<Ref<HamtNode>, PoolError> next = hamt_erase(d_model->d_bundle, d_root, id.value);
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(id);
+  add_damage(Damage{id, {}, {}, {}});
+}
+
+Model::Transaction& Model::Transaction::coalesce(CoalesceKey key) {
+  d_coalesce = key;
+  return *this;
+}
+
+void Model::Transaction::add_damage(const Damage& d) { damage_add(d_damage, d); }
+
+void Model::Transaction::abort() {
+  if (!d_open) {
+    return;
+  }
+  d_open = false;
+  // Discard the working tree: dropping the root cascades its unique nodes through
+  // the reclamation queue. Nothing was published, so nothing is observable.
+  d_root = Ref<HamtNode>{};
+  d_touched.clear();
+  d_contents.clear();
+  d_damage.clear();
 }
 
 expected<std::monostate, PoolError> Model::Transaction::commit() {
-  if (!d_status) {
-    return d_status;
+  if (!d_open) {
+    return d_status; // already committed or aborted: publish nothing
   }
-  DocStatePtr next =
-      std::make_shared<const DocRoot>(d_model->d_bundle, std::move(d_root), d_base_revision + 1);
-  d_model->d_current.store(std::move(next));
+  if (!d_status) {
+    return d_status; // a mutation failed: abort the publish, current stays put
+  }
+
+  // Assemble the journal entry BEFORE the publish so a resolve failure aborts
+  // atomically (nothing observed). Only when a commit sink is installed.
+  JournalEntry entry;
+  const bool build_entry = d_model->d_commit_sink != nullptr;
+  if (build_entry) {
+    entry.name = d_name;
+    entry.coalesce_key = d_coalesce;
+    entry.contents = d_contents;
+    entry.damage = d_damage;
+    for (const ObjectId id : d_touched) {
+      ObjectEdit e;
+      e.object = id;
+      SlotRef<ObjectRecord> before_edge;
+      if (hamt_lookup(d_model->d_bundle, d_base->root_ref(), id.value, before_edge)) {
+        expected<Ref<ObjectRecord>, RefError> r = d_model->d_records.resolve(before_edge);
+        if (!r) {
+          d_status = unexpected(PoolError::CapacityExhausted);
+          return d_status;
+        }
+        e.before = std::move(*r);
+      }
+      SlotRef<ObjectRecord> after_edge;
+      if (hamt_lookup(d_model->d_bundle, d_root, id.value, after_edge)) {
+        expected<Ref<ObjectRecord>, RefError> r = d_model->d_records.resolve(after_edge);
+        if (!r) {
+          d_status = unexpected(PoolError::CapacityExhausted);
+          return d_status;
+        }
+        e.after = std::move(*r);
+      }
+      entry.objects.push_back(std::move(e));
+    }
+  }
+
+  // Publish: exactly one atomic store, exactly one revision increment.
+  d_model->d_current.store(
+      std::make_shared<const DocRoot>(d_model->d_bundle, std::move(d_root), d_base_revision + 1));
+  d_open = false;
+
+  // Flush damage once, then notify the commit sink once (doc 14:92-94, :164).
+  if (d_model->d_damage_sink != nullptr) {
+    d_model->d_damage_sink->flush(d_damage);
+  }
+  if (build_entry) {
+    d_model->d_commit_sink->on_commit(std::move(entry));
+  }
   return std::monostate{};
 }
 

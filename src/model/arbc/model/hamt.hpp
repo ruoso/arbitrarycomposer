@@ -133,6 +133,14 @@ static_assert(std::is_standard_layout_v<SlotRef<HamtNode>>,
 expected<Ref<HamtNode>, PoolError> hamt_insert(StoreBundle& sb, const Ref<HamtNode>& root,
                                                std::uint64_t key, SlotRef<ObjectRecord> record);
 
+// Build the next version by erasing `key` from `root` (path-copy). Untouched
+// siblings are shared (retained) by `SlotRef` identity; a branch left with a
+// single leaf child collapses back into that leaf. An absent key yields a shared
+// copy of the tree (a structural no-op). An empty result `Ref` means the map is
+// now empty. Writer-only (allocates). Errors surface as values (never throws).
+expected<Ref<HamtNode>, PoolError> hamt_erase(StoreBundle& sb, const Ref<HamtNode>& root,
+                                              std::uint64_t key);
+
 // Resolve `key` to its bound object-record edge in `root` (a pinned version).
 // Zero-refcount-traffic: follows `SlotRef` edges via `peek` (doc 15:42-44). Any
 // thread. Returns false (leaving `out` untouched) when the key is absent.

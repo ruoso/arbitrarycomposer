@@ -92,6 +92,11 @@ All mutation flows through a transaction on the writer thread:
 - **Damage rides the transaction**: each mutation contributes damage
   (doc 01); commit flushes the union once. Undo/redo replays the entry's
   damage so invalidation is exactly right without diffing.
+- **Abort**: a transaction that is dropped without `commit()` (or whose
+  `txn.abort()` is called) publishes nothing — the current version and its
+  revision are unchanged, the working records it built are reclaimed, and no
+  journal entry or damage is emitted. Nothing is observable until commit, so
+  abort is a discard, not a rollback.
 - Reading needs no transaction: the writer reads current state directly;
   everyone else reads pinned versions.
 

@@ -22,8 +22,15 @@ task model "Versioned model" {
   task transactions "Transactions + coalescing" {
     effort 2d
     allocate team
+    complete 100
     depends !persistent_state
-    note "Atomic multi-mutation commits; gesture coalescing keys; damage rides the transaction and flushes once per commit. Doc 14."
+    note "Atomic multi-mutation commits; gesture coalescing keys; damage rides the transaction and flushes once per commit. Doc 14. Refinement: tasks/refinements/model/transactions.md"
+  }
+  task composition_membership "Composition layer membership mutators" {
+    effort 2d
+    allocate team
+    depends !transactions
+    note "Populate CompositionRecord layers array and layer_count with add/remove/reorder mutators incl. inline-cap spill to HAMT-backed layer list (beyond k_max_inline_layers=8). Source: tasks/refinements/model/transactions.md (deferred follow-up). Doc 14."
   }
   task journal "Journal, undo/redo" {
     effort 3d

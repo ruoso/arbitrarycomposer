@@ -3,7 +3,9 @@
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/transform.hpp>
+#include <arbc/model/damage.hpp>
 #include <arbc/model/hamt.hpp>
+#include <arbc/model/journal_entry.hpp>
 #include <arbc/model/records.hpp>
 #include <arbc/pool/reclamation.hpp>
 #include <arbc/pool/refs.hpp>
@@ -14,7 +16,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <variant>
+#include <vector>
 
 namespace arbc {
 
@@ -99,6 +103,13 @@ public:
   // witness of structural sharing and reclamation, doc 16:54-62).
   std::size_t live_slots() const noexcept;
 
+  // Install the writer-owned commit / damage seams (single sink each; abstract,
+  // model-defined per doc 02). A commit assembles the entry / damage union and
+  // notifies; `model.journal` and `model.damage` register the concrete consumers
+  // from above at wiring time (doc 17:66-72). Null clears. WRITER-THREAD ONLY.
+  void set_commit_sink(CommitSink* sink) noexcept { d_commit_sink = sink; }
+  void set_damage_sink(DamageSink* sink) noexcept { d_damage_sink = sink; }
+
   class Transaction {
   public:
     Transaction(const Transaction&) = delete;
@@ -120,23 +131,63 @@ public:
     // path). No-op if the layer is absent.
     void set_transform(ObjectId layer, const Affine& transform);
 
+    // Assign a caller-captured, OPAQUE content-state handle to a content object
+    // (path-copies its record + its map path) and record the prior handle as the
+    // entry's *before* (doc 14:133-135). The transaction never calls
+    // `Editable::capture()` -- the handle crosses the L2/L3 boundary opaquely
+    // (doc 17). No-op if `content` is absent or not a content object.
+    void set_content_state(ObjectId content, StateHandle after);
+
+    // Remove an object: a `hamt_erase` path-copy that shares untouched siblings
+    // and collapses emptied branches. Enables `model.journal`'s inverse of an
+    // add. No-op if the id is absent.
+    void remove(ObjectId id);
+
+    // Stamp a non-zero gesture key onto the emitted entry so `model.journal`
+    // merges consecutive commits into one undo unit (doc 14:86-91); each
+    // coalesced commit still publishes. `0` == no coalescing.
+    Transaction& coalesce(CoalesceKey key);
+
+    // Union `d` into the per-transaction damage set (dedup by object). The
+    // mutators already contribute coarse per-object damage; a caller above may
+    // add refined regions. Flushed once at commit; abort flushes nothing.
+    void add_damage(const Damage& d);
+
     // Publish the built version by an atomic swap of the current-version handle.
     // Observers see the old or the new root, never a half-edit (doc 14:83-85).
-    // Returns the sticky writer-path status (an allocation failure aborts the
-    // publish and leaves the current version in place).
+    // When a `CommitSink`/`DamageSink` is installed, assembles ONE journal entry
+    // and flushes the damage union exactly once. Returns the sticky writer-path
+    // status (an allocation failure aborts the publish and leaves the current
+    // version in place).
     expected<std::monostate, PoolError> commit();
+
+    // Discard the transaction: publish nothing (current version + revision
+    // unchanged), reclaim the working records via the existing reclamation queue,
+    // emit no entry and no damage (doc 14 §Transactions Abort). A dropped (never
+    // committed) transaction aborts implicitly through member destruction.
+    void abort();
 
   private:
     friend class Model;
-    explicit Transaction(Model& model);
+    Transaction(Model& model, std::string name);
+
+    // Note `id` as touched so `commit()` assembles its (before, after) edge.
+    void touch(ObjectId id);
 
     Model* d_model;
+    std::string d_name;
+    CoalesceKey d_coalesce{k_no_coalesce};
+    DocStatePtr d_base;   // pinned base version: the source of before-edges
     Ref<HamtNode> d_root; // working-tree root (owning); empty == empty map
     std::uint64_t d_base_revision;
+    std::vector<ObjectId> d_touched;
+    std::vector<ContentStateEdit> d_contents;
+    std::vector<Damage> d_damage;
+    bool d_open{true}; // false once committed or aborted: commit() is then inert
     expected<std::monostate, PoolError> d_status;
   };
 
-  Transaction transact();
+  Transaction transact(std::string name = {});
 
 private:
   friend class Transaction;
@@ -155,6 +206,11 @@ private:
 
   std::atomic<std::uint64_t> d_next_id{1};
   std::atomic<DocStatePtr> d_current;
+
+  // Writer-owned single sinks (doc 02, doc 17:66-72): the transaction notifies
+  // through these; the journal / damage-propagation consumers register above.
+  CommitSink* d_commit_sink{nullptr};
+  DamageSink* d_damage_sink{nullptr};
 };
 
 } // namespace arbc
