@@ -8,6 +8,8 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <variant>
+#include <vector>
 
 // Capability macro for file-backed workspace arenas (doc 15). File backing
 // needs POSIX `mmap`/`ftruncate`/`munmap`; hole-punch reclamation additionally
@@ -97,6 +99,23 @@ struct WorkspaceLayout {
   std::uint32_t max_chunks{k_workspace_default_max_chunks};
 };
 
+class WorkspaceFileChunkSource;
+
+// Durability fence for chunk hole-punch (doc 15). An emptied chunk freed after
+// the last checkpoint may still back the on-disk root, so its `fallocate(
+// PUNCH_HOLE)` must wait until the emptying is durable. When installed on a
+// source, `release` unmaps the chunk but defers the punch to the fence, which
+// calls back `punch_now` at the post-durable commit drain. Default is no fence
+// (eager punch — safe only for anonymous/pre-checkpoint use).
+class ChunkReleaseFence {
+public:
+  virtual ~ChunkReleaseFence() = default;
+  // The source has already unmapped the chunk; its file range at `offset` of
+  // `size` bytes (directory entry `index`) is punched later by `punch_now`.
+  virtual void on_release(WorkspaceFileChunkSource& source, std::uint64_t offset,
+                          std::uint64_t size, std::uint32_t index) = 0;
+};
+
 // File-backed ChunkSource (doc 15, "File-backed arenas"): only immutable data
 // chunks flow through here; bookkeeping (directory, free list) stays anonymous
 // because it never touches a ChunkSource at all — the inside-out split is the
@@ -130,6 +149,50 @@ public:
   // scope (pool.checkpoints). Errors as values with errno context.
   static expected<WorkspaceHeader, WorkspaceFileError> read_header(const std::string& path);
 
+  // Reopen an existing workspace file read-write and re-establish the mappings
+  // (pool.checkpoints recovery). Validates the header, maps the header/directory
+  // region, and remaps every live data chunk in directory order. The remapped
+  // chunks are then served, in order, by the next `acquire` calls — so a store's
+  // recovery `reserve_restored` re-binds the file's records without growing the
+  // file. Errors as values with errno context.
+  static expected<std::unique_ptr<WorkspaceFileChunkSource>, WorkspaceFileError>
+  open(const std::string& path);
+
+  // --- pool.checkpoints protocol helpers (no on-disk layout change) ---------
+
+  // msync(MS_SYNC) every live data-chunk mapping — step 1 of an ordered commit.
+  // Returns the number of chunks synced on success.
+  expected<std::size_t, WorkspaceFileError> sync_data() noexcept;
+
+  // msync(MS_SYNC) the header/directory mapping — step 3 of an ordered commit
+  // (publishes the flipped root durably).
+  expected<std::monostate, WorkspaceFileError> sync_header() noexcept;
+
+  // Read / atomically publish one of the two header A/B root slots (0 = A,
+  // 1 = B). The publish is a single naturally-aligned 8-byte store into the
+  // mapped header (single-sector, torn-write-free).
+  std::uint64_t root_slot(int ab) const noexcept;
+  void publish_root_slot(int ab, std::uint64_t value) noexcept;
+
+  // Debug hardening (doc 15): mprotect every live data mapping read-only after a
+  // checkpoint publishes it, or a single range writable when a quarantined slot
+  // is handed back for reuse. No-op / unsupported outside POSIX debug builds.
+  expected<std::monostate, WorkspaceFileError> protect_data(bool read_only) noexcept;
+  expected<std::monostate, WorkspaceFileError> protect_range(void* addr, std::size_t size,
+                                                             bool read_only) noexcept;
+
+  // Un-fenced hole-punch of a previously-released chunk, called by a
+  // ChunkReleaseFence once the emptying is durable. Punches the file range and
+  // clears the directory entry.
+  void punch_now(std::uint64_t offset, std::uint64_t size, std::uint32_t index) noexcept;
+
+  // Install (or clear, with nullptr) the durability fence that defers chunk
+  // hole-punch until durable. Default is eager punch. Writer-only setup.
+  void set_release_fence(ChunkReleaseFence* fence) noexcept { d_release_fence = fence; }
+
+  std::size_t live_chunk_count() const noexcept { return d_live.size(); }
+  std::size_t page() const noexcept { return d_page; }
+
   // Diagnostics: the last errno-bearing failure from acquire()/release(). The
   // ChunkSource interface can only return a bare PoolError, so this is how a
   // disk-full growth surfaces its errno without an abort.
@@ -150,6 +213,17 @@ private:
     std::uint32_t index;
   };
 
+  // A chunk remapped by `open` and not yet served back through `acquire`. On
+  // reopen the live data chunks are mapped and queued here in directory order;
+  // recovery's `reserve_restored` pulls them out (front-to-back) instead of
+  // growing the file.
+  struct ReopenedChunk {
+    void* base;
+    std::uint64_t offset;
+    std::uint64_t size;
+    std::uint32_t index;
+  };
+
   std::string d_path;
   int d_fd{-1};
   std::size_t d_page{0};
@@ -160,6 +234,9 @@ private:
   void* d_header_map{nullptr};
   std::size_t d_header_bytes{0};
   std::unordered_map<void*, LiveChunk> d_live;
+  std::vector<ReopenedChunk> d_reopened;
+  std::size_t d_reopened_cursor{0};
+  ChunkReleaseFence* d_release_fence{nullptr};
   WorkspaceFileError d_last_error{};
 };
 

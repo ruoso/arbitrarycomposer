@@ -121,8 +121,69 @@ expected<SlotIndex, PoolError> SlotStore::allocate() {
 
 void SlotStore::release(SlotIndex index) {
   assert_writer_thread();
-  d_free.push_back(index);
   --d_slots_live;
+  if (d_release_fence != nullptr) {
+    // Durability quarantine: the slot's data bytes stay intact and resolvable
+    // (an on-disk root may still reference them) until a checkpoint makes the
+    // freeing durable and the fence returns it via free_now.
+    d_release_fence->on_release(*this, index);
+    return;
+  }
+  d_free.push_back(index);
+}
+
+void SlotStore::free_now(SlotIndex index) {
+  assert_writer_thread();
+  d_free.push_back(index);
+}
+
+expected<std::monostate, PoolError> SlotStore::reserve_restored(std::uint32_t high_water) {
+  assert_writer_thread();
+  if (high_water == 0) {
+    d_high_water = 0;
+    return std::monostate{};
+  }
+  const std::uint32_t chunks_needed = ((high_water - 1) >> d_chunk_bits) + 1;
+  for (std::uint32_t chunk_number = 0; chunk_number < chunks_needed; ++chunk_number) {
+    if (d_directory.chunk(chunk_number) != nullptr) {
+      continue; // already bound
+    }
+    if (chunk_number >= SlabDirectory<std::byte>::max_chunks) {
+      return unexpected(PoolError::CapacityExhausted);
+    }
+    expected<ChunkSpan, PoolError> span = d_source->acquire(d_chunk_bytes, d_slot_align);
+    if (!span) {
+      return unexpected(span.error());
+    }
+    d_directory.publish(chunk_number, static_cast<std::byte*>(span->base));
+    d_slots_capacity += d_chunk_slots;
+    d_bytes_reserved += span->size;
+  }
+  d_free.reserve(d_slots_capacity);
+  d_high_water = high_water;
+  // Live count and free list are the walk's to establish (finalize_restore).
+  d_slots_live = 0;
+  return std::monostate{};
+}
+
+void SlotStore::finalize_restore(const std::vector<SlotIndex>& live) {
+  assert_writer_thread();
+  std::vector<bool> is_live(d_high_water, false);
+  for (const SlotIndex index : live) {
+    if (index < d_high_water) {
+      is_live[index] = true;
+    }
+  }
+  d_free.clear();
+  d_free.reserve(d_slots_capacity);
+  // Below-high-water complement, pushed high-index-first so the lowest hole is
+  // reused first (LIFO free list).
+  for (SlotIndex index = d_high_water; index-- > 0;) {
+    if (!is_live[index]) {
+      d_free.push_back(index);
+    }
+  }
+  d_slots_live = live.size();
 }
 
 void* SlotStore::resolve(SlotIndex index) const noexcept {
@@ -158,6 +219,14 @@ std::size_t Arena::total_slots_live() const noexcept {
   std::size_t total = 0;
   for (const auto& entry : d_stores) {
     total += entry.second->slots_live();
+  }
+  return total;
+}
+
+std::size_t Arena::total_high_water() const noexcept {
+  std::size_t total = 0;
+  for (const auto& entry : d_stores) {
+    total += entry.second->high_water();
   }
   return total;
 }

@@ -120,7 +120,9 @@ TEST_CASE("empty-drain, double-drain, and a store with no deferred sink are no-o
   // direct drain_pending finds an empty stack -- a no-op.
   arbc::RefStore<Tracked> immediate_store(arena);
   int immediate_destructions = 0;
-  { arbc::Ref<Tracked> r = *immediate_store.create(9, &immediate_destructions); }
+  {
+    arbc::Ref<Tracked> r = *immediate_store.create(9, &immediate_destructions);
+  }
   REQUIRE(immediate_destructions == 1); // immediate sink reclaimed inline
   REQUIRE_FALSE(immediate_store.drain_pending());
   REQUIRE(immediate_destructions == 1);
@@ -206,9 +208,9 @@ TEST_CASE("draining a released deep chain reclaims the whole subtree, iterativel
   // A single drain-to-quiescence cascades the entire chain.
   queue.drain();
 
-  REQUIRE(probe.destructions == depth);            // every ~Node ran exactly once
-  REQUIRE(store.slots_live() == baseline);         // leak check: back to baseline
-  REQUIRE(probe.max_depth == 1);                   // iterative: ~Node never nested
+  REQUIRE(probe.destructions == depth);    // every ~Node ran exactly once
+  REQUIRE(store.slots_live() == baseline); // leak check: back to baseline
+  REQUIRE(probe.max_depth == 1);           // iterative: ~Node never nested
 }
 
 TEST_CASE("an enqueue burst allocates nothing and publishes no reclaim-link chunk") {
@@ -236,11 +238,11 @@ TEST_CASE("an enqueue burst allocates nothing and publishes no reclaim-link chun
     store.release(s);
   }
 
-  REQUIRE(store.slots_live() == live_before);                     // enqueue frees no slot
-  REQUIRE(store.reclaim_chunks_published() == chunks_before);     // no chunk published
+  REQUIRE(store.slots_live() == live_before);                 // enqueue frees no slot
+  REQUIRE(store.reclaim_chunks_published() == chunks_before); // no chunk published
 
   queue.drain();
-  REQUIRE(store.slots_live() == live_before - count);             // drain returned them
+  REQUIRE(store.slots_live() == live_before - count); // drain returned them
 }
 
 TEST_CASE("multiple producers enqueue concurrently while the writer drains") {
@@ -296,8 +298,8 @@ TEST_CASE("multiple producers enqueue concurrently while the writer drains") {
     th.join();
   }
 
-  REQUIRE(destructions == total);       // every ~T fired exactly once
-  REQUIRE(store.slots_live() == 0);     // the arena is back to baseline
+  REQUIRE(destructions == total);   // every ~T fired exactly once
+  REQUIRE(store.slots_live() == 0); // the arena is back to baseline
 }
 
 #if defined(__linux__)
@@ -311,7 +313,8 @@ public:
   arbc::expected<arbc::ChunkSpan, arbc::PoolError> acquire(std::size_t size,
                                                            std::size_t /*alignment*/) override {
     const std::size_t rounded = (size + 4095) & ~std::size_t{4095};
-    void* base = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* base =
+        ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED) {
       return arbc::unexpected(arbc::PoolError::OutOfMemory);
     }

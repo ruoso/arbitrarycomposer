@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #ifndef NDEBUG
@@ -40,6 +41,23 @@ constexpr std::size_t align_up(std::size_t n, std::size_t align) {
   return (n + align - 1) & ~(align - 1);
 }
 
+// Nullable interposition point between `SlotStore::release` and the free list
+// (doc 15's durability-epoch quarantine). Default is `nullptr` — release pushes
+// straight to the free list, so every anonymous/arena-only usage is byte-for-
+// byte unchanged. When a fence is installed (pool.checkpoints' durability
+// fence), `release` diverts the freed slot to the fence instead of the free
+// list; the fence returns it through `free_now` only once a checkpoint has made
+// the freeing durable. This mirrors the nullable zero-count sink of pool.refs.
+class SlotStore;
+class ReleaseFence {
+public:
+  virtual ~ReleaseFence() = default;
+  // The store has decided `index` is free but a fence is installed: quarantine
+  // it (stamped with the current durability epoch). The slot's data bytes are
+  // NOT mutated here and stay resolvable until `free_now` returns it.
+  virtual void on_release(SlotStore& store, SlotIndex index) = 0;
+};
+
 // Instance-owned fixed-slot storage for one size class (doc 15). Slots have
 // stable addresses for the life of the store; growth appends chunks through
 // the ChunkSource and never reallocates. Fragmentation is structurally
@@ -69,11 +87,51 @@ public:
   expected<SlotIndex, PoolError> allocate();
 
   // Mark a slot reusable. Does NOT destroy the slot's object (caller's
-  // obligation). Writer-only.
+  // obligation). Writer-only. With a release fence installed the slot is
+  // diverted to the fence instead of the free list.
   void release(SlotIndex index);
+
+  // Install (or clear, with nullptr) the durability-epoch release fence. Default
+  // is no fence (direct free-list push). Writer-only setup.
+  void set_release_fence(ReleaseFence* fence) noexcept { d_release_fence = fence; }
+
+  // Un-fenced return of a slot to the free list, called by a ReleaseFence once
+  // the freeing is durable. Does NOT touch the live count (release already
+  // decremented it) and never runs a destructor. Writer-only.
+  void free_now(SlotIndex index);
 
   // Resolve a slot index to its stable address. Any thread.
   void* resolve(SlotIndex index) const noexcept;
+
+  // Recovery (doc 15, "map → validate → select → rebuild"). Bind existing
+  // file-backed chunks covering `[0, high_water)` from the (reopened) source and
+  // set the high-water mark WITHOUT constructing anything: the records already
+  // live in the file. Counts and free list are rebuilt by the caller
+  // (RefStore::set_count on the reachability walk, then `finalize_restore`).
+  // Writer-only. The reopened source returns the already-mapped file chunks in
+  // order, so this never grows the file.
+  expected<std::monostate, PoolError> reserve_restored(std::uint32_t high_water);
+
+  // Recovery finalize: repopulate the free list with the below-high-water
+  // complement of `live` (the reachable slots the walk found) and set the live
+  // count. Writer-only.
+  void finalize_restore(const std::vector<SlotIndex>& live);
+
+  std::uint32_t high_water() const noexcept { return d_high_water; }
+
+  // Debug checkpoint seal (doc 15): visit every FULLY-published data chunk base
+  // (all chunks below the frontier chunk still being filled), so the caller can
+  // mprotect published records read-only while continued allocation into the
+  // frontier chunk stays writable. `fn(base, chunk_bytes)`.
+  template <class Fn> void for_each_sealable_chunk(Fn&& fn) const {
+    const std::uint32_t frontier = d_high_water >> d_chunk_bits;
+    for (std::uint32_t chunk_number = 0; chunk_number < frontier; ++chunk_number) {
+      std::byte* base = d_directory.chunk(chunk_number);
+      if (base != nullptr) {
+        fn(static_cast<void*>(base), d_chunk_bytes);
+      }
+    }
+  }
 
   std::size_t slot_size() const noexcept { return d_slot_size; }
   std::size_t slot_stride() const noexcept { return d_slot_stride; }
@@ -83,6 +141,7 @@ public:
   // Per-store accounting (doc 15 debug discipline; hosts want a memory panel).
   std::size_t slots_live() const noexcept { return d_slots_live; }
   std::size_t slots_capacity() const noexcept { return d_slots_capacity; }
+  std::size_t free_slots() const noexcept { return d_free.size(); }
   std::size_t bytes_reserved() const noexcept { return d_bytes_reserved; }
 
 private:
@@ -99,6 +158,7 @@ private:
 
   SlabDirectory<std::byte> d_directory;
   std::vector<SlotIndex> d_free; // LIFO free list, kept OUTSIDE data pages
+  ReleaseFence* d_release_fence{nullptr};
   SlotIndex d_high_water{0};
   std::size_t d_slots_live{0};
   std::size_t d_slots_capacity{0};
@@ -129,7 +189,15 @@ public:
 
   std::size_t store_count() const noexcept { return d_stores.size(); }
   std::size_t total_slots_live() const noexcept;
+  std::size_t total_high_water() const noexcept;
   std::size_t total_bytes_reserved() const noexcept;
+
+  // Visit every store in the arena (the checkpoint seal walks these). Writer-only.
+  template <class Fn> void for_each_store(Fn&& fn) {
+    for (auto& entry : d_stores) {
+      fn(*entry.second);
+    }
+  }
 
 private:
   std::unique_ptr<ChunkSource> d_owned_source; // non-null only for the default

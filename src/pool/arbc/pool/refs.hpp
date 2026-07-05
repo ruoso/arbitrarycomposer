@@ -337,6 +337,38 @@ public:
     count_ref(ref.d_index).store(value, std::memory_order_release);
   }
 
+  // Recovery (doc 15, "map → validate → select → rebuild"). Re-bind the store's
+  // existing file-backed chunks covering `[0, high_water)` and publish the
+  // parallel refcount/reclaim-link tables for them, WITHOUT constructing any
+  // object (the records already live in the file). Counts start at zero; the
+  // caller's reachability walk sets them via `set_count_index`, then
+  // `SlotStore::finalize_restore` builds the free list. Writer-only.
+  expected<std::monostate, PoolError> restore(std::uint32_t high_water) {
+    expected<std::monostate, PoolError> reserved = d_typed.store().reserve_restored(high_water);
+    if (!reserved) {
+      return unexpected(reserved.error());
+    }
+    if (high_water != 0) {
+      const std::uint32_t last_chunk = (high_water - 1) >> d_chunk_bits;
+      for (std::uint32_t chunk_number = 0; chunk_number <= last_chunk; ++chunk_number) {
+        ensure_parallel_chunks(chunk_number << d_chunk_bits);
+      }
+    }
+    return std::monostate{};
+  }
+
+  // Raw-index reachability-walk primitives (recovery). The walk reads records by
+  // storage index -- SlotRef generations are anonymous and reset on open, so the
+  // walk must not assert them. `peek_index` resolves the record, and the child
+  // edges it follows are the records' in-place `SlotRef::index()` values.
+  T* peek_index(SlotIndex index) const noexcept { return d_typed.resolve(index); }
+  void set_count_index(SlotIndex index, std::uint32_t value) noexcept {
+    count_ref(index).store(value, std::memory_order_release);
+  }
+  std::uint32_t count_index(SlotIndex index) const noexcept {
+    return count_ref(index).load(std::memory_order_acquire);
+  }
+
   // Immediate reclamation: run `~T`, return the slot to the free list, and (in
   // debug) bump the slot's generation so any surviving stale reference faults.
   // This is what the default sink does and what a deferred queue calls when it
@@ -401,6 +433,10 @@ public:
 
   // Accounting passthrough (doc 15 debug discipline).
   std::size_t slots_live() const noexcept { return d_typed.store().slots_live(); }
+
+  // The underlying untyped store -- where recovery installs the durability
+  // release fence and where `finalize_open` rebuilds the free list.
+  SlotStore& store() noexcept { return d_typed.store(); }
 
   // How many times a parallel chunk (refcount + reclaim-link, and in debug the
   // generation table) has been published. Advances only on the writer-only

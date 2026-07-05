@@ -7,6 +7,7 @@
 #include <arbc/pool/slot_store.hpp> // align_up
 #include <arbc/pool/workspace_file.hpp>
 
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -120,6 +121,10 @@ WorkspaceFileChunkSource::~WorkspaceFileChunkSource() {
   for (const auto& entry : d_live) {
     ::munmap(entry.first, entry.second.size);
   }
+  // Remapped-on-open chunks never pulled back through acquire.
+  for (std::size_t i = d_reopened_cursor; i < d_reopened.size(); ++i) {
+    ::munmap(d_reopened[i].base, d_reopened[i].size);
+  }
   if (d_header_map != nullptr) {
     ::munmap(d_header_map, d_header_bytes);
   }
@@ -134,6 +139,15 @@ expected<ChunkSpan, PoolError> WorkspaceFileChunkSource::acquire(std::size_t siz
   // far smaller, matching the AnonymousChunkSource contract.
   assert(alignment <= d_page);
   (void)alignment;
+
+  // Recovery path: hand back an already-mapped file chunk (in directory order)
+  // rather than growing the file. reserve_restored drives this to re-bind the
+  // records the walk reads.
+  if (d_reopened_cursor < d_reopened.size()) {
+    const ReopenedChunk& rc = d_reopened[d_reopened_cursor++];
+    d_live.emplace(rc.base, LiveChunk{rc.offset, rc.size, rc.index});
+    return ChunkSpan{rc.base, rc.size};
+  }
 
   if (d_chunk_count >= d_max_chunks) {
     d_last_error = WorkspaceFileError{WorkspaceFileErrc::DirectoryFull, 0};
@@ -180,19 +194,33 @@ void WorkspaceFileChunkSource::release(ChunkSpan span) noexcept {
   const LiveChunk chunk = it->second;
 
   ::munmap(span.base, chunk.size);
+  d_live.erase(it);
 
+  if (d_release_fence != nullptr) {
+    // Durability fence: the chunk may still back the on-disk root, so defer the
+    // hole-punch (and the directory clear) to the post-durable commit drain.
+    d_release_fence->on_release(*this, chunk.offset, chunk.size, chunk.index);
+    return;
+  }
+
+  punch_now(chunk.offset, chunk.size, chunk.index);
+}
+
+void WorkspaceFileChunkSource::punch_now(std::uint64_t offset, std::uint64_t size,
+                                         std::uint32_t index) noexcept {
 #if defined(__linux__)
   // Return storage: hole-punch the chunk's file range while keeping the logical
   // size, so both memory and disk come back (fixing the grow-forever high-water
   // mark). Non-fatal if the filesystem lacks punch support.
-  if (::fallocate(d_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
-                  static_cast<off_t>(chunk.offset), static_cast<off_t>(chunk.size)) != 0) {
+  if (::fallocate(d_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, static_cast<off_t>(offset),
+                  static_cast<off_t>(size)) != 0) {
     d_last_error = sys_error(WorkspaceFileErrc::GrowFailed);
   }
+#else
+  (void)offset;
+  (void)size;
 #endif
-
-  directory()[chunk.index].state = k_workspace_chunk_free;
-  d_live.erase(it);
+  directory()[index].state = k_workspace_chunk_free;
 }
 
 expected<WorkspaceHeader, WorkspaceFileError>
@@ -216,6 +244,139 @@ WorkspaceFileChunkSource::read_header(const std::string& path) {
   return hdr;
 }
 
+expected<std::unique_ptr<WorkspaceFileChunkSource>, WorkspaceFileError>
+WorkspaceFileChunkSource::open(const std::string& path) {
+  const int fd = ::open(path.c_str(), O_RDWR);
+  if (fd < 0) {
+    return unexpected(sys_error(WorkspaceFileErrc::OpenFailed));
+  }
+
+  // Read the fixed header first to learn page size / directory capacity, then
+  // map the whole header+directory region.
+  WorkspaceHeader fixed{};
+  const ssize_t got = ::pread(fd, &fixed, sizeof(fixed), 0);
+  if (got != static_cast<ssize_t>(sizeof(fixed))) {
+    WorkspaceFileError err{WorkspaceFileErrc::HeaderIoFailed, got < 0 ? errno : 0};
+    ::close(fd);
+    return unexpected(err);
+  }
+  if (fixed.magic != k_workspace_magic) {
+    ::close(fd);
+    return unexpected(WorkspaceFileError{WorkspaceFileErrc::BadMagic, 0});
+  }
+  if (fixed.format_major != k_workspace_format_major) {
+    ::close(fd);
+    return unexpected(WorkspaceFileError{WorkspaceFileErrc::UnsupportedFormat, 0});
+  }
+
+  const std::size_t header_bytes = static_cast<std::size_t>(fixed.data_offset);
+  void* map = ::mmap(nullptr, header_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (map == MAP_FAILED) {
+    WorkspaceFileError err = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+    ::close(fd);
+    return unexpected(err);
+  }
+
+  auto source = std::unique_ptr<WorkspaceFileChunkSource>(new WorkspaceFileChunkSource());
+  source->d_path = path;
+  source->d_fd = fd;
+  source->d_page = fixed.page_size != 0 ? fixed.page_size : 4096;
+  source->d_max_chunks = fixed.max_chunks;
+  source->d_data_offset = fixed.data_offset;
+  source->d_chunk_count = static_cast<std::uint32_t>(fixed.chunk_count);
+  source->d_header_map = map;
+  source->d_header_bytes = header_bytes;
+
+  // Remap every live data chunk in directory order and queue it for acquire.
+  std::uint64_t next_offset = fixed.data_offset;
+  const WorkspaceChunkEntry* dir = source->directory();
+  for (std::uint32_t i = 0; i < source->d_chunk_count; ++i) {
+    const WorkspaceChunkEntry& entry = dir[i];
+    if (entry.offset + entry.size > next_offset) {
+      next_offset = entry.offset + entry.size;
+    }
+    if (entry.state != k_workspace_chunk_live) {
+      continue; // released (hole-punched) — not part of the live graph
+    }
+    void* base = ::mmap(nullptr, entry.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+                        static_cast<off_t>(entry.offset));
+    if (base == MAP_FAILED) {
+      return unexpected(sys_error(WorkspaceFileErrc::HeaderIoFailed));
+    }
+    source->d_reopened.push_back(ReopenedChunk{base, entry.offset, entry.size, i});
+  }
+  source->d_next_offset = next_offset;
+  return source;
+}
+
+expected<std::size_t, WorkspaceFileError> WorkspaceFileChunkSource::sync_data() noexcept {
+  std::size_t synced = 0;
+  for (const auto& entry : d_live) {
+    if (::msync(entry.first, entry.second.size, MS_SYNC) != 0) {
+      d_last_error = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+      return unexpected(d_last_error);
+    }
+    ++synced;
+  }
+  return synced;
+}
+
+expected<std::monostate, WorkspaceFileError> WorkspaceFileChunkSource::sync_header() noexcept {
+  if (d_header_map != nullptr && ::msync(d_header_map, d_header_bytes, MS_SYNC) != 0) {
+    d_last_error = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+    return unexpected(d_last_error);
+  }
+  return std::monostate{};
+}
+
+std::uint64_t WorkspaceFileChunkSource::root_slot(int ab) const noexcept {
+  auto* hdr = static_cast<WorkspaceHeader*>(d_header_map);
+  std::uint64_t& slot = ab == 0 ? hdr->root_slot_a : hdr->root_slot_b;
+  return std::atomic_ref<std::uint64_t>(slot).load(std::memory_order_acquire);
+}
+
+void WorkspaceFileChunkSource::publish_root_slot(int ab, std::uint64_t value) noexcept {
+  WorkspaceHeader* hdr = header();
+  std::uint64_t* slot = ab == 0 ? &hdr->root_slot_a : &hdr->root_slot_b;
+  // Single naturally-aligned 8-byte store: single-sector, torn-write-free.
+  std::atomic_ref<std::uint64_t>(*slot).store(value, std::memory_order_release);
+}
+
+expected<std::monostate, WorkspaceFileError>
+WorkspaceFileChunkSource::protect_data(bool read_only) noexcept {
+#ifndef NDEBUG
+  const int prot = read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
+  for (const auto& entry : d_live) {
+    if (::mprotect(entry.first, entry.second.size, prot) != 0) {
+      d_last_error = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+      return unexpected(d_last_error);
+    }
+  }
+#else
+  (void)read_only;
+#endif
+  return std::monostate{};
+}
+
+expected<std::monostate, WorkspaceFileError>
+WorkspaceFileChunkSource::protect_range(void* addr, std::size_t size, bool read_only) noexcept {
+#ifndef NDEBUG
+  const auto raw = reinterpret_cast<std::uintptr_t>(addr);
+  const std::uintptr_t page_base = raw & ~(static_cast<std::uintptr_t>(d_page) - 1);
+  const std::size_t len = align_up((raw - page_base) + size, d_page);
+  const int prot = read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
+  if (::mprotect(reinterpret_cast<void*>(page_base), len, prot) != 0) {
+    d_last_error = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+    return unexpected(d_last_error);
+  }
+#else
+  (void)addr;
+  (void)size;
+  (void)read_only;
+#endif
+  return std::monostate{};
+}
+
 #else // !ARBC_HAS_WORKSPACE_FILES
 
 expected<std::unique_ptr<WorkspaceFileChunkSource>, WorkspaceFileError>
@@ -232,9 +393,36 @@ expected<ChunkSpan, PoolError> WorkspaceFileChunkSource::acquire(std::size_t, st
 
 void WorkspaceFileChunkSource::release(ChunkSpan) noexcept {}
 
+void WorkspaceFileChunkSource::punch_now(std::uint64_t, std::uint64_t, std::uint32_t) noexcept {}
+
 expected<WorkspaceHeader, WorkspaceFileError>
 WorkspaceFileChunkSource::read_header(const std::string&) {
   return unexpected(WorkspaceFileError{WorkspaceFileErrc::Unsupported, 0});
+}
+
+expected<std::unique_ptr<WorkspaceFileChunkSource>, WorkspaceFileError>
+WorkspaceFileChunkSource::open(const std::string&) {
+  return unexpected(WorkspaceFileError{WorkspaceFileErrc::Unsupported, 0});
+}
+
+expected<std::size_t, WorkspaceFileError> WorkspaceFileChunkSource::sync_data() noexcept {
+  return unexpected(WorkspaceFileError{WorkspaceFileErrc::Unsupported, 0});
+}
+
+expected<std::monostate, WorkspaceFileError> WorkspaceFileChunkSource::sync_header() noexcept {
+  return unexpected(WorkspaceFileError{WorkspaceFileErrc::Unsupported, 0});
+}
+
+std::uint64_t WorkspaceFileChunkSource::root_slot(int) const noexcept { return 0; }
+void WorkspaceFileChunkSource::publish_root_slot(int, std::uint64_t) noexcept {}
+
+expected<std::monostate, WorkspaceFileError> WorkspaceFileChunkSource::protect_data(bool) noexcept {
+  return std::monostate{};
+}
+
+expected<std::monostate, WorkspaceFileError>
+WorkspaceFileChunkSource::protect_range(void*, std::size_t, bool) noexcept {
+  return std::monostate{};
 }
 
 #endif // ARBC_HAS_WORKSPACE_FILES

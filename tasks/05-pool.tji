@@ -54,8 +54,15 @@ task pool "Memory pool" {
   task checkpoints "Checkpoint protocol" {
     effort 3d
     allocate team
+    complete 100
     depends !mmap_backing, !reclamation
-    note "A/B root slots + ordered msync (LMDB-style); durability-epoch quarantine of freed slots; recovery = map, read root, resume; debug mprotect of published chunks. Doc 15."
+    note "A/B root slots + ordered msync (LMDB-style); durability-epoch quarantine of freed slots; recovery = map, read root, resume; debug mprotect of published chunks. Doc 15. Refinement: tasks/refinements/pool/checkpoints.md"
+  }
+  task checkpoints_win32 "Checkpoint protocol — Windows port" {
+    effort 1d
+    allocate team
+    depends !checkpoints, !mmap_backing_win32
+    note "FlushViewOfFile+FlushFileBuffers in place of msync, VirtualProtect in place of mprotect for debug read-only publish, behind ARBC_HAS_WORKSPACE_FILES. Source-of-debt: tasks/refinements/pool/checkpoints.md. Doc 15."
   }
   task crash_tests "Crash-recovery test sweep" {
     effort 2d
