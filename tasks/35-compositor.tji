@@ -9,7 +9,8 @@ task compositor "Compositor" {
   task scale_ladder "Scale ladder" {
     effort 2d
     allocate team
-    note "Quantize interactive request scales to power-of-two rungs; composite applies the <=1-octave remainder; prefer-downsample convention. Doc 04."
+    complete 100
+    note "Quantize interactive request scales to power-of-two rungs; composite applies the <=1-octave remainder; prefer-downsample convention. Doc 04. Refinement: tasks/refinements/compositor/scale_ladder.md"
   }
   task tile_planning "Tile-based request planning" {
     effort 4d

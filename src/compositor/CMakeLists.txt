@@ -2,4 +2,7 @@ arbc_add_component(
   NAME compositor
   SOURCES compositor.cpp
   PUBLIC_HEADERS arbc/compositor/compositor.hpp
-  DEPENDS contract)
+                 arbc/compositor/scale_ladder.hpp
+  DEPENDS contract cache)
+
+arbc_component_test(COMPONENT compositor SOURCES t/scale_ladder.t.cpp)
