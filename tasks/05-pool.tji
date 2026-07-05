@@ -36,8 +36,9 @@ task pool "Memory pool" {
   task free_pools "Thread-local free pools" {
     effort 2d
     allocate team
+    complete 100
     depends !reclamation
-    note "Thread-local LIFO free lists in SlotStore with global spill; relaxes writer-only-release assert to admit cross-thread release, unlocking runtime.housekeeping's low-priority-thread drain mode. Source-of-debt: tasks/refinements/pool/reclamation.md. Doc 15."
+    note "Thread-local LIFO free lists in SlotStore with global spill; relaxes writer-only-release assert to admit cross-thread release, unlocking runtime.housekeeping's low-priority-thread drain mode. Source-of-debt: tasks/refinements/pool/reclamation.md. Doc 15. Refinement: tasks/refinements/pool/free_pools.md"
   }
   task mmap_backing "mmap workspace backing" {
     effort 3d

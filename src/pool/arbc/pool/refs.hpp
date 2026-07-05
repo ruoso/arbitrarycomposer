@@ -387,7 +387,8 @@ public:
   // Immediate reclamation: run `~T`, return the slot to the free list, and (in
   // debug) bump the slot's generation so any surviving stale reference faults.
   // This is what the default sink does and what a deferred queue calls when it
-  // pops. Writer-only.
+  // pops. Runs on the single drainer (any one thread; see drain_pending); its
+  // SlotStore::release now admits cross-thread release into a thread-local pool.
   void reclaim(SlotIndex index) {
     d_typed.destroy(index);
 #ifndef NDEBUG
@@ -424,7 +425,11 @@ public:
   // another registered store's) fresh stack -- the iterative cascade, unrolled
   // through the queue so the C++ stack stays O(1) in subtree depth. Reclaims one
   // detached batch; the ReclamationQueue loops across stores to quiescence.
-  // Returns whether it reclaimed anything. Writer-thread-only.
+  // Returns whether it reclaimed anything. SINGLE-DRAINER, ANY ONE THREAD
+  // (pool.free_pools): the exchange detach relies on exactly one consumer at a
+  // time, but that consumer may be the writer between transactions OR the
+  // low-priority housekeeping thread -- not the writer exclusively. Concurrent
+  // multi-thread drain remains illegal (it would reintroduce the ABA hazard).
   bool drain_pending() {
     SlotIndex head = d_reclaim_head.exchange(k_reclaim_nil, std::memory_order_acquire);
     if (head == k_reclaim_nil) {

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -22,6 +23,11 @@ namespace arbc {
 // Storage address of a slot within a store. Distinct from ObjectId: an index
 // is a storage location that recycles, an ObjectId is a document identity.
 using SlotIndex = std::uint32_t;
+
+// One thread's LIFO free pool within a store (pool.free_pools). Defined in the
+// .cpp; the store owns these (so they outlive the threads that touch them) and a
+// thread reaches its own via a thread-local {store-id -> pool} cache.
+struct SlotFreePool;
 
 // Slots-per-chunk exponent k targeting ~64 KiB data chunks, capped at 12
 // (the max the 10+10 root/table split keeps addressable in a 32-bit index).
@@ -103,10 +109,21 @@ public:
 // is viewed from, and a slot recycled from `T` to `U` reuses the same count
 // entry and carries its generation bump across the views.
 //
-// Threading (doc 15): `allocate` and `release` are WRITER-THREAD-ONLY in this
-// task (a debug-build assert enforces it; thread-local free pools and
-// cross-thread release arrive with pool.reclamation). `resolve` is safe from
-// any thread concurrently with growth.
+// Threading (doc 15, pool.free_pools): the guard relaxation is ASYMMETRIC.
+// `allocate`/`reserve_restored`/`finalize_restore` stay WRITER-THREAD-ONLY (a
+// debug-build assert enforces it) because arena growth -- chunk publish, column
+// publish, capacity accounting -- is single-threaded and unsynchronized: the
+// writer is the only structural allocator. `release`/`free_now` admit ANY thread
+// (the low-priority housekeeping drain releases cross-thread): each thread pushes
+// freed slots onto its own thread-local LIFO pool with no lock and no allocation,
+// spilling a batch to the shared global pool only when its local pool fills, and
+// the writer's `allocate` refills a batch from the global pool when its local
+// pool runs dry -- so reuse is thread-affine (`15-memory-model.md:45-46,137-143`)
+// and the writer's allocation never contends with a concurrent release. The
+// deferred reclamation drain stays SINGLE-DRAINER (exactly one thread at a time,
+// writer between transactions OR the low-priority thread -- runtime.housekeeping
+// serializes the choice), which is what `RefStore::drain_pending`'s exchange
+// detach relies on. `resolve` is safe from any thread concurrently with growth.
 //
 // `release` marks a slot reusable but DOES NOT run the object's destructor —
 // running or deferring destruction is the caller's obligation (doc 15:
@@ -123,23 +140,37 @@ public:
   SlotStore(const SlotStore&) = delete;
   SlotStore& operator=(const SlotStore&) = delete;
 
-  // Reserve a slot and return its index. Writer-only. Returns an error
-  // (never throws, never aborts) when the ChunkSource refuses to grow or the
-  // index space is exhausted.
+  // Batch size for the thread-local <-> global free-pool boundary (pool.free_
+  // pools). A thread-local pool caches at most this many slots; on filling it
+  // spills the whole batch to the shared global pool, and a dry `allocate`
+  // refills up to a batch from the global pool. Sized for the two-thread (writer
+  // + one drainer) reality; not tuned in this task.
+  static constexpr std::size_t k_free_pool_batch = 32;
+
+  // Reserve a slot and return its index. WRITER-ONLY (arena growth is
+  // single-threaded). Pops from the writer's thread-local pool, refilling a batch
+  // from the global pool when it is empty before falling back to high-water
+  // growth. Returns an error (never throws, never aborts) when the ChunkSource
+  // refuses to grow or the index space is exhausted.
   expected<SlotIndex, PoolError> allocate();
 
   // Mark a slot reusable. Does NOT destroy the slot's object (caller's
-  // obligation). Writer-only. With a release fence installed the slot is
-  // diverted to the fence instead of the free list.
+  // obligation). ANY THREAD (pool.free_pools): pushes onto the calling thread's
+  // thread-local free pool -- no lock, no allocation. With a release fence
+  // installed the slot is diverted to the fence instead of the free pool.
   void release(SlotIndex index);
 
   // Install (or clear, with nullptr) the durability-epoch release fence. Default
-  // is no fence (direct free-list push). Writer-only setup.
-  void set_release_fence(ReleaseFence* fence) noexcept { d_release_fence = fence; }
+  // is no fence (direct free-pool push). Writer-only setup, but the pointer is
+  // atomic because a cross-thread `release` reads it concurrently.
+  void set_release_fence(ReleaseFence* fence) noexcept {
+    d_release_fence.store(fence, std::memory_order_release);
+  }
 
-  // Un-fenced return of a slot to the free list, called by a ReleaseFence once
+  // Un-fenced return of a slot to the free pool, called by a ReleaseFence once
   // the freeing is durable. Does NOT touch the live count (release already
-  // decremented it) and never runs a destructor. Writer-only.
+  // decremented it) and never runs a destructor. Runs on the releasing thread
+  // and pushes onto THAT thread's local pool (any thread).
   void free_now(SlotIndex index);
 
   // Resolve a slot index to its stable address. Any thread.
@@ -205,13 +236,45 @@ public:
 #endif
 
   // Per-store accounting (doc 15 debug discipline; hosts want a memory panel).
-  std::size_t slots_live() const noexcept { return d_slots_live; }
+  // `slots_live` is exact (atomic: the writer's `allocate` and a cross-thread
+  // `release` both mutate it).
+  std::size_t slots_live() const noexcept { return d_slots_live.load(std::memory_order_relaxed); }
   std::size_t slots_capacity() const noexcept { return d_slots_capacity; }
-  std::size_t free_slots() const noexcept { return d_free.size(); }
+  // BEST-EFFORT (pool.free_pools): the size of the SHARED global pool only, under
+  // the pool lock. Slots cached in per-thread local pools are not counted -- they
+  // are not globally visible. A diagnostic counter, never an invariant source.
+  std::size_t free_slots() const noexcept {
+    std::lock_guard<std::mutex> guard(d_pool_mutex);
+    return d_free.size();
+  }
   std::size_t bytes_reserved() const noexcept { return d_bytes_reserved; }
+
+  // Behavioral counters (doc 16 `:54-62`): how many times a local pool spilled a
+  // batch to, or refilled a batch from, the shared global pool -- i.e. how many
+  // times the global lock was taken for a slot round-trip. Both stay put across a
+  // sub-batch churn burst (proving the hot path takes no global lock) and advance
+  // only when a local pool crosses the batch threshold. Any thread.
+  std::size_t spill_count() const noexcept { return d_spill_count.load(std::memory_order_relaxed); }
+  std::size_t refill_count() const noexcept {
+    return d_refill_count.load(std::memory_order_relaxed);
+  }
 
 private:
   void assert_writer_thread() noexcept;
+
+  // The calling thread's local free pool for this store, created (and registered
+  // in `d_local_pools` under the lock) on first touch. The hot path after warm-up
+  // is a lock-free thread-local lookup.
+  SlotFreePool& local_pool();
+
+  // Push a freed slot onto the calling thread's local pool (no lock, no
+  // allocation); when the local pool fills, spill the whole batch to the global
+  // pool under the lock. The shared release/free_now tail.
+  void push_free(SlotIndex index);
+
+  // Move up to a batch of slots from the shared global pool into `local` (LIFO
+  // order preserved) under the lock; a no-op when the global pool is empty.
+  void refill_from_global(SlotFreePool& local);
 
   // Publish the refcount (and, in debug, generation) chunk covering
   // `chunk_number` if it is not yet backed. Idempotent. Called in lock-step with
@@ -239,12 +302,26 @@ private:
   // Null in production (portable `new[]` refcount chunks); non-null only for the
   // page-aligned, mprotectable count-column diagnostic harness.
   RefcountTableBacking* d_refcount_backing{nullptr};
-  std::vector<SlotIndex> d_free; // LIFO free list, kept OUTSIDE data pages
-  ReleaseFence* d_release_fence{nullptr};
+  // The SHARED global free pool (LIFO), kept OUTSIDE data pages. Touched only on
+  // the cold spill/refill boundary and at recovery, always under `d_pool_mutex`.
+  std::vector<SlotIndex> d_free;
+  // Per-thread local pools, store-owned so they outlive the threads that touch
+  // them. `local_pool()` registers a thread's pool here on first touch; the hot
+  // path then reaches it lock-free through a thread-local {store-id -> pool}
+  // cache. Guarded by `d_pool_mutex` (registration is cold).
+  std::vector<std::unique_ptr<SlotFreePool>> d_local_pools;
+  mutable std::mutex d_pool_mutex; // guards d_free + d_local_pools registration
+  std::uint64_t d_store_id;        // identifies this store in the thread-local cache
+  // Atomic because a cross-thread `release` reads/writes it concurrently with the
+  // writer-only `set_release_fence` install.
+  std::atomic<ReleaseFence*> d_release_fence{nullptr};
   SlotIndex d_high_water{0};
-  std::size_t d_slots_live{0};
+  // Atomic: mutated by the writer's `allocate` and a cross-thread `release`.
+  std::atomic<std::size_t> d_slots_live{0};
   std::size_t d_slots_capacity{0};
   std::size_t d_bytes_reserved{0};
+  std::atomic<std::size_t> d_spill_count{0};  // global-pool spills (lock taken)
+  std::atomic<std::size_t> d_refill_count{0}; // global-pool refills (lock taken)
 
 #ifndef NDEBUG
   std::thread::id d_writer{};

@@ -71,7 +71,7 @@ TEST_CASE("a slot recycled from one type to another reuses the shared count-colu
   // index, and its shared count-column entry is reset to 1 by create -- not a
   // second, per-view table.
   arbc::Ref<Beta> b = *beta.create(0xB2u, &b_dtor);
-  REQUIRE(b.index() == idx);          // same physical slot
+  REQUIRE(b.index() == idx); // same physical slot
   REQUIRE(beta.store().slots_live() == 1);
   REQUIRE(beta.count(b.slot()) == 1); // one logical count, reset on reuse
   REQUIRE(b->value == 0xB2u);
@@ -137,12 +137,10 @@ TEST_CASE("the shared generation column faults a stale cross-type reference") {
 
   // A bump made through the BETA (U) view is visible through the ALPHA (T) view's
   // store accessor: the two views share the one generation cell.
-  const std::uint32_t before =
-      alpha.store().generation_ref(idx).load(std::memory_order_acquire);
+  const std::uint32_t before = alpha.store().generation_ref(idx).load(std::memory_order_acquire);
   b = arbc::Ref<Beta>{}; // drop -> reclaim via the Beta view -> bump
   REQUIRE(b_dtor == 1);
-  const std::uint32_t after =
-      alpha.store().generation_ref(idx).load(std::memory_order_acquire);
+  const std::uint32_t after = alpha.store().generation_ref(idx).load(std::memory_order_acquire);
   REQUIRE(after == before + 1); // the U-view bump is seen through the T view
 }
 #endif

@@ -421,10 +421,12 @@ TEST_CASE("a freed slot is quarantined until a commit makes the freeing durable"
   REQUIRE(keep.index() != freed);
   const arbc::SlotIndex keep_index = keep.index();
 
-  // A commit that makes the freeing durable releases the slot.
+  // A commit that makes the freeing durable releases the slot. free_now returns
+  // it to the writer's THREAD-LOCAL pool (pool.free_pools), so the global-only
+  // free_slots() stays 0; reuse below proves the slot is back and usable.
   REQUIRE(ckpt.commit(keep_index).has_value());
   REQUIRE(ckpt.slot_fence().pending() == 0);
-  REQUIRE(store.store().free_slots() == 1);
+  REQUIRE(store.store().free_slots() == 0); // in the writer's local pool, not global
 
   // Now it is reusable.
   arbc::Ref<GraphNode> reused = *store.create();
@@ -472,7 +474,10 @@ TEST_CASE("without a workspace fence a freed slot returns to the free list immed
     arbc::Ref<GraphNode> a = *store.create();
     freed = a.index();
   }
-  REQUIRE(store.store().free_slots() == 1); // straight to the free list
+  // No fence: release goes straight to the writer's thread-local pool. The
+  // global-only free_slots() stays 0; the immediate reuse below is the proof the
+  // slot returned (pool.free_pools: sub-batch churn never touches the global pool).
+  REQUIRE(store.store().free_slots() == 0);
 
   arbc::Ref<GraphNode> reused = *store.create();
   REQUIRE(reused.index() == freed); // reused with no commit in sight

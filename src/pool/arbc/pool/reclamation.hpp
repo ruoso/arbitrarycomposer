@@ -54,8 +54,12 @@ private:
 // recovered from the (already type-segregated) store, keeping the hot enqueue
 // path free of any tag write.
 //
-// Drain is WRITER-THREAD-ONLY (it bottoms out in SlotStore::release, which
-// arena_core binds to the writer thread). RT threads only enqueue.
+// Drain is SINGLE-DRAINER, ANY ONE THREAD (pool.free_pools): it bottoms out in
+// SlotStore::release, which now admits cross-thread release into a thread-local
+// free pool, so the drainer may be the writer between transactions OR the
+// low-priority housekeeping thread -- exactly one at a time (runtime.housekeeping
+// serializes the choice); the reclaim-link exchange detach stays single-consumer.
+// RT threads only enqueue.
 class ReclamationQueue {
 public:
   ReclamationQueue() = default;
@@ -74,7 +78,7 @@ public:
   // this or another store's fresh stack; the outer loop keeps sweeping until
   // every stack is empty. The recursion is unrolled through the stacks, so the
   // C++ call stack stays O(1) in subtree depth. Empty- and double-drain are
-  // no-ops. Writer-thread-only.
+  // no-ops. Single-drainer, any one thread (see class comment).
   void drain() {
     bool progressed = true;
     while (progressed) {
