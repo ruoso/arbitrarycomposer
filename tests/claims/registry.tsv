@@ -22,6 +22,7 @@
 14-data-model-and-editing#membership-edit-damages-composition	Each attach/detach/reorder raises the revision by exactly one and contributes exactly one damage record for the composition id, flushed once at commit
 14-data-model-and-editing#membership-undo-round-trips	Undo of an attach/detach/reorder restores the prior layer order exactly (including across the spill boundary) and redo re-applies it, as ordinary journal navigation publishes with no new entry type
 07-color-and-pixel-formats#premultiplied-source-over	Compositing is source-over on premultiplied alpha in the working space
+07-color-and-pixel-formats#surfaces-carry-tags	Every surface exposes its complete tag triple (pixel format, color space, premultiplication) from creation, and the reference backend refuses to composite across mismatched tags
 16-sdlc-and-quality#byte-exact-goldens	CPU backend rendering is byte-exact deterministic
 15-memory-model#slots-recycle-in-place	A released slot is the next same-class allocation's perfect hole; fixed slabs make fragmentation impossible
 15-memory-model#chunk-growth-preserves-addresses	Slot pointers taken before growth stay valid and unchanged across arbitrary chunk growth

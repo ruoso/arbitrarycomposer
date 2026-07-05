@@ -342,7 +342,7 @@ TEST_CASE("membership mutators no-op on absent composition, absent/non-member la
 
   {
     auto txn = model.transact();
-    txn.attach_layer(arbc::ObjectId{424242}, l[1]);   // absent composition
+    txn.attach_layer(arbc::ObjectId{424242}, l[1]);    // absent composition
     txn.attach_layer(comp, arbc::ObjectId{999999}, 0); // absent layer
     txn.attach_layer(l[0], l[1], 0);                   // target is a layer, not a composition
     txn.detach_layer(comp, l[1]);                      // l1 is not a member

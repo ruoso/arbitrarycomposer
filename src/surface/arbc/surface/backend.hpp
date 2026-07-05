@@ -16,7 +16,9 @@ public:
   Backend& operator=(const Backend&) = delete;
   virtual ~Backend();
 
-  virtual std::unique_ptr<Surface> make_surface(int width, int height, PixelFormat format) = 0;
+  // Allocate a surface carrying `format`'s full tag triple. Returns null if
+  // the backend cannot store that format (capability honesty, doc 07).
+  virtual std::unique_ptr<Surface> make_surface(int width, int height, SurfaceFormat format) = 0;
 
   // Premultiplied working-space color (doc 07).
   virtual void clear(Surface& surface, float r, float g, float b, float a) = 0;

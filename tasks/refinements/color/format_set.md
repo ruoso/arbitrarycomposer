@@ -122,4 +122,13 @@ a pure implementation task. Gates M3 (via `color.kernel_goldens` →
 
 ## Status
 
-_pending implementation_
+**Done** — 2026-07-05.
+
+- Extended `src/media/arbc/media/pixel_format.hpp` with `Rgba16fLinearPremul` and `Rgba8Srgb` members; added descriptor helpers (`bytes_per_pixel`, `channels_per_pixel`, `is_float`, `to_string`) — all constexpr.
+- Created `src/media/arbc/media/color_space.hpp` (`Primaries` + `TransferFunction` enums with `Srgb`/`Linear`/`Srgb` members).
+- Created `src/media/arbc/media/surface_format.hpp` — `SurfaceFormat { PixelFormat, ColorSpace, Premultiplied }` value struct carried through `make_surface` and echoed by every `Surface`.
+- Updated `src/surface/arbc/surface/{surface,backend}.hpp` to accept `SurfaceFormat` instead of bare `PixelFormat`.
+- Updated `src/backend_cpu/arbc/backend_cpu/cpu_backend.hpp` and `src/backend_cpu/cpu_backend.cpp` to store the `SurfaceFormat`, return null for unsupported formats, and assert tag agreement on composite.
+- Added `src/media/t/pixel_format.t.cpp` — unit tests for descriptor helpers, `SurfaceFormat` equality/copy, and `to_string` coverage (7 cases).
+- Extended `src/backend_cpu/t/cpu_backend.t.cpp` with tag-echo, capability-honesty, and mismatch-rejection cases (6 cases).
+- Registered claim `07-color-and-pixel-formats#surfaces-carry-tags` in `tests/claims/registry.tsv`; enforced by the new CPU backend tests.

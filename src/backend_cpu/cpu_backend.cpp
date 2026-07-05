@@ -1,4 +1,5 @@
 #include <arbc/backend_cpu/cpu_backend.hpp>
+#include <arbc/media/surface_format.hpp>
 
 #include <cassert>
 #include <cmath>
@@ -7,13 +8,23 @@
 
 namespace arbc {
 
-CpuSurface::CpuSurface(int width, int height, PixelFormat format)
+CpuSurface::CpuSurface(int width, int height, SurfaceFormat format)
     : d_width(width), d_height(height), d_format(format),
       d_data(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) *
-                 channels_per_pixel(format),
+                 channels_per_pixel(format.pixel_format),
              0.0F) {}
 
-std::unique_ptr<Surface> CpuBackend::make_surface(int width, int height, PixelFormat format) {
+std::unique_ptr<Surface> CpuBackend::make_surface(int width, int height, SurfaceFormat format) {
+  // Capability honesty (doc 07): the reference backend stores and composites
+  // only the premultiplied linear-light rgba32f working format today. f16 /
+  // 8-bit storage and the tag conversions arrive with color.kernels; a
+  // configurable working space with color.working_space. Anything else is
+  // honestly unsupported -> null. (Migrates to arbc::expected once
+  // pool.arena_core lands it in base -- a one-line signature change scoped
+  // to surfaces.capabilities, not this task.)
+  if (format != k_working_rgba32f) {
+    return nullptr;
+  }
   return std::make_unique<CpuSurface>(width, height, format);
 }
 
@@ -30,6 +41,15 @@ void CpuBackend::clear(Surface& surface, float r, float g, float b, float a) {
 
 void CpuBackend::composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                            double opacity) {
+  // Tag agreement (doc 07 rule 2): compositing happens within one working
+  // format; converting between differing tags is color.kernels' job. Until
+  // then a mismatch is a caller error, never a silent reinterpretation --
+  // debug assert, no-op in release, mirroring the degenerate-transform cull
+  // below.
+  assert(dst.format() == src.format());
+  if (!(dst.format() == src.format())) {
+    return;
+  }
   const std::optional<Affine> dst_to_src = src_to_dst.inverse();
   if (!dst_to_src.has_value()) {
     return; // degenerate mapping: cull, never propagate NaNs (doc 04)

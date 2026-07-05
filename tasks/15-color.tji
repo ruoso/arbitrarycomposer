@@ -9,6 +9,7 @@ task color "Color and pixel formats" {
   task format_set "Pixel format set + surface tags" {
     effort 1d
     allocate team
+    complete 100
     note "Rgba16fLinearPremul (default working format) and Rgba8Srgb join Rgba32f; every surface tagged with format + color space + premultiplication. Doc 07. Refinement: tasks/refinements/color/format_set.md"
   }
   task working_space "Per-composition working space" {

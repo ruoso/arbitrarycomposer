@@ -10,18 +10,18 @@ namespace arbc {
 
 class CpuSurface final : public Surface {
 public:
-  CpuSurface(int width, int height, PixelFormat format);
+  CpuSurface(int width, int height, SurfaceFormat format);
 
   int width() const override { return d_width; }
   int height() const override { return d_height; }
-  PixelFormat format() const override { return d_format; }
+  SurfaceFormat format() const override { return d_format; }
   std::span<float> cpu_pixels() override { return d_data; }
   std::span<const float> cpu_pixels() const override { return d_data; }
 
 private:
   int d_width;
   int d_height;
-  PixelFormat d_format;
+  SurfaceFormat d_format;
   std::vector<float> d_data;
 };
 
@@ -31,7 +31,7 @@ class CpuBackend final : public Backend {
 public:
   CpuBackend() = default;
 
-  std::unique_ptr<Surface> make_surface(int width, int height, PixelFormat format) override;
+  std::unique_ptr<Surface> make_surface(int width, int height, SurfaceFormat format) override;
   void clear(Surface& surface, float r, float g, float b, float a) override;
   void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                  double opacity) override;
