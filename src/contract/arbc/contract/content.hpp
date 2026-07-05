@@ -8,8 +8,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <span>
 
 namespace arbc {
 
@@ -131,8 +133,19 @@ private:
   std::optional<expected<RenderResult, RenderError>> d_payload;
 };
 
+// A non-owning graph edge to a `Content` input (doc 13:48-52, Decision 1).
+// Input edges are core-owned structure (doc 13:142), so an operator is a
+// non-owning observer of its inputs -- a raw non-owning pointer states exactly
+// that lifetime relationship. This resolves the provisional doc-13 `ContentRef`
+// type name to the project's existing `Content*` idiom (the compositor already
+// names content as `Content* content = resolve(layer.content)`), so it is
+// trivially copyable and keeps `inputs()` and the pull seam allocation-free.
+class Content;
+using ContentRef = Content*;
+
 // The layer contract (doc 03). Walking-skeleton subset: the audio and editable
-// facets and the operator-graph members land with their systems.
+// facets land with their systems. The operator-graph members below are
+// null/identity defaults, so leaf content is behaviourally unchanged.
 class Content {
 public:
   Content(const Content&) = delete;
@@ -167,8 +180,62 @@ public:
   virtual std::optional<RenderResult> render(const RenderRequest& request,
                                              std::shared_ptr<RenderCompletion> done) = 0;
 
+  // --- operator graph (doc 13:39-67) ---
+  // The operator's input edges, visible to the core for aggregate revisions,
+  // snapshot consistency, cycle detection, and damage routing (doc 13:48-51).
+  // The returned span views the operator's own storage in declared order.
+  // Default: an empty span -- leaf content is a graph leaf (doc 13:52).
+  virtual std::span<const ContentRef> inputs() const { return {}; }
+
+  // Map damage on input `input`'s given `rect` into damage on this content's
+  // output (doc 13:54-57). Default: identity (pass-through-shaped content).
+  //
+  // Covering requirement (normative, entailed by doc 13:104-107): the returned
+  // output rect MUST cover every output pixel whose value can change when the
+  // named input's `rect` changes. Over-approximation is sound; under-
+  // approximation drops repaint and is a bug. This is the forward reverse of
+  // the region pull -- a blur inflates the damage by its radius exactly as it
+  // inflates the pulled region. The general property is enforced over
+  // arbitrary operators by the public conformance suite.
+  virtual Rect map_input_damage(std::size_t input, const Rect& rect) const;
+
+  // The OpenFX-style identity (pass-through) action (doc 13:59-65): if, for
+  // this request, this content's output is exactly input N's output (a fade at
+  // envelope == 1, a disabled effect), return N so the compositor can serve
+  // that input's cached tiles directly -- no render, no copy, no new cache
+  // entry. Request-scoped. Default: `nullopt` (never a pass-through).
+  virtual std::optional<std::size_t> identity(const RenderRequest& request) const;
+
 protected:
   Content() = default;
+};
+
+// The abstract service through which an operator asks the core to render an
+// input, instead of calling `input->render()` directly (doc 13:69-89). A pull
+// is the same machinery as a compositor-issued request -- cache lookup first,
+// worker scheduling, the request's snapshot token respected, its deadline and
+// budget inherited -- so it carries the render contract's own `RenderRequest`
+// and `RenderCompletion` and adds no new settlement path.
+//
+// This is the L3 interface only (doc 17:53): pure virtuals and a virtual
+// destructor, no state and no cache/worker/scheduling logic. The concrete
+// implementation and the attach-time injection that hands a service to content
+// are the L4 concern (`compositor.pull_service`, doc 17:56). The audio pull
+// (`pull_audio`, doc 13:80) joins this interface with `contract.audio_facet`,
+// which owns `AudioRequest`.
+class PullService {
+public:
+  PullService(const PullService&) = delete;
+  PullService& operator=(const PullService&) = delete;
+  virtual ~PullService() = default;
+
+  // Render `input` for `request`, settling `done` exactly as `Content::render`
+  // does -- inline via `done->complete`/`done->fail` or later off-thread.
+  virtual void pull(ContentRef input, const RenderRequest& request,
+                    std::shared_ptr<RenderCompletion> done) = 0;
+
+protected:
+  PullService() = default;
 };
 
 } // namespace arbc

@@ -31,7 +31,8 @@ task contract "Layer contract" {
   task operator_members "Operator graph members" {
     effort 1d
     allocate team
-    note "inputs(), map_input_damage(), identity(); PullService interface (implementation lives in the compositor). Doc 13."
+    complete 100
+    note "inputs(), map_input_damage(), identity(); PullService interface (implementation lives in the compositor). Doc 13. Refinement: tasks/refinements/contract/operator_members.md"
   }
   task registry "Kind registry" {
     effort 1d
