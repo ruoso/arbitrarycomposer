@@ -21,6 +21,7 @@ task color "Color and pixel formats" {
   task kernels "Templated kernels + variant dispatch" {
     effort 3d
     allocate team
+    complete 100
     depends !format_set
     note "Format-templated blend/premultiply/convert kernels, monomorphized; one std::visit per tile-sized operation; typed span accessors checked against tags. Doc 07. Refinement: tasks/refinements/color/kernels.md"
   }

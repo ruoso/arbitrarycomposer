@@ -30,8 +30,8 @@ public:
   int width() const override { return d_width; }
   int height() const override { return d_height; }
   arbc::SurfaceFormat format() const override { return d_format; }
-  std::span<float> cpu_pixels() override { return {}; }
-  std::span<const float> cpu_pixels() const override { return {}; }
+  std::span<std::byte> cpu_bytes() override { return {}; }
+  std::span<const std::byte> cpu_bytes() const override { return {}; }
 
 private:
   int d_width;

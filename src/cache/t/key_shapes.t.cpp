@@ -34,8 +34,8 @@ public:
     sf.pixel_format = d_pf;
     return sf;
   }
-  std::span<float> cpu_pixels() override { return {}; }
-  std::span<const float> cpu_pixels() const override { return {}; }
+  std::span<std::byte> cpu_bytes() override { return {}; }
+  std::span<const std::byte> cpu_bytes() const override { return {}; }
 
 private:
   int d_w;
@@ -46,8 +46,7 @@ private:
 // A representative fully-populated Timed tile key the field-discrimination
 // cases perturb one field at a time.
 TileKey timed_key() {
-  return TileKey{arbc::ObjectId{7}, 3, ScaleRung{2}, TileCoord{5, 9},
-                 arbc::Time{100}};
+  return TileKey{arbc::ObjectId{7}, 3, ScaleRung{2}, TileCoord{5, 9}, arbc::Time{100}};
 }
 
 TileValue make_tile(int w, int h, arbc::PixelFormat pf) {
@@ -111,8 +110,7 @@ TEST_CASE("TileKey: each field independently discriminates") {
 
 // enforces: 11-time-and-video#tile-key-carries-time-and-revision
 TEST_CASE("TileKey: a Static key never equals a Timed key, including at flicks 0") {
-  const TileKey static_key{arbc::ObjectId{7}, 3, ScaleRung{2}, TileCoord{5, 9},
-                           std::nullopt};
+  const TileKey static_key{arbc::ObjectId{7}, 3, ScaleRung{2}, TileCoord{5, 9}, std::nullopt};
 
   // Static content omits the time axis -- no still grows the cache.
   TileKey timed_zero = static_key;
@@ -179,7 +177,8 @@ TEST_CASE("TileKey and BlockKey behave as std::unordered_map keys") {
 TEST_CASE("TileCache round-trip: insert, hit on equal key, miss on a differing one") {
   TileCache cache(1 << 20);
   const TileKey key = timed_key();
-  const std::size_t bytes = arbc::tile_byte_cost(FixedSurface{16, 16, arbc::PixelFormat::Rgba32fLinearPremul});
+  const std::size_t bytes =
+      arbc::tile_byte_cost(FixedSurface{16, 16, arbc::PixelFormat::Rgba32fLinearPremul});
 
   cache.insert(key, make_tile(16, 16, arbc::PixelFormat::Rgba32fLinearPremul), bytes,
                PriorityClass::Visible);
@@ -225,11 +224,17 @@ TEST_CASE("behavioral counters: exact tile-cache hits/misses over a script") {
   CHECK(cache.hits() == 0);
   CHECK(cache.misses() == 0);
 
-  { auto h = cache.lookup(k1); }         // hit
-  { auto h = cache.lookup(k2); }         // hit
+  {
+    auto h = cache.lookup(k1);
+  } // hit
+  {
+    auto h = cache.lookup(k2);
+  } // hit
   TileKey absent = timed_key();
   absent.revision += 100;
-  { auto m = cache.lookup(absent); }     // miss (different revision)
+  {
+    auto m = cache.lookup(absent);
+  } // miss (different revision)
 
   CHECK(cache.hits() == 2);
   CHECK(cache.misses() == 1);

@@ -1,5 +1,6 @@
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
+#include <arbc/media/pixel_format.hpp>
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/offline.hpp>
 
@@ -13,7 +14,7 @@
 namespace {
 
 std::array<float, 4> pixel(const arbc::Surface& surface, int x, int y) {
-  const std::span<const float> data = surface.cpu_pixels();
+  const std::span<const float> data = surface.span<arbc::PixelFormat::Rgba32fLinearPremul>();
   const std::size_t at =
       4 * (static_cast<std::size_t>(y) * static_cast<std::size_t>(surface.width()) +
            static_cast<std::size_t>(x));
@@ -77,8 +78,10 @@ TEST_CASE("walking skeleton: rendering is byte-exact deterministic") {
   const std::unique_ptr<arbc::Surface> first = render_offline(document, viewport, backend);
   const std::unique_ptr<arbc::Surface> second = render_offline(document, viewport, backend);
 
-  const std::span<const float> a = std::as_const(*first).cpu_pixels();
-  const std::span<const float> b = std::as_const(*second).cpu_pixels();
+  const std::span<const float> a =
+      std::as_const(*first).span<arbc::PixelFormat::Rgba32fLinearPremul>();
+  const std::span<const float> b =
+      std::as_const(*second).span<arbc::PixelFormat::Rgba32fLinearPremul>();
   REQUIRE(a.size() == b.size());
   REQUIRE(std::memcmp(a.data(), b.data(), a.size_bytes()) == 0);
 }

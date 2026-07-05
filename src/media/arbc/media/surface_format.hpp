@@ -31,10 +31,21 @@ struct SurfaceFormat {
   friend constexpr bool operator==(const SurfaceFormat&, const SurfaceFormat&) = default;
 };
 
-// The doc 07 default working format at float32 -- the storage the reference
-// backend supports today: premultiplied linear-light sRGB. (The designed
-// default working format is f16; it becomes *storable* with color.kernels.)
+// The doc 07 default working format at float32 -- premultiplied linear-light
+// sRGB, the walking-skeleton storage.
 inline constexpr SurfaceFormat k_working_rgba32f{PixelFormat::Rgba32fLinearPremul, k_linear_srgb,
                                                  Premultiplied::Yes};
+
+// The doc 07 *designed* default working format: premultiplied linear-light
+// sRGB at f16. Storable with color.kernels; the working-space default flips
+// onto it with color.working_space.
+inline constexpr SurfaceFormat k_working_rgba16f{PixelFormat::Rgba16fLinearPremul, k_linear_srgb,
+                                                 Premultiplied::Yes};
+
+// The doc 07 rule-3 fast mode: 8-bit sRGB, *straight* alpha. Premultiplying
+// gamma-encoded 8-bit samples is doubly wrong (gamma-space multiply + precision
+// loss), so the storable pairing is non-premultiplied; the codec crosses into
+// the premultiplied working space at decode time.
+inline constexpr SurfaceFormat k_fast_rgba8srgb{PixelFormat::Rgba8Srgb, k_srgb, Premultiplied::No};
 
 } // namespace arbc

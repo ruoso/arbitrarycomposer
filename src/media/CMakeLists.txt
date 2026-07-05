@@ -2,7 +2,8 @@ arbc_add_component(
   NAME media
   SOURCES pixel_format.cpp
   PUBLIC_HEADERS arbc/media/pixel_format.hpp arbc/media/color_space.hpp
-                 arbc/media/surface_format.hpp
+                 arbc/media/surface_format.hpp arbc/media/pixel_traits.hpp
   DEPENDS base)
 
-arbc_component_test(COMPONENT media SOURCES t/pixel_format.t.cpp)
+arbc_component_test(COMPONENT media SOURCES t/pixel_format.t.cpp
+                                            t/pixel_traits.t.cpp)

@@ -16,8 +16,8 @@
 namespace {
 
 // A self-contained in-memory `Surface` with real rgba32f storage, so
-// `render()` output is byte-observable via `cpu_pixels()` without linking a
-// backend. Keeps the contract unit test at L3.
+// `render()` output is byte-observable via the checked typed span without
+// linking a backend. Keeps the contract unit test at L3.
 class MemSurface : public arbc::Surface {
 public:
   MemSurface(int w, int h, arbc::SurfaceFormat fmt)
@@ -27,8 +27,12 @@ public:
   int width() const override { return d_w; }
   int height() const override { return d_h; }
   arbc::SurfaceFormat format() const override { return d_fmt; }
-  std::span<float> cpu_pixels() override { return d_pixels; }
-  std::span<const float> cpu_pixels() const override { return d_pixels; }
+  std::span<std::byte> cpu_bytes() override {
+    return {reinterpret_cast<std::byte*>(d_pixels.data()), d_pixels.size() * sizeof(float)};
+  }
+  std::span<const std::byte> cpu_bytes() const override {
+    return {reinterpret_cast<const std::byte*>(d_pixels.data()), d_pixels.size() * sizeof(float)};
+  }
 
   const std::vector<float>& pixels() const { return d_pixels; }
 
@@ -51,7 +55,7 @@ public:
 
   std::optional<arbc::RenderResult> render(const arbc::RenderRequest& request,
                                            std::shared_ptr<arbc::RenderCompletion>) override {
-    const std::span<float> px = request.target.cpu_pixels();
+    const std::span<float> px = request.target.span<arbc::PixelFormat::Rgba32fLinearPremul>();
     const float seed = static_cast<float>(request.snapshot.slot) +
                        static_cast<float>(request.region.x0) +
                        static_cast<float>(request.region.y0) + static_cast<float>(request.scale) +

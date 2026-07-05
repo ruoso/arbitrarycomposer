@@ -30,8 +30,12 @@ public:
   int width() const override { return d_w; }
   int height() const override { return d_h; }
   arbc::SurfaceFormat format() const override { return d_fmt; }
-  std::span<float> cpu_pixels() override { return d_pixels; }
-  std::span<const float> cpu_pixels() const override { return d_pixels; }
+  std::span<std::byte> cpu_bytes() override {
+    return {reinterpret_cast<std::byte*>(d_pixels.data()), d_pixels.size() * sizeof(float)};
+  }
+  std::span<const std::byte> cpu_bytes() const override {
+    return {reinterpret_cast<const std::byte*>(d_pixels.data()), d_pixels.size() * sizeof(float)};
+  }
 
   const std::vector<float>& pixels() const { return d_pixels; }
 
@@ -49,7 +53,7 @@ constexpr arbc::SurfaceFormat k_fmt = arbc::k_working_rgba32f;
 // outputs must be byte-identical -- the whole point of the one-code-path
 // golden.
 arbc::RenderResult paint(const arbc::RenderRequest& request) {
-  const std::span<float> px = request.target.cpu_pixels();
+  const std::span<float> px = request.target.span<arbc::PixelFormat::Rgba32fLinearPremul>();
   const float seed = static_cast<float>(request.region.x0) + static_cast<float>(request.region.y0) +
                      static_cast<float>(request.scale) + static_cast<float>(request.time.flicks);
   for (std::size_t i = 0; i < px.size(); ++i) {

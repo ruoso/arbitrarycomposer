@@ -129,4 +129,13 @@ this task.
 
 ## Status
 
-_pending implementation_
+**Done** — 2026-07-05.
+
+- Format-templated CPU kernels (`fill_kernel` / `source_over_kernel` / `convert_kernel`) monomorphized per format, one `std::visit` dispatch per tile-sized operation — `src/backend_cpu/kernels.hpp` (new), `src/backend_cpu/cpu_backend.cpp`.
+- `PixelTraits<Format>` descriptors with portable software f16 (round-to-nearest-even, no `_Float16` dependency) and correct sRGB EOTF encode/decode — `src/media/arbc/media/pixel_traits.hpp` (new).
+- Byte-backed `CpuSurface` storage sized by format; `cpu_pixels()` float-span replaced by `cpu_bytes()` + checked `typed_span<F>` accessors — `src/surface/arbc/surface/surface.hpp`, `src/surface/arbc/surface/typed_span.hpp` (new).
+- All call sites migrated: `src/kind_solid/solid_content.cpp`, `tests/walking_skeleton.t.cpp`, `src/cache/t/key_shapes.t.cpp`, `src/surface/t/surface_pool.t.cpp`, `src/contract/t/async_render.t.cpp`, `src/contract/t/snapshot_pins.t.cpp`.
+- New unit tests: exhaustive sRGB8 round-trip, f16 edge-case table + exhaustive non-NaN half round-trip (`src/media/t/pixel_traits.t.cpp`); per-format blend properties and rgba8↔rgba32f convert round-trip (`src/backend_cpu/t/cpu_backend.t.cpp`).
+- Claims registered + enforced: `blending-in-linear-working-space` (required), `srgb8-round-trips-exactly`, `f16-conversion-portable-and-exact`, `storage-sized-by-pixel-format`, `conversions-route-through-working-space` — `tests/claims/registry.tsv`.
+- Walking-skeleton 32f golden remains byte-identical; 183 tests pass under dev+ASan/UBSan gate.
+- **`color.kernel_goldens` note**: must cover `fill_kernel` / `source_over_kernel` / `convert_kernel` (`src/backend_cpu/kernels.hpp`) across all three formats, plus `pixel_traits.hpp` codecs (sRGB8↔linear, f16↔float, unorm8, premultiply/unpremultiply).

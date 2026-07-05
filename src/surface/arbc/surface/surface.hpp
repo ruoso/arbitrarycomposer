@@ -1,7 +1,9 @@
 #pragma once
 
+#include <arbc/media/pixel_traits.hpp>
 #include <arbc/media/surface_format.hpp>
 
+#include <cstddef>
 #include <span>
 
 namespace arbc {
@@ -21,16 +23,37 @@ public:
   // and premultiplication, carried from creation.
   virtual SurfaceFormat format() const = 0;
 
-  // Typed CPU access, gated on capability *and* tag (doc 09): a CPU span is
-  // available iff the owning backend advertises `cpu_access` in its
-  // BackendCaps and the requested view matches this surface's SurfaceFormat
-  // tag; empty when unavailable (e.g. a GPU surface without readback).
-  // Walking-skeleton subset: the float span is premultiplied linear-light
-  // rgba32f only (the reference backend's sole stored format until
-  // color.kernels); the multi-format `span<Format>()` accessors land with
-  // color.kernels and slot into the same capability-plus-tag check.
-  virtual std::span<float> cpu_pixels() = 0;
-  virtual std::span<const float> cpu_pixels() const = 0;
+  // Raw byte access to the CPU-side storage (doc 07/09): available iff the
+  // owning backend advertises `cpu_access` and the surface is CPU-backed;
+  // empty otherwise (e.g. a GPU surface without readback). Bytes are the honest
+  // wire: storage is sized by the pixel format, so typed views must go through
+  // the checked accessor below rather than reinterpreting blindly.
+  virtual std::span<std::byte> cpu_bytes() = 0;
+  virtual std::span<const std::byte> cpu_bytes() const = 0;
+
+  // Checked typed CPU access (doc 07): a span of the format's storage samples,
+  // valid iff the requested F matches this surface's pixel-format tag. A
+  // mismatch (or no CPU access) yields an empty span -- never a silent
+  // reinterpretation across formats. Kernels and format-generic callers reach
+  // this via the variant visit helper in typed_span.hpp; a plugin that knows
+  // its format calls `surface.span<F>()` directly.
+  template <PixelFormat F> std::span<typename PixelTraits<F>::Storage> span() {
+    using Storage = typename PixelTraits<F>::Storage;
+    if (format().pixel_format != F) {
+      return {};
+    }
+    const std::span<std::byte> bytes = cpu_bytes();
+    return {reinterpret_cast<Storage*>(bytes.data()), bytes.size() / sizeof(Storage)};
+  }
+
+  template <PixelFormat F> std::span<const typename PixelTraits<F>::Storage> span() const {
+    using Storage = typename PixelTraits<F>::Storage;
+    if (format().pixel_format != F) {
+      return {};
+    }
+    const std::span<const std::byte> bytes = cpu_bytes();
+    return {reinterpret_cast<const Storage*>(bytes.data()), bytes.size() / sizeof(Storage)};
+  }
 
 protected:
   Surface() = default;

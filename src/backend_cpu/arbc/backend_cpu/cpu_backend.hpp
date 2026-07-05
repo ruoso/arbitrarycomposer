@@ -2,6 +2,7 @@
 
 #include <arbc/surface/backend.hpp>
 
+#include <cstddef>
 #include <memory>
 #include <span>
 #include <vector>
@@ -15,14 +16,17 @@ public:
   int width() const override { return d_width; }
   int height() const override { return d_height; }
   SurfaceFormat format() const override { return d_format; }
-  std::span<float> cpu_pixels() override { return d_data; }
-  std::span<const float> cpu_pixels() const override { return d_data; }
+  // Byte-backed storage sized by the pixel format (doc 07): 16 / 8 / 4 bytes
+  // per pixel for 32f / 16f / 8. Typed views go through Surface::span<F>(),
+  // which checks the tag before reinterpreting.
+  std::span<std::byte> cpu_bytes() override { return d_data; }
+  std::span<const std::byte> cpu_bytes() const override { return d_data; }
 
 private:
   int d_width;
   int d_height;
   SurfaceFormat d_format;
-  std::vector<float> d_data;
+  std::vector<std::byte> d_data;
 };
 
 // Reference backend (doc 09): CPU memory surfaces, software compositing.

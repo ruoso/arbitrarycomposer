@@ -1,18 +1,29 @@
 #include <arbc/backend_cpu/cpu_backend.hpp>
+#include <arbc/media/pixel_format.hpp>
+#include <arbc/media/pixel_traits.hpp>
 #include <arbc/media/surface_format.hpp>
+#include <arbc/surface/typed_span.hpp>
+
+#include "kernels.hpp"
 
 #include <cassert>
-#include <cmath>
 #include <cstddef>
+#include <memory>
+#include <optional>
+#include <span>
 #include <utility>
 
 namespace arbc {
 
+// Byte-backed storage sized by the pixel format (doc 07): 16 / 8 / 4 bytes per
+// pixel for 32f / 16f / 8. Zero-filled bytes are transparent black in every
+// format (float +0, integer 0), so a fresh surface starts clear -- and the 32f
+// case is byte-identical to the walking skeleton's old float-count layout.
 CpuSurface::CpuSurface(int width, int height, SurfaceFormat format)
     : d_width(width), d_height(height), d_format(format),
       d_data(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) *
-                 channels_per_pixel(format.pixel_format),
-             0.0F) {}
+                 bytes_per_pixel(format.pixel_format),
+             std::byte{0}) {}
 
 BackendCaps CpuBackend::capabilities() const {
   // Honest current caps (doc 07/09): the reference backend serves typed CPU
@@ -29,13 +40,15 @@ BackendCaps CpuBackend::capabilities() const {
 
 expected<std::unique_ptr<Surface>, SurfaceError> CpuBackend::make_surface(int width, int height,
                                                                           SurfaceFormat format) {
-  // Capability honesty (doc 07): the reference backend stores and composites
-  // only the premultiplied linear-light rgba32f working format today. f16 /
-  // 8-bit storage and the tag conversions arrive with color.kernels; a
-  // configurable working space with color.working_space. Anything else is
-  // honestly unsupported -> SurfaceError, surfaced as a value (doc 10), never
-  // a null handle and never an abort.
-  if (format != k_working_rgba32f) {
+  // Capability honesty (doc 07): with color.kernels the reference backend now
+  // stores all three closed working formats -- premultiplied linear-light
+  // rgba32f and rgba16f, and the straight-alpha 8-bit sRGB fast mode -- each at
+  // the exact tag triple its codecs honor. Any other tag combination (a color
+  // space or premultiplication no kernel implements, e.g. gamma-space rgba32f
+  // or premultiplied rgba8) is honestly unsupported -> SurfaceError, surfaced
+  // as a value (doc 10), never a null handle and never an abort. A configurable
+  // working space beyond these arrives with color.working_space.
+  if (format != k_working_rgba32f && format != k_working_rgba16f && format != k_fast_rgba8srgb) {
     return unexpected(SurfaceError::UnsupportedFormat);
   }
   // Convert to the base handle first: expected's value ctor takes exactly
@@ -46,23 +59,21 @@ expected<std::unique_ptr<Surface>, SurfaceError> CpuBackend::make_surface(int wi
 }
 
 void CpuBackend::clear(Surface& surface, float r, float g, float b, float a) {
-  std::span<float> pixels = surface.cpu_pixels();
-  assert(!pixels.empty() || surface.width() == 0 || surface.height() == 0);
-  for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) {
-    pixels[i + 0] = r;
-    pixels[i + 1] = g;
-    pixels[i + 2] = b;
-    pixels[i + 3] = a;
-  }
+  // (r,g,b,a) is a premultiplied working-space sample (doc 07 rule 2). One
+  // variant dispatch per operation: resolve the surface's runtime format tag to
+  // a compile-time typed span, then run the monomorphized fill that encodes the
+  // working color into the destination format once per pixel.
+  const WorkingPixel color{r, g, b, a};
+  visit_surface(surface, [&](auto typed) { fill_kernel(typed, color); });
 }
 
 void CpuBackend::composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                            double opacity) {
   // Tag agreement (doc 07 rule 2): compositing happens within one working
-  // format; converting between differing tags is color.kernels' job. Until
-  // then a mismatch is a caller error, never a silent reinterpretation --
-  // debug assert, no-op in release, mirroring the degenerate-transform cull
-  // below.
+  // format; converting between differing tags routes through convert_kernel and
+  // is wired by the edge tasks (imports, nesting, display-out), not here. Until
+  // then a mismatch is a caller error, never a silent reinterpretation -- debug
+  // assert, no-op in release, mirroring the degenerate-transform cull below.
   assert(dst.format() == src.format());
   if (!(dst.format() == src.format())) {
     return;
@@ -71,40 +82,16 @@ void CpuBackend::composite(Surface& dst, const Surface& src, const Affine& src_t
   if (!dst_to_src.has_value()) {
     return; // degenerate mapping: cull, never propagate NaNs (doc 04)
   }
-  std::span<float> d = dst.cpu_pixels();
-  const std::span<const float> s = std::as_const(src).cpu_pixels();
-  assert(!d.empty() && !s.empty());
-
-  const int dst_width = dst.width();
-  const int dst_height = dst.height();
-  const int src_width = src.width();
-  const int src_height = src.height();
-  const auto op = static_cast<float>(opacity);
-
-  for (int y = 0; y < dst_height; ++y) {
-    for (int x = 0; x < dst_width; ++x) {
-      // Nearest sampling at the destination pixel center. Filtered
-      // resampling arrives with the real kernel set (doc 07).
-      const Vec2 q = dst_to_src->apply({x + 0.5, y + 0.5});
-      const int i = static_cast<int>(std::floor(q.x));
-      const int j = static_cast<int>(std::floor(q.y));
-      if (i < 0 || i >= src_width || j < 0 || j >= src_height) {
-        continue;
-      }
-      const std::size_t src_at =
-          4 * (static_cast<std::size_t>(j) * static_cast<std::size_t>(src_width) +
-               static_cast<std::size_t>(i));
-      const std::size_t dst_at =
-          4 * (static_cast<std::size_t>(y) * static_cast<std::size_t>(dst_width) +
-               static_cast<std::size_t>(x));
-      // Source-over on premultiplied alpha (doc 07): out = s + (1 - a_s) d,
-      // uniformly across all four channels.
-      const float alpha = s[src_at + 3] * op;
-      for (std::size_t k = 0; k < 4; ++k) {
-        d[dst_at + k] = s[src_at + k] * op + (1.0F - alpha) * d[dst_at + k];
-      }
-    }
-  }
+  // One dispatch per tile-sized operation (doc 07), never per pixel: the kernel
+  // body is monomorphized on the shared format. src is read through the same
+  // compile-time format, so the source-over math runs in linear working floats.
+  visit_surface(dst, [&](auto dst_typed) {
+    constexpr PixelFormat F = decltype(dst_typed)::format;
+    const std::span<const typename PixelTraits<F>::Storage> src_span = src.span<F>();
+    assert(!dst_typed.data.empty() && !src_span.empty());
+    source_over_kernel<F>(dst_typed, dst.width(), dst.height(), src_span, src.width(), src.height(),
+                          *dst_to_src, static_cast<float>(opacity));
+  });
 }
 
 } // namespace arbc

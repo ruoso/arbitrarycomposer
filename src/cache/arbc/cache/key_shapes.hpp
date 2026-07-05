@@ -151,8 +151,7 @@ template <> struct std::hash<arbc::TileKey> {
     // Distinct combine for present vs absent so a Static key (nullopt) never
     // hash-collides with a Timed key at `flicks == 0` (doc 11:139-140).
     if (key.achieved_time.has_value()) {
-      h = arbc::detail::key_hash_combine(
-          h, std::hash<std::int64_t>{}(key.achieved_time->flicks));
+      h = arbc::detail::key_hash_combine(h, std::hash<std::int64_t>{}(key.achieved_time->flicks));
       h = arbc::detail::key_hash_combine(h, 0x9ddfea08eb382d69ULL);
     } else {
       h = arbc::detail::key_hash_combine(h, 0x2545f4914f6cdd1dULL);
