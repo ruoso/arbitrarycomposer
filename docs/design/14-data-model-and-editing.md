@@ -55,6 +55,22 @@ a state handle, below). The writer thread is the single mutator (doc 02's
 single-writer rule, unchanged); `Document` holds the current `DocState`
 in an atomic shared pointer.
 
+A composition's ordered layer list is stored inline in the composition
+record up to a small fixed cap (`k_max_inline_layers`); past the cap it
+spills to a HAMT-backed chain of order-chunk objects — ordinary records in
+the same `DocState` map, keyed by their own `ObjectId` and named from the
+composition by a plain `ObjectId` spill-root value (never an owning edge, so
+the composition record stays fixed-size and trivially destructible like every
+other record). Crossing the cap migrates inline → chunks; dropping back to
+the cap collapses chunks → inline, so a given membership has one canonical
+record. Because chunks are ordinary map objects, the persistent map owns,
+path-copies, and reclaims them with no bespoke ownership machinery, and a
+membership edit path-copies only the touched chunk map-paths — every
+untouched chunk is shared by `SlotRef` identity across versions
+(`14-data-model-and-editing#membership-spills-past-inline-cap`). Order
+rewrites are O(members) worst case, which value semantics blesses at this
+scale ("hundreds of layers … nanoseconds-to-microseconds", above).
+
 ## Identity
 
 Every object carries a stable `ObjectId` (64-bit, document-unique,
@@ -99,6 +115,16 @@ All mutation flows through a transaction on the writer thread:
   abort is a discard, not a rollback.
 - Reading needs no transaction: the writer reads current state directly;
   everyone else reads pinned versions.
+
+Composition membership edits — `attach_layer`, `detach_layer`,
+`reorder_layer` — are placement/graph transactions in exactly this class:
+they rewrite pure core records (the composition and its spill chunks), damage
+the parent composition once
+(`14-data-model-and-editing#membership-edit-damages-composition`,
+`#layer-order-is-explicit`), and undo/redo as ordinary inverse publishes over
+the existing journal `ObjectEdit` edges with no new entry type, restoring the
+prior order even across the inline↔spill boundary
+(`14-data-model-and-editing#membership-undo-round-trips`).
 
 ## Content state: the `Editable` facet
 

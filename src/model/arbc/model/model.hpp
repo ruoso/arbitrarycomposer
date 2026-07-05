@@ -56,6 +56,14 @@ public:
   // is `model.transactions`' concern. Refcount-free peek traversal.
   void for_each_layer(const std::function<void(const LayerRecord&)>& fn) const;
 
+  // Visit a composition's members in true bottom-to-top membership order
+  // (`model.composition_membership`, doc 14 § The central decision): the inline
+  // `layers[]` array while the count is within `k_max_inline_layers`, else the
+  // HAMT-backed spill-chunk chain. Refcount-free peek traversal; a no-op when
+  // `composition` is absent or not a composition. This is the composition-scoped
+  // accessor consumers adopt over the global-order `for_each_layer`.
+  void for_each_layer_in(ObjectId composition, const std::function<void(ObjectId)>& fn) const;
+
   // The object-record edge `id` is bound to (the HAMT leaf's `SlotRef`). Exposed
   // so a test can witness that an untouched object is shared by `SlotRef`
   // identity between two versions (14-data-model-and-editing#commit-shares-
@@ -210,6 +218,30 @@ public:
     // path). No-op if the layer is absent.
     void set_transform(ObjectId layer, const Affine& transform);
 
+    // Insert `layer` into `composition`'s ordered membership at `at_index`
+    // (bottom-to-top, doc 01:6-11); an `at_index` at or past the current count
+    // appends at the top. The order lives inline while it fits in
+    // `k_max_inline_layers`, spilling to a HAMT chunk chain past the cap
+    // (`model.composition_membership`, doc 14). Path-copies the composition record
+    // and only the touched spill chunks, damages the composition once. No-op if
+    // the composition or the layer is absent (or after a prior sticky failure).
+    void attach_layer(ObjectId composition, ObjectId layer, std::uint32_t at_index);
+    // Convenience: append `layer` at the top of `composition`'s order.
+    void attach_layer(ObjectId composition, ObjectId layer);
+
+    // Remove `layer` from `composition`'s ordered membership (dropping back to the
+    // inline representation when the count falls to `k_max_inline_layers`).
+    // Path-copies the composition record and the touched chunks, damages the
+    // composition once. No-op if the composition is absent or `layer` is not a
+    // member.
+    void detach_layer(ObjectId composition, ObjectId layer);
+
+    // Move the member at `from_index` to `to_index` (a stable move: the relative
+    // order of the untouched members is preserved). Damages the composition once.
+    // No-op if the composition is absent, either index is out of range, or the
+    // indices are equal.
+    void reorder_layer(ObjectId composition, std::uint32_t from_index, std::uint32_t to_index);
+
     // Assign a caller-captured, OPAQUE content-state handle to a content object
     // (path-copies its record + its map path) and record the prior handle as the
     // entry's *before* (doc 14:133-135). The transaction never calls
@@ -252,6 +284,20 @@ public:
 
     // Note `id` as touched so `commit()` assembles its (before, after) edge.
     void touch(ObjectId id);
+
+    // Path-copy `composition`'s membership in the working tree to `new_order`,
+    // sharing every spill chunk whose members and `next` edge are unchanged and
+    // creating/erasing chunk records only at the touched tail (so live-slot growth
+    // is O(touched chunks + path depth), not O(members)). Collapses to the inline
+    // representation when `new_order` fits `k_max_inline_layers`. Touches the
+    // composition and every rewritten/erased chunk. Sets `d_status` and returns
+    // false on an allocation failure. `base` is a value copy of the composition
+    // record to rewrite from; `old_order`/`old_chunk_ids` are its current
+    // membership + chunk-id chain (empty chain when inline).
+    bool store_membership(ObjectId composition, const ObjectRecord& base,
+                          const std::vector<ObjectId>& old_order,
+                          const std::vector<ObjectId>& old_chunk_ids,
+                          const std::vector<ObjectId>& new_order);
 
     Model* d_model;
     std::string d_name;

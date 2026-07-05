@@ -107,8 +107,8 @@ TEST_CASE("a published content StateHandle retains once and releases once at slo
   model.drain();
   REQUIRE(refsink.retains == 2);
   REQUIRE(refsink.releases == 2);
-  REQUIRE(refsink.released == std::vector<arbc::StateHandle>{arbc::StateHandle{42},
-                                                             arbc::StateHandle{43}});
+  REQUIRE(refsink.released ==
+          std::vector<arbc::StateHandle>{arbc::StateHandle{42}, arbc::StateHandle{43}});
 }
 
 // enforces: 14-data-model-and-editing#pin-holds-content-state
@@ -223,8 +223,8 @@ TEST_CASE("a coalesced capture gesture keeps only first-before/last-after; undo 
   // tip) remain referenced.
   REQUIRE(refsink.retains == 4);
   REQUIRE(refsink.releases == 2);
-  REQUIRE(refsink.released == std::vector<arbc::StateHandle>{arbc::StateHandle{10},
-                                                             arbc::StateHandle{11}});
+  REQUIRE(refsink.released ==
+          std::vector<arbc::StateHandle>{arbc::StateHandle{10}, arbc::StateHandle{11}});
   REQUIRE(journal.depth() == 3); // add + seed-state + one coalesced gesture entry
   REQUIRE(journal.cursor() == 3);
   REQUIRE(model.current()->content_state(content) == arbc::StateHandle{12});

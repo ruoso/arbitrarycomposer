@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -246,6 +248,40 @@ expected<Ref<HamtNode>, PoolError> erase_rec(StoreBundle& sb, SlotRef<HamtNode> 
   return branch_without_child(sb, node, digit);
 }
 
+// Walk a composition's ordered layer membership into `order` (bottom-to-top): the
+// inline `layers[]` array while inline, else the HAMT-backed spill-chunk chain
+// headed by `comp.spill_root`. When `chunk_ids` is non-null, collect the chain's
+// chunk `ObjectId`s in order. Pure peek traversal against `root` (refcount-free).
+void read_layer_order(const StoreBundle& sb, const Ref<HamtNode>& root,
+                      const CompositionRecord& comp, std::vector<ObjectId>& order,
+                      std::vector<ObjectId>* chunk_ids) {
+  if (!comp.spill_root.valid()) {
+    for (std::uint32_t i = 0; i < comp.layer_count; ++i) {
+      order.push_back(comp.layers[i]);
+    }
+    return;
+  }
+  ObjectId cur = comp.spill_root;
+  while (cur.valid()) {
+    SlotRef<ObjectRecord> edge;
+    if (!hamt_lookup(sb, root, cur.value, edge)) {
+      break; // defensive: a well-formed chain always resolves
+    }
+    const ObjectRecord* r = sb.records->peek(edge);
+    if (r->kind != RecordKind::LayerOrderChunk) {
+      break;
+    }
+    const LayerOrderChunk& ch = r->as.order_chunk;
+    for (std::uint32_t i = 0; i < ch.count; ++i) {
+      order.push_back(ch.members[i]);
+    }
+    if (chunk_ids != nullptr) {
+      chunk_ids->push_back(cur);
+    }
+    cur = ch.next;
+  }
+}
+
 } // namespace
 
 expected<Ref<HamtNode>, PoolError> hamt_insert(StoreBundle& sb, const Ref<HamtNode>& root,
@@ -383,6 +419,19 @@ void DocRoot::for_each_layer(const std::function<void(const LayerRecord&)>& fn) 
     if (r->kind == RecordKind::Layer) {
       fn(r->as.layer);
     }
+  }
+}
+
+void DocRoot::for_each_layer_in(ObjectId composition,
+                                const std::function<void(ObjectId)>& fn) const {
+  const CompositionRecord* c = find_composition(composition);
+  if (c == nullptr) {
+    return;
+  }
+  std::vector<ObjectId> order;
+  read_layer_order(d_stores, d_root, *c, order, nullptr);
+  for (const ObjectId id : order) {
+    fn(id);
   }
 }
 
@@ -556,6 +605,247 @@ void Model::Transaction::set_transform(ObjectId layer, const Affine& transform) 
   d_root = std::move(*next);
   touch(layer);
   add_damage(Damage{layer, {}, {}, {}});
+}
+
+bool Model::Transaction::store_membership(ObjectId composition, const ObjectRecord& base,
+                                          const std::vector<ObjectId>& old_order,
+                                          const std::vector<ObjectId>& old_chunk_ids,
+                                          const std::vector<ObjectId>& new_order) {
+  const std::size_t cap = k_max_inline_layers;
+  const std::size_t n = new_order.size();
+
+  // --- Fits inline: rewrite the composition record, drop any spill chunks. ---
+  if (n <= cap) {
+    for (const ObjectId cid : old_chunk_ids) {
+      expected<Ref<HamtNode>, PoolError> er = hamt_erase(d_model->d_bundle, d_root, cid.value);
+      if (!er) {
+        d_status = unexpected(er.error());
+        return false;
+      }
+      d_root = std::move(*er);
+      touch(cid);
+    }
+    expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+    if (!rec) {
+      d_status = unexpected(rec.error());
+      return false;
+    }
+    ObjectRecord& nr = **rec;
+    nr = base;
+    nr.as.composition.layer_count = static_cast<std::uint32_t>(n);
+    nr.as.composition.spill_root = ObjectId{};
+    for (std::size_t i = 0; i < cap; ++i) {
+      nr.as.composition.layers[i] = (i < n) ? new_order[i] : ObjectId{};
+    }
+    expected<Ref<HamtNode>, PoolError> next =
+        hamt_insert(d_model->d_bundle, d_root, composition.value, rec->slot());
+    if (!next) {
+      d_status = unexpected(next.error());
+      return false;
+    }
+    d_root = std::move(*next);
+    touch(composition);
+    return true;
+  }
+
+  // --- Spilled: a chunk chain of ceil(n / cap) chunks. ---
+  const std::size_t c_new = (n + cap - 1) / cap;
+  const std::size_t c_old = old_chunk_ids.size();
+
+  // Assign chunk ids positionally: reuse existing chunk ids (so unchanged prefix
+  // chunks keep their `SlotRef` identity and their `next` edges stay valid),
+  // allocate fresh ids only for the growth tail.
+  std::vector<ObjectId> chunk_ids(c_new);
+  for (std::size_t p = 0; p < c_new; ++p) {
+    chunk_ids[p] = (p < c_old) ? old_chunk_ids[p] : d_model->allocate_id();
+  }
+  // Erase surplus tail chunks (a shrink that stays spilled).
+  for (std::size_t p = c_new; p < c_old; ++p) {
+    expected<Ref<HamtNode>, PoolError> er =
+        hamt_erase(d_model->d_bundle, d_root, old_chunk_ids[p].value);
+    if (!er) {
+      d_status = unexpected(er.error());
+      return false;
+    }
+    d_root = std::move(*er);
+    touch(old_chunk_ids[p]);
+  }
+
+  // Rewrite only the chunks whose members or `next` edge actually change; every
+  // other chunk is shared from the base version by `SlotRef` identity.
+  for (std::size_t p = 0; p < c_new; ++p) {
+    const std::size_t begin = p * cap;
+    const std::size_t cnt = std::min(cap, n - begin);
+    const ObjectId next_id = (p + 1 < c_new) ? chunk_ids[p + 1] : ObjectId{};
+
+    bool unchanged = p < c_old;
+    if (unchanged) {
+      const std::size_t old_begin = p * cap;
+      const std::size_t old_cnt = std::min(cap, old_order.size() - old_begin);
+      const ObjectId old_next = (p + 1 < c_old) ? old_chunk_ids[p + 1] : ObjectId{};
+      unchanged = (cnt == old_cnt) && (old_next == next_id);
+      for (std::size_t i = 0; unchanged && i < cnt; ++i) {
+        unchanged = new_order[begin + i] == old_order[old_begin + i];
+      }
+    }
+    if (unchanged) {
+      continue; // share the base chunk unchanged
+    }
+
+    expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+    if (!rec) {
+      d_status = unexpected(rec.error());
+      return false;
+    }
+    ObjectRecord& cr = **rec;
+    cr.kind = RecordKind::LayerOrderChunk;
+    cr.id = chunk_ids[p];
+    cr.as.order_chunk = LayerOrderChunk{};
+    cr.as.order_chunk.count = static_cast<std::uint32_t>(cnt);
+    for (std::size_t i = 0; i < cnt; ++i) {
+      cr.as.order_chunk.members[i] = new_order[begin + i];
+    }
+    cr.as.order_chunk.next = next_id;
+    expected<Ref<HamtNode>, PoolError> ins =
+        hamt_insert(d_model->d_bundle, d_root, chunk_ids[p].value, rec->slot());
+    if (!ins) {
+      d_status = unexpected(ins.error());
+      return false;
+    }
+    d_root = std::move(*ins);
+    touch(chunk_ids[p]);
+  }
+
+  // Path-copy the composition record: head the chain, hold the authoritative
+  // count, and clear the now-dead inline array for a canonical record.
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return false;
+  }
+  ObjectRecord& nr = **rec;
+  nr = base;
+  nr.as.composition.layer_count = static_cast<std::uint32_t>(n);
+  nr.as.composition.spill_root = chunk_ids[0];
+  for (std::size_t i = 0; i < cap; ++i) {
+    nr.as.composition.layers[i] = ObjectId{};
+  }
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, composition.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return false;
+  }
+  d_root = std::move(*next);
+  touch(composition);
+  return true;
+}
+
+void Model::Transaction::attach_layer(ObjectId composition, ObjectId layer,
+                                      std::uint32_t at_index) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> comp_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, composition.value, comp_edge)) {
+    return; // absent composition: no-op
+  }
+  const ObjectRecord* comp = d_model->d_records.peek(comp_edge);
+  if (comp->kind != RecordKind::Composition) {
+    return; // not a composition: no-op
+  }
+  SlotRef<ObjectRecord> layer_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, layer.value, layer_edge)) {
+    return; // absent layer: no-op
+  }
+
+  const ObjectRecord base = *comp;
+  std::vector<ObjectId> old_order;
+  std::vector<ObjectId> old_chunk_ids;
+  read_layer_order(d_model->d_bundle, d_root, base.as.composition, old_order, &old_chunk_ids);
+
+  std::vector<ObjectId> new_order = old_order;
+  const std::size_t at = std::min(static_cast<std::size_t>(at_index), new_order.size());
+  new_order.insert(new_order.begin() + static_cast<std::ptrdiff_t>(at), layer);
+
+  if (!store_membership(composition, base, old_order, old_chunk_ids, new_order)) {
+    return;
+  }
+  add_damage(Damage{composition, {}, {}, {}});
+}
+
+void Model::Transaction::attach_layer(ObjectId composition, ObjectId layer) {
+  attach_layer(composition, layer, std::numeric_limits<std::uint32_t>::max());
+}
+
+void Model::Transaction::detach_layer(ObjectId composition, ObjectId layer) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> comp_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, composition.value, comp_edge)) {
+    return; // absent composition: no-op
+  }
+  const ObjectRecord* comp = d_model->d_records.peek(comp_edge);
+  if (comp->kind != RecordKind::Composition) {
+    return;
+  }
+
+  const ObjectRecord base = *comp;
+  std::vector<ObjectId> old_order;
+  std::vector<ObjectId> old_chunk_ids;
+  read_layer_order(d_model->d_bundle, d_root, base.as.composition, old_order, &old_chunk_ids);
+
+  std::size_t idx = old_order.size();
+  for (std::size_t i = 0; i < old_order.size(); ++i) {
+    if (old_order[i] == layer) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx == old_order.size()) {
+    return; // not a member: no-op
+  }
+  std::vector<ObjectId> new_order = old_order;
+  new_order.erase(new_order.begin() + static_cast<std::ptrdiff_t>(idx));
+
+  if (!store_membership(composition, base, old_order, old_chunk_ids, new_order)) {
+    return;
+  }
+  add_damage(Damage{composition, {}, {}, {}});
+}
+
+void Model::Transaction::reorder_layer(ObjectId composition, std::uint32_t from_index,
+                                       std::uint32_t to_index) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> comp_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, composition.value, comp_edge)) {
+    return; // absent composition: no-op
+  }
+  const ObjectRecord* comp = d_model->d_records.peek(comp_edge);
+  if (comp->kind != RecordKind::Composition) {
+    return;
+  }
+
+  const ObjectRecord base = *comp;
+  std::vector<ObjectId> old_order;
+  std::vector<ObjectId> old_chunk_ids;
+  read_layer_order(d_model->d_bundle, d_root, base.as.composition, old_order, &old_chunk_ids);
+
+  if (from_index >= old_order.size() || to_index >= old_order.size() || from_index == to_index) {
+    return; // out of range or a no-op move
+  }
+  std::vector<ObjectId> new_order = old_order;
+  const ObjectId moved = new_order[from_index];
+  new_order.erase(new_order.begin() + static_cast<std::ptrdiff_t>(from_index));
+  new_order.insert(new_order.begin() + static_cast<std::ptrdiff_t>(to_index), moved);
+
+  if (!store_membership(composition, base, old_order, old_chunk_ids, new_order)) {
+    return;
+  }
+  add_damage(Damage{composition, {}, {}, {}});
 }
 
 void Model::Transaction::set_content_state(ObjectId content, StateHandle after) {

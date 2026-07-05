@@ -22,7 +22,12 @@ namespace arbc {
 // slab size class (one `RefStore<ObjectRecord>`), so a slot recycled from one
 // kind to another reuses the same count column (doc 15:230-236,
 // 15-memory-model#one-count-column-per-size-class).
-enum class RecordKind : std::uint32_t { Composition = 0, Layer = 1, Content = 2 };
+enum class RecordKind : std::uint32_t {
+  Composition = 0,
+  Layer = 1,
+  Content = 2,
+  LayerOrderChunk = 3
+};
 
 // Sentinel meaning "no editable state captured". State handles are inert in this
 // task; `model.editable_facet` gives them capture/restore semantics.
@@ -61,20 +66,39 @@ struct LayerRecord {
   bool visible() const noexcept { return (flags & k_layer_visible) != 0; }
 };
 
-// A composition holds a bounded, inline layer order for this foundation task.
-// Unbounded / chunked layer order is deferred to `model.transactions` (which
-// drives commit shape); the fixed inline cap keeps the record a single slab
-// size class here.
+// A composition holds its ordered layer list inline up to this fixed cap; beyond
+// it the order spills to a HAMT-backed chain of `LayerOrderChunk` objects
+// (`model.composition_membership`, doc 14 § The central decision). The fixed cap
+// keeps the composition record a single slab size class.
 inline constexpr std::size_t k_max_inline_layers = 8;
 
-// Composition record (doc 14): canvas, working space, and the ordered layer
-// list (bottom-to-top), each layer named by `ObjectId`.
+// A spill chunk for a composition whose layer order exceeds `k_max_inline_layers`
+// (doc 14). Holds up to `k_max_inline_layers` ordered member ids plus the
+// `ObjectId` of the next chunk in the chain (invalid == chain end). Chunks are
+// ordinary objects in the DocState HAMT keyed by their own `ObjectId`; a
+// composition names the chain head by `ObjectId` value (see `spill_root`), never
+// an owning edge -- so, like every other record, a chunk owns no slot and is
+// trivially destructible (records.hpp:12-19). Its size class stays within the
+// `CompositionRecord` arm (9 `ObjectId`s + a word, vs 8 `ObjectId`s + two doubles).
+struct LayerOrderChunk {
+  std::uint32_t count{0};
+  ObjectId members[k_max_inline_layers]{};
+  ObjectId next{};
+};
+
+// Composition record (doc 14): canvas, working space, and the ordered layer list
+// (bottom-to-top), each layer named by `ObjectId`. The order is inline in
+// `layers[0, layer_count)` while `layer_count <= k_max_inline_layers` and
+// `spill_root` is invalid; past the cap it lives in the `LayerOrderChunk` chain
+// headed by `spill_root` (the inline array is then dead) and `layer_count`
+// remains the authoritative total (`model.composition_membership`, doc 14).
 struct CompositionRecord {
   double canvas_w{0.0};
   double canvas_h{0.0};
   std::uint32_t working_space{0};
   std::uint32_t layer_count{0};
   ObjectId layers[k_max_inline_layers]{};
+  ObjectId spill_root{};
 };
 
 // The tagged object record the DocState map binds each `ObjectId` to. One record
@@ -89,6 +113,7 @@ struct ObjectRecord {
     CompositionRecord composition;
     LayerRecord layer;
     ContentRecord content;
+    LayerOrderChunk order_chunk;
   } as;
 
   // Value-initialize the union (defined state for asan/debug); every real record
@@ -107,6 +132,11 @@ static_assert(std::is_standard_layout_v<LayerRecord> &&
 static_assert(std::is_standard_layout_v<CompositionRecord> &&
                   std::is_trivially_destructible_v<CompositionRecord>,
               "CompositionRecord must be a fixed-size, trivially destructible slab record");
+static_assert(std::is_standard_layout_v<LayerOrderChunk> &&
+                  std::is_trivially_destructible_v<LayerOrderChunk>,
+              "LayerOrderChunk must be a fixed-size, trivially destructible slab record");
+static_assert(sizeof(LayerOrderChunk) <= sizeof(CompositionRecord),
+              "the spill chunk arm must not grow the ObjectRecord union size class");
 static_assert(std::is_standard_layout_v<ObjectRecord> &&
                   std::is_trivially_destructible_v<ObjectRecord> &&
                   std::is_trivially_copyable_v<ObjectRecord>,
