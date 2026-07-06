@@ -43,8 +43,9 @@ task model "Versioned model" {
   task damage "Damage records + propagation" {
     effort 2d
     allocate team
+    complete 100
     depends !transactions
-    note "Damage as (ObjectId, region, time-range) values; placement changes auto-damage; propagation up nesting to viewports. Docs 01/14."
+    note "Damage as (ObjectId, region, time-range) values; placement changes auto-damage; propagation up nesting to viewports. Docs 01/14. Refinement: tasks/refinements/model/damage.md"
   }
   task editable_facet "Editable facet plumbing" {
     effort 2d

@@ -124,7 +124,7 @@ std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
 // Drain the settled arrivals from `queue` (doc 02:69-71 step 6). For each pending
 // tile whose `RenderCompletion` has `settled()` with a value: move its rendered
 // surface into a `Visible` cache insert under the tile's exact key, emit one
-// `model::Damage{content, tile_local_rect(rung, coord), time}` for the tile
+// `model::Damage{content, tile_local_rect(rung, coord), TimeRange{time, time}}` for the tile
 // region (content-local terms, not device -- device mapping is
 // `damage_planning`'s, doc 02:94), and drop it. Unsettled tiles are retained; a
 // tile that settled via `fail` is dropped with no insert and no damage. The

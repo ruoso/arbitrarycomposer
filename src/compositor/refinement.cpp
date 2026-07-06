@@ -90,7 +90,7 @@ std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
       // for the clock-invariant Static key.
       const Time when = pending.key.achieved_time.value_or(Time::zero());
       damage.push_back(Damage{pending.content, tile_local_rect(pending.key.rung, pending.key.coord),
-                              when, when});
+                              TimeRange{when, when}});
       // A settled arrival that landed in the cache and emitted damage is one
       // follow-up frame (doc 02:69-71 step 6, doc 16:54-62).
       if (counters != nullptr) {

@@ -218,6 +218,12 @@ public:
     // path). No-op if the layer is absent.
     void set_transform(ObjectId layer, const Affine& transform);
 
+    // Replace an existing layer's opacity (path-copies its record + its map
+    // path). A placement change (doc 01:137, "transform, opacity, order") that
+    // auto-damages the whole layer, all time, once at commit. No-op if the layer
+    // is absent or not a layer.
+    void set_opacity(ObjectId layer, double opacity);
+
     // Insert `layer` into `composition`'s ordered membership at `at_index`
     // (bottom-to-top, doc 01:6-11); an `at_index` at or past the current count
     // appends at the top. The order lives inline while it fits in
@@ -259,9 +265,11 @@ public:
     // coalesced commit still publishes. `0` == no coalescing.
     Transaction& coalesce(CoalesceKey key);
 
-    // Union `d` into the per-transaction damage set (dedup by object). The
-    // mutators already contribute coarse per-object damage; a caller above may
-    // add refined regions. Flushed once at commit; abort flushes nothing.
+    // Union `d` into the per-transaction damage set (dedup by object, both axes
+    // under empty=identity / whole=absorbing). Structural mutators auto-contribute
+    // a whole-object / all-time damage (level-forced over-approximation, doc 17);
+    // a caller above (a kind's L3 `Editable`) adds the precise content region and
+    // time-range here. Flushed once at commit; abort flushes nothing.
     void add_damage(const Damage& d);
 
     // Publish the built version by an atomic swap of the current-version handle.

@@ -225,6 +225,11 @@ TEST_CASE("each attach/detach/reorder raises the revision once and damages the c
     REQUIRE(dsink.calls == expected_calls);
     REQUIRE(dsink.last.size() == 1);
     REQUIRE(dsink.last.front().object == comp);
+    // Footprint upgraded by model.damage: a membership edit is structural, so it
+    // spans the whole composition (infinite rect) at all instants (all() range).
+    // Count and keying are unchanged (still exactly one, keyed to the composition).
+    REQUIRE(dsink.last.front().rect == arbc::Rect::infinite());
+    REQUIRE(dsink.last.front().range == arbc::TimeRange::all());
     REQUIRE(model.current()->revision() == rev_before + 1);
   };
 

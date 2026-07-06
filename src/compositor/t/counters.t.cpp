@@ -197,8 +197,8 @@ TEST_CASE("counters: a still warm-cache scene issues zero renders through the co
   // requests, all cache hits, no new misses, one composite per tile.
   arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **frame2,
                                  arbc::Deadline::none(), std::nullopt, nullptr, &counters);
-  CHECK(counters.requests_issued() == k_tiles_covered);           // delta == 0
-  CHECK(counters.composites() == 2 * k_tiles_covered);            // + one per tile
+  CHECK(counters.requests_issued() == k_tiles_covered);          // delta == 0
+  CHECK(counters.composites() == 2 * k_tiles_covered);           // + one per tile
   CHECK(cache.hits() - hits_before == k_tiles_covered);          // all hits
   CHECK(cache.misses() - misses_before == 0);                    // zero new misses
   CHECK(content.renders() == static_cast<int>(k_tiles_covered)); // no second render

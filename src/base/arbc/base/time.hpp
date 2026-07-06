@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 namespace arbc {
 
@@ -28,6 +29,16 @@ struct Time {
 struct TimeRange {
   Time start{};
   Time end{};
+
+  // The all-instants range `[Time::min, Time::max)`: the temporal analog of
+  // `Rect::infinite()` -- "damaged at every instant / temporal extent unknown".
+  // Non-empty and absorbing under a range union (min-start / max-end), so a
+  // structural damage that carries it never lets a temporal consumer (the audio
+  // lookahead window, doc 14:213-217) skip the edit.
+  static constexpr TimeRange all() {
+    return {Time{std::numeric_limits<std::int64_t>::min()},
+            Time{std::numeric_limits<std::int64_t>::max()}};
+  }
 
   // Empty iff it contains no instant -- `end <= start`. A degenerate range
   // (`end == start`) is empty; a well-formed extent has `start < end`.

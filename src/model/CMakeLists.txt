@@ -8,4 +8,4 @@ arbc_add_component(
 arbc_component_test(COMPONENT model
                     SOURCES t/model.t.cpp t/records.t.cpp t/persistent_state.t.cpp
                             t/transactions.t.cpp t/journal.t.cpp t/editable_facet.t.cpp
-                            t/composition_membership.t.cpp)
+                            t/composition_membership.t.cpp t/damage.t.cpp)

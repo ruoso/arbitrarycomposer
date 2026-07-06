@@ -515,7 +515,7 @@ ObjectId Model::Transaction::add_layer(ObjectId content, const Affine& transform
   }
   d_root = std::move(*next);
   touch(id);
-  add_damage(Damage{id, {}, {}, {}});
+  add_damage(Damage{id, Rect::infinite(), TimeRange::all()});
   return id;
 }
 
@@ -542,7 +542,7 @@ ObjectId Model::Transaction::add_content(std::uint64_t kind) {
   }
   d_root = std::move(*next);
   touch(id);
-  add_damage(Damage{id, {}, {}, {}});
+  add_damage(Damage{id, Rect::infinite(), TimeRange::all()});
   return id;
 }
 
@@ -571,7 +571,7 @@ ObjectId Model::Transaction::add_composition(double canvas_w, double canvas_h) {
   }
   d_root = std::move(*next);
   touch(id);
-  add_damage(Damage{id, {}, {}, {}});
+  add_damage(Damage{id, Rect::infinite(), TimeRange::all()});
   return id;
 }
 
@@ -604,7 +604,39 @@ void Model::Transaction::set_transform(ObjectId layer, const Affine& transform) 
   }
   d_root = std::move(*next);
   touch(layer);
-  add_damage(Damage{layer, {}, {}, {}});
+  add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
+}
+
+void Model::Transaction::set_opacity(ObjectId layer, double opacity) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, layer.value, old_edge)) {
+    return; // absent: no-op (matches the walking-skeleton contract)
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Layer) {
+    return;
+  }
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return;
+  }
+  ObjectRecord& nr = **rec;
+  nr = *old; // trivial copy of the immutable old record, then override placement
+  nr.as.layer.opacity = opacity;
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, layer.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(layer);
+  add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
 }
 
 bool Model::Transaction::store_membership(ObjectId composition, const ObjectRecord& base,
@@ -771,7 +803,7 @@ void Model::Transaction::attach_layer(ObjectId composition, ObjectId layer,
   if (!store_membership(composition, base, old_order, old_chunk_ids, new_order)) {
     return;
   }
-  add_damage(Damage{composition, {}, {}, {}});
+  add_damage(Damage{composition, Rect::infinite(), TimeRange::all()});
 }
 
 void Model::Transaction::attach_layer(ObjectId composition, ObjectId layer) {
@@ -812,7 +844,7 @@ void Model::Transaction::detach_layer(ObjectId composition, ObjectId layer) {
   if (!store_membership(composition, base, old_order, old_chunk_ids, new_order)) {
     return;
   }
-  add_damage(Damage{composition, {}, {}, {}});
+  add_damage(Damage{composition, Rect::infinite(), TimeRange::all()});
 }
 
 void Model::Transaction::reorder_layer(ObjectId composition, std::uint32_t from_index,
@@ -845,7 +877,7 @@ void Model::Transaction::reorder_layer(ObjectId composition, std::uint32_t from_
   if (!store_membership(composition, base, old_order, old_chunk_ids, new_order)) {
     return;
   }
-  add_damage(Damage{composition, {}, {}, {}});
+  add_damage(Damage{composition, Rect::infinite(), TimeRange::all()});
 }
 
 void Model::Transaction::set_content_state(ObjectId content, StateHandle after) {
@@ -889,7 +921,14 @@ void Model::Transaction::set_content_state(ObjectId content, StateHandle after) 
   }
   d_root = std::move(*next);
   touch(content);
-  add_damage(Damage{content, {}, {}, {}});
+  // No model-emitted damage floor here (doc 14 Decisions): only the kind's L3
+  // `Editable` method knows the touched region and temporal extent, and it
+  // supplies precise damage via `add_damage` under the "capture, mutate, damage"
+  // discipline (doc 14:151-171). A coarse whole-content floor would be absorbing
+  // and erase that precision, defeating the O(touched tiles) promise; an
+  // empty-rect floor would be unsound. Callers that swap state without an
+  // `Editable` supply their own `Damage{content, Rect::infinite(),
+  // TimeRange::all()}` at their call site.
 
   // Record the (before, after) handle pair; first-before / last-after within a
   // single transaction (a second set on the same object keeps the first before).
@@ -917,7 +956,7 @@ void Model::Transaction::remove(ObjectId id) {
   }
   d_root = std::move(*next);
   touch(id);
-  add_damage(Damage{id, {}, {}, {}});
+  add_damage(Damage{id, Rect::infinite(), TimeRange::all()});
 }
 
 Model::Transaction& Model::Transaction::coalesce(CoalesceKey key) {

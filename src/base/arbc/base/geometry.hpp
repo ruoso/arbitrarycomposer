@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
 
 namespace arbc {
 
@@ -18,6 +19,15 @@ struct Rect {
   double y1{0.0};
 
   static constexpr Rect from_size(double width, double height) { return {0.0, 0.0, width, height}; }
+
+  // The whole-plane rect: "region unknown / everything changed" (doc 01:136,
+  // "R may be everything"). Non-empty (`-inf < +inf`) and absorbing under
+  // `rect_union` (min/max with the infinities), so a structural, level-forced
+  // over-approximation of a damage footprint never under-reports a region.
+  static constexpr Rect infinite() {
+    return {-std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+            std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+  }
 
   constexpr double width() const { return x1 - x0; }
   constexpr double height() const { return y1 - y0; }
