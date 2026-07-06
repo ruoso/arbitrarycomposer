@@ -1,10 +1,35 @@
+#include <arbc/base/transform.hpp> // Affine::max_scale
 #include <arbc/runtime/interactive.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
 namespace arbc {
+
+namespace {
+
+// One-ring pan prefetch (doc 02:92-93 "adjacent (pan prefetch ring)"): the
+// immediately-adjacent tile annulus (Chebyshev radius 1) the next pan step
+// reveals at the leading edge. A named constant `compositor.pull_service` (M4)
+// can tune when it turns the want-list into scheduled prefetch renders.
+constexpr std::int32_t k_pan_prefetch_radius = 1;
+
+} // namespace
+
+int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept {
+  if (!(prev_scale > 0.0)) {
+    return 0; // no prior frame -> no gesture
+  }
+  if (scale > prev_scale) {
+    return 1;
+  }
+  if (scale < prev_scale) {
+    return -1;
+  }
+  return 0; // camera unchanged
+}
 
 InteractiveRenderer::InteractiveRenderer(WorkerPoolConfig pool_config, Clock clock)
     : d_pool(std::move(pool_config)),
@@ -82,8 +107,14 @@ InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& r
   // The first frame plans the whole viewport (null dirty clears + full re-plan);
   // every later frame is damage-gated onto the caller-persisted `target`.
   const DirtyRegion* const dirty_ptr = first_frame ? nullptr : &dirty;
+  // Surface the per-visible-layer plans the driver composited from so Step 7 can
+  // drive speculation render-free without re-planning (the whole point of this
+  // seam). A frame-local: consumed by Step 7 and dropped at frame end, so the
+  // plan stays a pure per-frame value and no plan state crosses frames.
+  std::vector<LayerTilePlan> visible_plans;
   render_frame_interactive(state, resolve, viewport, cache, backend, pool, target, deadline,
-                           d_prior_revision, &d_pending, &d_counters, dirty_ptr, composition_time);
+                           d_prior_revision, &d_pending, &d_counters, dirty_ptr, composition_time,
+                           &visible_plans);
 
   // --- Step 5: park to the deadline; enforce it (doc 02:61-65, 140-143). ----
   // Park for async arrivals only until `d`. `wait_completions` returns whether a
@@ -116,17 +147,30 @@ InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& r
   d_carried_damage = arrival;
   const bool schedule_follow_up = !arrival_device.empty();
 
-  // --- Step 7: speculation (doc 02:92-93, 04:99-101) is DEFERRED. -----------
-  // Driving `compositor::prime_prefetch` needs the visible `LayerTilePlan`, which
-  // `render_frame_interactive` builds internally and does not surface; re-planning
-  // it here to feed the prefetch driver would double the cache lookups and perturb
-  // the very counters the loop asserts on. Priming renders nothing (the want-list
-  // is `compositor.pull_service`'s, M4), so no M3 behavior depends on it -- left
-  // to the plan-exposing seam (see the follow-up task in the return summary).
+  // --- Step 7: speculation (doc 02:92-93, 04:99-101). ----------------------
+  // Warm the prefetch rings' residency render-free by driving
+  // `compositor::prime_prefetch` from the plans the frame ALREADY composited
+  // (surfaced through `render_frame_interactive`'s `visible_plans` sink) rather
+  // than re-planning -- so this pass adds zero cache probes over the plan pass and
+  // leaves `requests_issued`/`composites` untouched (claim
+  // `02-architecture#speculation-drives-from-exposed-plan`). `zoom_direction` is
+  // the sign of the frame-over-frame camera-scale delta (Decision 5): the loop is
+  // the only place that sees successive viewports, and `prime_prefetch` takes a
+  // caller-supplied sign because "the compositor infers no gesture"
+  // (`refinement.hpp:95`). `0` on the first rendered frame or a still camera. The
+  // returned want-lists are NOT rendered here -- rendering them is
+  // `compositor.pull_service`'s (M4); M3's Step 7 only reclassifies resident
+  // pan/zoom-ring tiles, which is render-free and composite-free.
+  const double camera_scale = viewport.camera.max_scale();
+  const int zoom_direction = zoom_direction_from_scale_delta(d_prev_camera_scale, camera_scale);
+  for (const LayerTilePlan& plan : visible_plans) {
+    prime_prefetch(cache, plan, zoom_direction, k_pan_prefetch_radius);
+  }
 
   // --- Step 8: advance state. ----------------------------------------------
   d_prior_revision = revision;
   d_prev_time = composition_time;
+  d_prev_camera_scale = camera_scale;
   return FrameOutcome{schedule_follow_up};
 }
 

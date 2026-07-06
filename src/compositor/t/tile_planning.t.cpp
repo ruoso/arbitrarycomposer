@@ -1,22 +1,32 @@
+#include <arbc/base/expected.hpp>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/cache/key_shapes.hpp>
 #include <arbc/cache/keyed_store.hpp>
+#include <arbc/compositor/compositor.hpp>
+#include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/media/surface_format.hpp>
+#include <arbc/model/model.hpp>
 #include <arbc/model/records.hpp>
+#include <arbc/surface/backend.hpp>
 #include <arbc/surface/surface.hpp>
+#include <arbc/surface/surface_error.hpp>
+#include <arbc/surface/surface_pool.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <span>
+#include <vector>
 
 // Exhaustive unit tests for the pure tile planner (doc 16:46). The planner is
 // exercised against a hand-populated `TileCache` with no backend and no pool --
@@ -81,6 +91,70 @@ LayerTilePlan plan_static(TileCache& cache, const RungSelection& sel, const Rect
                           arbc::Affine::identity(), Stability::Static, time, snapshot,
                           arbc::Deadline::none());
 }
+
+// --- Driver-seam fixtures (the `visible_plans` surfacing test) ----------------
+// A CPU-buffer surface + a backend that folds a deterministic marker per
+// composite, so the two-drive byte comparison in the surfacing test is
+// meaningful (a dropped composite would not reproduce the bytes). Mirrors the
+// runtime loop test's `BufferSurface`/`MarkBackend`.
+class BufferSurface : public arbc::Surface {
+public:
+  BufferSurface(int width, int height)
+      : d_width(width), d_height(height),
+        d_bytes(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 16,
+                std::byte{0}) {}
+  int width() const override { return d_width; }
+  int height() const override { return d_height; }
+  arbc::SurfaceFormat format() const override { return arbc::k_working_rgba32f; }
+  std::span<std::byte> cpu_bytes() override { return d_bytes; }
+  std::span<const std::byte> cpu_bytes() const override { return d_bytes; }
+
+private:
+  int d_width;
+  int d_height;
+  std::vector<std::byte> d_bytes;
+};
+
+class MarkBackend : public arbc::Backend {
+public:
+  arbc::BackendCaps capabilities() const override { return {}; }
+  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
+  make_surface(int width, int height, arbc::SurfaceFormat /*format*/) override {
+    return std::unique_ptr<arbc::Surface>(std::make_unique<BufferSurface>(width, height));
+  }
+  void clear(arbc::Surface& surface, float /*r*/, float /*g*/, float /*b*/, float /*a*/) override {
+    std::span<std::byte> bytes = surface.cpu_bytes();
+    std::memset(bytes.data(), 0, bytes.size_bytes());
+  }
+  void composite(arbc::Surface& dst, const arbc::Surface& src, const arbc::Affine& /*m*/,
+                 double opacity) override {
+    const std::span<const std::byte> s = src.cpu_bytes();
+    const unsigned seed = s.empty() ? 0u : std::to_integer<unsigned>(s[0]);
+    const auto mark = (static_cast<unsigned>(opacity * 251.0) + 1u + seed) & 0xFFu;
+    for (std::byte& b : dst.cpu_bytes()) {
+      b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);
+    }
+  }
+  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
+};
+
+// A Content that answers synchronously with an exact, at-scale result and fills
+// its tile deterministically, so a cold-cache drive renders + inserts inline.
+class SyncSolid : public arbc::Content {
+public:
+  std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<arbc::RenderResult>
+  render(const arbc::RenderRequest& request,
+         std::shared_ptr<arbc::RenderCompletion> /*done*/) override {
+    const std::span<std::byte> bytes = request.target.cpu_bytes();
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+      bytes[i] = static_cast<std::byte>((i * 31u + 7u) & 0xFFu);
+    }
+    return arbc::RenderResult{request.scale, /*exact=*/true};
+  }
+};
 
 } // namespace
 
@@ -358,4 +432,75 @@ TEST_CASE("plan_layer: every planned tile carries PriorityClass::Visible") {
   for (const PlannedTile& tile : plan.tiles) {
     CHECK(tile.klass == PriorityClass::Visible);
   }
+}
+
+// --- Surfacing the composited plan (the `visible_plans` seam) -----------------
+
+// enforces: 02-architecture#speculation-drives-from-exposed-plan
+TEST_CASE("render_frame_interactive: the surfaced plan equals the composited plan; null is inert") {
+  arbc::Model model;
+  arbc::ObjectId content_id{};
+  {
+    auto txn = model.transact();
+    content_id = txn.add_content(0);
+    txn.add_layer(content_id, arbc::Affine::identity());
+    REQUIRE(txn.commit().has_value());
+  }
+  const arbc::DocStatePtr state = model.current();
+  SyncSolid content;
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == content_id ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // one rung-0 tile
+  const TileKey visible_key{content_id, state->revision(), ScaleRung{0}, TileCoord{0, 0},
+                            std::nullopt};
+
+  // Drive A: with a plan sink. A cold cache renders the tile inline (Fresh) and
+  // surfaces its plan.
+  MarkBackend backend_a;
+  arbc::SurfacePool pool_a(backend_a);
+  TileCache cache_a(64u * 1024 * 1024);
+  auto target_a = backend_a.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_a.has_value());
+  std::vector<LayerTilePlan> plans;
+  arbc::render_frame_interactive(*state, resolver, viewport, cache_a, backend_a, pool_a, **target_a,
+                                 arbc::Deadline::none(), std::nullopt, nullptr, nullptr, nullptr,
+                                 arbc::Time::zero(), &plans);
+  const std::uint64_t hits_after_plan = cache_a.hits();
+  const std::uint64_t misses_after_plan = cache_a.misses();
+
+  // One entry per visible layer, in composite order, carrying exactly the tile the
+  // frame composited (same key, same post-composite display source).
+  REQUIRE(plans.size() == 1);
+  CHECK(plans[0].content == content_id);
+  CHECK(plans[0].rung == ScaleRung{0});
+  REQUIRE(plans[0].tiles.size() == 1);
+  CHECK(plans[0].tiles[0].key == visible_key);
+  CHECK(plans[0].tiles[0].display_source == TileSource::Fresh);
+
+  // The surfaced plan drives prime_prefetch with no re-plan: the pan annulus of the
+  // single visible rung-0 tile is the 8 absent Chebyshev neighbours, and the prime
+  // probes the cache but composites/renders nothing.
+  const std::vector<arbc::TileKey> want =
+      arbc::prime_prefetch(cache_a, plans[0], /*zoom_direction=*/0, /*pan_radius=*/1);
+  CHECK(want.size() == 8);
+  CHECK(cache_a.misses() > misses_after_plan); // the prime probed the ring keys
+
+  // Drive B: identical drive with a null sink. Byte-identical target and identical
+  // plan-pass probe counts -- the seam is inert when unused.
+  MarkBackend backend_b;
+  arbc::SurfacePool pool_b(backend_b);
+  TileCache cache_b(64u * 1024 * 1024);
+  auto target_b = backend_b.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_b.has_value());
+  arbc::render_frame_interactive(*state, resolver, viewport, cache_b, backend_b, pool_b, **target_b,
+                                 arbc::Deadline::none(), std::nullopt, nullptr, nullptr, nullptr,
+                                 arbc::Time::zero(), nullptr);
+
+  CHECK(hits_after_plan == cache_b.hits());
+  CHECK(misses_after_plan == cache_b.misses()); // surfacing added no probe over the plan pass
+  const std::span<const std::byte> bytes_a = (*target_a)->cpu_bytes();
+  const std::span<const std::byte> bytes_b = (*target_b)->cpu_bytes();
+  REQUIRE(bytes_a.size() == bytes_b.size());
+  CHECK(std::memcmp(bytes_a.data(), bytes_b.data(), bytes_a.size_bytes()) == 0);
 }

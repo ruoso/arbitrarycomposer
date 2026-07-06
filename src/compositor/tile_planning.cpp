@@ -210,13 +210,20 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                               SurfacePool& pool, Surface& target, Deadline deadline,
                               std::optional<std::uint64_t> prior_revision, RefinementQueue* pending,
                               CompositorCounters* counters, const DirtyRegion* dirty,
-                              Time composition_time) {
+                              Time composition_time, std::vector<LayerTilePlan>* visible_plans) {
   // The null-`dirty` path clears and re-plans the whole viewport (byte-identical
   // to today). A gated frame composites only the damaged tiles onto the
   // caller-persisted `target`, so it must NOT clear -- the untouched region
   // survives from the previous frame (doc 02:51, refinement Decision 2).
   if (dirty == nullptr) {
     backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
+  }
+
+  // The opt-in plan sink is emptied at entry so it holds exactly this frame's
+  // planned layers, in composite order (see the move-out at layer-scope exit).
+  // Null (the default) surfaces nothing -- byte-for-byte the current behavior.
+  if (visible_plans != nullptr) {
+    visible_plans->clear();
   }
 
   const std::uint64_t revision = state.revision();
@@ -359,6 +366,17 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         // "nothing yet" is a no-op (doc 02:64 checkerboard/transparent).
         break;
       }
+    }
+
+    // Surface the plan the frame just composited from (Decision 1/3): move it
+    // into the caller's sink -- retaining its tiles' cache holds -- so the
+    // interactive loop drives `prime_prefetch` from exactly these keys without a
+    // re-plan (claim `02-architecture#speculation-drives-from-exposed-plan`).
+    // Reached only for a layer that survived every cull above and was planned, so
+    // the sink holds one entry per composited layer in bottom-to-top order. Null
+    // (the default) drops the plan here exactly as before.
+    if (visible_plans != nullptr) {
+      visible_plans->push_back(std::move(plan));
     }
   });
 }

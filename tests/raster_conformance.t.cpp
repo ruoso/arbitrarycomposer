@@ -51,7 +51,8 @@ DecodedImage raster_image() {
 }
 
 testing::ContentFactory raster_factory() {
-  return []() -> std::unique_ptr<Content> { return std::make_unique<RasterContent>(raster_image()); };
+  return
+      []() -> std::unique_ptr<Content> { return std::make_unique<RasterContent>(raster_image()); };
 }
 
 } // namespace

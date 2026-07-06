@@ -1,5 +1,4 @@
 #include <arbc/kind_raster/raster_content.hpp>
-
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/surface/typed_span.hpp>
 
@@ -19,7 +18,8 @@ void decode_into(const std::vector<std::byte>& bytes, int count, std::vector<Wor
   using Storage = typename Traits::Storage;
   const auto* p = reinterpret_cast<const Storage*>(bytes.data());
   for (int i = 0; i < count; ++i) {
-    out[static_cast<std::size_t>(i)] = Traits::decode(p + static_cast<std::size_t>(i) * Traits::channels);
+    out[static_cast<std::size_t>(i)] =
+        Traits::decode(p + static_cast<std::size_t>(i) * Traits::channels);
   }
 }
 
@@ -49,11 +49,12 @@ WorkingPixel level_pixel(const Level& lvl, int edge, int x, int y) {
   const int ty = y / edge;
   const int ix = x % edge;
   const int iy = y % edge;
-  const TileBlob& blob = *lvl.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(lvl.tiles_x) +
-                                   static_cast<std::size_t>(tx)];
-  const std::size_t o =
-      (static_cast<std::size_t>(iy) * static_cast<std::size_t>(edge) + static_cast<std::size_t>(ix)) *
-      k_tile_channels;
+  const TileBlob& blob =
+      *lvl.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(lvl.tiles_x) +
+                 static_cast<std::size_t>(tx)];
+  const std::size_t o = (static_cast<std::size_t>(iy) * static_cast<std::size_t>(edge) +
+                         static_cast<std::size_t>(ix)) *
+                        k_tile_channels;
   return {blob.px[o], blob.px[o + 1], blob.px[o + 2], blob.px[o + 3]};
 }
 
@@ -61,14 +62,15 @@ WorkingPixel level_pixel(const Level& lvl, int edge, int x, int y) {
 std::shared_ptr<TileBlob> new_blob(int edge, std::uint64_t& alloc) {
   ++alloc;
   auto blob = std::make_shared<TileBlob>();
-  blob->px.assign(static_cast<std::size_t>(edge) * static_cast<std::size_t>(edge) * k_tile_channels, 0.0F);
+  blob->px.assign(static_cast<std::size_t>(edge) * static_cast<std::size_t>(edge) * k_tile_channels,
+                  0.0F);
   return blob;
 }
 
 void put(std::shared_ptr<TileBlob>& blob, int edge, int ix, int iy, const WorkingPixel& c) {
-  const std::size_t o =
-      (static_cast<std::size_t>(iy) * static_cast<std::size_t>(edge) + static_cast<std::size_t>(ix)) *
-      k_tile_channels;
+  const std::size_t o = (static_cast<std::size_t>(iy) * static_cast<std::size_t>(edge) +
+                         static_cast<std::size_t>(ix)) *
+                        k_tile_channels;
   blob->px[o] = c[0];
   blob->px[o + 1] = c[1];
   blob->px[o + 2] = c[2];
@@ -135,10 +137,9 @@ std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, in
               const WorkingPixel b = level_pixel(child, edge, cx1, cy0);
               const WorkingPixel c = level_pixel(child, edge, cx0, cy1);
               const WorkingPixel d = level_pixel(child, edge, cx1, cy1);
-              const WorkingPixel avg{(a[0] + b[0] + c[0] + d[0]) * 0.25F,
-                                     (a[1] + b[1] + c[1] + d[1]) * 0.25F,
-                                     (a[2] + b[2] + c[2] + d[2]) * 0.25F,
-                                     (a[3] + b[3] + c[3] + d[3]) * 0.25F};
+              const WorkingPixel avg{
+                  (a[0] + b[0] + c[0] + d[0]) * 0.25F, (a[1] + b[1] + c[1] + d[1]) * 0.25F,
+                  (a[2] + b[2] + c[2] + d[2]) * 0.25F, (a[3] + b[3] + c[3] + d[3]) * 0.25F};
               put(blob, edge, ix, iy, avg);
             }
           }
@@ -201,15 +202,14 @@ WorkingPixel TileTable::pixel(std::size_t l, int x, int y) const {
 
 std::vector<float> TileTable::level_pixels(std::size_t l) const {
   const Level& lvl = d_levels[l];
-  std::vector<float> out(static_cast<std::size_t>(lvl.width) * static_cast<std::size_t>(lvl.height) *
-                         k_tile_channels);
+  std::vector<float> out(static_cast<std::size_t>(lvl.width) *
+                         static_cast<std::size_t>(lvl.height) * k_tile_channels);
   for (int y = 0; y < lvl.height; ++y) {
     for (int x = 0; x < lvl.width; ++x) {
       const WorkingPixel p = level_pixel(lvl, d_edge, x, y);
-      const std::size_t o =
-          (static_cast<std::size_t>(y) * static_cast<std::size_t>(lvl.width) +
-           static_cast<std::size_t>(x)) *
-          k_tile_channels;
+      const std::size_t o = (static_cast<std::size_t>(y) * static_cast<std::size_t>(lvl.width) +
+                             static_cast<std::size_t>(x)) *
+                            k_tile_channels;
       out[o] = p[0];
       out[o + 1] = p[1];
       out[o + 2] = p[2];
@@ -249,7 +249,8 @@ StateHandle RasterStore::build(const DecodedImage& image, int edge) {
   const std::vector<WorkingPixel> grid = decode_image(image);
   std::uint64_t alloc = 0;
   std::vector<Level> levels = build_levels(grid, image.width, image.height, edge, alloc);
-  auto table = std::make_shared<const TileTable>(image.width, image.height, edge, std::move(levels));
+  auto table =
+      std::make_shared<const TileTable>(image.width, image.height, edge, std::move(levels));
   {
     std::lock_guard<std::mutex> lock(d_mutex);
     d_blobs_allocated += alloc;
@@ -303,9 +304,9 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
         if (!tile_overlaps(tx, ty, edge, region)) {
           continue;
         }
-        auto blob = std::make_shared<TileBlob>(*l0.tiles[static_cast<std::size_t>(ty) *
-                                                             static_cast<std::size_t>(l0.tiles_x) +
-                                                         static_cast<std::size_t>(tx)]);
+        auto blob = std::make_shared<TileBlob>(
+            *l0.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(l0.tiles_x) +
+                      static_cast<std::size_t>(tx)]);
         ++alloc;
         for (int iy = 0; iy < edge; ++iy) {
           for (int ix = 0; ix < edge; ++ix) {
@@ -354,10 +355,9 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
               const WorkingPixel b = level_pixel(child, edge, cx1, cy0);
               const WorkingPixel c = level_pixel(child, edge, cx0, cy1);
               const WorkingPixel d = level_pixel(child, edge, cx1, cy1);
-              const WorkingPixel avg{(a[0] + b[0] + c[0] + d[0]) * 0.25F,
-                                     (a[1] + b[1] + c[1] + d[1]) * 0.25F,
-                                     (a[2] + b[2] + c[2] + d[2]) * 0.25F,
-                                     (a[3] + b[3] + c[3] + d[3]) * 0.25F};
+              const WorkingPixel avg{
+                  (a[0] + b[0] + c[0] + d[0]) * 0.25F, (a[1] + b[1] + c[1] + d[1]) * 0.25F,
+                  (a[2] + b[2] + c[2] + d[2]) * 0.25F, (a[3] + b[3] + c[3] + d[3]) * 0.25F};
               put(blob, edge, ix, iy, avg);
             }
           }

@@ -51,6 +51,16 @@
 
 namespace arbc {
 
+// The zoom-gesture sign the interactive loop feeds `prime_prefetch` (Decision 5,
+// doc 04:99-101): the sign of the frame-over-frame camera scale-magnitude delta.
+// `prime_prefetch` takes a caller-supplied sign because "the compositor infers no
+// gesture" (`refinement.hpp:95`), and the loop is the only place that sees
+// successive viewports. Returns `+1` when the camera magnified since the previous
+// frame, `-1` when it shrank, and `0` when unchanged or there is no prior frame
+// (`prev_scale <= 0`, the pre-first-frame sentinel) -- "no gesture -> no zoom
+// speculation". A free function so the derivation is directly unit-testable.
+int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept;
+
 // The deadline-bounded, damage-driven interactive frame loop (doc 02:49-71).
 // Owns the frame-to-frame state doc 17:88-95 assigns to runtime and threads it
 // into the stateless compositor by pointer. Non-copyable and non-movable (it
@@ -114,6 +124,12 @@ private:
   Clock d_clock;                                 // the loop's only wall-clock read
   std::optional<std::uint64_t> d_prior_revision; // last-completed revision (stale probe)
   std::optional<Time> d_prev_time;               // previous composition time (clock advance)
+  // The previous frame's viewport camera scale magnitude (`camera.max_scale()`),
+  // the only inter-frame camera state the loop keeps -- Step 7 compares it with
+  // this frame's to pick a `zoom_direction` sign for `prime_prefetch` (Decision
+  // 5). `0` before the first rendered frame (and while unchanged) means "no
+  // gesture", so the zoom ring stays cold until the camera actually scales.
+  double d_prev_camera_scale{0.0};
   // Arrival damage a poll produced this frame, owed to the NEXT frame's plan so
   // the just-inserted sharp tiles re-plan Fresh. Kept separate from the
   // invalidation set: it re-plans/re-composites the refined region WITHOUT

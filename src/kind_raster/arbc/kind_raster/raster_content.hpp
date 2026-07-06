@@ -3,8 +3,8 @@
 #include <arbc/contract/content.hpp>
 #include <arbc/media/pixel_traits.hpp>   // WorkingPixel, PixelTraits
 #include <arbc/media/surface_format.hpp> // SurfaceFormat
-#include <arbc/model/model.hpp>          // Model::Transaction, StateRefSink
 #include <arbc/model/journal.hpp>        // StateCostFn, RestoreSink
+#include <arbc/model/model.hpp>          // Model::Transaction, StateRefSink
 #include <arbc/model/records.hpp>        // StateHandle, k_state_none
 
 #include <cstddef>
@@ -236,9 +236,7 @@ private:
 class RasterStateCostFn final : public StateCostFn {
 public:
   explicit RasterStateCostFn(RasterStore& store) : d_store(&store) {}
-  std::size_t cost(const StateHandle& handle) const override {
-    return d_store->state_cost(handle);
-  }
+  std::size_t cost(const StateHandle& handle) const override { return d_store->state_cost(handle); }
 
 private:
   RasterStore* d_store;

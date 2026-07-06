@@ -41,8 +41,9 @@ task compositor "Compositor" {
   task expose_visible_plan "Expose visible LayerTilePlan from render_frame_interactive" {
     effort 1d
     allocate team
+    complete 100
     depends !tile_planning
-    note "Surface the visible LayerTilePlan from render_frame_interactive so the interactive loop can drive prime_prefetch (speculation step 7) without re-planning, avoiding counter perturbation. Doc 02. Source of debt: tasks/refinements/runtime/interactive.md."
+    note "Surface the visible LayerTilePlan from render_frame_interactive so the interactive loop can drive prime_prefetch (speculation step 7) without re-planning, avoiding counter perturbation. Doc 02. Source of debt: tasks/refinements/runtime/interactive.md. Refinement: tasks/refinements/compositor/expose_visible_plan.md"
   }
   task pull_service "PullService implementation" {
     effort 3d

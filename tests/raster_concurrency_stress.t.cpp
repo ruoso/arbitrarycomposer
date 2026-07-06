@@ -27,8 +27,8 @@ using namespace arbc;
 class MemSurface final : public Surface {
 public:
   MemSurface(int w, int h)
-      : d_w(w), d_h(h), d_bytes(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 16U,
-                                std::byte{0}) {}
+      : d_w(w), d_h(h),
+        d_bytes(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 16U, std::byte{0}) {}
   int width() const override { return d_w; }
   int height() const override { return d_h; }
   SurfaceFormat format() const override { return k_working_rgba32f; }
@@ -58,8 +58,8 @@ DecodedImage gradient_16x16() {
 
 std::vector<std::byte> render_snapshot(RasterContent& content, StateHandle h) {
   MemSurface target(16, 16);
-  RenderRequest req{Rect{0.0, 0.0, 16.0, 16.0}, 1.0,      Time::zero(), h, target,
-                    Exactness::Exact,           Deadline::none()};
+  RenderRequest req{
+      Rect{0.0, 0.0, 16.0, 16.0}, 1.0, Time::zero(), h, target, Exactness::Exact, Deadline::none()};
   auto done = std::make_shared<RenderCompletion>();
   (void)content.render(req, done);
   return target.copy();
@@ -74,9 +74,8 @@ TEST_CASE("raster render workers read a frozen snapshot while the editor keeps p
   // Capture a frozen snapshot H via a paint, and pin it live for the whole test
   // (a manual retain stands in for the model's record-slot hold).
   Rect touched{};
-  const StateHandle h =
-      content.store().paint(content.base_handle(), Rect{2.0, 2.0, 8.0, 8.0},
-                            WorkingPixel{0.5F, 0.25F, 0.125F, 0.5F}, touched);
+  const StateHandle h = content.store().paint(content.base_handle(), Rect{2.0, 2.0, 8.0, 8.0},
+                                              WorkingPixel{0.5F, 0.25F, 0.125F, 0.5F}, touched);
   content.store().retain_version(h);
 
   const std::vector<std::byte> reference = render_snapshot(content, h);

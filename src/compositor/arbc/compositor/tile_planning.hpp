@@ -195,13 +195,31 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 // layer to its content grid via `quantize_time`, so a sub-frame advance keys the
 // same native frame and hits the cache) and onto each miss `RenderRequest`.
 // Defaulted `Time::zero()`, so every landed caller and golden is byte-unchanged.
-void render_frame_interactive(const DocRoot& state, const ContentResolver& resolve,
-                              const Viewport& viewport, TileCache& cache, Backend& backend,
-                              SurfacePool& pool, Surface& target, Deadline deadline,
-                              std::optional<std::uint64_t> prior_revision,
-                              RefinementQueue* pending = nullptr,
-                              CompositorCounters* counters = nullptr,
-                              const DirtyRegion* dirty = nullptr,
-                              Time composition_time = Time::zero());
+//
+// When `visible_plans` is non-null the driver surfaces the per-visible-layer
+// `LayerTilePlan`s it composited from: it `assign`s the sink empty at entry, and
+// after each visible layer is composited **moves** that layer's plan into
+// `*visible_plans` (in composite / bottom-to-top order) instead of letting it die
+// at layer-scope exit. Each entry is the exact plan the frame composited -- same
+// `content`, `rung`, and `tiles` (each `PlannedTile`'s post-composite `TileKey`
+// and `display_source`) -- so the interactive loop can drive `prime_prefetch`
+// (doc 02:92-93 speculation, step 7) render-free from what the frame already
+// planned, with no re-plan and no extra cache probe (claim
+// `02-architecture#speculation-drives-from-exposed-plan`). When null (the
+// default) each plan is dropped exactly as today -- byte-for-byte the current
+// behavior the landed goldens guard. `LayerTilePlan` is move-only (its
+// `PlannedTile`s pin cache holds), so the surfaced plans retain their pins until
+// the caller drops the sink; on this opt-in *active* path an earlier layer's
+// tiles therefore stay pinned while later layers' misses insert, which may change
+// eviction victim selection/timing versus the null default (intended: the visible
+// set stays resident for the prime pass). The null default is untouched; the
+// invariant is render/composite neutrality, not `evictions()` equality on the
+// active path.
+void render_frame_interactive(
+    const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
+    TileCache& cache, Backend& backend, SurfacePool& pool, Surface& target, Deadline deadline,
+    std::optional<std::uint64_t> prior_revision, RefinementQueue* pending = nullptr,
+    CompositorCounters* counters = nullptr, const DirtyRegion* dirty = nullptr,
+    Time composition_time = Time::zero(), std::vector<LayerTilePlan>* visible_plans = nullptr);
 
 } // namespace arbc
