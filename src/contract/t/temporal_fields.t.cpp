@@ -100,8 +100,8 @@ public:
 std::vector<float> render_at(arbc::Content& content, arbc::Time time,
                              arbc::RenderResult& out_result) {
   MemSurface target(2, 2, k_fmt);
-  const arbc::RenderRequest request{arbc::Rect::from_size(2.0, 2.0), 1.0, time,
-                                    arbc::StateHandle{}, target};
+  const arbc::RenderRequest request{arbc::Rect::from_size(2.0, 2.0), 1.0, time, arbc::StateHandle{},
+                                    target};
   const std::optional<arbc::RenderResult> result =
       content.render(request, std::make_shared<arbc::RenderCompletion>());
   REQUIRE(result.has_value());
@@ -112,13 +112,14 @@ std::vector<float> render_at(arbc::Content& content, arbc::Time time,
 } // namespace
 
 // enforces: 03-layer-plugin-interface#render-time-honest
-TEST_CASE("Timed content renders a deterministic function of request time and reports achieved_time") {
+TEST_CASE(
+    "Timed content renders a deterministic function of request time and reports achieved_time") {
   TimedContent content;
 
   // t = 0.31 s in flicks (doc 11:111-112 worked example): it falls in native
   // frame 7, so the content renders 7/24 s and reports that as achieved_time.
-  const arbc::Time asked{218'736'000};                               // 0.31 s
-  const arbc::Time frame7{7 * TimedContent::k_frame};                // 7/24 s
+  const arbc::Time asked{218'736'000};                // 0.31 s
+  const arbc::Time frame7{7 * TimedContent::k_frame}; // 7/24 s
   REQUIRE(frame7.flicks == 205'800'000);
 
   // (a) Reports the quantized local time it actually rendered.
@@ -182,13 +183,14 @@ TEST_CASE("Timed content declares its half-open temporal extent") {
   REQUIRE(extent->end == arbc::Time{TimedContent::k_frame * TimedContent::k_frames});
 }
 
-TEST_CASE("TimeRange is a half-open interval with inclusive start and exclusive end - emptiness membership equality") {
+TEST_CASE("TimeRange is a half-open interval with inclusive start and exclusive end - emptiness "
+          "membership equality") {
   const arbc::TimeRange r{arbc::Time{10}, arbc::Time{20}};
 
   // Half-open membership: start is included, end is excluded.
   REQUIRE_FALSE(r.empty());
-  REQUIRE(r.contains(arbc::Time{10}));  // lower bound inclusive
-  REQUIRE(r.contains(arbc::Time{15}));  // interior
+  REQUIRE(r.contains(arbc::Time{10}));       // lower bound inclusive
+  REQUIRE(r.contains(arbc::Time{15}));       // interior
   REQUIRE_FALSE(r.contains(arbc::Time{20})); // upper bound EXCLUSIVE
   REQUIRE_FALSE(r.contains(arbc::Time{9}));  // below
   REQUIRE_FALSE(r.contains(arbc::Time{21})); // above

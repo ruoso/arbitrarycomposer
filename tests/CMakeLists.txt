@@ -6,6 +6,17 @@ target_link_libraries(arbc_smoke_t PRIVATE Catch2::Catch2WithMain
                                            arbc_build_flags)
 catch_discover_tests(arbc_smoke_t)
 
+# Contract conformance driver (doc 16, contract.conformance_suite): runs the
+# public arbc-testing suite over one purpose-built double per contract branch
+# plus the org.arbc.solid reference kind. Cross-component (pulls kind_solid), so
+# it lives here. arbc-testing precedes `arbc` on the link line so its unresolved
+# contract symbols resolve from the umbrella (static-archive link order).
+add_executable(arbc_contract_conformance_t contract_conformance.t.cpp)
+target_link_libraries(
+  arbc_contract_conformance_t
+  PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_contract_conformance_t)
+
 add_executable(arbc_walking_skeleton_t walking_skeleton.t.cpp)
 target_link_libraries(arbc_walking_skeleton_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)

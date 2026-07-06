@@ -29,7 +29,7 @@ def main() -> int:
             registered.add(line.split("\t")[0])
 
     enforced: set[str] = set()
-    for base in (root / "src", root / "tests"):
+    for base in (root / "src", root / "tests", root / "testing"):
         if not base.is_dir():
             continue
         for path in list(base.rglob("*.cpp")) + list(base.rglob("*.hpp")):

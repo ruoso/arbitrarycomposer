@@ -95,6 +95,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
 endif()
 
+# The contract conformance suite (arbc-testing) needs Catch2 for its assertion
+# runtime and the component targets (declared in src/) for their public-header
+# include dirs, so it is added after src/ and only under BUILD_TESTING.
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/testing/CMakeLists.txt")
+  add_subdirectory(testing)
+endif()
+
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()

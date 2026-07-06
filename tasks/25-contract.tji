@@ -43,7 +43,14 @@ task contract "Layer contract" {
   task conformance_suite "Contract conformance suite (arbc-testing)" {
     effort 4d
     allocate team
+    complete 100
     depends !async_render, !temporal_fields, !operator_members
-    note "Property-based public suite: render purity, scale/time honesty, bounds honesty, damage soundness, capture/restore round-trips, async completion + cancellation, facet consistency. Shipped artifact. Doc 16."
+    note "Property-based public suite: render purity, scale/time honesty, bounds honesty, damage soundness, capture/restore round-trips, async completion + cancellation, facet consistency. Shipped artifact. Doc 16. Refinement: tasks/refinements/contract/conformance_suite.md"
+  }
+  task audio_conformance "Audio facet conformance (arbc-testing extension)" {
+    effort 1d
+    allocate team
+    depends !audio_facet, !conformance_suite
+    note "Extend arbc-testing facet-consistency and async families to AudioFacet; register 03-layer-plugin-interface#audio-facet-consistent. Source: tasks/refinements/contract/conformance_suite.md. Docs 12/16."
   }
 }

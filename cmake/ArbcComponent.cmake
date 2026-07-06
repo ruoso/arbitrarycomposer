@@ -73,6 +73,51 @@ function(arbc_component_bench)
   target_link_libraries(${target} PRIVATE arbc benchmark::benchmark arbc_build_flags)
 endfunction()
 
+# arbc_add_testing_library(NAME <name>
+#                          SOURCES <src...>
+#                          PUBLIC_HEADERS <hdr...>
+#                          [DEPENDS <component...>])
+#
+# A standalone STATIC library shipped SEPARATELY from the umbrella `arbc`
+# (doc 17:14): the contract conformance suite `arbc-testing`, the first
+# non-OBJECT build target in the tree. Unlike a component it is NOT folded into
+# `arbc` and is never linked by `libarbc`; downstream test binaries and plugin
+# authors link it alongside `arbc` and call `arbc::contract_tests(factory)`.
+#
+# Crucially the DEPENDS components are consumed for their PUBLIC HEADERS ONLY --
+# their include directories are propagated, but their OBJECT files are NOT
+# pulled into this archive. Doing so would duplicate every contract symbol
+# against the copy the umbrella `arbc` already carries and break the downstream
+# link. The suite's unresolved contract symbols (Content vtable, RenderCompletion
+# methods, ...) resolve at the consumer's final link against `arbc`.
+function(arbc_add_testing_library)
+  cmake_parse_arguments(ARG "" "NAME" "SOURCES;PUBLIC_HEADERS;DEPENDS" ${ARGN})
+  if(NOT ARG_NAME)
+    message(FATAL_ERROR "arbc_add_testing_library: NAME is required")
+  endif()
+  if(NOT TARGET Catch2::Catch2)
+    message(FATAL_ERROR "arbc_add_testing_library: Catch2 not available (BUILD_TESTING off?)")
+  endif()
+
+  add_library(${ARG_NAME} STATIC ${ARG_SOURCES})
+  add_library(arbc::testing ALIAS ${ARG_NAME})
+  target_sources(
+    ${ARG_NAME}
+    PUBLIC FILE_SET HEADERS BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}" FILES
+           ${ARG_PUBLIC_HEADERS})
+  target_compile_features(${ARG_NAME} PUBLIC cxx_std_20)
+  target_link_libraries(${ARG_NAME} PRIVATE arbc_build_flags)
+  # Catch2 supplies the assertion runtime the suite drives from inside a
+  # caller's TEST_CASE (doc 16 Decision 1); WithMain comes from the consumer.
+  target_link_libraries(${ARG_NAME} PUBLIC Catch2::Catch2)
+  # Headers only -- see the note above on why objects must not be linked.
+  foreach(dep IN LISTS ARG_DEPENDS)
+    target_include_directories(
+      ${ARG_NAME} PUBLIC
+      "$<TARGET_PROPERTY:arbc_${dep},INTERFACE_INCLUDE_DIRECTORIES>")
+  endforeach()
+endfunction()
+
 # arbc_finalize_library()
 #
 # Creates the single shipped `arbc` library from all registered components.
