@@ -33,7 +33,7 @@ task milestones "Milestones" {
 
   task m4_recursion "M4: Recursive composition" {
     milestone
-    depends kinds.nested, compositor.operator_graph
+    depends kinds.nested, compositor.operator_graph, compositor.expose_visible_plan
     note "Compositions embed compositions through PullService with two-level caching and cycle termination. Doc 05 realized."
   }
 

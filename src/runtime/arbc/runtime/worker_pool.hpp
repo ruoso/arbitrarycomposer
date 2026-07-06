@@ -67,8 +67,9 @@ struct WorkerPoolConfig {
   // false renders one-at-a-time through its per-content queue. Injectable so a
   // test can drive the gate with a stub content without a real non-thread-safe
   // kind. The *source of truth* is the contract method; this is the routing hook.
-  std::function<bool(const Content*)> serialize_predicate =
-      [](const Content* c) { return c != nullptr && !c->render_thread_safe(); };
+  std::function<bool(const Content*)> serialize_predicate = [](const Content* c) {
+    return c != nullptr && !c->render_thread_safe();
+  };
 };
 
 // A pool of worker threads with a shared FIFO work queue, a per-content
@@ -136,16 +137,16 @@ private:
     std::deque<RenderTask> parked;
   };
 
-  void run();                                    // worker loop (started per thread)
+  void run();                                     // worker loop (started per thread)
   void run_task(RenderTask task, bool serialize); // render + settle + counters
   void submit_inline(RenderTask task);            // worker_count == 0 executor
 
   WorkerPoolConfig d_config;
 
-  mutable std::mutex d_mutex;             // guards the queues + serialization map + gens
-  std::condition_variable d_work_cv;      // parks idle workers
+  mutable std::mutex d_mutex;              // guards the queues + serialization map + gens
+  std::condition_variable d_work_cv;       // parks idle workers
   std::condition_variable d_completion_cv; // parks a render thread in wait_completions
-  std::deque<RenderTask> d_ready;         // shared FIFO of runnable tasks
+  std::deque<RenderTask> d_ready;          // shared FIFO of runnable tasks
   std::unordered_map<const Content*, SerialState> d_serial; // per-content gate
   bool d_stop = false;
 

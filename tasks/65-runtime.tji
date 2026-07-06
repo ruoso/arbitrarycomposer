@@ -14,8 +14,9 @@ task runtime "Runtime" {
   task interactive "Interactive renderer" {
     effort 4d
     allocate team
+    complete 100
     depends !threading, compositor.refinement, cache.prefetch
-    note "Frame loop with deadlines: collect damage, plan, render misses within budget, composite, refine; placeholder policy (stale > coarser > transparent). Doc 02."
+    note "Frame loop with deadlines: collect damage, plan, render misses within budget, composite, refine; placeholder policy (stale > coarser > transparent). Doc 02. Refinement: tasks/refinements/runtime/interactive.md"
   }
   task offline_sequences "Offline sequence renderer + export" {
     effort 2d

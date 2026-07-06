@@ -159,8 +159,8 @@ TEST_CASE("inline degenerate mode settles on the calling thread, byte-identical 
   auto done = std::make_shared<arbc::RenderCompletion>();
   pool.submit(arbc::RenderTask{&content, make_request(pool_target, 1.5), done});
 
-  REQUIRE(done->settled());                        // settled synchronously on this thread
-  REQUIRE(content.last_thread() == test_tid);      // render ran on the calling thread
+  REQUIRE(done->settled());                   // settled synchronously on this thread
+  REQUIRE(content.last_thread() == test_tid); // render ran on the calling thread
   REQUIRE(pool.tasks_submitted() == 1);
   REQUIRE(pool.tasks_completed() == 1);
 

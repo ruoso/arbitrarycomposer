@@ -38,6 +38,12 @@ task compositor "Compositor" {
     allocate team
     note "Core-visible inputs(): aggregate revisions, damage routing via map_input_damage, cycle detection + recursion-depth budget, identity() short-circuit in planning. Docs 05/13."
   }
+  task expose_visible_plan "Expose visible LayerTilePlan from render_frame_interactive" {
+    effort 1d
+    allocate team
+    depends !tile_planning
+    note "Surface the visible LayerTilePlan from render_frame_interactive so the interactive loop can drive prime_prefetch (speculation step 7) without re-planning, avoiding counter perturbation. Doc 02. Source of debt: tasks/refinements/runtime/interactive.md."
+  }
   task pull_service "PullService implementation" {
     effort 3d
     allocate team
