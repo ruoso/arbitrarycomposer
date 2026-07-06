@@ -11,26 +11,33 @@
 
 namespace arbc {
 
-// The cache's shared eviction-ordered class vocabulary (doc 02). Declaration
-// order **is** eviction order: Speculative is evicted first and Visible last,
-// which is doc 02's "visible > adjacent > recently visible > speculative"
-// read bottom-up. Both engines share this enum (doc 17: `cache` is
-// engine-agnostic); doc 11's temporal prefetch ring is a later extension
-// owned by `cache.prefetch`, and because the eviction walk visits classes in
-// declaration order, appending a class is a localized change.
+// The cache's shared eviction-ordered class vocabulary (doc 02 + doc 11).
+// Declaration order **is** eviction order (victim-first): Speculative is
+// evicted first and Visible last, which is doc 02's "visible > adjacent >
+// recently visible > speculative" read bottom-up. Both engines share this enum
+// (doc 17: `cache` is engine-agnostic). doc 11's temporal prefetch ring
+// (`Temporal`, owned by `cache.prefetch`) slots between `Recent` and
+// `Adjacent`: an upcoming-playback frame is a stronger prediction than a
+// maybe-return recently-visible tile (so it outranks `Recent`), but yields to
+// the spatial pan ring (`Adjacent`) so scrubbing/panning stays responsive
+// (doc 11:141-149). Because the eviction walk visits classes in declaration
+// order, inserting the class is a localized change (here + the out-of-line
+// order array).
 enum class PriorityClass {
   Speculative,
   Recent,
+  Temporal,
   Adjacent,
   Visible,
 };
 
 namespace detail {
 
-// The four doc-02 classes in eviction order (victim-first). Kept out-of-line
-// (see keyed_store.cpp) so the ordering has a single authoritative definition
-// the template's eviction walk reads.
-constexpr std::size_t k_priority_class_count = 4;
+// The five priority classes in eviction order (victim-first): doc 02's four
+// plus doc 11's `Temporal` prefetch ring. Kept out-of-line (see
+// keyed_store.cpp) so the ordering has a single authoritative definition the
+// template's eviction walk reads.
+constexpr std::size_t k_priority_class_count = 5;
 const std::array<PriorityClass, k_priority_class_count>& cache_eviction_order();
 
 // A stored entry. Independent of Key so CacheHold need not name the store's

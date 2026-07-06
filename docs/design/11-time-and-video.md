@@ -140,7 +140,13 @@ correctness, span/extent consistency.
   content's keys are unchanged (no time dimension, no cache growth for
   stills). Priority classes gain a **temporal prefetch ring** (upcoming
   times in playback direction) alongside the spatial pan-prefetch ring; the
-  playback-hint horizon bounds it.
+  playback-hint horizon bounds it. The temporal ring is a *distinct*
+  priority class, ranked between recently-visible and the spatial
+  pan-prefetch ring: an upcoming-playback frame is a stronger prediction
+  than a maybe-return recently-visible tile, but yields to the pan ring so
+  scrubbing/panning stays responsive. The full eviction order (victim-first)
+  is therefore speculative < recently-visible < temporal-prefetch <
+  pan-prefetch (adjacent, doc 02) < visible.
 - **Offline rendering** was already framed as "video frames" (doc 02): a
   sequence render is a loop over output frame times — snapshot, set time,
   exact render — and the existing snapshot mechanism is precisely what

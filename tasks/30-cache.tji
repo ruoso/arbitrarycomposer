@@ -26,7 +26,8 @@ task cache "Cache" {
   task prefetch "Prefetch rings" {
     effort 2d
     allocate team
+    complete 100
     depends !key_shapes
-    note "Spatial pan-prefetch ring + temporal playback-direction ring bounded by playback-hint horizon; priority-class integration. Docs 02/11."
+    note "Spatial pan-prefetch ring + temporal playback-direction ring bounded by playback-hint horizon; priority-class integration. Docs 02/11. Refinement: tasks/refinements/cache/prefetch.md"
   }
 }

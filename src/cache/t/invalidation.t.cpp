@@ -1,5 +1,4 @@
 #include <arbc/cache/invalidation.hpp>
-
 #include <arbc/cache/key_shapes.hpp>
 
 #include <catch2/catch_test_macros.hpp>
