@@ -48,6 +48,13 @@ namespace arbc {
 // refinement loop).
 struct RefinementQueue;
 
+// The caller-owned device-space dirty region a gated interactive frame plans
+// against. Defined in `arbc/compositor/damage_planning.hpp`; forward-declared
+// here so `render_frame_interactive` can take an optional pointer to it without
+// pulling the damage-planning header into this one, exactly as `RefinementQueue`
+// is forward-declared above (doc 02:51's "no damage -> no work").
+struct DirtyRegion;
+
 // A fixed device-pixel tile edge (doc 02:59's "e.g. 256^2 device pixels").
 // Even at every rung, so tiles satisfy `reduce_rung`'s even-source-dims
 // precondition (the power-of-two tile geometry `scale_ladder.md:251-253`
@@ -159,11 +166,22 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 // once per `Backend::composite` call (coarser upscales included). Null (the
 // default) is byte-identical -- the counter path only reads and writes the
 // caller-owned struct, never a surface (doc 16:54-62, `counters.hpp`).
+//
+// When `dirty` is non-null the frame is damage-gated (doc 02:51 "no damage ->
+// no work"): each visible layer's planned `local_region` is intersected with
+// the dirty region mapped into that layer's local space, so only tiles
+// intersecting a device dirty rect are planned, rendered, and composited onto
+// the (caller-persisted) `target` -- which is therefore NOT cleared on the gated
+// path. A non-null but *empty* `DirtyRegion` plans nothing: zero renders, zero
+// composites. When `dirty` is null (the default) the driver clears `target` and
+// plans the whole viewport, byte-identical to the pre-damage behavior the
+// `tile_planning`/`refinement`/`anchored_viewports` goldens guard.
 void render_frame_interactive(const DocRoot& state, const ContentResolver& resolve,
                               const Viewport& viewport, TileCache& cache, Backend& backend,
                               SurfacePool& pool, Surface& target, Deadline deadline,
                               std::optional<std::uint64_t> prior_revision,
                               RefinementQueue* pending = nullptr,
-                              CompositorCounters* counters = nullptr);
+                              CompositorCounters* counters = nullptr,
+                              const DirtyRegion* dirty = nullptr);
 
 } // namespace arbc

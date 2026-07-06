@@ -1,3 +1,4 @@
+#include <arbc/compositor/damage_planning.hpp>
 #include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 
@@ -201,8 +202,14 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                               const Viewport& viewport, TileCache& cache, Backend& backend,
                               SurfacePool& pool, Surface& target, Deadline deadline,
                               std::optional<std::uint64_t> prior_revision, RefinementQueue* pending,
-                              CompositorCounters* counters) {
-  backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
+                              CompositorCounters* counters, const DirtyRegion* dirty) {
+  // The null-`dirty` path clears and re-plans the whole viewport (byte-identical
+  // to today). A gated frame composites only the damaged tiles onto the
+  // caller-persisted `target`, so it must NOT clear -- the untouched region
+  // survives from the previous frame (doc 02:51, refinement Decision 2).
+  if (dirty == nullptr) {
+    backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
+  }
 
   const std::uint64_t revision = state.revision();
   const Rect device_rect =
@@ -227,6 +234,23 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     Rect region = inv->map_rect(device_rect);
     if (const std::optional<Rect> bounds = content->bounds(); bounds.has_value()) {
       region = region.intersect(*bounds);
+    }
+    // Damage gating (Decision 2): narrow this layer's plan region to the dirty
+    // region mapped into layer-local space (reusing the inverse the cull already
+    // computed), so only tiles intersecting a device dirty rect are planned. A
+    // non-null empty `DirtyRegion` leaves `dirty_local` empty -> `region` empty
+    // -> this layer is skipped, realizing "no damage -> no work" as zero renders
+    // and zero composites.
+    if (dirty != nullptr) {
+      Rect dirty_local{}; // empty accumulator (empty=identity under rect_union)
+      for (const Rect& device_dirty : dirty->device_rects) {
+        const Rect clipped = device_dirty.intersect(device_rect);
+        if (clipped.empty()) {
+          continue;
+        }
+        dirty_local = rect_union(dirty_local, inv->map_rect(clipped));
+      }
+      region = region.intersect(dirty_local);
     }
     if (region.empty()) {
       return;

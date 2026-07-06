@@ -69,7 +69,8 @@ TEST_CASE("rect_union and range_union: empty is identity, infinite/all is absorb
 // ---- Structural auto-damage: whole object, all time, keyed to the edited id --
 
 // enforces: 01-core-concepts#placement-change-auto-damages
-TEST_CASE("each placement/graph mutator flushes one whole-object all-time damage for the edited id") {
+TEST_CASE(
+    "each placement/graph mutator flushes one whole-object all-time damage for the edited id") {
   SECTION("set_transform keys to the layer") {
     arbc::Model model;
     arbc::ObjectId layer;
@@ -195,7 +196,8 @@ TEST_CASE("structural damage carries the all() range so a temporal consumer neve
 // ---- Content auto-damage: caller-supplied, floor removed --------------------
 
 // enforces: 14-data-model-and-editing#damage-carries-region-and-time
-TEST_CASE("a caller-supplied content damage survives commit -> flush -> journal -> undo/redo bit-identical") {
+TEST_CASE("a caller-supplied content damage survives commit -> flush -> journal -> undo/redo "
+          "bit-identical") {
   arbc::Model model;
   arbc::Journal journal(model);
   model.set_commit_sink(&journal);
@@ -252,8 +254,8 @@ TEST_CASE("set_content_state alone flushes no content damage (the coarse floor i
     txn.set_content_state(content, arbc::StateHandle{9}); // no add_damage
     REQUIRE(txn.commit().has_value());
   }
-  REQUIRE(dsink.calls == 1);      // commit still flushes exactly once...
-  REQUIRE(dsink.last.empty());    // ...but with no content damage keyed to it
+  REQUIRE(dsink.calls == 1);   // commit still flushes exactly once...
+  REQUIRE(dsink.last.empty()); // ...but with no content damage keyed to it
 }
 
 TEST_CASE("two caller damages on one content union to the bbox / [min,max] within a transaction") {
@@ -351,7 +353,7 @@ TEST_CASE("behavioral counters: N placement mutations -> one flush, one record p
     txn.set_opacity(layerA, 0.9);
     txn.abort();
   }
-  REQUIRE(dsink.calls == flushes_after);            // zero flushes on abort
+  REQUIRE(dsink.calls == flushes_after);             // zero flushes on abort
   REQUIRE(model.current()->revision() == rev_after); // no publish
 }
 

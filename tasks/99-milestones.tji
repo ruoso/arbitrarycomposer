@@ -27,7 +27,7 @@ task milestones "Milestones" {
 
   task m3_still_compositor "M3: Interactive still compositor" {
     milestone
-    depends compositor.damage_planning, compositor.anchored_viewports, compositor.refinement, compositor.counters, runtime.interactive, kinds.raster, color.kernel_goldens
+    depends compositor.damage_planning, compositor.temporal_coalescing, compositor.anchored_viewports, compositor.refinement, compositor.counters, runtime.interactive, kinds.raster, color.kernel_goldens
     note "Pan/zoom at frame rate over mixed solid/raster scenes: tile cache, scale ladder, damage-driven frames, progressive refinement, deep-zoom rebasing. Docs 02/04 realized for stills."
   }
 
