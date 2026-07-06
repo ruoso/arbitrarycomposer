@@ -1,9 +1,8 @@
-#include <arbc/cache/prefetch.hpp>
-
 #include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/cache/key_shapes.hpp>
 #include <arbc/cache/keyed_store.hpp>
+#include <arbc/cache/prefetch.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 

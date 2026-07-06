@@ -45,8 +45,9 @@ task compositor "Compositor" {
   task refinement "Progressive refinement" {
     effort 2d
     allocate team
+    complete 100
     depends !tile_planning
-    note "Async tile arrivals emit damage scheduling follow-up frames; speculative next-rung requests during zoom gestures. Docs 02/04."
+    note "Async tile arrivals emit damage scheduling follow-up frames; speculative next-rung requests during zoom gestures. Docs 02/04. Refinement: tasks/refinements/compositor/refinement.md"
   }
   task counters "Behavioral counters" {
     effort 1d

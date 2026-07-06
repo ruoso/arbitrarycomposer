@@ -39,6 +39,14 @@
 
 namespace arbc {
 
+// The caller-owned pending-completion registry an interactive frame records
+// deferred (async) tile renders into, drained by `poll_refinements`. Defined in
+// `arbc/compositor/refinement.hpp`; forward-declared here so
+// `render_frame_interactive` can take an optional pointer to it without pulling
+// the refinement header into this one (doc 02:69-71 step 6, the progressive
+// refinement loop).
+struct RefinementQueue;
+
 // A fixed device-pixel tile edge (doc 02:59's "e.g. 256^2 device pixels").
 // Even at every rung, so tiles satisfy `reduce_rung`'s even-source-dims
 // precondition (the power-of-two tile geometry `scale_ladder.md:251-253`
@@ -135,9 +143,19 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 // `prior_revision` (the caller's last-completed revision) enables the stale
 // probe; `std::nullopt` disables it. Single-threaded (doc 02:135-137); the
 // async worker pool and real deadline clock are `compositor.pull_service`.
+//
+// When `pending` is non-null, a miss whose inline `render` answers
+// asynchronously (returns `nullopt`, leaving a still-live `RenderCompletion`) is
+// **recorded** into `*pending` instead of dropped -- the tile still composites
+// its best available fallback this frame (the "coarse-then-refine" display), and
+// `poll_refinements` later turns its arrival into a cache insert plus damage
+// (doc 02:69-71 step 6). When `pending` is null the async miss is dropped
+// exactly as before -- the byte-for-byte behavior `compositor.tile_planning`'s
+// tests and goldens assert.
 void render_frame_interactive(const DocRoot& state, const ContentResolver& resolve,
                               const Viewport& viewport, TileCache& cache, Backend& backend,
                               SurfacePool& pool, Surface& target, Deadline deadline,
-                              std::optional<std::uint64_t> prior_revision);
+                              std::optional<std::uint64_t> prior_revision,
+                              RefinementQueue* pending = nullptr);
 
 } // namespace arbc

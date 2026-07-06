@@ -1,3 +1,4 @@
+#include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 
 #include <cmath>
@@ -193,7 +194,8 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 void render_frame_interactive(const DocRoot& state, const ContentResolver& resolve,
                               const Viewport& viewport, TileCache& cache, Backend& backend,
                               SurfacePool& pool, Surface& target, Deadline deadline,
-                              std::optional<std::uint64_t> prior_revision) {
+                              std::optional<std::uint64_t> prior_revision,
+                              RefinementQueue* pending) {
   backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
 
   const std::uint64_t revision = state.revision();
@@ -271,6 +273,17 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
               tile.display_source = TileSource::Fresh;
               tile.source_rung = selection.rung;
             }
+          } else if (pending != nullptr) {
+            // Doc 02:69-71 step 6: the content answered asynchronously (the
+            // `RenderCompletion` is still live). Record the deferred render into
+            // the caller-owned queue instead of dropping it -- the target surface
+            // travels with it so the arrival can be inserted, and the tile keeps
+            // its planned fallback `display_source` so it still composites the
+            // coarse-then-refine display this frame. When `pending` is null this
+            // branch is skipped and the tile is dropped exactly as before.
+            const std::size_t bytes = tile_byte_cost(tile_surface);
+            pending->tiles.push_back(PendingTile{tile.key, tile.local_rect, layer.content, bytes,
+                                                 std::move(*owned), std::move(done)});
           }
         }
       }
