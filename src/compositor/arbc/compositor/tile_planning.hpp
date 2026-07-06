@@ -63,6 +63,14 @@ struct DirtyRegion;
 // (doc 05:66-70, `compositor.operator_graph` Decision 6).
 struct GraphDiagnostics;
 
+// The concrete pull engine a frame may delegate its miss-fill's render dispatch
+// to (`compositor.pull_service`, doc 13:69-89). Defined in
+// `arbc/compositor/pull_service.hpp`; forward-declared here so
+// `render_frame_interactive` can take an optional pointer to it without pulling
+// that header (which includes this one) into this one -- the same forward-declare
+// discipline `RefinementQueue` / `DirtyRegion` / `GraphDiagnostics` follow above.
+class PullServiceImpl;
+
 // A fixed device-pixel tile edge (doc 02:59's "e.g. 256^2 device pixels").
 // Even at every rung, so tiles satisfy `reduce_rung`'s even-source-dims
 // precondition (the power-of-two tile geometry `scale_ladder.md:251-253`
@@ -238,12 +246,25 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 // fires, no diagnostic is reported -- byte-for-byte the pre-task leaf path the
 // landed goldens guard. `diagnostics` defaults null (byte-neutral), the trailing
 // caller-owned optional pointer per the established seam-growth discipline.
+//
+// When `pulls` is non-null the driver delegates each miss's render *dispatch* to
+// it (`compositor.pull_service`, doc 13:69-89): instead of calling
+// `content->render` inline, it hands the render to `pulls->dispatch`, which
+// runtime binds to the worker pool. The driver keeps its own plan-time cache
+// probe, tile key, tile-surface ownership, insert, and async recording -- only
+// the render call is delegated -- so cache operations are unchanged. When `pulls`
+// is null (the default) the driver builds an internal `PullServiceImpl` with a
+// `DirectDispatch` (call `content->render` inline), so the null path is
+// byte-for-byte the pre-task inline fill the landed goldens guard. Every
+// dispatched render carries the layer plan's `snapshot` pin (closing the inert
+// `StateHandle{}` gap, doc 02:124, `02-architecture#miss-becomes-deadline-request`)
+// and the frame `deadline` verbatim.
 void render_frame_interactive(
     const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
     TileCache& cache, Backend& backend, SurfacePool& pool, Surface& target, Deadline deadline,
     std::optional<std::uint64_t> prior_revision, RefinementQueue* pending = nullptr,
     CompositorCounters* counters = nullptr, const DirtyRegion* dirty = nullptr,
     Time composition_time = Time::zero(), std::vector<LayerTilePlan>* visible_plans = nullptr,
-    GraphDiagnostics* diagnostics = nullptr);
+    GraphDiagnostics* diagnostics = nullptr, PullServiceImpl* pulls = nullptr);
 
 } // namespace arbc

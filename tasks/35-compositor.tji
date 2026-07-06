@@ -49,8 +49,9 @@ task compositor "Compositor" {
   task pull_service "PullService implementation" {
     effort 3d
     allocate team
+    complete 100
     depends !tile_planning, !operator_graph
-    note "The request/cache/snapshot/budget machinery behind a public seam: pulls hit the cache first, schedule on workers, inherit deadline + snapshot. Doc 13."
+    note "The request/cache/snapshot/budget machinery behind a public seam: pulls hit the cache first, schedule on workers, inherit deadline + snapshot. Doc 13. Refinement: tasks/refinements/compositor/pull_service.md"
   }
   task anchored_viewports "Anchored viewports + rebasing" {
     effort 4d

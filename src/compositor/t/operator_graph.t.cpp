@@ -40,9 +40,9 @@
 
 namespace {
 
+using arbc::CompositorCounters;
 using arbc::Content;
 using arbc::ContentRef;
-using arbc::CompositorCounters;
 using arbc::Damage;
 using arbc::GraphBudget;
 using arbc::GraphDiagnostics;
@@ -65,7 +65,8 @@ using arbc::TileValue;
 class GraphContent : public arbc::Content {
 public:
   explicit GraphContent(std::vector<ContentRef> inputs = {},
-                        std::optional<std::size_t> identity_idx = std::nullopt, double inflate = 0.0)
+                        std::optional<std::size_t> identity_idx = std::nullopt,
+                        double inflate = 0.0)
       : d_inputs(std::move(inputs)), d_identity(identity_idx), d_inflate(inflate) {}
 
   void set_inputs(std::vector<ContentRef> inputs) { d_inputs = std::move(inputs); }
@@ -378,7 +379,8 @@ TEST_CASE("operator_graph: an aggregate-revision-keyed tile invalidates like a l
     auto surf = backend.make_surface(256, 256, arbc::k_working_rgba32f);
     REQUIRE(surf.has_value());
     const std::size_t bytes = arbc::tile_byte_cost(**surf);
-    cache.insert(key, TileValue{std::move(*surf), {1.0, true}}, bytes, arbc::PriorityClass::Visible);
+    cache.insert(key, TileValue{std::move(*surf), {1.0, true}}, bytes,
+                 arbc::PriorityClass::Visible);
   };
 
   SECTION("invalidate_content drops the aggregate-keyed tile (a plain uint64 slot)") {

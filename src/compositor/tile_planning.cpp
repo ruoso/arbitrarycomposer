@@ -1,5 +1,6 @@
 #include <arbc/compositor/damage_planning.hpp>
 #include <arbc/compositor/operator_graph.hpp>
+#include <arbc/compositor/pull_service.hpp>
 #include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 
@@ -212,7 +213,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                               std::optional<std::uint64_t> prior_revision, RefinementQueue* pending,
                               CompositorCounters* counters, const DirtyRegion* dirty,
                               Time composition_time, std::vector<LayerTilePlan>* visible_plans,
-                              GraphDiagnostics* diagnostics) {
+                              GraphDiagnostics* diagnostics, PullServiceImpl* pulls) {
   // The null-`dirty` path clears and re-plans the whole viewport (byte-identical
   // to today). A gated frame composites only the damaged tiles onto the
   // caller-persisted `target`, so it must NOT clear -- the untouched region
@@ -315,10 +316,13 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
           // and reports `achieved_time == quantize_time(composition_time)`, which
           // by contract equals the plan-built key, so the fill stores under the
           // key the render lands on -- no post-render re-key (Decision 3). The
-          // inert default snapshot stands until runtime binding wires
-          // content_state through; `deadline` is stamped as a value.
+          // request carries the layer plan's `snapshot` pin verbatim (closing the
+          // inert `StateHandle{}` gap, doc 02:124,
+          // `02-architecture#miss-becomes-deadline-request`); runtime populates a
+          // non-none handle once content-state binding lands, and it flows onto
+          // every dispatched render unchanged. `deadline` is stamped as a value.
           const RenderRequest request{tile.local_rect, rung_px,      composition_time,
-                                      StateHandle{},   tile_surface, Exactness::BestEffort,
+                                      plan.snapshot,   tile_surface, Exactness::BestEffort,
                                       deadline};
           // Operator identity short-circuit (`compositor.operator_graph`, doc
           // 13:59-65,128). An operator layer resolves its identity chain before
@@ -346,9 +350,27 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                 counters->note_operator_render();
               }
             }
-            const std::optional<RenderResult> inline_result = content->render(request, done);
-            if (inline_result.has_value()) {
-              done->complete(*inline_result);
+            // Inline-vs-async detection. The NULL path is byte-for-byte the
+            // pre-task inline fill: it drives `content->render` directly and keys
+            // off the RETURN value (a content may return `nullopt` yet pre-settle
+            // `done` -- that stays an async record reaped by the next poll, doc
+            // 02:69-71). The ACTIVE path (`pulls` non-null, runtime's worker-backed
+            // dispatch) hands the render to `pulls->dispatch` and detects async via
+            // `done->settled()` -- a worker leaves the completion live to settle
+            // off-thread. Only the render call differs; the insert and async
+            // recording below are shared.
+            bool inline_settled = false;
+            if (pulls != nullptr) {
+              pulls->dispatch(content, request, done);
+              inline_settled = done->settled();
+            } else {
+              const std::optional<RenderResult> inline_result = content->render(request, done);
+              if (inline_result.has_value()) {
+                done->complete(*inline_result);
+              }
+              inline_settled = inline_result.has_value();
+            }
+            if (inline_settled) {
               const std::optional<expected<RenderResult, RenderError>> settled = done->take();
               if (settled.has_value() && settled->has_value()) {
                 const RenderResult result = **settled;

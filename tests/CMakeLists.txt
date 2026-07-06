@@ -93,3 +93,10 @@ add_executable(arbc_arena_growth_litmus_t arena_growth_litmus.t.cpp)
 target_link_libraries(arbc_arena_growth_litmus_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_arena_growth_litmus_t)
+
+# compositor.pull_service async concurrency stress (tier-6, tsan lane): many
+# concurrent worker-backed pulls settle race-free into the single-writer cache.
+add_executable(arbc_pull_service_async_t pull_service_async.t.cpp)
+target_link_libraries(arbc_pull_service_async_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_pull_service_async_t)
