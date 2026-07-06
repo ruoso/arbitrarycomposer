@@ -1,6 +1,5 @@
-#include <arbc/compositor/refinement.hpp>
-
 #include <arbc/base/expected.hpp>
+#include <arbc/compositor/refinement.hpp>
 
 #include <span>
 #include <utility>
@@ -28,8 +27,8 @@ std::vector<TileKey> zoom_prefetch_ring(const RungSelection& current, const Rect
   return keys;
 }
 
-std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
-                                    int zoom_direction, std::int32_t pan_radius) {
+std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan, int zoom_direction,
+                                    std::int32_t pan_radius) {
   // Assemble the visible tile keys and their covered local region straight from
   // the pure plan: the pan ring is the annulus around these keys, the zoom ring
   // re-tiles this region at the neighbouring rung.
@@ -89,8 +88,8 @@ std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache) {
       // model damage: the tile's requested instant for Timed content, Time::zero()
       // for the clock-invariant Static key.
       const Time when = pending.key.achieved_time.value_or(Time::zero());
-      damage.push_back(
-          Damage{pending.content, tile_local_rect(pending.key.rung, pending.key.coord), when, when});
+      damage.push_back(Damage{pending.content, tile_local_rect(pending.key.rung, pending.key.coord),
+                              when, when});
     }
     // A settled-via-fail (or already-taken) arrival is dropped: no insert, no
     // damage, no retain.

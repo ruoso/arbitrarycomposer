@@ -117,8 +117,8 @@ std::vector<TileKey> zoom_prefetch_ring(const RungSelection& current, const Rect
 // `resident_bytes()` and `evictions()` are unchanged across the call
 // (`prefetch.hpp:17-25`). The visible region, revision, and `achieved_time` the
 // zoom ring needs are derived from `plan` (its tiles' rects and keys).
-std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
-                                    int zoom_direction, std::int32_t pan_radius);
+std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan, int zoom_direction,
+                                    std::int32_t pan_radius);
 
 // Drain the settled arrivals from `queue` (doc 02:69-71 step 6). For each pending
 // tile whose `RenderCompletion` has `settled()` with a value: move its rendered

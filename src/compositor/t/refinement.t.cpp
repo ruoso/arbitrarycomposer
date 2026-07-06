@@ -92,9 +92,9 @@ public:
   std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
   arbc::Stability stability() const override { return arbc::Stability::Static; }
   std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
-  std::optional<arbc::RenderResult> render(const arbc::RenderRequest& /*request*/,
-                                           std::shared_ptr<arbc::RenderCompletion> /*done*/)
-      override {
+  std::optional<arbc::RenderResult>
+  render(const arbc::RenderRequest& /*request*/,
+         std::shared_ptr<arbc::RenderCompletion> /*done*/) override {
     ++d_renders;
     return std::nullopt;
   }
@@ -152,8 +152,8 @@ TEST_CASE("zoom_prefetch_ring re-tiles the visible region at the neighbouring ru
     // rung 1 cell = 256/2 = 128 -> [0,256) covers 2 cols x 2 rows = 4 tiles.
     REQUIRE(ring.size() == 4);
     for (const TileKey& key : ring) {
-      CHECK(key.rung.index == 1);       // the finer, next rung
-      CHECK(key.revision == k_revision); // carries the current revision
+      CHECK(key.rung.index == 1);                 // the finer, next rung
+      CHECK(key.revision == k_revision);          // carries the current revision
       CHECK_FALSE(key.achieved_time.has_value()); // Static: clock-invariant key
       CHECK(key.content == k_content);
     }
@@ -168,7 +168,8 @@ TEST_CASE("zoom_prefetch_ring re-tiles the visible region at the neighbouring ru
   }
 
   SECTION("no gesture (direction == 0) -> empty ring") {
-    CHECK(arbc::zoom_prefetch_ring(current, region, k_content, k_revision, std::nullopt, 0).empty());
+    CHECK(
+        arbc::zoom_prefetch_ring(current, region, k_content, k_revision, std::nullopt, 0).empty());
   }
 
   SECTION("Timed content carries the requested time into every key") {
@@ -286,7 +287,8 @@ TEST_CASE("poll_refinements drains settled arrivals into cache inserts and damag
     CHECK(queue.tiles.empty());
 
     // The arrival is now a fresh, exact cache entry at its key.
-    std::optional<arbc::CacheHold<TileValue>> hit = cache.lookup(tile_key(ScaleRung{0}, TileCoord{0, 0}));
+    std::optional<arbc::CacheHold<TileValue>> hit =
+        cache.lookup(tile_key(ScaleRung{0}, TileCoord{0, 0}));
     REQUIRE(hit.has_value());
     CHECK(hit->get().meta.exact);
   }
@@ -339,8 +341,8 @@ TEST_CASE("render_frame_interactive records async misses only when a queue is su
     RefinementQueue queue;
     arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
                                    arbc::Deadline::none(), std::nullopt, &queue);
-    CHECK(content.renders() == 1);          // one tile, one async miss
-    REQUIRE(queue.tiles.size() == 1);       // recorded, not dropped
+    CHECK(content.renders() == 1);    // one tile, one async miss
+    REQUIRE(queue.tiles.size() == 1); // recorded, not dropped
     CHECK(queue.tiles.front().content == content_id);
 
     // Not settled yet -> the poll schedules no follow-up frame.
@@ -353,8 +355,9 @@ TEST_CASE("render_frame_interactive records async misses only when a queue is su
     REQUIRE(damage.size() == 1);
     CHECK(damage.front().object == content_id);
     CHECK(queue.tiles.empty());
-    CHECK(cache.lookup(TileKey{content_id, state->revision(), ScaleRung{0}, TileCoord{0, 0},
-                               std::nullopt})
+    CHECK(cache
+              .lookup(TileKey{content_id, state->revision(), ScaleRung{0}, TileCoord{0, 0},
+                              std::nullopt})
               .has_value());
   }
 
@@ -363,8 +366,9 @@ TEST_CASE("render_frame_interactive records async misses only when a queue is su
                                    arbc::Deadline::none(), std::nullopt, nullptr);
     CHECK(content.renders() == 1); // rendered, answered async
     // Nothing recorded (no global state), nothing inserted -> the tile is dropped.
-    CHECK_FALSE(cache.lookup(TileKey{content_id, state->revision(), ScaleRung{0}, TileCoord{0, 0},
-                                     std::nullopt})
+    CHECK_FALSE(cache
+                    .lookup(TileKey{content_id, state->revision(), ScaleRung{0}, TileCoord{0, 0},
+                                    std::nullopt})
                     .has_value());
   }
 }

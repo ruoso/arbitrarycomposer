@@ -42,6 +42,11 @@ target_link_libraries(arbc_refinement_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_refinement_golden_t)
 
+add_executable(arbc_anchored_viewports_golden_t anchored_viewports_golden.t.cpp)
+target_link_libraries(arbc_anchored_viewports_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_anchored_viewports_golden_t)
+
 # Cross-component concurrency stress + litmus (design doc 16 tier 6). These
 # combine model publish/pin (L2), pool reclamation/arena (L1), and runtime
 # housekeeping (L5), so per doc 17:153 they live here in top-level tests/ and

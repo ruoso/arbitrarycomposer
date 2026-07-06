@@ -39,8 +39,9 @@ task compositor "Compositor" {
   task anchored_viewports "Anchored viewports + rebasing" {
     effort 4d
     allocate team
+    complete 100
     depends !tile_planning
-    note "Camera = (anchor node, matrix); re-anchor past the 2^16 scale threshold; culling walks viewport-outward with sub-pixel cull; deep-nesting numeric property tests across rebase thresholds. Doc 04."
+    note "Camera = (anchor node, matrix); re-anchor past the 2^16 scale threshold; culling walks viewport-outward with sub-pixel cull; deep-nesting numeric property tests across rebase thresholds. Doc 04. Refinement: tasks/refinements/compositor/anchored_viewports.md"
   }
   task refinement "Progressive refinement" {
     effort 2d

@@ -11,12 +11,20 @@
 namespace arbc {
 
 // The consumer side (doc 01): a device-pixel rectangle plus a camera
-// mapping composition space to device pixels. Anchoring and rebasing
-// (doc 04) land with deep-zoom support.
+// mapping composition space to device pixels.
 struct Viewport {
   int width{0};
   int height{0};
   Affine camera;
+  // The node the camera is pinned to (doc 04:81-84): `camera` maps this
+  // anchor's LOCAL space -> device pixels, not root space, so the transforms the
+  // pipeline computes with stay well-conditioned at any zoom depth (doc
+  // 04:49-69). The default (invalid) id is the root sentinel -- `render_frame`'s
+  // flat global walk, byte-identical to pre-anchor behavior; a composition id
+  // switches on the viewport-outward walk (`anchored_viewports.hpp`). Rebasing
+  // re-picks this as the user zooms; the persistent value lives in runtime (doc
+  // 17), the compositor stays a pure per-frame library.
+  ObjectId anchor{};
 };
 
 // Resolves a content id from the pinned state to its implementation; the
@@ -32,5 +40,17 @@ using ContentResolver = std::function<Content*(ObjectId)>;
 // per-frame allocator churn. The pool composes over `backend`.
 void render_frame(const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
                   Backend& backend, SurfacePool& pool, Surface& target);
+
+// Render one layer whose composed local->device transform is `composed` into
+// `target`, applying the pull contract's exact cull/compose/region/sub-pixel
+// predicates (doc 03/04): degenerate `inverse()` cull, bounds intersect,
+// `max_scale()` positive-finite cull, zero-pixel cull, then the single settle
+// path. `render_frame` calls it per global layer; the anchored viewport-outward
+// walk (`anchored_viewports.hpp`) calls it per surviving leaf -- ONE shared body,
+// so the `anchor == root` case stays byte-identical (refinement Decision 4).
+// Internal to the compositor; declared here so the anchored walk reuses it
+// verbatim rather than duplicating the predicates.
+void render_layer(const ContentResolver& resolve, const LayerRecord& layer, const Affine& composed,
+                  const Rect& device_rect, Backend& backend, SurfacePool& pool, Surface& target);
 
 } // namespace arbc
