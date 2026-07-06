@@ -4,4 +4,4 @@ arbc_add_component(
   PUBLIC_HEADERS arbc/backend_cpu/cpu_backend.hpp
   DEPENDS base media surface)
 
-arbc_component_test(COMPONENT backend_cpu SOURCES t/cpu_backend.t.cpp)
+arbc_component_test(COMPONENT backend_cpu SOURCES t/cpu_backend.t.cpp t/kernel_goldens.t.cpp)

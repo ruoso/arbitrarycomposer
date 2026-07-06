@@ -35,7 +35,8 @@ task color "Color and pixel formats" {
   task kernel_goldens "Per-format golden kernel tests" {
     effort 1d
     allocate team
+    complete 100
     depends !kernels, !resampling
-    note "Byte-exact goldens per format for blend/convert/resample; the doc 16 determinism discipline applied at kernel granularity."
+    note "Byte-exact goldens per format for blend/convert/resample; the doc 16 determinism discipline applied at kernel granularity. Refinement: tasks/refinements/color/kernel_goldens.md"
   }
 }
