@@ -113,8 +113,9 @@ public:
   std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
   Stability stability() const override { return d_stability; }
   std::optional<arbc::TimeRange> time_extent() const override {
-    return d_stability == Stability::Static ? std::optional<arbc::TimeRange>(std::nullopt)
-                                            : std::optional<arbc::TimeRange>(arbc::TimeRange::all());
+    return d_stability == Stability::Static
+               ? std::optional<arbc::TimeRange>(std::nullopt)
+               : std::optional<arbc::TimeRange>(arbc::TimeRange::all());
   }
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion> /*done*/) override {
@@ -267,19 +268,19 @@ TEST_CASE("interactive: a still scene advancing only the clock does no work") {
   arbc::InteractiveRenderer renderer({}, epoch_clock());
 
   // Frame 1 warms the cache (first frame -> whole viewport).
-  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {}, arbc::Time{0},
-                        k_budget);
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{0}, k_budget);
   CHECK(renderer.counters().requests_issued() == 1);
   CHECK(renderer.counters().composites() == 1);
   const std::vector<std::byte> after_frame1 = snapshot(**target);
 
   // Frame 2: advance only the clock over the all-Static scene, no model damage.
   // Collected damage is empty and the queue is empty -> zero work, no frame.
-  const auto out2 = renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target,
-                                          {}, arbc::Time{1'000'000}, k_budget);
+  const auto out2 = renderer.render_frame(*state, resolver, viewport, cache, backend, pool,
+                                          **target, {}, arbc::Time{1'000'000}, k_budget);
   CHECK_FALSE(out2.schedule_follow_up);
   CHECK(renderer.counters().requests_issued() == 1); // delta 0
-  CHECK(renderer.counters().composites() == 1);       // delta 0
+  CHECK(renderer.counters().composites() == 1);      // delta 0
   CHECK(renderer.counters().follow_up_frames() == 0);
   // The zero-work frame does not touch (does not clear) the persisted target.
   CHECK(bytes_identical(after_frame1, snapshot(**target)));
@@ -407,8 +408,8 @@ TEST_CASE("interactive: a damage-gated frame re-plans only the changed tiles") {
   arbc::InteractiveRenderer renderer({}, epoch_clock());
 
   // Frame 1: cold cache, whole viewport -> four misses, four composites.
-  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {}, arbc::Time{0},
-                        k_budget);
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{0}, k_budget);
   CHECK(renderer.counters().requests_issued() == 4);
   CHECK(renderer.counters().composites() == 4);
 
@@ -419,7 +420,7 @@ TEST_CASE("interactive: a damage-gated frame re-plans only the changed tiles") {
   renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, damage,
                         arbc::Time{0}, k_budget);
   CHECK(renderer.counters().requests_issued() == 5); // + exactly one
-  CHECK(renderer.counters().composites() == 5);       // + exactly one
+  CHECK(renderer.counters().composites() == 5);      // + exactly one
 }
 
 // enforces: 02-architecture#degraded-fallback-preference-order
@@ -510,7 +511,7 @@ TEST_CASE("interactive: frame-to-frame state advances across frames") {
     renderer.render_frame(*state_r1, r1_resolver, viewport, cache, backend, pool, **target, {},
                           arbc::Time{0}, k_budget);
     CHECK(renderer.counters().requests_issued() - requests_before == 1); // the R+1 async miss
-    CHECK(renderer.counters().composites() - composites_before == 1);     // the stale R fallback
+    CHECK(renderer.counters().composites() - composites_before == 1);    // the stale R fallback
   }
 }
 

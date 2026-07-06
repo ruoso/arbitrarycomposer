@@ -1,15 +1,15 @@
 #pragma once
 
-#include <arbc/compositor/compositor.hpp>      // Viewport, ContentResolver, Backend, SurfacePool, Surface
-#include <arbc/compositor/counters.hpp>        // CompositorCounters, CompositorStats, TileCache
+#include <arbc/base/time.hpp>             // Time
+#include <arbc/compositor/compositor.hpp> // Viewport, ContentResolver, Backend, SurfacePool, Surface
+#include <arbc/compositor/counters.hpp>   // CompositorCounters, CompositorStats, TileCache
 #include <arbc/compositor/damage_planning.hpp> // DirtyRegion + the map/clock/invalidate free functions
 #include <arbc/compositor/refinement.hpp>      // RefinementQueue, poll_refinements
-#include <arbc/compositor/tile_planning.hpp>   // render_frame_interactive
-#include <arbc/contract/content.hpp>           // Deadline
-#include <arbc/base/time.hpp>                  // Time
-#include <arbc/model/damage.hpp>               // Damage
-#include <arbc/model/model.hpp>                // DocRoot
-#include <arbc/runtime/worker_pool.hpp>        // WorkerPool, WorkerPoolConfig
+#include <arbc/compositor/tile_planning.hpp> // render_frame_interactive
+#include <arbc/contract/content.hpp>         // Deadline
+#include <arbc/model/damage.hpp>             // Damage
+#include <arbc/model/model.hpp>              // DocRoot
+#include <arbc/runtime/worker_pool.hpp>      // WorkerPool, WorkerPoolConfig
 
 #include <chrono>
 #include <cstdint>
@@ -93,7 +93,9 @@ public:
   // The persistent behavioral counters accumulated across frames (doc 16:54-62).
   const CompositorCounters& counters() const noexcept { return d_counters; }
   // The composed observability snapshot (compositor counts beside the cache's).
-  CompositorStats stats(const TileCache& cache) const { return counters_snapshot(d_counters, cache); }
+  CompositorStats stats(const TileCache& cache) const {
+    return counters_snapshot(d_counters, cache);
+  }
 
   // Frame-to-frame state, exposed read-only for tests and host observability.
   const RefinementQueue& pending() const noexcept { return d_pending; }
@@ -106,10 +108,10 @@ public:
   WorkerPool& worker_pool() noexcept { return d_pool; }
 
 private:
-  RefinementQueue d_pending;   // the frame-to-frame registry of async renders
-  CompositorCounters d_counters; // persistent behavioral counts across frames
-  WorkerPool d_pool;           // async-completion park/wake (inline by default)
-  Clock d_clock;               // the loop's only wall-clock read
+  RefinementQueue d_pending;                     // the frame-to-frame registry of async renders
+  CompositorCounters d_counters;                 // persistent behavioral counts across frames
+  WorkerPool d_pool;                             // async-completion park/wake (inline by default)
+  Clock d_clock;                                 // the loop's only wall-clock read
   std::optional<std::uint64_t> d_prior_revision; // last-completed revision (stale probe)
   std::optional<Time> d_prev_time;               // previous composition time (clock advance)
   // Arrival damage a poll produced this frame, owed to the NEXT frame's plan so

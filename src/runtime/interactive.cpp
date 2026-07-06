@@ -8,8 +8,7 @@ namespace arbc {
 
 InteractiveRenderer::InteractiveRenderer(WorkerPoolConfig pool_config, Clock clock)
     : d_pool(std::move(pool_config)),
-      d_clock(clock ? std::move(clock)
-                    : Clock{[] { return std::chrono::steady_clock::now(); }}) {}
+      d_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}) {}
 
 InteractiveRenderer::FrameOutcome
 InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& resolve,

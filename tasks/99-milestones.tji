@@ -27,6 +27,7 @@ task milestones "Milestones" {
 
   task m3_still_compositor "M3: Interactive still compositor" {
     milestone
+    complete 100
     depends compositor.damage_planning, compositor.temporal_coalescing, compositor.anchored_viewports, compositor.refinement, compositor.counters, runtime.interactive, kinds.raster, color.kernel_goldens
     note "Pan/zoom at frame rate over mixed solid/raster scenes: tile cache, scale ladder, damage-driven frames, progressive refinement, deep-zoom rebasing. Docs 02/04 realized for stills."
   }
@@ -63,7 +64,7 @@ task milestones "Milestones" {
 
   task m9_release "M9: v0.1 release" {
     milestone
-    depends packaging.release_01, packaging.plugin_helper, quality.testing_artifact, quality.tidy_promotion, quality.benchmark_history, quality.claims_audit, quality.repo_linters, quality.request_fuzz, kinds.dual_build, surfaces.import, pool.mmap_backing_win32, pool.checkpoints_win32, pool.crash_tests_win32, pool.concurrent_pin_benchmark
+    depends packaging.release_01, packaging.plugin_helper, quality.testing_artifact, quality.tidy_promotion, quality.benchmark_history, quality.claims_audit, quality.repo_linters, quality.request_fuzz, kinds.dual_build, surfaces.import, pool.mmap_backing_win32, pool.checkpoints_win32, pool.crash_tests_win32, pool.concurrent_pin_benchmark, kinds.raster_resampling_quality, kinds.raster_runtime_binding, kinds.raster_pool_backing, pool.big_block_pool
     note "The single library + arbc-testing + imageseq plugin, installable with package metadata, examples building, quality bars promoted, external-import surface contract complete."
   }
 }

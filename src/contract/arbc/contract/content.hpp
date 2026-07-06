@@ -160,9 +160,39 @@ private:
 class Content;
 using ContentRef = Content*;
 
-// The layer contract (doc 03). Walking-skeleton subset: the audio and editable
-// facets land with their systems. The operator-graph members below are
-// null/identity defaults, so leaf content is behaviourally unchanged.
+// The editable-state facet (doc 03:98, doc 14:110-123). A content with mutable,
+// undoable state (a raster's pixel buffer) implements this and returns it from
+// `Content::editable()`; leaf and live content omit it (the null default). The
+// three operations are the capture discipline doc 14 mandates, all over the same
+// opaque `model::StateHandle` a render request pins (doc 14:181-187), so
+// `render(snapshot = h)` renders exactly the state `capture()` froze:
+//   - `capture()`: snapshot the current edited state into a `StateHandle`. MUST
+//     be O(small) -- cheap enough to call once per gesture -- realized by
+//     structural sharing: a paint stroke copies only the tiles it touched, so
+//     capture copies O(touched tiles), not O(document) (doc 14:110-116,164-171).
+//   - `restore(h)`: adopt a prior captured state (the undo/redo path), emitting
+//     damage for what changed (doc 14:117-119).
+//   - `state_cost(h)`: the byte cost of a captured state, for journal memory
+//     budgeting (doc 14:120-122).
+// The L3 interface only (doc 17:53): pure virtuals and a virtual destructor, no
+// state. `org.arbc.raster` is the first and reference implementer (doc 14:164).
+class Editable {
+public:
+  Editable(const Editable&) = delete;
+  Editable& operator=(const Editable&) = delete;
+  virtual ~Editable() = default;
+
+  virtual StateHandle capture() = 0;
+  virtual void restore(StateHandle state) = 0;
+  virtual std::size_t state_cost(StateHandle state) const = 0;
+
+protected:
+  Editable() = default;
+};
+
+// The layer contract (doc 03). Walking-skeleton subset: the audio facet lands
+// with its system. The operator-graph members below are null/identity defaults,
+// so leaf content is behaviourally unchanged.
 class Content {
 public:
   Content(const Content&) = delete;
@@ -243,6 +273,13 @@ public:
   // (`runtime.threading`, doc 17:60). Default keeps every existing content
   // byte-identical.
   virtual bool render_thread_safe() const { return true; }
+
+  // The editable-state facet, or `nullptr` for non-editable (leaf/live) content
+  // (doc 03:98, "Live content omits"). A content that returns non-null promises
+  // its `render` is a pure function of the pinned `snapshot` handle the facet's
+  // `capture()` produces (doc 14:181-187). `org.arbc.raster` is the reference
+  // implementer (doc 14:164-171); every walking-skeleton kind keeps the default.
+  virtual Editable* editable() { return nullptr; }
 
   // --- operator graph (doc 13:39-67) ---
   // The operator's input edges, visible to the core for aggregate revisions,

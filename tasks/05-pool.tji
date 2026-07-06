@@ -40,6 +40,12 @@ task pool "Memory pool" {
     depends !reclamation
     note "Thread-local LIFO free lists in SlotStore with global spill; relaxes writer-only-release assert to admit cross-thread release, unlocking runtime.housekeeping's low-priority-thread drain mode. Source-of-debt: tasks/refinements/pool/reclamation.md. Doc 15. Refinement: tasks/refinements/pool/free_pools.md"
   }
+  task big_block_pool "Big-block pool" {
+    effort 2d
+    allocate team
+    depends !refs
+    note "Variable-size bulk-pixel payload allocator (doc 15:19-20, 240-242): tile-pixel blobs for kind_raster and any future kind with large-block payloads; refcount-managed, arena-backed. Docs 14/15. Source-of-debt: tasks/refinements/kinds/raster.md"
+  }
   task mmap_backing "mmap workspace backing" {
     effort 3d
     allocate team

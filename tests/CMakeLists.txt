@@ -17,6 +17,22 @@ target_link_libraries(
   PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_contract_conformance_t)
 
+# org.arbc.raster contract conformance (pulls kind_raster + arbc-testing). Like
+# the solid driver above, arbc-testing precedes `arbc` on the link line so its
+# unresolved contract symbols resolve from the umbrella.
+add_executable(arbc_raster_conformance_t raster_conformance.t.cpp)
+target_link_libraries(
+  arbc_raster_conformance_t
+  PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_raster_conformance_t)
+
+# Raster render-vs-edit concurrency stress (tier-6, tsan lane): pinned-snapshot
+# readers race an editor painting new versions.
+add_executable(arbc_raster_concurrency_stress_t raster_concurrency_stress.t.cpp)
+target_link_libraries(arbc_raster_concurrency_stress_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_raster_concurrency_stress_t)
+
 add_executable(arbc_walking_skeleton_t walking_skeleton.t.cpp)
 target_link_libraries(arbc_walking_skeleton_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)

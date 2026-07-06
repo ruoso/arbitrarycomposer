@@ -11,7 +11,27 @@ task kinds "Reference kinds" {
   task raster "org.arbc.raster" {
     effort 4d
     allocate team
-    note "Decoded-buffer raster: persistent CoW tile table (the Editable reference proof), mip/tile pyramid, bounded scale range, achieved_scale below requests past native. Docs 03/14/15."
+    complete 100
+    depends model.editable_facet
+    note "Decoded-buffer raster: persistent CoW tile table (the Editable reference proof), mip/tile pyramid, bounded scale range, achieved_scale below requests past native. Docs 03/14/15. Refinement: tasks/refinements/kinds/raster.md"
+  }
+  task raster_resampling_quality "org.arbc.raster resampling quality" {
+    effort 2d
+    allocate team
+    depends !raster
+    note "Replace baseline box-downsample/bilinear resampling with higher-order filters (e.g. Lanczos-3 downsample, bicubic upsample), each pinned by byte-exact per-filter goldens; keeps the mip-generation seam, swaps the kernel. Docs 03/14. Source-of-debt: tasks/refinements/kinds/raster.md"
+  }
+  task raster_runtime_binding "org.arbc.raster runtime sink wiring" {
+    effort 1d
+    allocate team
+    depends !raster, model.content_binding
+    note "When the runtime instantiates an org.arbc.raster content, register its StateRefSink/StateCostFn/RestoreSink onto the live Model/Journal and tear down on release — closing the production wiring raster's tests drive manually. Docs 03/14/17. Source-of-debt: tasks/refinements/kinds/raster.md"
+  }
+  task raster_pool_backing "org.arbc.raster big-block pool tile backing" {
+    effort 2d
+    allocate team
+    depends !raster, pool.big_block_pool
+    note "Migrate tile-pixel payloads from refcounted shared_ptr onto the doc-15 big-block pool once that L1 primitive exists; restores the doc-15 tile-table/tile-pixel storage split. Docs 14/15. Source-of-debt: tasks/refinements/kinds/raster.md"
   }
   task nested "org.arbc.nested" {
     effort 4d
