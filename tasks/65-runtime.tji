@@ -8,7 +8,8 @@ task runtime "Runtime" {
   task threading "Worker pool + threading structure" {
     effort 3d
     allocate team
-    note "Render-thread frame planning, worker pool for layer rendering, per-content serialization queues for non-thread-safe content, async completion plumbing. Doc 02."
+    complete 100
+    note "Render-thread frame planning, worker pool for layer rendering, per-content serialization queues for non-thread-safe content, async completion plumbing. Doc 02. Refinement: tasks/refinements/runtime/threading.md"
   }
   task interactive "Interactive renderer" {
     effort 4d

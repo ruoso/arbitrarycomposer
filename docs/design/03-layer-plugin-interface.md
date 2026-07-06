@@ -83,6 +83,15 @@ public:
   virtual std::optional<RenderResult>
   render(const RenderRequest&, std::shared_ptr<RenderCompletion> done) = 0;
 
+  // Render concurrency declaration (doc 02:126-130). Default true: `render`
+  // may run concurrently with itself on the worker pool. Return false when the
+  // renderer is not internally thread-safe (a stateful decoder, a
+  // single-context engine); the core then serializes that content's requests
+  // through a per-content queue so at most one runs at a time. Orthogonal to
+  // the sync/async axis above — externally-async content returns nullopt and
+  // settles `done` later, occupying no worker regardless of this flag.
+  virtual bool render_thread_safe() const { return true; }
+
   // --- optional facets ---
   virtual AudioFacet* audio() { return nullptr; }    // audio capability
                                                      //  (doc 12)
@@ -119,6 +128,15 @@ Points worth calling out:
   kicks its own pipeline, stores `done`, returns `nullopt`, and completes
   later. The compositor treats "returned inline" as an immediately-completed
   async request; there is one code path.
+- **Content declares its render concurrency (doc 02:126-130).**
+  `render_thread_safe()` defaults to true — the worker pool may render a
+  thread-safe content's tiles in parallel. Content whose renderer is not
+  internally thread-safe returns false and the core funnels its requests
+  through a per-content serialization queue (one in-flight render at a time),
+  rather than forcing every author to add their own lock. The *mechanism* —
+  the worker pool and the per-content queue — is runtime policy (doc 02's
+  threading model, doc 17:60, `runtime.threading`); the *declaration* lives
+  here on the contract so the core can route without a downcast.
 - **`cancelled()`** lets long renders abandon work when the user has zoomed
   elsewhere. Cooperative, best-effort.
 - **`Exact` requests may take unbounded time but must be faithful.** A

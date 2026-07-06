@@ -57,7 +57,7 @@ constexpr std::int64_t k_output_step = arbc::Time::flicks_per_second / 60; // 11
 
 // Two requested instants inside native frame 7 ([7/24, 8/24)), one output step
 // apart, plus an instant in the next native frame (frame 8).
-constexpr arbc::Time k_t0{210'000'000};                    // interior of frame 7
+constexpr arbc::Time k_t0{210'000'000};                     // interior of frame 7
 constexpr arbc::Time k_t_same{210'000'000 + k_output_step}; // 221'760'000, still frame 7
 constexpr arbc::Time k_t_next{240'000'000};                 // interior of frame 8
 constexpr arbc::Time k_frame7{7 * k_frame};                 // 205'800'000
@@ -200,7 +200,7 @@ TEST_CASE("plan_layer coalesces Timed keys within one native frame period") {
   REQUIRE(p_same.tiles.size() == 1);
   CHECK(p0.tiles[0].key.achieved_time == std::optional<arbc::Time>{k_frame7});
   CHECK(p0.tiles[0].key == p_same.tiles[0].key);
-  CHECK(p0.tiles[0].is_miss);      // cold cache: a render is owed
+  CHECK(p0.tiles[0].is_miss); // cold cache: a render is owed
   CHECK(p_same.tiles[0].is_miss);
 
   // Warm the cache under the coalesced (frame-7) key: BOTH instants now plan
@@ -273,8 +273,8 @@ TEST_CASE("driver: an advance within one native frame issues zero renders (count
         backend.make_surface(256, 256, arbc::k_working_rgba32f);
     REQUIRE(target.has_value());
     arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
-                                   arbc::Deadline::none(), std::nullopt, nullptr, &counters, nullptr,
-                                   composition_time);
+                                   arbc::Deadline::none(), std::nullopt, nullptr, &counters,
+                                   nullptr, composition_time);
   };
 
   // Frame 1 at t0: cold cache -> exactly one render, one composite.

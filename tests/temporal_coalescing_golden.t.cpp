@@ -35,9 +35,7 @@ class TimedFill : public arbc::Content {
 public:
   static constexpr std::int64_t k_frame = arbc::Time::flicks_per_second / 24; // 24 fps
 
-  std::optional<arbc::Rect> bounds() const override {
-    return arbc::Rect{0.0, 0.0, 512.0, 512.0};
-  }
+  std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
   arbc::Stability stability() const override { return arbc::Stability::Timed; }
   std::optional<arbc::TimeRange> time_extent() const override {
     return arbc::TimeRange{arbc::Time::zero(), arbc::Time{k_frame * 48}};

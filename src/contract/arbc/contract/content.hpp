@@ -229,6 +229,21 @@ public:
   virtual std::optional<RenderResult> render(const RenderRequest& request,
                                              std::shared_ptr<RenderCompletion> done) = 0;
 
+  // Render-concurrency declaration (doc 02:126-130, doc 03:131-139). Default
+  // `true`: `render` is internally thread-safe, so the worker pool may render
+  // this content's tiles concurrently with each other. A content whose renderer
+  // is NOT internally thread-safe (a stateful decoder, a single-context engine)
+  // overrides this to `false`; the core then funnels that content's requests
+  // through a per-content serialization queue so at most one runs at a time,
+  // rather than forcing every author to add their own lock. Orthogonal to the
+  // sync/async axis of `render`: externally-async content returns `nullopt` and
+  // settles `done` later, occupying no worker regardless of this flag. The
+  // *declaration* lives here on the contract so the core routes without a
+  // downcast; the *mechanism* (the pool + per-content queue) is runtime policy
+  // (`runtime.threading`, doc 17:60). Default keeps every existing content
+  // byte-identical.
+  virtual bool render_thread_safe() const { return true; }
+
   // --- operator graph (doc 13:39-67) ---
   // The operator's input edges, visible to the core for aggregate revisions,
   // snapshot consistency, cycle detection, and damage routing (doc 13:48-51).
