@@ -3,7 +3,7 @@ arbc_add_component(
   SOURCES model.cpp journal.cpp
   PUBLIC_HEADERS arbc/model/model.hpp arbc/model/records.hpp arbc/model/hamt.hpp
                  arbc/model/damage.hpp arbc/model/journal_entry.hpp arbc/model/journal.hpp
-  DEPENDS base pool)
+  DEPENDS base pool media)
 
 arbc_component_test(COMPONENT model
                     SOURCES t/model.t.cpp t/records.t.cpp t/persistent_state.t.cpp

@@ -45,8 +45,9 @@ TEST_CASE("anchored walk with anchor==root is byte-identical to render_frame") {
   const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
 
   // Reference: render_frame via the offline driver.
-  const std::unique_ptr<arbc::Surface> reference =
-      arbc::render_offline(document, viewport, backend);
+  const auto reference_result = arbc::render_offline(document, viewport, backend);
+  REQUIRE(reference_result.has_value());
+  const std::unique_ptr<arbc::Surface>& reference = *reference_result;
 
   // Candidate: the generalized anchored walk into a fresh target.
   const arbc::DocStatePtr state = document.pin();

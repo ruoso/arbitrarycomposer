@@ -3,6 +3,7 @@
 #include <arbc/base/ids.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/contract/content.hpp>
+#include <arbc/media/surface_format.hpp>
 #include <arbc/model/model.hpp>
 
 #include <memory>
@@ -20,6 +21,14 @@ public:
   ObjectId add_content(std::shared_ptr<Content> content);
   ObjectId add_layer(ObjectId content, const Affine& transform, double opacity = 1.0);
   void set_layer_transform(ObjectId layer, const Affine& transform);
+
+  // Insert a composition (doc 07 rule 2: the unit that owns a working space). Its
+  // working space defaults to the doc 07 walking-skeleton format; the render
+  // drivers read it from the pinned state for target/temp allocation.
+  ObjectId add_composition(double canvas_w, double canvas_h);
+  // Configure a composition's working space -- the `SurfaceFormat` the compositor
+  // blends it in (doc 07). Committed as its own version, bumping the revision.
+  void set_working_space(ObjectId composition, const SurfaceFormat& format);
 
   // Pin the current version for rendering (doc 14).
   DocStatePtr pin() const;

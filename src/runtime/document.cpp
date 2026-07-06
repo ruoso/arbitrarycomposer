@@ -23,6 +23,19 @@ void Document::set_layer_transform(ObjectId layer, const Affine& transform) {
   txn.commit();
 }
 
+ObjectId Document::add_composition(double canvas_w, double canvas_h) {
+  auto txn = d_model.transact();
+  const ObjectId id = txn.add_composition(canvas_w, canvas_h);
+  txn.commit();
+  return id;
+}
+
+void Document::set_working_space(ObjectId composition, const SurfaceFormat& format) {
+  auto txn = d_model.transact();
+  txn.set_working_space(composition, format);
+  txn.commit();
+}
+
 DocStatePtr Document::pin() const { return d_model.current(); }
 
 Content* Document::resolve(ObjectId content) const {

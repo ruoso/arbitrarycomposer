@@ -42,7 +42,9 @@ TEST_CASE("walking skeleton: solid layers compose to exact pixels") {
 
   arbc::CpuBackend backend;
   const arbc::Viewport viewport{8, 8, arbc::Affine::identity()};
-  const std::unique_ptr<arbc::Surface> out = render_offline(document, viewport, backend);
+  const auto out_result = render_offline(document, viewport, backend);
+  REQUIRE(out_result.has_value());
+  const std::unique_ptr<arbc::Surface>& out = *out_result;
 
   for (int y = 0; y < 8; ++y) {
     for (int x = 0; x < 8; ++x) {
@@ -75,8 +77,12 @@ TEST_CASE("walking skeleton: rendering is byte-exact deterministic") {
 
   arbc::CpuBackend backend;
   const arbc::Viewport viewport{16, 16, arbc::Affine::scaling(2.0, 2.0)};
-  const std::unique_ptr<arbc::Surface> first = render_offline(document, viewport, backend);
-  const std::unique_ptr<arbc::Surface> second = render_offline(document, viewport, backend);
+  const auto first_result = render_offline(document, viewport, backend);
+  const auto second_result = render_offline(document, viewport, backend);
+  REQUIRE(first_result.has_value());
+  REQUIRE(second_result.has_value());
+  const std::unique_ptr<arbc::Surface>& first = *first_result;
+  const std::unique_ptr<arbc::Surface>& second = *second_result;
 
   const std::span<const float> a =
       std::as_const(*first).span<arbc::PixelFormat::Rgba32fLinearPremul>();

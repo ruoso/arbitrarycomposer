@@ -19,7 +19,7 @@ ALLOWED = {
     "pool": {"base"},
     "media": {"base"},
     "surface": {"base", "media"},
-    "model": {"base", "pool"},
+    "model": {"base", "pool", "media"},
     "contract": {"base", "pool", "media", "surface", "model"},
     "cache": {"base", "surface"},
     "backend_cpu": {"base", "media", "surface"},

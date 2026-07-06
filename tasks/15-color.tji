@@ -15,6 +15,7 @@ task color "Color and pixel formats" {
   task working_space "Per-composition working space" {
     effort 1d
     allocate team
+    complete 100
     depends !format_set
     note "Working space as composition configuration (primaries, transfer, format); nesting boundaries convert; homogeneous trees pay nothing. Doc 07. Refinement: tasks/refinements/color/working_space.md"
   }

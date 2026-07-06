@@ -32,7 +32,7 @@ L4  compositor   audio-engine   serialize      kind-solid kind-tone
 L3  contract         cache          backend-cpu
      │                │                 │
 L2  model          surface ────────────┘
-     │                │
+     │  ┌───────────┐ │
 L1  pool            media
      └────────┬───────┘
 L0          base
@@ -49,7 +49,7 @@ against this table:
 | `arbc::pool` | 1 | inside-out slab arenas, `arbc::ref`, deferred reclamation, mmap/anonymous backing, checkpoint protocol, generation tags | 15 | base |
 | `arbc::media` | 1 | pixel-format & color-space descriptors, premultiplication tags, channel layouts, typed pixel/sample span views | 07, 12 | base |
 | `arbc::surface` | 2 | `Surface` handles, the backend contract, external import + sync tokens, format conversion *interfaces* | 09 | base, media |
-| `arbc::model` | 2 | object records, persistent `DocState`, transactions, journal/undo, damage, revisions, pins | 01, 14 | base, pool |
+| `arbc::model` | 2 | object records, persistent `DocState`, transactions, journal/undo, damage, revisions, pins | 01, 14 | base, pool, media |
 | `arbc::contract` | 3 | `Content` + `AudioFacet` + `Editable`, requests/results, `Stability`, `Registry`, `PullService` *interface*, damage sinks | 03, 11, 12, 13, 14 | base, pool, media, surface, model |
 | `arbc::cache` | 3 | budgeted keyed cache (2D tiles, 1D blocks), priority classes, prefetch rings, eviction | 02, 11, 12 | base, surface |
 | `arbc::backend-cpu` | 3 | format-templated kernels + variant dispatch, CPU surfaces, wrap-or-copy import | 07, 09 | base, media, surface |
@@ -70,6 +70,12 @@ Notes on placements that were genuinely contested:
   free of the `Content` vtable (records hold opaque content slots; binding
   happens in `runtime`), preserving "pure data plus change notification"
   (doc 02).
+- **`model` depends on `media`** because a composition record stores its
+  per-composition working space as a `SurfaceFormat` (doc 07 rule 2): media
+  descriptors are level-1 vocabulary and composition records are precisely where
+  configuration vocabulary lives, so the edge is a levelization-clean downward
+  one and the model stays typed rather than smuggling the working space as opaque
+  integers interpreted upstairs (`color.working_space`).
 - **`cache` is engine-agnostic** — tiles and blocks are the same machinery
   with different key shapes (doc 12), so both engines share one component.
 - **Kernels are not `media`.** Format/space *descriptors* are vocabulary

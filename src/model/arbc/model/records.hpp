@@ -2,7 +2,8 @@
 
 #include <arbc/base/ids.hpp>
 #include <arbc/base/transform.hpp>
-#include <arbc/pool/slot_store.hpp> // SlotIndex
+#include <arbc/media/surface_format.hpp> // SurfaceFormat (per-composition working space, doc 07)
+#include <arbc/pool/slot_store.hpp>      // SlotIndex
 
 #include <cstdint>
 #include <type_traits>
@@ -92,10 +93,18 @@ struct LayerOrderChunk {
 // `spill_root` is invalid; past the cap it lives in the `LayerOrderChunk` chain
 // headed by `spill_root` (the inline array is then dead) and `layer_count`
 // remains the authoritative total (`model.composition_membership`, doc 14).
+//
+// `working_space` is the `SurfaceFormat` the compositor blends this composition
+// in (doc 07 rule 2) -- per-composition configuration mutated through a
+// `Transaction` like any other record field (`color.working_space`). It defaults
+// to the doc 07 walking-skeleton working format (`k_working_rgba32f`); the 16f
+// designed default flips on when kernels make it storable. A media descriptor is
+// level-1 vocabulary, so carrying it here is the `model -> media` edge doc 17
+// scopes for exactly this record.
 struct CompositionRecord {
   double canvas_w{0.0};
   double canvas_h{0.0};
-  std::uint32_t working_space{0};
+  SurfaceFormat working_space{};
   std::uint32_t layer_count{0};
   ObjectId layers[k_max_inline_layers]{};
   ObjectId spill_root{};

@@ -50,6 +50,15 @@ public:
   const CompositionRecord* find_composition(ObjectId id) const;
   bool contains(ObjectId id) const;
 
+  // The working space the compositor blends this document in (doc 07 rule 2):
+  // the configured `SurfaceFormat` of the document's single composition, or the
+  // doc 07 default (`k_working_rgba32f`) when the document has no composition yet
+  // -- a fresh document still renders out of the box. When more than one
+  // composition exists the lowest-id one wins (deterministic); true
+  // multi-composition selection lands with `kinds.nested`. Refcount-free peek
+  // traversal.
+  SurfaceFormat working_space() const;
+
   // Visit every layer record in ascending object-id order. Object ids are
   // assigned monotonically, so ascending-id order reproduces the walking-
   // skeleton's insertion order (bottom-to-top, doc 02); explicit layer reorder
@@ -212,7 +221,17 @@ public:
 
     // Insert a new composition object (canvas + empty layer order). Layer-order
     // population is `model.transactions`' concern; this lands the record shape.
+    // The working space defaults to the doc 07 walking-skeleton format
+    // (`k_working_rgba32f`); `set_working_space` configures it.
     ObjectId add_composition(double canvas_w, double canvas_h);
+
+    // Replace a composition's working space (path-copies its record + its map
+    // path), the per-composition configuration of doc 07 rule 2. A configuration
+    // change that invalidates every rendered pixel of the composition, so it
+    // auto-damages the whole composition, all time, once at commit -- and bumps
+    // the revision like any mutation. No-op if the composition is absent or not a
+    // composition.
+    void set_working_space(ObjectId composition, const SurfaceFormat& format);
 
     // Replace an existing layer's transform (path-copies its record + its map
     // path). No-op if the layer is absent.

@@ -75,7 +75,9 @@ TEST_CASE(
   const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
 
   // The offline whole-region reference.
-  const std::unique_ptr<arbc::Surface> whole = render_offline(document, viewport, backend);
+  const auto whole_result = render_offline(document, viewport, backend);
+  REQUIRE(whole_result.has_value());
+  const std::unique_ptr<arbc::Surface>& whole = *whole_result;
 
   // The interactive tiled render of the same scene.
   const arbc::DocStatePtr state = document.pin();

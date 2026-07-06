@@ -122,4 +122,14 @@ WBS edge added for exactly this.
 
 ## Status
 
-_pending implementation_
+**Done** — 2026-07-06.
+
+- `src/model/arbc/model/records.hpp` — added `SurfaceFormat working_space` composition record.
+- `src/model/arbc/model/model.hpp` + `src/model/model.cpp` — `Transaction::set_working_space`, `DocRoot::working_space()` accessor; revision-bumping mutation plumbed through the model.
+- `src/model/CMakeLists.txt` + `scripts/check_levels.py` — `model→media` levelization edge added; `docs/design/17-internal-components.md` table row and diagram updated with rationale note.
+- `src/model/t/model.t.cpp` — four unit tests: defaults, set-bumps-revision, pinned-version-sees-value, no-op.
+- `src/runtime/arbc/runtime/document.hpp` + `src/runtime/document.cpp` — `add_composition`/`set_working_space` wiring.
+- `src/runtime/arbc/runtime/offline.hpp` + `src/runtime/offline.cpp` — reads pinned working space; returns `expected<…,SurfaceError>`; `Rgba32fLinearPremul` hardcode replaced.
+- `tests/offline_working_space.t.cpp` (new) — integration test + claim `07-color-and-pixel-formats#compositing-in-working-space`; enforces target/temp tag triple and unstorable→error path.
+- `tests/CMakeLists.txt` + `tests/claims/registry.tsv` — new test wired, claim registered.
+- `tests/{walking_skeleton,anchored_viewports_golden,tile_planning_golden}.t.cpp` — updated to unwrap; walking-skeleton goldens unchanged (default remains `Rgba32fLinearPremul`).
