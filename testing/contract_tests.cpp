@@ -1,5 +1,3 @@
-#include <arbc/testing/contract_tests.hpp>
-
 #include <arbc/base/expected.hpp>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/time.hpp>
@@ -8,6 +6,7 @@
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
 #include <arbc/surface/surface.hpp>
+#include <arbc/testing/contract_tests.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -262,8 +261,8 @@ void check_bounds_honesty(const ContentFactory& factory, const Options& options)
       const double w = std::max(1.0, b->width());
       const Rect outside{b->x1 + 1.0, b->y0, b->x1 + 1.0 + w, b->y1};
       MemSurface s(options.width, options.height);
-      RenderRequest r{outside, scale, gen_time(rng), StateHandle{},
-                      s,       Exactness::Exact, Deadline::none()};
+      RenderRequest r{outside,          scale,           gen_time(rng), StateHandle{}, s,
+                      Exactness::Exact, Deadline::none()};
       drive(*content, r);
       REQUIRE(is_transparent(s.pixels()));
     }
@@ -275,8 +274,8 @@ void check_bounds_honesty(const ContentFactory& factory, const Options& options)
         const Time outside_t{te->end.flicks + 1};
         const Rect region = b.value_or(Rect::from_size(options.width, options.height));
         MemSurface s(options.width, options.height);
-        RenderRequest r{region, scale, outside_t, StateHandle{},
-                        s,      Exactness::Exact, Deadline::none()};
+        RenderRequest r{region,           scale,           outside_t, StateHandle{}, s,
+                        Exactness::Exact, Deadline::none()};
         drive(*content, r);
         REQUIRE(is_transparent(s.pixels()));
       }
@@ -311,8 +310,9 @@ void check_capture_restore_roundtrip(const ContentFactory& factory, const Option
   for (int i = 0; i < k; ++i) {
     const int j = (i * 7 + 3) % k;
     MemSurface s(options.width, options.height);
-    RenderRequest r{region, scale, time, handles[static_cast<std::size_t>(j)], s, Exactness::Exact,
-                    Deadline::none()};
+    RenderRequest r{
+        region,           scale,           time, handles[static_cast<std::size_t>(j)], s,
+        Exactness::Exact, Deadline::none()};
     drive(*content, r);
     REQUIRE(s.pixels() == captured[static_cast<std::size_t>(j)]);
   }
@@ -390,8 +390,7 @@ void check_async_cancellation(const ContentFactory& factory, const Options& opti
     done->fail(RenderError::ContentFailed);
     REQUIRE(done->take() == std::nullopt);
 
-    const expected<RenderResult, RenderError> settlement =
-        taken.has_value() ? *taken : *remainder;
+    const expected<RenderResult, RenderError> settlement = taken.has_value() ? *taken : *remainder;
     REQUIRE(settlement.has_value());
     REQUIRE(settlement->achieved_scale == 2.0);
   }
@@ -485,7 +484,7 @@ void check_operator_identity_faithful(const ContentFactory& factory, Time identi
   const Rect region = Rect::from_size(options.width, options.height);
 
   MemSurface op_target(options.width, options.height);
-  RenderRequest r{region,     1.0, identity_time, StateHandle{}, op_target, Exactness::Exact,
+  RenderRequest r{region,          1.0, identity_time, StateHandle{}, op_target, Exactness::Exact,
                   Deadline::none()};
   const std::optional<std::size_t> id = content->identity(r);
   REQUIRE(id.has_value());
@@ -496,7 +495,7 @@ void check_operator_identity_faithful(const ContentFactory& factory, Time identi
 
   // Render input N for the same request as ground truth.
   MemSurface in_target(options.width, options.height);
-  RenderRequest ir{region,     1.0, identity_time, StateHandle{}, in_target, Exactness::Exact,
+  RenderRequest ir{region,          1.0, identity_time, StateHandle{}, in_target, Exactness::Exact,
                    Deadline::none()};
   drive(*ins[n], ir);
 

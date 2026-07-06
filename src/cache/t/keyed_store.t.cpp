@@ -260,6 +260,47 @@ TEST_CASE("re-inserting a key replaces its value and re-accounts bytes") {
   CHECK(hit->get().id == 11);
 }
 
+// The generic seam `cache.invalidation` builds over (keyed_store.hpp): a
+// predicate-remove that drops every match, freeing unpinned matches inline and
+// deferring pinned matches' value drop to their last unpin, and reports the
+// exact count. The store never learns the key's shape -- the predicate does.
+// enforces: 02-architecture#cache-pin-survives-eviction
+TEST_CASE("remove_if drops every match: unpinned freed inline, pinned deferred, "
+          "count is exact") {
+  auto released = std::make_shared<int>(0);
+  Store store(1000);
+
+  store.insert(1, make(1, released), 10, PriorityClass::Recent);
+  store.insert(2, make(2, released), 10, PriorityClass::Recent);
+  store.insert(3, make(3, released), 10, PriorityClass::Recent);
+  store.insert(4, make(4, released), 10, PriorityClass::Recent);
+
+  // Pin one match (key 2) so its removal must defer; key 4 (also even) is
+  // unpinned and must free inline.
+  auto pinned = store.lookup(2);
+  REQUIRE(pinned.has_value());
+  const int released_before = *released;
+
+  const std::size_t removed = store.remove_if([](const int& k) { return k % 2 == 0; });
+  CHECK(removed == 2);
+
+  // Unpinned match (4) released inline; pinned match (2) deferred.
+  CHECK(*released == released_before + 1);
+  // Both matches are immediately unreachable by lookup...
+  CHECK_FALSE(store.lookup(2).has_value());
+  CHECK_FALSE(store.lookup(4).has_value());
+  // ...while non-matches are spared.
+  CHECK(store.lookup(1).has_value());
+  CHECK(store.lookup(3).has_value());
+
+  // Dropping the pinned hold fires the deferred drop exactly once.
+  pinned = std::nullopt;
+  CHECK(*released == released_before + 2);
+
+  // A predicate matching nothing removes nothing.
+  CHECK(store.remove_if([](const int&) { return false; }) == 0);
+}
+
 // The behavioral-counter tier for a cache (doc 16:54-62): a scripted sequence
 // asserting exact hits / misses / evictions deltas. Never wall-clock.
 // enforces: 15-memory-model#cache-budget-is-eviction-policy

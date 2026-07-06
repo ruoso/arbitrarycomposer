@@ -171,6 +171,16 @@ public:
   // the primitive `cache.invalidation` builds its orphan index over.
   void remove(const Key& key);
 
+  // Drop every key satisfying `pred(const Key&)`, returning the number removed.
+  // Each match routes through the same detach path as `remove`: an unpinned
+  // match is released inline, a pinned match becomes immediately unreachable by
+  // lookup with its value drop deferred to its last unpin. The store never
+  // learns the key's shape -- the predicate carries all key-shape knowledge, so
+  // `cache.invalidation` layers its (content, region) and revision sweeps over
+  // this one generic seam. Invalidations are removals, not evictions:
+  // `evictions()` is untouched. Safe on an empty match set (returns 0).
+  template <class Pred> std::size_t remove_if(Pred&& pred);
+
   std::size_t resident_bytes() const noexcept { return d_resident; }
   std::size_t budget() const noexcept { return d_budget; }
   std::uint64_t hits() const noexcept { return d_hits; }
@@ -296,6 +306,25 @@ template <class Key, class Value> void KeyedStore<Key, Value>::remove(const Key&
     return;
   }
   detach(it);
+}
+
+template <class Key, class Value>
+template <class Pred>
+std::size_t KeyedStore<Key, Value>::remove_if(Pred&& pred) {
+  std::size_t removed = 0;
+  // Advance past the match before detaching it: detach() erases the entry, and
+  // erasing an unordered_map element invalidates only that element's iterator,
+  // so the pre-advanced `it` stays valid across the erase.
+  for (auto it = d_map.begin(); it != d_map.end();) {
+    if (pred(it->first)) {
+      auto victim = it++;
+      detach(victim);
+      ++removed;
+    } else {
+      ++it;
+    }
+  }
+  return removed;
 }
 
 } // namespace arbc

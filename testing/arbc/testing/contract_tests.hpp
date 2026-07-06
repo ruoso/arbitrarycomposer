@@ -165,7 +165,6 @@ namespace arbc {
 // structural check. The damage-soundness and operator covering/identity
 // families need caller-supplied (before, after, damage)/identity metadata, so
 // the conformance driver invokes their granular entry points directly.
-void contract_tests(const testing::ContentFactory& factory,
-                    const testing::Options& options = {});
+void contract_tests(const testing::ContentFactory& factory, const testing::Options& options = {});
 
 } // namespace arbc

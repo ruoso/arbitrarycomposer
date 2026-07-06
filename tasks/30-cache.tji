@@ -19,8 +19,9 @@ task cache "Cache" {
   task invalidation "Damage/revision invalidation" {
     effort 1d
     allocate team
+    complete 100
     depends !key_shapes
-    note "Invalidate by (content, region) across rungs; revision bumps orphan old keys; aggregate revisions for composite content. Docs 02/05."
+    note "Invalidate by (content, region) across rungs; revision bumps orphan old keys; aggregate revisions for composite content. Docs 02/05. Refinement: tasks/refinements/cache/invalidation.md"
   }
   task prefetch "Prefetch rings" {
     effort 2d

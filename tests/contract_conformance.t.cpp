@@ -192,8 +192,7 @@ public:
 // Time::zero(), and over-approximates input damage by a one-pixel inflation.
 class PassthroughOperator final : public Content {
 public:
-  PassthroughOperator()
-      : d_input(std::make_unique<SpatialFixture>()), d_inputs{{d_input.get()}} {}
+  PassthroughOperator() : d_input(std::make_unique<SpatialFixture>()), d_inputs{{d_input.get()}} {}
 
   std::optional<Rect> bounds() const override { return std::nullopt; }
   Stability stability() const override { return Stability::Static; }
@@ -237,31 +236,27 @@ TEST_CASE("org.arbc.solid passes the contract conformance suite") {
 
 // enforces: 03-layer-plugin-interface#render-time-honest
 TEST_CASE("a Timed content passes the contract conformance suite") {
-  arbc::contract_tests([]() -> std::unique_ptr<arbc::Content> {
-    return std::make_unique<TimedFixture>();
-  });
+  arbc::contract_tests(
+      []() -> std::unique_ptr<arbc::Content> { return std::make_unique<TimedFixture>(); });
 }
 
 // enforces: 03-layer-plugin-interface#render-within-declared-bounds
 TEST_CASE("a bounds-honoring content renders nothing outside its bounds") {
-  arbc::contract_tests([]() -> std::unique_ptr<arbc::Content> {
-    return std::make_unique<BoundedFixture>();
-  });
+  arbc::contract_tests(
+      []() -> std::unique_ptr<arbc::Content> { return std::make_unique<BoundedFixture>(); });
 }
 
 // enforces: 03-layer-plugin-interface#render-scale-honest
 TEST_CASE("a resolution-degrading content reports scale honestly") {
-  arbc::contract_tests([]() -> std::unique_ptr<arbc::Content> {
-    return std::make_unique<ScaleFixture>();
-  });
+  arbc::contract_tests(
+      []() -> std::unique_ptr<arbc::Content> { return std::make_unique<ScaleFixture>(); });
 }
 
 // enforces: 03-layer-plugin-interface#render-inline-or-async
 // enforces: 03-layer-plugin-interface#render-completion-settles-once
 TEST_CASE("an async-completing content settles through the one render path") {
-  arbc::contract_tests([]() -> std::unique_ptr<arbc::Content> {
-    return std::make_unique<AsyncFixture>();
-  });
+  arbc::contract_tests(
+      []() -> std::unique_ptr<arbc::Content> { return std::make_unique<AsyncFixture>(); });
 }
 
 // enforces: 03-layer-plugin-interface#render-pure-over-pinned-state
@@ -269,16 +264,15 @@ TEST_CASE("an async-completing content settles through the one render path") {
 TEST_CASE("an editable (snapshot-sensitive) content is pure and round-trips") {
   arbc::testing::Options options;
   options.snapshot_sensitive = true;
-  arbc::contract_tests([]() -> std::unique_ptr<arbc::Content> {
-    return std::make_unique<EditableFixture>();
-  }, options);
+  arbc::contract_tests(
+      []() -> std::unique_ptr<arbc::Content> { return std::make_unique<EditableFixture>(); },
+      options);
 }
 
 // enforces: 03-layer-plugin-interface#leaf-content-has-no-operator-graph
 TEST_CASE("a leaf content exposes no operator graph") {
-  arbc::testing::check_leaf_no_operator_graph([]() -> std::unique_ptr<arbc::Content> {
-    return std::make_unique<EditableFixture>();
-  });
+  arbc::testing::check_leaf_no_operator_graph(
+      []() -> std::unique_ptr<arbc::Content> { return std::make_unique<EditableFixture>(); });
 }
 
 // enforces: 03-layer-plugin-interface#undamaged-regions-stable
