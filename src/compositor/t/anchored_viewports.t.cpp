@@ -1,7 +1,6 @@
-#include <arbc/compositor/anchored_viewports.hpp>
-
 #include <arbc/base/ids.hpp>
 #include <arbc/base/transform.hpp>
+#include <arbc/compositor/anchored_viewports.hpp>
 #include <arbc/model/model.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -246,8 +245,7 @@ TEST_CASE("a sub-pixel subtree is culled without descending and emits no request
   arbc::Model model;
   // The nested composition is placed at 1e-6x: its 1000-unit canvas maps to
   // 0.001 device px -- far below one pixel.
-  const SubtreeScene scene =
-      build_subtree_scene(model, Affine::scaling(1.0e-6, 1.0e-6));
+  const SubtreeScene scene = build_subtree_scene(model, Affine::scaling(1.0e-6, 1.0e-6));
   const arbc::DocStatePtr state = model.current();
 
   const Viewport vp{1000, 1000, Affine::identity(), scene.anchor};

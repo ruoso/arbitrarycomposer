@@ -78,6 +78,21 @@ Notes on placements that were genuinely contested:
 - **The two render drivers live in `runtime`, not the engines.** The
   engines are libraries over pinned versions; deadlines, frame loops, and
   device clocks are runtime policy (doc 02's renderer/compositor split).
+- **"Debug counters" is a convention, not a central registry.** The
+  `arbc::base` "debug counters" entry names the *primitive style* — plain
+  `std::uint64_t` fields with `noexcept` accessors, the wall-clock-free
+  behavioral-counter surface doc 16:54-62 requires — not a shared mutable
+  counter object every component writes into. Each component **owns its own
+  counters** and exposes them where they naturally live: `cache` publishes
+  `hits()/misses()/evictions()` on the keyed store; `runtime` composes a
+  `HousekeepingStats` snapshot; `pool` counts on its arenas. Components that
+  are **pure per-frame libraries** (the compositor) do not hold persistent
+  counter state — they take a caller-owned counters struct by pointer, the
+  same way they already take the `SurfacePool` and `RefinementQueue`, so the
+  persistent value lives in `runtime` and the library stays stateless. There
+  is deliberately no `base`-level global registry: a mutable singleton would
+  reintroduce cross-frame state into stateless engines and make behavioral
+  assertions order-dependent under parallel test execution.
 
 ## Why object libraries specifically
 

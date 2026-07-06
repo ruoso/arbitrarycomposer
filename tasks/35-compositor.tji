@@ -53,7 +53,8 @@ task compositor "Compositor" {
   task counters "Behavioral counters" {
     effort 1d
     allocate team
+    complete 100
     depends !tile_planning
-    note "Debug counters (requests, cache hits, composites) exposed for claims tests: still-scene playback issues zero renders, identity fades issue zero operator renders, etc. Doc 16."
+    note "Debug counters (requests, cache hits, composites) exposed for claims tests: still-scene playback issues zero renders, identity fades issue zero operator renders, etc. Doc 16. Refinement: tasks/refinements/compositor/counters.md"
   }
 }

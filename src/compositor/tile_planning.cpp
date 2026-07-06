@@ -39,7 +39,7 @@ Affine surface_to_device(const Affine& local_to_device, const Rect& local_rect, 
 // fallbacks never double-blend.
 void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
                        const PlannedTile& tile, const Affine& local_to_device, ScaleRung rung,
-                       double opacity) {
+                       double opacity, CompositorCounters* counters) {
   const double rung_px = rung_scale(rung);
   const int octave = rung.index - tile.source_rung.index;
   const std::int32_t factor = std::int32_t{1} << octave;
@@ -65,9 +65,15 @@ void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
               Affine::translation(-tile.local_rect.x0, -tile.local_rect.y0));
   backend.composite(temp_surface, *tile.hold->surface, compose(local_to_temp, coarser_to_local),
                     1.0);
+  if (counters != nullptr) {
+    counters->note_composite();
+  }
 
   backend.composite(target, temp_surface,
                     surface_to_device(local_to_device, tile.local_rect, rung_px), opacity);
+  if (counters != nullptr) {
+    counters->note_composite();
+  }
 }
 
 } // namespace
@@ -194,8 +200,8 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 void render_frame_interactive(const DocRoot& state, const ContentResolver& resolve,
                               const Viewport& viewport, TileCache& cache, Backend& backend,
                               SurfacePool& pool, Surface& target, Deadline deadline,
-                              std::optional<std::uint64_t> prior_revision,
-                              RefinementQueue* pending) {
+                              std::optional<std::uint64_t> prior_revision, RefinementQueue* pending,
+                              CompositorCounters* counters) {
   backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
 
   const std::uint64_t revision = state.revision();
@@ -259,7 +265,12 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                                       StateHandle{},   tile_surface, Exactness::BestEffort,
                                       deadline};
           // The single settle path (doc 03:117-121), exactly as `render_frame`.
+          // A request is *driven* here (Decision 5): count it whether the
+          // content answers inline or defers -- both issued the render.
           auto done = std::make_shared<RenderCompletion>();
+          if (counters != nullptr) {
+            counters->note_request_issued();
+          }
           const std::optional<RenderResult> inline_result = content->render(request, done);
           if (inline_result.has_value()) {
             done->complete(*inline_result);
@@ -296,11 +307,15 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           backend.composite(target, *tile.hold->surface,
                             surface_to_device(composed, tile.local_rect, rung_px), layer.opacity);
+          if (counters != nullptr) {
+            counters->note_composite();
+          }
         }
         break;
       case TileSource::Coarser:
         if (tile.hold.valid()) {
-          composite_coarser(backend, pool, target, tile, composed, selection.rung, layer.opacity);
+          composite_coarser(backend, pool, target, tile, composed, selection.rung, layer.opacity,
+                            counters);
         }
         break;
       case TileSource::Placeholder:

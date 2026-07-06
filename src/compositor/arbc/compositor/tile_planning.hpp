@@ -7,6 +7,7 @@
 #include <arbc/cache/key_shapes.hpp>
 #include <arbc/cache/keyed_store.hpp>
 #include <arbc/compositor/compositor.hpp>
+#include <arbc/compositor/counters.hpp>
 #include <arbc/compositor/scale_ladder.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/model/model.hpp>
@@ -152,10 +153,17 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 // (doc 02:69-71 step 6). When `pending` is null the async miss is dropped
 // exactly as before -- the byte-for-byte behavior `compositor.tile_planning`'s
 // tests and goldens assert.
+//
+// When `counters` is non-null the driver bumps the behavioral counts at their
+// seams: `requests_issued` once per inline miss render driven, `composites`
+// once per `Backend::composite` call (coarser upscales included). Null (the
+// default) is byte-identical -- the counter path only reads and writes the
+// caller-owned struct, never a surface (doc 16:54-62, `counters.hpp`).
 void render_frame_interactive(const DocRoot& state, const ContentResolver& resolve,
                               const Viewport& viewport, TileCache& cache, Backend& backend,
                               SurfacePool& pool, Surface& target, Deadline deadline,
                               std::optional<std::uint64_t> prior_revision,
-                              RefinementQueue* pending = nullptr);
+                              RefinementQueue* pending = nullptr,
+                              CompositorCounters* counters = nullptr);
 
 } // namespace arbc

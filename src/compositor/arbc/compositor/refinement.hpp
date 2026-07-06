@@ -6,6 +6,7 @@
 #include <arbc/cache/key_shapes.hpp>
 #include <arbc/cache/keyed_store.hpp>
 #include <arbc/cache/prefetch.hpp>
+#include <arbc/compositor/counters.hpp>
 #include <arbc/compositor/scale_ladder.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 #include <arbc/contract/content.hpp>
@@ -131,6 +132,11 @@ std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
 // revision then finds the tile `Fresh` and composites it sharp. An empty poll
 // (nothing settled, or an empty queue) returns **empty** damage -- no follow-up
 // frame (doc 02:51).
-std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache);
+//
+// When `counters` is non-null, `follow_up_frames` bumps once per arrival that
+// settled into the cache and emitted damage (doc 16:54-62, `counters.hpp`);
+// null (the default) is behavior-identical.
+std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
+                                     CompositorCounters* counters = nullptr);
 
 } // namespace arbc

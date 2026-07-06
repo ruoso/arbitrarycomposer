@@ -64,7 +64,8 @@ std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
   return want;
 }
 
-std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache) {
+std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
+                                     CompositorCounters* counters) {
   std::vector<Damage> damage;
   std::vector<PendingTile> retained;
   retained.reserve(queue.tiles.size());
@@ -90,6 +91,11 @@ std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache) {
       const Time when = pending.key.achieved_time.value_or(Time::zero());
       damage.push_back(Damage{pending.content, tile_local_rect(pending.key.rung, pending.key.coord),
                               when, when});
+      // A settled arrival that landed in the cache and emitted damage is one
+      // follow-up frame (doc 02:69-71 step 6, doc 16:54-62).
+      if (counters != nullptr) {
+        counters->note_follow_up_frame();
+      }
     }
     // A settled-via-fail (or already-taken) arrival is dropped: no insert, no
     // damage, no retain.
