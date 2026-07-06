@@ -36,7 +36,8 @@ task compositor "Compositor" {
   task operator_graph "Operator graph awareness" {
     effort 3d
     allocate team
-    note "Core-visible inputs(): aggregate revisions, damage routing via map_input_damage, cycle detection + recursion-depth budget, identity() short-circuit in planning. Docs 05/13."
+    complete 100
+    note "Core-visible inputs(): aggregate revisions, damage routing via map_input_damage, cycle detection + recursion-depth budget, identity() short-circuit in planning. Docs 05/13. Refinement: tasks/refinements/compositor/operator_graph.md"
   }
   task expose_visible_plan "Expose visible LayerTilePlan from render_frame_interactive" {
     effort 1d

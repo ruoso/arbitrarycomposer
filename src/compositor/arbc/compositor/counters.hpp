@@ -44,15 +44,25 @@ public:
   // Refinement arrivals that settled into the cache and emitted damage in a
   // `poll_refinements` call.
   std::uint64_t follow_up_frames() const noexcept { return d_follow_up_frames; }
+  // Renders the driver issued on an operator-typed content (`inputs()` non-empty)
+  // -- one bump per `content->render` the driver drives for an operator layer's
+  // miss (`compositor.operator_graph`, doc 13:124-128). An `identity()`
+  // short-circuit issues no operator render, so it leaves this at zero: the
+  // behavioral proof of "identity fades issue zero operator renders". A subset
+  // of `requests_issued` (every operator render is also a render request); a
+  // leaf layer never bumps it, so the counter is 0 on the flat leaf path.
+  std::uint64_t operator_renders() const noexcept { return d_operator_renders; }
 
   void note_request_issued() noexcept { ++d_requests_issued; }
   void note_composite() noexcept { ++d_composites; }
   void note_follow_up_frame() noexcept { ++d_follow_up_frames; }
+  void note_operator_render() noexcept { ++d_operator_renders; }
 
 private:
   std::uint64_t d_requests_issued{0};
   std::uint64_t d_composites{0};
   std::uint64_t d_follow_up_frames{0};
+  std::uint64_t d_operator_renders{0};
 };
 
 // The composed observability record a host debug panel / downstream
@@ -64,6 +74,7 @@ struct CompositorStats {
   std::uint64_t requests_issued{0};
   std::uint64_t composites{0};
   std::uint64_t follow_up_frames{0};
+  std::uint64_t operator_renders{0};
   std::uint64_t cache_hits{0};
   std::uint64_t cache_misses{0};
   std::uint64_t cache_evictions{0};
@@ -76,6 +87,7 @@ inline CompositorStats counters_snapshot(const CompositorCounters& counters,
   return CompositorStats{counters.requests_issued(),
                          counters.composites(),
                          counters.follow_up_frames(),
+                         counters.operator_renders(),
                          cache.hits(),
                          cache.misses(),
                          cache.evictions()};

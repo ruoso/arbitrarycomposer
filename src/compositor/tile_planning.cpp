@@ -1,4 +1,5 @@
 #include <arbc/compositor/damage_planning.hpp>
+#include <arbc/compositor/operator_graph.hpp>
 #include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 
@@ -210,7 +211,8 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                               SurfacePool& pool, Surface& target, Deadline deadline,
                               std::optional<std::uint64_t> prior_revision, RefinementQueue* pending,
                               CompositorCounters* counters, const DirtyRegion* dirty,
-                              Time composition_time, std::vector<LayerTilePlan>* visible_plans) {
+                              Time composition_time, std::vector<LayerTilePlan>* visible_plans,
+                              GraphDiagnostics* diagnostics) {
   // The null-`dirty` path clears and re-plans the whole viewport (byte-identical
   // to today). A gated frame composites only the damaged tiles onto the
   // caller-persisted `target`, so it must NOT clear -- the untouched region
@@ -241,6 +243,17 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     if (content == nullptr) {
       return;
     }
+    // Operator-graph awareness (`compositor.operator_graph`): a layer whose
+    // content is an operator (`inputs()` non-empty) keys its tiles by the
+    // aggregate revision folded over the reachable `inputs()` DAG (doc
+    // 05:82-91), so the operator's key changes on any reachable input change.
+    // A leaf keeps the flat `revision` -- the fold degenerates to
+    // `contribution(root)` and this branch is skipped, so the leaf path is
+    // byte-identical. The driver supplies the document-global `revision` as
+    // every node's contribution today (Decision 3): correct and never stale.
+    const bool op_layer = is_operator(content);
+    const std::uint64_t layer_revision =
+        op_layer ? aggregate_revision(content, [&](const Content*) { return revision; }) : revision;
     const Affine composed = compose(viewport.camera, layer.transform);
     const std::optional<Affine> inv = composed.inverse();
     if (!inv.has_value()) {
@@ -277,9 +290,9 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
 
     // Doc 02 step 3: quantize to the ladder, split into tiles, look each up.
     const RungSelection selection = select_rung(scale);
-    LayerTilePlan plan =
-        plan_layer(cache, layer.content, revision, prior_revision, selection, region, composed,
-                   content->stability(), composition_time, StateHandle{}, deadline, content);
+    LayerTilePlan plan = plan_layer(cache, layer.content, layer_revision, prior_revision, selection,
+                                    region, composed, content->stability(), composition_time,
+                                    StateHandle{}, deadline, content);
 
     const double rung_px = rung_scale(selection.rung);
 
@@ -307,37 +320,58 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
           const RenderRequest request{tile.local_rect, rung_px,      composition_time,
                                       StateHandle{},   tile_surface, Exactness::BestEffort,
                                       deadline};
-          // The single settle path (doc 03:117-121), exactly as `render_frame`.
-          // A request is *driven* here (Decision 5): count it whether the
-          // content answers inline or defers -- both issued the render.
-          auto done = std::make_shared<RenderCompletion>();
-          if (counters != nullptr) {
-            counters->note_request_issued();
+          // Operator identity short-circuit (`compositor.operator_graph`, doc
+          // 13:59-65,128). An operator layer resolves its identity chain before
+          // issuing a render: an identity pass-through (a fade at envelope == 1)
+          // serves input N's cached tiles -- `pull_service`'s job -- so this task
+          // issues NO operator render and creates NO operator-output cache entry,
+          // and a budget-exceeded descent (a divergent cycle) renders the
+          // placeholder plus one diagnostic. Only a genuine non-identity operator
+          // render is driven and counted (`operator_renders`). A leaf never
+          // enters this branch (`op_layer` false), so its path is byte-identical.
+          bool issue_render = true;
+          if (op_layer) {
+            const IdentityResolution ident =
+                resolve_identity(content, request, GraphBudget{}, diagnostics);
+            issue_render = !(ident.short_circuited || ident.budget_exceeded);
           }
-          const std::optional<RenderResult> inline_result = content->render(request, done);
-          if (inline_result.has_value()) {
-            done->complete(*inline_result);
-            const std::optional<expected<RenderResult, RenderError>> settled = done->take();
-            if (settled.has_value() && settled->has_value()) {
-              const RenderResult result = **settled;
-              const std::size_t bytes = tile_byte_cost(tile_surface);
-              tile.hold = cache.insert(
-                  tile.key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
-                  bytes, PriorityClass::Visible);
-              tile.display_source = TileSource::Fresh;
-              tile.source_rung = selection.rung;
+          if (issue_render) {
+            // The single settle path (doc 03:117-121), exactly as `render_frame`.
+            // A request is *driven* here (Decision 5): count it whether the
+            // content answers inline or defers -- both issued the render.
+            auto done = std::make_shared<RenderCompletion>();
+            if (counters != nullptr) {
+              counters->note_request_issued();
+              if (op_layer) {
+                counters->note_operator_render();
+              }
             }
-          } else if (pending != nullptr) {
-            // Doc 02:69-71 step 6: the content answered asynchronously (the
-            // `RenderCompletion` is still live). Record the deferred render into
-            // the caller-owned queue instead of dropping it -- the target surface
-            // travels with it so the arrival can be inserted, and the tile keeps
-            // its planned fallback `display_source` so it still composites the
-            // coarse-then-refine display this frame. When `pending` is null this
-            // branch is skipped and the tile is dropped exactly as before.
-            const std::size_t bytes = tile_byte_cost(tile_surface);
-            pending->tiles.push_back(PendingTile{tile.key, tile.local_rect, layer.content, bytes,
-                                                 std::move(*owned), std::move(done)});
+            const std::optional<RenderResult> inline_result = content->render(request, done);
+            if (inline_result.has_value()) {
+              done->complete(*inline_result);
+              const std::optional<expected<RenderResult, RenderError>> settled = done->take();
+              if (settled.has_value() && settled->has_value()) {
+                const RenderResult result = **settled;
+                const std::size_t bytes = tile_byte_cost(tile_surface);
+                tile.hold = cache.insert(
+                    tile.key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
+                    bytes, PriorityClass::Visible);
+                tile.display_source = TileSource::Fresh;
+                tile.source_rung = selection.rung;
+              }
+            } else if (pending != nullptr) {
+              // Doc 02:69-71 step 6: the content answered asynchronously (the
+              // `RenderCompletion` is still live). Record the deferred render into
+              // the caller-owned queue instead of dropping it -- the target
+              // surface travels with it so the arrival can be inserted, and the
+              // tile keeps its planned fallback `display_source` so it still
+              // composites the coarse-then-refine display this frame. When
+              // `pending` is null this branch is skipped and the tile is dropped
+              // exactly as before.
+              const std::size_t bytes = tile_byte_cost(tile_surface);
+              pending->tiles.push_back(PendingTile{tile.key, tile.local_rect, layer.content, bytes,
+                                                   std::move(*owned), std::move(done)});
+            }
           }
         }
       }

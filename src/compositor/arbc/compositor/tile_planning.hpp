@@ -55,6 +55,14 @@ struct RefinementQueue;
 // is forward-declared above (doc 02:51's "no damage -> no work").
 struct DirtyRegion;
 
+// The caller-owned cycle/too-deep diagnostic sink an operator-aware frame reports
+// budget-exceeded planning descents into. Defined in
+// `arbc/compositor/operator_graph.hpp`; forward-declared here so
+// `render_frame_interactive` can take an optional pointer to it without pulling
+// the operator-graph header into this one, exactly as `DirtyRegion` is
+// (doc 05:66-70, `compositor.operator_graph` Decision 6).
+struct GraphDiagnostics;
+
 // A fixed device-pixel tile edge (doc 02:59's "e.g. 256^2 device pixels").
 // Even at every rung, so tiles satisfy `reduce_rung`'s even-source-dims
 // precondition (the power-of-two tile geometry `scale_ladder.md:251-253`
@@ -215,11 +223,27 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 // set stays resident for the prime pass). The null default is untouched; the
 // invariant is render/composite neutrality, not `evictions()` equality on the
 // active path.
+//
+// Operator-graph awareness (`compositor.operator_graph`, doc 13:124-128,
+// 05:66-70): a visible layer whose content is an operator (`inputs()` non-empty)
+// keys its tiles by the **aggregate** revision folded over the reachable
+// `inputs()` DAG (so the operator's key changes on any reachable input change),
+// resolves its `identity()` chain before issuing a render, and bumps
+// `counters->operator_renders` once per operator render driven. An `identity()`
+// short-circuit issues no operator render and creates no operator-output cache
+// entry (serving input N's tiles is `pull_service`'s); a descent that exceeds the
+// recursion budget renders the placeholder and reports one diagnostic through
+// `diagnostics` (non-null). A **leaf** layer (empty `inputs()`) takes none of
+// these branches: the fold degenerates to the flat revision, no identity check
+// fires, no diagnostic is reported -- byte-for-byte the pre-task leaf path the
+// landed goldens guard. `diagnostics` defaults null (byte-neutral), the trailing
+// caller-owned optional pointer per the established seam-growth discipline.
 void render_frame_interactive(
     const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
     TileCache& cache, Backend& backend, SurfacePool& pool, Surface& target, Deadline deadline,
     std::optional<std::uint64_t> prior_revision, RefinementQueue* pending = nullptr,
     CompositorCounters* counters = nullptr, const DirtyRegion* dirty = nullptr,
-    Time composition_time = Time::zero(), std::vector<LayerTilePlan>* visible_plans = nullptr);
+    Time composition_time = Time::zero(), std::vector<LayerTilePlan>* visible_plans = nullptr,
+    GraphDiagnostics* diagnostics = nullptr);
 
 } // namespace arbc
