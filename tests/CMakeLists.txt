@@ -52,6 +52,11 @@ target_link_libraries(arbc_damage_planning_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_damage_planning_golden_t)
 
+add_executable(arbc_temporal_coalescing_golden_t temporal_coalescing_golden.t.cpp)
+target_link_libraries(arbc_temporal_coalescing_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_temporal_coalescing_golden_t)
+
 # Cross-component concurrency stress + litmus (design doc 16 tier 6). These
 # combine model publish/pin (L2), pool reclamation/arena (L1), and runtime
 # housekeeping (L5), so per doc 17:153 they live here in top-level tests/ and

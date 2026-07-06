@@ -112,6 +112,21 @@ struct RenderResult {
   serves every request in [7/24, 8/24) from that cached entry — on a 60 fps
   output, more than half of all playback requests against 24 fps content
   become cache hits by achieved-time coalescing, with zero decoder work.
+- **`quantize_time(t)` — the render-free grid query (compositor pre-lookup).**
+  To *serve* [7/24, 8/24) from one entry, the compositor must form the cache
+  key at 7/24 **before** it renders — and it cannot learn the bucket edges from
+  a post-render `achieved_time` alone (one sample gives the floor, never the
+  span; a floor-probe over cached instants over-serves a skipped frame under
+  seek). So `Content` gains one pure, render-free query —
+  `std::optional<Time> quantize_time(Time) const`, defaulting to `nullopt` (no
+  quantization: the requested time is used as-is, the pre-coalescing behaviour)
+  — returning the native grid instant a render at `t` would resolve to (a
+  24 fps clip returns `floor(t·24)/24`). Contract (conformance-tested): when
+  `quantize_time(t)` has a value it MUST equal `render(time = t).achieved_time`,
+  and it is idempotent. The compositor keys `Timed` tiles by
+  `quantize_time(time).value_or(time)`, so every request in one native frame
+  collapses to a single key and the second issues zero renders — sound under
+  seek because the content, not the compositor, owns the grid.
 - **Playback hints.** New optional content interface:
   `playback_hint(direction, rate, horizon)` — advisory, issued by the
   transport, so decoder-backed content can pre-roll sequentially. Video
@@ -129,7 +144,9 @@ correctness, span/extent consistency.
 - **Frame planning** samples the transport's current composition time, then
   computes each layer's local time by composing time maps down the tree —
   the same walk that composes transforms, one rational multiply-add per
-  edge.
+  edge — and then snaps each `Timed` layer's local time to that content's
+  grid via `quantize_time` before the tile-cache lookup, so a sub-frame clock
+  advance keys the same native frame and hits the cache (zero renders).
 - **Clock advance is the temporal damage.** Advancing time invalidates
   nothing spatial: `Static` layers' cached tiles remain valid and playback
   over a mostly-still scene re-renders only the moving layers. Spatial

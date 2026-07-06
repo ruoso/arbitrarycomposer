@@ -182,6 +182,27 @@ public:
   // a clock advance. The common `Static` case is a one-line
   // `return std::nullopt;`.
   virtual std::optional<TimeRange> time_extent() const = 0;
+  // The render-free grid query (doc 11:115-129): the native-grid instant a
+  // `render(time = t)` would resolve to, computed WITHOUT rendering, or `nullopt`
+  // for content that honors any time exactly (or is `Static`). A 24 fps `Timed`
+  // clip returns `floor(t * 24) / 24`. This is the *defaulted opposite* of
+  // `time_extent()` above: `time_extent()` is a non-defaulted pure virtual
+  // because a silent default would misclassify a `Timed` content as timeless and
+  // serve it stale; `quantize_time`'s `nullopt` default is *safe* -- it means
+  // "use the requested time as-is", today's exact behaviour, sound for every
+  // content (an un-migrated `Timed` content simply coalesces nothing, never
+  // renders wrong pixels). So it is null-defaulted like the operator-graph
+  // members below, and only content that can quantize opts in.
+  //
+  // Contract (conformance-tested, doc 11:124-126): when `quantize_time(t)` has a
+  // value it MUST equal `render(time = t).achieved_time`, and it MUST be
+  // idempotent (`quantize_time(*quantize_time(t)) == quantize_time(t)`). This is
+  // what lets the compositor form the native-instant tile key at plan time,
+  // BEFORE rendering, and trust the render to land on that key -- so every
+  // requested instant in one native frame period collapses to a single key and a
+  // sub-frame clock advance issues zero renders (achieved-time coalescing). Pure
+  // and const: a query on immutable content, no cross-frame state.
+  virtual std::optional<Time> quantize_time(Time /*t*/) const { return std::nullopt; }
   // Render `request.region` into `request.target`. For content with editable
   // state, `render` must be a PURE function of `(request.snapshot, region,
   // scale, time)` (docs 03:138-140, 14:181-187): two calls with an identical

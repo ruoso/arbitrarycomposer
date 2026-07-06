@@ -117,9 +117,10 @@ Initially-open questions, now decided in their own docs:
   with a one-line build helper. Decided in doc 10.
 - **Time and video**: full video in v1 — timeline, layer time spans with
   rational rate maps, `time` in the render contract, transport, time-keyed
-  caching with temporal prefetch, and an image-sequence reference kind.
-  Keyframed property animation and motion blur remain deferred. Decided in
-  doc 11.
+  caching with temporal prefetch and a render-free `quantize_time` grid query
+  the compositor uses to snap requested times to native frames (achieved-time
+  coalescing), and an image-sequence reference kind. Keyframed property
+  animation and motion blur remain deferred. Decided in doc 11.
 - **Audio**: full audio in v1 — audio as an optional content facet sharing
   the layer's placement, per-layer gain, working sample rate/layout per
   composition, spatialization as monitor policy (flat by default), device

@@ -103,8 +103,9 @@ public:
   std::optional<Rect> bounds() const override { return Rect{0.0, 0.0, 512.0, 512.0}; }
   Stability stability() const override { return d_stability; }
   std::optional<arbc::TimeRange> time_extent() const override {
-    return d_stability == Stability::Static ? std::optional<arbc::TimeRange>(std::nullopt)
-                                            : std::optional<arbc::TimeRange>(arbc::TimeRange::all());
+    return d_stability == Stability::Static
+               ? std::optional<arbc::TimeRange>(std::nullopt)
+               : std::optional<arbc::TimeRange>(arbc::TimeRange::all());
   }
   std::optional<RenderResult> render(const arbc::RenderRequest& request,
                                      std::shared_ptr<arbc::RenderCompletion> /*done*/) override {
@@ -152,7 +153,8 @@ TEST_CASE("map_damage_to_device projects content damage through the camera to de
   SECTION("identity camera maps the content rect one-to-one") {
     const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
     const Damage d{content, Rect{10.0, 20.0, 110.0, 120.0}, arbc::TimeRange::all()};
-    const std::vector<Rect> rects = arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now);
+    const std::vector<Rect> rects =
+        arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now);
     REQUIRE(rects.size() == 1);
     CHECK(rects[0] == Rect{10.0, 20.0, 110.0, 120.0});
   }
@@ -160,7 +162,8 @@ TEST_CASE("map_damage_to_device projects content damage through the camera to de
   SECTION("a scaled camera maps the rect correspondingly") {
     const arbc::Viewport viewport{512, 512, arbc::Affine::scaling(2.0, 2.0)};
     const Damage d{content, Rect{10.0, 20.0, 110.0, 120.0}, arbc::TimeRange::all()};
-    const std::vector<Rect> rects = arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now);
+    const std::vector<Rect> rects =
+        arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now);
     REQUIRE(rects.size() == 1);
     CHECK(rects[0] == Rect{20.0, 40.0, 220.0, 240.0});
   }
@@ -174,7 +177,8 @@ TEST_CASE("map_damage_to_device projects content damage through the camera to de
   SECTION("structural infinite damage maps to the full viewport rect") {
     const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
     const Damage d{content, Rect::infinite(), arbc::TimeRange::all()};
-    const std::vector<Rect> rects = arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now);
+    const std::vector<Rect> rects =
+        arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now);
     REQUIRE(rects.size() == 1);
     CHECK(rects[0] == Rect{0.0, 0.0, 512.0, 512.0});
   }
@@ -200,14 +204,16 @@ TEST_CASE("map_damage_to_device gates on the displayed instant") {
 
   SECTION("a range containing now keeps the damage") {
     const Damage d{content, rect, arbc::TimeRange{arbc::Time{10}, arbc::Time{20}}};
-    CHECK(arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), arbc::Time{15}).size() == 1);
+    CHECK(arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), arbc::Time{15}).size() ==
+          1);
   }
 
   SECTION("a degenerate instant range (refinement-arrival shape) is present-frame damage") {
     // TimeRange{when, when} is empty under TimeRange::empty(); the gate reads it
     // as this instant, not no-time, so an async arrival is never dropped.
     const Damage d{content, rect, arbc::TimeRange{arbc::Time{7}, arbc::Time{7}}};
-    CHECK(arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), arbc::Time{999}).size() == 1);
+    CHECK(arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), arbc::Time{999}).size() ==
+          1);
   }
 }
 
@@ -270,8 +276,8 @@ TEST_CASE("invalidate_damage drops the damaged content's tiles across rungs") {
 
   // Two tiles of `damaged` intersecting region [0,0,100,100] at different rungs,
   // one `damaged` tile outside the region, and one `other`-content tile.
-  put_tile(cache, damaged, rung0, TileCoord{0, 0}); // footprint [0,0,256,256]
-  put_tile(cache, damaged, rung1, TileCoord{0, 0}); // footprint [0,0,128,128]
+  put_tile(cache, damaged, rung0, TileCoord{0, 0});   // footprint [0,0,256,256]
+  put_tile(cache, damaged, rung1, TileCoord{0, 0});   // footprint [0,0,128,128]
   put_tile(cache, damaged, rung0, TileCoord{10, 10}); // footprint [2560,..] -- outside
   put_tile(cache, other, rung0, TileCoord{0, 0});
 

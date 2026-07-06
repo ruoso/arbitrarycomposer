@@ -29,6 +29,7 @@ task compositor "Compositor" {
   task temporal_coalescing "Temporal achieved_time coalescing" {
     effort 2d
     allocate team
+    complete 100
     depends !damage_planning
     note "Quantize a Timed layer's requested Time to the content's reported temporal grid (achieved_time bucketing, doc 11:111-114) so a clock advance within one frame period reuses the cached tile and issues zero renders — the temporal analog of no-damage-no-work. Docs 11. Source of debt: tasks/refinements/compositor/damage_planning.md. Refinement: tasks/refinements/compositor/temporal_coalescing.md"
   }

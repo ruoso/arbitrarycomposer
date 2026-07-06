@@ -62,6 +62,14 @@ public:
     return arbc::TimeRange{arbc::Time::zero(), arbc::Time{k_frame * k_frames}};
   }
 
+  // The render-free grid query (doc 11:115-129): the native frame instant a
+  // `render(time = t)` would resolve to, computed WITHOUT rendering. By contract
+  // it equals `render(time = t).achieved_time` and is idempotent. The floor is an
+  // exact integer division because `flicks_per_second % 24 == 0`.
+  std::optional<arbc::Time> quantize_time(arbc::Time t) const override {
+    return arbc::Time{(t.flicks / k_frame) * k_frame};
+  }
+
   std::optional<arbc::RenderResult> render(const arbc::RenderRequest& request,
                                            std::shared_ptr<arbc::RenderCompletion>) override {
     // Quantize down to the native frame (request.time is non-negative here).
@@ -173,6 +181,46 @@ TEST_CASE("Static content ignores request time and reports nullopt achieved_time
   // (c) Declares no temporal extent: static content varies over no local-time
   // range.
   REQUIRE(content.time_extent() == std::nullopt);
+}
+
+// enforces: 11-time-and-video#quantize-time-matches-achieved-time
+TEST_CASE("quantize_time is render-free, equals achieved_time, and is idempotent") {
+  TimedContent timed;
+
+  // Representative instants: the doc worked example (0.31 s -> frame 7), an
+  // interior instant of the same frame, exact frame edges, the origin, and the
+  // last flick before the next frame boundary.
+  const std::vector<arbc::Time> samples{
+      arbc::Time{218'736'000},                  // 0.31 s, frame 7
+      arbc::Time{210'000'000},                  // interior of frame 7
+      arbc::Time{7 * TimedContent::k_frame},    // exact frame-7 edge
+      arbc::Time::zero(),                       // frame 0
+      arbc::Time{8 * TimedContent::k_frame - 1} // last flick of frame 7
+  };
+  for (const arbc::Time t : samples) {
+    const std::optional<arbc::Time> q = timed.quantize_time(t);
+    REQUIRE(q.has_value());
+
+    // (a) The render-free query equals the achieved_time a real render reports,
+    // so the compositor may key a tile at the native instant BEFORE rendering
+    // and the render lands on that key.
+    arbc::RenderResult rendered{};
+    render_at(timed, t, rendered);
+    REQUIRE(rendered.achieved_time == q);
+
+    // (b) Idempotent: quantizing an already-grid instant is a fixed point.
+    REQUIRE(timed.quantize_time(*q) == q);
+  }
+}
+
+// enforces: 11-time-and-video#quantize-time-matches-achieved-time
+TEST_CASE("Static content does not quantize: the default nullopt is correct for stills") {
+  StaticContent still;
+  // The defaulted `Content::quantize_time` returns nullopt -- the requested time
+  // is honored as-is, so a still coalesces nothing and grows no cache on a clock
+  // advance (doc 11:139-140).
+  REQUIRE(still.quantize_time(arbc::Time::zero()) == std::nullopt);
+  REQUIRE(still.quantize_time(arbc::Time{999'999'999}) == std::nullopt);
 }
 
 TEST_CASE("Timed content declares its half-open temporal extent") {

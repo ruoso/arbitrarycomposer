@@ -1,7 +1,6 @@
-#include <arbc/compositor/damage_planning.hpp>
-
 #include <arbc/cache/invalidation.hpp>
 #include <arbc/compositor/anchored_viewports.hpp>
+#include <arbc/compositor/damage_planning.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 
 #include <cmath>

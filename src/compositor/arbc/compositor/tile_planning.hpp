@@ -132,11 +132,22 @@ struct LayerTilePlan {
 // the fallback shown. Reads and pins (`lookup`) only -- never inserts,
 // allocates, or renders (Decision 1); takes `TileCache&` because `lookup`
 // mutates LRU/counters, but performs no fill.
+//
+// `Timed`/`Live` tiles are keyed by the requested `time` snapped to the
+// content's native grid via `content_ptr->quantize_time(time)` (achieved-time
+// coalescing, doc 11:115-129): every requested instant in one native frame
+// period collapses to a single key, so a sub-frame clock advance re-plans to
+// all-fresh hits and issues zero renders. `Static` tiles omit `achieved_time`
+// regardless (clock-invariant, doc 11:139-140). A null `content_ptr` (the
+// default) or a `nullopt` from `quantize_time` keeps the raw requested time --
+// the pre-coalescing, byte-identical behaviour; the snap is a single query
+// evaluated once per layer.
 LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revision,
                          std::optional<std::uint64_t> prior_revision,
                          const RungSelection& selection, const Rect& local_region,
                          const Affine& local_to_device, Stability stability, Time time,
-                         StateHandle snapshot, Deadline deadline);
+                         StateHandle snapshot, Deadline deadline,
+                         const Content* content_ptr = nullptr);
 
 // The synchronous tiled resolve+composite driver: the interactive analog of
 // `render_frame` (doc 02:49-71). It reuses `render_frame`'s per-layer
@@ -176,12 +187,21 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 // composites. When `dirty` is null (the default) the driver clears `target` and
 // plans the whole viewport, byte-identical to the pre-damage behavior the
 // `tile_planning`/`refinement`/`anchored_viewports` goldens guard.
+//
+// `composition_time` is the caller-supplied content-local time the frame plans
+// at (Decision 4): a `Time` value, not a clock -- the compositor stays stateless
+// and the transport that samples the clock is `runtime.interactive`'s (doc
+// 11:144-149, doc 17:60). It threads into `plan_layer` (which snaps each `Timed`
+// layer to its content grid via `quantize_time`, so a sub-frame advance keys the
+// same native frame and hits the cache) and onto each miss `RenderRequest`.
+// Defaulted `Time::zero()`, so every landed caller and golden is byte-unchanged.
 void render_frame_interactive(const DocRoot& state, const ContentResolver& resolve,
                               const Viewport& viewport, TileCache& cache, Backend& backend,
                               SurfacePool& pool, Surface& target, Deadline deadline,
                               std::optional<std::uint64_t> prior_revision,
                               RefinementQueue* pending = nullptr,
                               CompositorCounters* counters = nullptr,
-                              const DirtyRegion* dirty = nullptr);
+                              const DirtyRegion* dirty = nullptr,
+                              Time composition_time = Time::zero());
 
 } // namespace arbc

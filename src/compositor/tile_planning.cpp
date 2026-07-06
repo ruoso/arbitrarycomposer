@@ -116,7 +116,7 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
                          std::optional<std::uint64_t> prior_revision,
                          const RungSelection& selection, const Rect& local_region,
                          const Affine& local_to_device, Stability stability, Time time,
-                         StateHandle snapshot, Deadline deadline) {
+                         StateHandle snapshot, Deadline deadline, const Content* content_ptr) {
   LayerTilePlan plan;
   plan.content = content;
   plan.rung = selection.rung;
@@ -127,11 +127,18 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
   plan.deadline = deadline;
 
   const double rung_px = rung_scale(selection.rung);
-  // Static content omits achieved_time so its keys are clock-invariant (doc 11);
-  // Timed/Live content carries the raw requested time (bucketing is
-  // damage_planning's).
+  // Static content omits achieved_time so its keys are clock-invariant (doc 11:
+  // 139-140), unchanged by the quantization branch. Timed/Live content keys the
+  // time snapped to the content's native grid via `quantize_time` (achieved-time
+  // coalescing, doc 11:115-129): every requested instant in one native frame
+  // period collapses to a single key, so a sub-frame clock advance re-plans to
+  // all-fresh hits and issues zero renders. A null `content_ptr` or a `nullopt`
+  // from `quantize_time` keeps the raw requested time (today's identity
+  // behaviour) -- the default path is byte-identical. Evaluated once per layer.
+  const Time key_time =
+      (content_ptr != nullptr) ? content_ptr->quantize_time(time).value_or(time) : time;
   const std::optional<Time> achieved_time =
-      (stability == Stability::Static) ? std::nullopt : std::optional<Time>(time);
+      (stability == Stability::Static) ? std::nullopt : std::optional<Time>(key_time);
 
   for (const TileCoord coord : tiles_covering(selection.rung, local_region)) {
     PlannedTile tile;
@@ -202,7 +209,8 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                               const Viewport& viewport, TileCache& cache, Backend& backend,
                               SurfacePool& pool, Surface& target, Deadline deadline,
                               std::optional<std::uint64_t> prior_revision, RefinementQueue* pending,
-                              CompositorCounters* counters, const DirtyRegion* dirty) {
+                              CompositorCounters* counters, const DirtyRegion* dirty,
+                              Time composition_time) {
   // The null-`dirty` path clears and re-plans the whole viewport (byte-identical
   // to today). A gated frame composites only the damaged tiles onto the
   // caller-persisted `target`, so it must NOT clear -- the untouched region
@@ -264,7 +272,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     const RungSelection selection = select_rung(scale);
     LayerTilePlan plan =
         plan_layer(cache, layer.content, revision, prior_revision, selection, region, composed,
-                   content->stability(), Time::zero(), StateHandle{}, deadline);
+                   content->stability(), composition_time, StateHandle{}, deadline, content);
 
     const double rung_px = rung_scale(selection.rung);
 
@@ -282,10 +290,14 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
           Surface& tile_surface = **owned;
           backend.clear(tile_surface, 0.0F, 0.0F, 0.0F, 0.0F);
 
-          // Matches `render_frame`'s walking-skeleton request (compositor.cpp:71):
-          // Time::zero() and the inert default snapshot until runtime binding
-          // wires content_state through. `deadline` is stamped as a value.
-          const RenderRequest request{tile.local_rect, rung_px,      Time::zero(),
+          // The requested content-local time is the caller-supplied
+          // `composition_time` (Decision 4); the content quantizes it internally
+          // and reports `achieved_time == quantize_time(composition_time)`, which
+          // by contract equals the plan-built key, so the fill stores under the
+          // key the render lands on -- no post-render re-key (Decision 3). The
+          // inert default snapshot stands until runtime binding wires
+          // content_state through; `deadline` is stamped as a value.
+          const RenderRequest request{tile.local_rect, rung_px,      composition_time,
                                       StateHandle{},   tile_surface, Exactness::BestEffort,
                                       deadline};
           // The single settle path (doc 03:117-121), exactly as `render_frame`.
