@@ -86,9 +86,9 @@ public:
   expected<Time, TimeError> advance(Time real_elapsed);
 
 private:
-  Time d_playhead{};              // the sampled instant (pure-read via position())
-  Rational d_rate{1, 1};          // playback speed, negative = reverse, kept across pause
-  bool d_paused{false};           // distinct from rate == 0 (doc 11:97-101)
+  Time d_playhead{};               // the sampled instant (pure-read via position())
+  Rational d_rate{1, 1};           // playback speed, negative = reverse, kept across pause
+  bool d_paused{false};            // distinct from rate == 0 (doc 11:97-101)
   std::optional<TimeRange> d_loop; // half-open loop bounds, or none (unbounded)
 };
 

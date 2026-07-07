@@ -33,7 +33,8 @@ task timeline "Time and video" {
   task playback_hints "Playback hints" {
     effort 1d
     allocate team
+    complete 100
     depends !transport
-    note "Advisory (direction, rate, horizon) from the transport to decoder-backed content; feeds the temporal prefetch ring. Doc 11."
+    note "Advisory (direction, rate, horizon) from the transport to decoder-backed content; feeds the temporal prefetch ring. Doc 11. Refinement: tasks/refinements/timeline/playback_hints.md"
   }
 }

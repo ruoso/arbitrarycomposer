@@ -163,7 +163,19 @@ struct RenderResult {
   decoders are the one content kind whose cost model is aggressively
   order-dependent (seeking is expensive, decoding forward is cheap); the
   async render path already tolerates their latency, but the hint is what
-  makes smooth playback *cheap* rather than merely possible.
+  makes smooth playback *cheap* rather than merely possible. The triple is
+  *derived* from the transport, not stored on it: `direction` is the sign of
+  `rate` (`+1` forward, `-1` reverse); `rate` is the transport's exact
+  rational rate; `horizon` is a runtime lookahead window scaled from real
+  time into content time by `|rate|` (exact rational, the single ties-to-even
+  leaf rounding of the time map), so faster playback looks proportionally
+  further ahead. A paused or zero-rate transport derives the empty hint
+  (`direction 0`, `horizon 0`): no motion, no pre-roll, an empty temporal
+  ring. The interface returns nothing and solicits no answer — the default is
+  a no-op, so content that ignores it is byte-identical whether or not a hint
+  is issued; only the two consumers act on it (a decoder pre-rolls its own
+  state; the runtime unpacks the triple into the `base`-typed
+  `(direction, step, horizon)` the temporal prefetch ring consumes).
 
 The contract tests (doc 10) extend accordingly: time-honesty (`Timed`
 content returns identical pixels for identical times), `achieved_time`

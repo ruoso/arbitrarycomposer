@@ -17,8 +17,7 @@ expected<Time, TimeError> Transport::advance(Time real_elapsed) {
   // (`TimeMap{in=0, rate, offset=0}.evaluate(real_elapsed) == round_ties_even(
   // real_elapsed * rate)`), so reverse playback is sign-symmetric and a
   // pathological rate faults as a `TimeError` rather than wrapping (doc 11:102-108).
-  const expected<Time, TimeError> delta =
-      TimeMap{Time{0}, d_rate, Time{0}}.evaluate(real_elapsed);
+  const expected<Time, TimeError> delta = TimeMap{Time{0}, d_rate, Time{0}}.evaluate(real_elapsed);
   if (!delta) {
     return unexpected(delta.error()); // playhead untouched: advance is all-or-nothing
   }

@@ -2,6 +2,7 @@
 
 #include <arbc/base/expected.hpp> // expected/unexpected (doc 10: errors as values)
 #include <arbc/base/geometry.hpp>
+#include <arbc/base/rational_time.hpp> // Rational (PlaybackHint rate)
 #include <arbc/base/time.hpp>
 #include <arbc/model/records.hpp> // StateHandle (L3->model edge, doc 17:53,68-72)
 #include <arbc/surface/surface.hpp>
@@ -110,6 +111,25 @@ struct RenderResult {
   // marks a framebuffer the content reuses every frame: consume-within-frame,
   // copy-to-cache, never retained (doc 09:106-112).
   std::optional<SurfaceRef> provided{};
+};
+
+// A playback advisory issued to decoder-backed content (doc 11:160-178): the
+// transport-derived `(direction, rate, horizon)` triple that lets a decoder
+// pre-roll sequentially (seeking is expensive, decoding forward is cheap).
+// `direction` is the sign of the playback rate (`+1` forward, `-1` reverse, `0`
+// for a paused/zero-rate transport -- the *empty* hint); `rate` is the
+// transport's exact rational playback rate; `horizon` is the content-time
+// lookahead window (`|rate|` x a runtime real-time window, exact rational). A
+// named struct rather than three loose scalars: it is extensible (audio may add a
+// quantum count) and mirrors how `RenderRequest` bundles inputs. It is a
+// `contract`-level value carrying only `base` scalars -- the hint *issued to
+// `Content`* is a contract concept, but the cache (which cannot name contract
+// types) receives the triple unpacked into `base` scalars by the runtime
+// (doc 11:175-178). Trivially copyable, so it stays a cheap by-value descriptor.
+struct PlaybackHint {
+  int direction{0};
+  Rational rate{};
+  Time horizon{};
 };
 
 // A thread-safe, one-shot completion handle (doc 03:62-67). The renderer
@@ -287,6 +307,20 @@ public:
   // (`runtime.threading`, doc 17:60). Default keeps every existing content
   // byte-identical.
   virtual bool render_thread_safe() const { return true; }
+
+  // Playback advisory (doc 11:160-178): each frame the runtime issues the
+  // transport-derived `(direction, rate, horizon)` hint so decoder-backed content
+  // can PRE-ROLL sequentially (seeking is expensive, decoding forward cheap). The
+  // default is a NO-OP returning `void`: the hint is purely advisory -- it changes
+  // no pixels and no cache correctness, and solicits no answer -- so content that
+  // ignores it is byte-identical whether or not a hint is issued (determinism
+  // stays owned by `quantize_time`/`achieved_time`, not by hints). Non-const: a
+  // decoder mutates its own pre-roll state on receipt (precisely the
+  // `render_thread_safe() == false` stateful path); render purity (a pure function
+  // of the pinned snapshot, above) is unaffected because the hint feeds pre-roll,
+  // not the rendered pixels. Only decoder-backed `Timed` content overrides it;
+  // every existing content keeps the null default.
+  virtual void playback_hint(const PlaybackHint& /*hint*/) {}
 
   // The editable-state facet, or `nullptr` for non-editable (leaf/live) content
   // (doc 03:98, "Live content omits"). A content that returns non-null promises
