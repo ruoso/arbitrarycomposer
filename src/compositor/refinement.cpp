@@ -1,6 +1,7 @@
 #include <arbc/base/expected.hpp>
 #include <arbc/compositor/refinement.hpp>
 
+#include <cassert>
 #include <span>
 #include <utility>
 
@@ -79,6 +80,11 @@ std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
     const std::optional<expected<RenderResult, RenderError>> settled = pending.done->take();
     if (settled.has_value() && settled->has_value()) {
       const RenderResult result = **settled;
+      // Insert-key temporal linkage (doc 11:134-137): this async arrival is keyed
+      // at the pre-quantized plan instant; assert the render landed on it before it
+      // is cached, exactly as the inline insert sites do (a no-op for conformant
+      // content, fires only on a doc-11 MUST violation).
+      assert(timed_insert_key_consistent(pending.key, result, pending.stability));
       // The arrival is placed under its exact request key so a follow-up frame at
       // the same revision plans it Fresh (doc 02:100-104 pin), then dropped from
       // the queue by simply not retaining it.

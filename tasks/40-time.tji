@@ -25,8 +25,9 @@ task timeline "Time and video" {
   task temporal_cache "achieved_time coalescing" {
     effort 2d
     allocate team
+    complete 100
     depends !rational_time, cache.key_shapes
-    note "Time-keyed cache entries for Timed content; achieved_time coalescing serves whole inter-frame intervals from one entry (24fps content on 60fps output). Doc 11."
+    note "Time-keyed cache entries for Timed content; achieved_time coalescing serves whole inter-frame intervals from one entry (24fps content on 60fps output). Doc 11. Refinement: tasks/refinements/timeline/temporal_cache.md"
   }
   task playback_hints "Playback hints" {
     effort 1d

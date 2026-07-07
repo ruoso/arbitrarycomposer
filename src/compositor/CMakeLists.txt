@@ -17,4 +17,5 @@ arbc_component_test(COMPONENT compositor SOURCES t/scale_ladder.t.cpp
                     t/tile_planning.t.cpp t/refinement.t.cpp
                     t/counters.t.cpp t/anchored_viewports.t.cpp
                     t/damage_planning.t.cpp t/temporal_coalescing.t.cpp
-                    t/operator_graph.t.cpp t/pull_service.t.cpp)
+                    t/temporal_cache.t.cpp t/operator_graph.t.cpp
+                    t/pull_service.t.cpp)

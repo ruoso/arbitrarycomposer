@@ -4,6 +4,7 @@
 #include <arbc/compositor/scale_ladder.hpp>
 #include <arbc/compositor/tile_planning.hpp> // k_tile_size, tiles_covering
 
+#include <cassert>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -180,6 +181,11 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
     const std::optional<expected<RenderResult, RenderError>> settled = done->take();
     if (settled.has_value() && settled->has_value()) {
       const RenderResult result = **settled;
+      // Insert-key temporal linkage (doc 11:134-137): the pull keyed this tile at
+      // `quantize_time(request.time)` before dispatching; assert the render landed
+      // on that same instant so the cached tile serves the frame it is keyed under
+      // (a no-op for conformant content, fires only on a doc-11 MUST violation).
+      assert(timed_insert_key_consistent(key, result, stability));
       const std::size_t bytes = tile_byte_cost(tile_surface);
       d_cache.insert(key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
                      bytes, PriorityClass::Visible);
@@ -197,7 +203,7 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
     // worker settles and `poll_refinements` drains.
     const std::size_t bytes = tile_byte_cost(tile_surface);
     d_config.pending->tiles.push_back(
-        PendingTile{key, request.region, id, bytes, std::move(*owned), std::move(done)});
+        PendingTile{key, request.region, id, stability, bytes, std::move(*owned), std::move(done)});
   }
 }
 

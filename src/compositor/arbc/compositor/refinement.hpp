@@ -73,6 +73,12 @@ struct PendingTile {
   TileKey key;
   Rect local_rect;
   ObjectId content;
+  // The content's stability, captured at record time so `poll_refinements` can
+  // apply the insert-site temporal-linkage check on the async arrival without
+  // re-resolving the `Content*` (which the queue does not retain). `Static`
+  // default keeps a hand-constructed test tile exempt (doc 11:134-137,
+  // `timed_insert_key_consistent`).
+  Stability stability{Stability::Static};
   std::size_t bytes{0};
   std::unique_ptr<Surface> surface;
   std::shared_ptr<RenderCompletion> done;

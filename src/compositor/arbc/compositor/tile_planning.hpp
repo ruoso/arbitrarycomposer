@@ -165,6 +165,30 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
                          StateHandle snapshot, Deadline deadline,
                          const Content* content_ptr = nullptr);
 
+// The insert-site temporal-linkage predicate (doc 11:134-137). At a cache miss
+// the compositor keys a `Timed` tile at `quantize_time(time)` *before* it renders
+// (`plan_layer`), then on the render's arrival inserts the surface under that same
+// pre-quantized `TileKey`, dropping `RenderResult::achieved_time` (`TileMeta` has
+// no time field). Doc 11's **MUST** is that a `Timed` content's `render(time = t)`
+// lands on the instant `quantize_time(t)` names -- so the `achieved_time` the
+// render reports equals the instant the tile was keyed under, the coalesced tile
+// is exactly the frame the transport asked for, and reuse is sound under seek.
+// This pure predicate pins that linkage at the insert site: for `Timed` content
+// that reports a concrete `achieved_time` it holds iff that instant equals
+// `key.achieved_time`. It is deliberately additive and, for conformant content, a
+// no-op: `Static`/`Live` content is exempt (they own no achieved-time grid, doc
+// 11:139-143), and a `Timed` render that reports `nullopt` `achieved_time` is
+// exempt too (the content honored the requested time exactly, or its
+// `quantize_time` defaulted to `nullopt` and the key carries the raw requested
+// time -- today's identity behaviour, which coalesces nothing yet is still sound,
+// content.hpp:227-234). It is called under `assert` at the three insert sites
+// (`tile_planning.cpp`, `pull_service.cpp`, `refinement.cpp`) -- catching a
+// content that violates the doc-11 MUST as a fail-fast tripwire rather than a
+// wrong-frame-under-seek bug -- and *directly* from its enforcing test, so the
+// linkage claim holds regardless of `NDEBUG`.
+bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
+                                 Stability stability);
+
 // The synchronous tiled resolve+composite driver: the interactive analog of
 // `render_frame` (doc 02:49-71). It reuses `render_frame`'s per-layer
 // cull/compose/region walk, calls `select_rung`, `plan_layer`, then for each

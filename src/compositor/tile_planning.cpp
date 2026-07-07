@@ -4,6 +4,7 @@
 #include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -11,6 +12,24 @@
 #include <utility>
 
 namespace arbc {
+
+bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
+                                 Stability stability) {
+  // Only `Timed` content owns an achieved-time grid the key must land on (doc
+  // 11:139-143); `Static` keys carry no achieved_time and `Live` owns no grid.
+  if (stability != Stability::Timed) {
+    return true;
+  }
+  // A `Timed` render that reports no achieved_time honored the requested time
+  // exactly (or its `quantize_time` defaulted to nullopt): the key then carries
+  // the raw requested time and coalesces nothing, still sound (content.hpp:227-234).
+  if (!result.achieved_time.has_value()) {
+    return true;
+  }
+  // The doc-11 MUST: the instant the render landed on IS the instant the tile was
+  // keyed under, so the coalesced tile is exactly the frame the transport asked for.
+  return key.achieved_time == result.achieved_time;
+}
 
 namespace {
 
@@ -374,6 +393,12 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
               const std::optional<expected<RenderResult, RenderError>> settled = done->take();
               if (settled.has_value() && settled->has_value()) {
                 const RenderResult result = **settled;
+                // Insert-key temporal linkage (doc 11:134-137): the tile was keyed
+                // at `quantize_time(time)` before this render; assert the render
+                // landed on that same instant so the coalesced entry serves the
+                // frame it is keyed under (a no-op for conformant content, fires
+                // only on a doc-11 MUST violation).
+                assert(timed_insert_key_consistent(tile.key, result, content->stability()));
                 const std::size_t bytes = tile_byte_cost(tile_surface);
                 tile.hold = cache.insert(
                     tile.key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
@@ -391,8 +416,9 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
               // `pending` is null this branch is skipped and the tile is dropped
               // exactly as before.
               const std::size_t bytes = tile_byte_cost(tile_surface);
-              pending->tiles.push_back(PendingTile{tile.key, tile.local_rect, layer.content, bytes,
-                                                   std::move(*owned), std::move(done)});
+              pending->tiles.push_back(PendingTile{tile.key, tile.local_rect, layer.content,
+                                                   content->stability(), bytes, std::move(*owned),
+                                                   std::move(done)});
             }
           }
         }

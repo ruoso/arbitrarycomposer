@@ -177,7 +177,8 @@ TEST_CASE("set_span / set_time_map on an absent or non-layer id is a no-op") {
   {
     auto txn = model.transact("no-op");
     txn.set_span(arbc::ObjectId{424242}, arbc::TimeRange{arbc::Time{1}, arbc::Time{2}}); // absent
-    txn.set_time_map(content, arbc::TimeMap{arbc::Time{5}, arbc::Rational{2, 1}, {}}); // not a layer
+    txn.set_time_map(content,
+                     arbc::TimeMap{arbc::Time{5}, arbc::Rational{2, 1}, {}}); // not a layer
     REQUIRE(txn.commit().has_value());
   }
 
