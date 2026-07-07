@@ -43,7 +43,7 @@ TEST_CASE("a SurfaceRef fires its release callback exactly once when the last re
     {
       // Copy: now two references share one control block.
       arbc::SurfaceRef copy = ref; // NOLINT(performance-unnecessary-copy-initialization)
-      REQUIRE(releases == 0);       // first ref still live -> no release
+      REQUIRE(releases == 0);      // first ref still live -> no release
     }
     REQUIRE(releases == 0); // one of two dropped -> still not the last
   }
@@ -58,7 +58,7 @@ TEST_CASE("moving a SurfaceRef transfers the reference without double-release or
   {
     arbc::SurfaceRef ref(surface, [&releases] { ++releases; });
     arbc::SurfaceRef moved = std::move(ref); // the moved-from handle holds no reference
-    REQUIRE(releases == 0);                   // exactly one live reference across the move
+    REQUIRE(releases == 0);                  // exactly one live reference across the move
     // `ref` (moved-from) must NOT release when it dies at scope end.
   }
   REQUIRE(releases == 1); // released once by the surviving handle, never double-dropped
@@ -89,7 +89,9 @@ TEST_CASE("the wrapped Surface is reachable while any reference is live") {
 
 TEST_CASE("a null release callback is permitted and fires nothing") {
   StubSurface surface(4, 4, k_fmt);
-  { arbc::SurfaceRef ref(surface, nullptr); }
+  {
+    arbc::SurfaceRef ref(surface, nullptr);
+  }
   SUCCEED("no teardown obligation: destruction is a no-op, never UB");
 }
 

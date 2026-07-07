@@ -152,14 +152,13 @@ TEST_CASE("inline composite from a provided surface equals the same content fill
 
   arbc::CpuBackend fb_backend; // the content's own framebuffer allocator
   arbc::Document provided_doc;
-  provided_doc.add_layer(
-      provided_doc.add_content(
-          std::make_shared<ProvidingContent>(fb_backend, k_red, k_unit, /*transient=*/false)),
-      placement);
+  provided_doc.add_layer(provided_doc.add_content(std::make_shared<ProvidingContent>(
+                             fb_backend, k_red, k_unit, /*transient=*/false)),
+                         placement);
 
   arbc::Document solid_doc;
-  solid_doc.add_layer(
-      solid_doc.add_content(std::make_shared<arbc::SolidContent>(k_red, k_unit)), placement);
+  solid_doc.add_layer(solid_doc.add_content(std::make_shared<arbc::SolidContent>(k_red, k_unit)),
+                      placement);
 
   arbc::CpuBackend backend;
   const auto provided_out = render_offline(provided_doc, viewport, backend);

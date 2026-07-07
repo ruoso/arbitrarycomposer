@@ -11,6 +11,7 @@
 #include <arbc/model/damage.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/interactive.hpp>
+#include <arbc/runtime/transport.hpp>
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
@@ -308,6 +309,51 @@ TEST_CASE("interactive: a still scene advancing only the clock does no work") {
   CHECK(renderer.counters().follow_up_frames() == 0);
   // The zero-work frame does not touch (does not clear) the persisted target.
   CHECK(bytes_identical(after_frame1, snapshot(**target)));
+}
+
+// enforces: 02-architecture#interactive-still-scene-schedules-no-frame
+// enforces: 11-time-and-video#static-tiles-survive-clock
+TEST_CASE("interactive: a transport-produced clock advance over a still scene does no work") {
+  // The zero-render promise now holds when the composition_time is PRODUCED by a
+  // real Transport (a play->advance cycle) rather than handed a literal instant --
+  // proving the transport wires into the loop without regressing the promise.
+  MarkBackend backend;
+  SyncSolid content(arbc::Stability::Static);
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+  arbc::Transport transport(arbc::Time{0});
+
+  // Frame 1 warms the cache at the transport's playhead (position() == 0).
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                        transport.position(), k_budget);
+  CHECK(renderer.counters().requests_issued() == 1);
+  CHECK(renderer.counters().composites() == 1);
+
+  // Play, then advance by a sub-native-frame real elapsed. The playhead moves, but
+  // the all-Static scene's tile keys omit achieved_time, so frame 2 plans all-fresh
+  // cache hits: zero renders, zero composites, no follow-up frame.
+  transport.play();
+  const auto advanced = transport.advance(arbc::Time{1'000'000});
+  REQUIRE(advanced.has_value());
+  CHECK(transport.position() == arbc::Time{1'000'000});
+
+  const auto out2 = renderer.render_frame(*state, resolver, viewport, cache, backend, pool,
+                                          **target, {}, transport.position(), k_budget);
+  CHECK_FALSE(out2.schedule_follow_up);
+  CHECK(renderer.counters().requests_issued() == 1); // delta 0
+  CHECK(renderer.counters().composites() == 1);      // delta 0
+  CHECK(renderer.counters().follow_up_frames() == 0);
 }
 
 // enforces: 02-architecture#interactive-frame-loop-bounded-by-deadline

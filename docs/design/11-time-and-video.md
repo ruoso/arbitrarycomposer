@@ -92,6 +92,28 @@ different times* (an editor's preview at the playhead and a filmstrip of
 thumbnails at other times), which the pull-based design gives for free, and
 which push-based video frameworks structurally cannot do.
 
+The transport's semantics are:
+
+- **Playhead + rate + pause are three independent facts.** The playhead is an
+  instant on the composition axis (`Time`, flicks); `rate` is a rational
+  playback speed (negative = reverse, retained across pause so resume restores
+  it); `pause` is a separate boolean, *not* `rate == 0` — a paused transport
+  can still be seeked/scrubbed, and resume plays at the pre-pause rate.
+- **The transport reads no wall clock.** Advancing is driven by an elapsed
+  *real* duration the host supplies (it owns the sole wall-clock read, as the
+  interactive renderer already does for its deadline); the transport scales
+  that real duration by `rate` in exact rational arithmetic with one
+  ties-to-even leaf rounding — the same sign-symmetric path the time-map math
+  uses, so reverse playback is unbiased and pathological rates fault as a
+  value, never wrap. A paused advance moves the playhead zero flicks.
+- **Loop bounds are half-open `[in, out)` and wrap only on advance, never on
+  seek.** A forward advance that reaches or passes `out` re-enters at `in`
+  (true modulo, so an advance longer than the loop still lands in range);
+  reverse wraps symmetrically at `in`. Seek/scrub sets the playhead to the
+  exact requested instant, unconstrained by the loop or pause — a filmstrip
+  thumbnail may sit anywhere, including outside the loop window. With no loop
+  set, advance runs unbounded and span culling handles emptiness.
+
 ## Contract changes (doc 03)
 
 ```cpp

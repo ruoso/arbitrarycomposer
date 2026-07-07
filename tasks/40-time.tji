@@ -19,8 +19,9 @@ task timeline "Time and video" {
   task transport "Transport" {
     effort 2d
     allocate team
+    complete 100
     depends !temporal_placement
-    note "Per-viewport clock: play/pause/seek/rate (negative allowed), loop bounds; multiple transports observing one composition at different times. Doc 11."
+    note "Per-viewport clock: play/pause/seek/rate (negative allowed), loop bounds; multiple transports observing one composition at different times. Doc 11. Refinement: tasks/refinements/timeline/transport.md"
   }
   task temporal_cache "achieved_time coalescing" {
     effort 2d
