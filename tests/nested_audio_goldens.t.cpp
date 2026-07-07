@@ -81,8 +81,7 @@ private:
 };
 
 bool bytes_equal(const std::vector<float>& a, const std::vector<float>& b) {
-  return a.size() == b.size() &&
-         std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+  return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
 }
 
 // Render a fixed tone directly into an interleaved block -- the flat-monitor
@@ -100,8 +99,8 @@ std::vector<float> render_tone(std::uint32_t freq, float amp, const TimeRange& w
 }
 
 // Render an already-built + attached nested content's audio into a block.
-std::vector<float> render_nested(NestedContent& nested, const TimeRange& window,
-                                 std::uint32_t rate, ChannelLayout layout, std::uint32_t frames) {
+std::vector<float> render_nested(NestedContent& nested, const TimeRange& window, std::uint32_t rate,
+                                 ChannelLayout layout, std::uint32_t frames) {
   std::vector<float> buf(static_cast<std::size_t>(frames) * channel_count(layout), 0.0F);
   AudioBlock block{buf.data(), frames, layout, rate};
   const AudioRequest req{window, rate, layout, block, Exactness::Exact, StateHandle{}};
@@ -156,12 +155,15 @@ TEST_CASE("nested mixes a two-tone child byte-identically to mixing those tones 
   NestedContent nested(comp);
   nested.attach(pull, backend, map_resolver(binding), *doc);
 
-  const std::vector<float> got = render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
+  const std::vector<float> got =
+      render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
 
   // Oracle: the same two tones mixed directly at top level (homogeneous 48 kHz
   // stereo, unit gain), in bottom-to-top order.
-  const std::vector<float> a = render_tone(440, 0.5F, window, k_rate, ChannelLayout::Stereo, k_frames);
-  const std::vector<float> b = render_tone(660, 0.25F, window, k_rate, ChannelLayout::Stereo, k_frames);
+  const std::vector<float> a =
+      render_tone(440, 0.5F, window, k_rate, ChannelLayout::Stereo, k_frames);
+  const std::vector<float> b =
+      render_tone(660, 0.25F, window, k_rate, ChannelLayout::Stereo, k_frames);
   std::vector<float> want(a.size(), 0.0F);
   for (std::size_t i = 0; i < a.size(); ++i) {
     want[i] = a[i] + b[i];
@@ -202,11 +204,13 @@ TEST_CASE("nested scales by the layer gain and remixes a mono child up to stereo
   NestedContent nested(comp);
   nested.attach(pull, backend, map_resolver(binding), *doc);
 
-  const std::vector<float> got = render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
+  const std::vector<float> got =
+      render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
 
   // Oracle: the mono tone at the child working layout, scaled 0.5 and spread to
   // both stereo channels (the weighted additive mix + mono->stereo remix).
-  const std::vector<float> mono = render_tone(440, 0.5F, window, k_rate, ChannelLayout::Mono, k_frames);
+  const std::vector<float> mono =
+      render_tone(440, 0.5F, window, k_rate, ChannelLayout::Mono, k_frames);
   std::vector<float> want(static_cast<std::size_t>(k_frames) * 2, 0.0F);
   for (std::uint32_t f = 0; f < k_frames; ++f) {
     const float s = 0.5F * mono[f];
@@ -245,7 +249,8 @@ TEST_CASE("nested varispeeds a rate-1/2 child by requesting it at the composed r
   NestedContent nested(comp);
   nested.attach(pull, backend, map_resolver(binding), *doc);
 
-  const std::vector<float> got = render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
+  const std::vector<float> got =
+      render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
 
   // Oracle: a rate-1/2 layer plays its audio at half speed == the tone requested
   // at TWICE the rate (the composed rational rate), placed 1:1 -- one octave down.
@@ -290,7 +295,8 @@ TEST_CASE("a composition embedding a composition mixes its child audio through t
   NestedContent outer(c2);
   outer.attach(pull, backend, map_resolver(binding), *doc);
 
-  const std::vector<float> got = render_nested(outer, window, k_rate, ChannelLayout::Stereo, k_frames);
+  const std::vector<float> got =
+      render_nested(outer, window, k_rate, ChannelLayout::Stereo, k_frames);
 
   // Homogeneous, unit-gain, identity-map two-level nesting == the leaf tone.
   const std::vector<float> want =
@@ -334,7 +340,8 @@ TEST_CASE("a gain<1 Droste audio cycle decays to a finite, stable, deterministic
   binding[c_self] = &nested; // the cycle edge
   nested.attach(pull, backend, map_resolver(binding), *doc);
 
-  const std::vector<float> first = render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
+  const std::vector<float> first =
+      render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
   // The depth budget fired (the divergent self-reference degraded to silence),
   // yet the mix is finite and bounded (a converging geometric echo).
   REQUIRE(pull.backstops() > 0);
@@ -343,7 +350,8 @@ TEST_CASE("a gain<1 Droste audio cycle decays to a finite, stable, deterministic
     REQUIRE(std::fabs(v) < 4.0F);
   }
   // Deterministic across repeated visits (stable samples).
-  const std::vector<float> second = render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
+  const std::vector<float> second =
+      render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
   REQUIRE(bytes_equal(first, second));
 }
 
@@ -372,7 +380,8 @@ TEST_CASE("a gain>=1 Droste audio cycle terminates on the budget with a silent b
   binding[c_self] = &nested;
   nested.attach(pull, backend, map_resolver(binding), *doc);
 
-  const std::vector<float> got = render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
+  const std::vector<float> got =
+      render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
   REQUIRE(pull.backstops() > 0);
   for (const float v : got) {
     REQUIRE(v == 0.0F); // silent (all-zero) block

@@ -62,6 +62,17 @@ target_link_libraries(arbc_nested_audio_goldens_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_nested_audio_goldens_t)
 
+# org.arbc.nested BELOW-RATE cross-rate reconstruction goldens
+# (kinds.nested_audio_resampling): a below-rate child is band-limit-reconstructed
+# by the shared arbc::media windowed-sinc kernel byte-identically to applying that
+# kernel to the child's genuine native block (integer / non-integer / varispeed /
+# two-level ratios), decisively not a nearest/hold, with the discovery+native pull
+# counter and preserved achieved_rate/exact honesty; a honoring tone stays 1:1.
+add_executable(arbc_nested_audio_resampling_goldens_t nested_audio_resampling_goldens.t.cpp)
+target_link_libraries(arbc_nested_audio_resampling_goldens_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_audio_resampling_goldens_t)
+
 # org.arbc.nested audio concurrency stress (tier-6, tsan lane): many concurrent
 # render_audio calls of one nested audio scene through a stateless multi-thread
 # PullService audio double are race-free and deterministic.

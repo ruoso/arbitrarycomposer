@@ -205,7 +205,11 @@ AudioResult render_mix(NestedContent& nested, std::uint32_t rate, ChannelLayout 
   AudioBlock block{out.data(), frames, layout, rate};
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(rate);
   const AudioRequest req{TimeRange{Time::zero(), Time{static_cast<std::int64_t>(frames) * fpf}},
-                         rate, layout, block, Exactness::Exact, StateHandle{}};
+                         rate,
+                         layout,
+                         block,
+                         Exactness::Exact,
+                         StateHandle{}};
   auto done = std::make_shared<AudioCompletion>();
   const std::optional<AudioResult> r = nested.audio()->render_audio(req, done);
   REQUIRE(r.has_value());

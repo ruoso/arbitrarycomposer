@@ -1,4 +1,5 @@
 #include <arbc/kind_nested/nested_content.hpp>
+#include <arbc/media/audio_resampler.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -479,31 +480,84 @@ void NestedContent::mix_child_layer(const LayerRecord& layer, const CompositionR
   }
   const AudioResult cr = **settled;
 
+  // Below-rate reconstruction (kinds.nested_audio_resampling). A child that bottoms
+  // out below the composed rate conveyed only `achieved_rate` of genuine
+  // information in the caller-sized discovery block -- a baseline nearest/hold.
+  // Rather than read that hold, re-request the child's GENUINE native samples over
+  // the same child-local window at its native rate (a second, block-cache-served
+  // pull) and band-limit-reconstruct them up to `child_rate` with the deterministic
+  // `arbc::media` windowed-sinc polyphase kernel -- exactly `frames` samples that
+  // then feed the UNCHANGED 1:1 additive mix below. A rate-honoring child (every
+  // homogeneous reference scene) skips this entirely and keeps its byte-exact 1:1
+  // placement, so the pre-existing goldens reproduce (Constraint 3). The kernel
+  // improves the sample VALUES only; the achieved_rate/exact honesty math below is
+  // untouched, never fabricated (doc 12:24-25,100-104; Constraints 2,4,5,6).
+  const float* mix_src = child_buf.data();
+  std::vector<float> resampled_buf;
+  if (cr.achieved_rate > 0 && cr.achieved_rate < child_rate) {
+    const std::uint32_t native_rate = cr.achieved_rate;
+    const std::int64_t fpf_native =
+        Time::flicks_per_second / static_cast<std::int64_t>(native_rate);
+    // Native frames spanning the same child-local window at the native rate. Output
+    // frame n reads native position `n * native_rate / child_rate` (< frames), so
+    // this count covers every in-range tap; taps past the block read as zero (the
+    // kernel's defined edge convention). One rounding at the leaf is the kernel's
+    // (doc 11:216-234) -- the rate is never accumulated across depth.
+    const std::uint32_t native_frames = static_cast<std::uint32_t>(
+        static_cast<std::uint64_t>(frames) * native_rate / child_rate + 1);
+    std::vector<float> native_buf(static_cast<std::size_t>(native_frames) * in_ch, 0.0F);
+    AudioBlock native_block{native_buf.data(), native_frames, child_layout, native_rate};
+    const AudioRequest native_req{
+        TimeRange{*child_start, Time{child_start->flicks +
+                                     static_cast<std::int64_t>(native_frames) * fpf_native}},
+        native_rate,
+        child_layout,
+        native_block,
+        request.exactness, // carried verbatim (Constraint 9)
+        request.snapshot,  // carried verbatim (Constraint 9)
+    };
+    auto native_done = std::make_shared<AudioCompletion>();
+    d_pull->pull_audio(content, native_req, native_done);
+    if (native_done->settled()) {
+      const std::optional<expected<AudioResult, RenderError>> native_settled = native_done->take();
+      if (native_settled.has_value() && native_settled->has_value()) {
+        resampled_buf.assign(static_cast<std::size_t>(frames) * in_ch, 0.0F);
+        AudioBlock resampled_block{resampled_buf.data(), frames, child_layout, child_rate};
+        resample_audio(native_block, resampled_block);
+        mix_src = resampled_buf.data();
+      }
+    } else {
+      native_done->cancel(); // a deferred native pull: keep the baseline block
+    }
+  }
+
   // Additive Flat-mode mix (doc 12:129-130): contribution = gain * child, summed
-  // into the target, remixed to the request layout. Placement is 1:1 -- the child
-  // was requested at the composed rate over `frames` frames.
+  // into the target, remixed to the request layout. Placement is 1:1 -- `mix_src`
+  // carries exactly `frames` samples at `child_rate` (the honoring child's block,
+  // or the reconstructed block above).
   const float gain = static_cast<float>(layer.gain);
   for (std::uint32_t f = 0; f < frames; ++f) {
     for (std::uint32_t c = 0; c < out_ch; ++c) {
       float s = 0.0F;
       if (in_ch == out_ch) {
-        s = child_buf[static_cast<std::size_t>(f) * in_ch + c];
+        s = mix_src[static_cast<std::size_t>(f) * in_ch + c];
       } else if (in_ch == 1) {
-        s = child_buf[f]; // mono child -> every request channel
+        s = mix_src[f]; // mono child -> every request channel
       } else {
         // stereo child -> mono request: average the channels (baseline downmix).
-        s = 0.5F * (child_buf[static_cast<std::size_t>(f) * 2] +
-                    child_buf[static_cast<std::size_t>(f) * 2 + 1]);
+        s = 0.5F * (mix_src[static_cast<std::size_t>(f) * 2] +
+                    mix_src[static_cast<std::size_t>(f) * 2 + 1]);
       }
       request.target.samples[static_cast<std::size_t>(f) * out_ch + c] += gain * s;
     }
   }
 
-  // achieved_rate / exact honesty (constraint 6). A child honoring the composed
-  // rate keeps the boundary at the request rate; a below-rate child (its block
-  // reinterpreted by a baseline nearest/hold fill -- high-quality resampling is
-  // the deferred `kinds.nested_audio_resampling`) lowers the aggregate and marks
-  // it inexact.
+  // achieved_rate / exact honesty (Constraint 6). A child honoring the composed
+  // rate keeps the boundary at the request rate; a below-rate child (whose samples
+  // are now band-limit-reconstructed above, not held) still lowers the aggregate
+  // and marks it inexact -- the windowed-sinc reconstruction improves the sample
+  // VALUES' fidelity but creates no information, so it must never raise
+  // achieved_rate toward the request rate nor report exact (doc 12 rate-honesty).
   if (!cr.exact || cr.achieved_rate != child_rate) {
     exact = false;
     const std::uint64_t eff =

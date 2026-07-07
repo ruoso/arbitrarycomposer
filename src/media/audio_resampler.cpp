@@ -1,0 +1,126 @@
+#include <arbc/media/audio_resampler.hpp>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+
+namespace arbc {
+
+namespace {
+
+// ===========================================================================
+// FROZEN POLYPHASE COEFFICIENT TABLE -- regenerate deliberately (doc 16:50-53).
+// ===========================================================================
+//
+// A fixed 16-tap (half N=8) Blackman-Harris windowed sinc over a 32-phase
+// polyphase bank, per-phase normalized so each phase's taps sum to 1 (DC gain
+// unity) and phase 0 is an exact Kronecker delta (integer-argument sinc forced
+// to exact zero) -- so an aligned tap (an integer-ratio phase-0 sample)
+// reproduces its native input byte-for-byte and a constant signal reconstructs
+// to itself in the block interior. The coefficients carry no runtime libm: they
+// are tabulated once, offline, and only ordered no-FMA float32 MACs run at
+// render time (doc 16 CPU-determinism recipe; the audio twin of tone's
+// parabolic-sine portability, `kinds.tone`).
+//
+// Window/tap/phase choices are fixed (Constraint 7): no runtime quality knob.
+//
+// REGENERATE PROCEDURE (doc 16 tier-3): an intended filter change (different
+// window, tap count, or phase count) deliberately re-freezes this table; it
+// never regenerates silently. Build the media unit test and run only the hidden
+// dump case, which prints this paste-ready block:
+//
+//     cmake --build --preset dev --target arbc_media_t
+//     ./build/dev/src/media/arbc_media_t "[.regen]"
+//
+// then replace the block below with its output AND re-freeze the dependent
+// output goldens (src/media/t/audio_resampler.t.cpp and
+// tests/nested_audio_resampling_goldens.t.cpp).
+
+// PHASES=32 TAPS=16 (half N=8), Blackman-Harris windowed sinc, per-phase normalized
+constexpr std::size_t k_resampler_phases = 32;
+constexpr std::size_t k_resampler_taps = 16;
+constexpr std::array<float, 512> k_resampler_coeffs = {
+    0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x1.0000000000000p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, 0x0.0p+0f, // phase 0
+    -0x1.a4fd660000000p-17f, 0x1.c0c0540000000p-14f, -0x1.03c39e0000000p-11f, 0x1.ae049a0000000p-10f, -0x1.201c720000000p-8f, 0x1.5a25900000000p-7f, -0x1.c298920000000p-6f, 0x1.ff22240000000p-1f, 0x1.e517d60000000p-6f, -0x1.6d73e40000000p-7f, 0x1.30f3f00000000p-8f, -0x1.cbb70c0000000p-10f, 0x1.1a41880000000p-11f, -0x1.f489720000000p-14f, 0x1.f072920000000p-17f, -0x1.0532bc0000000p-22f, // phase 1
+    -0x1.80e2aa0000000p-16f, 0x1.a683620000000p-13f, -0x1.efc3400000000p-11f, 0x1.9dc47e0000000p-9f, -0x1.16a5d80000000p-7f, 0x1.4f48080000000p-6f, -0x1.b0ae140000000p-5f, 0x1.fc89f60000000p-1f, 0x1.f5875c0000000p-5f, -0x1.75bafc0000000p-6f, 0x1.382dde0000000p-7f, -0x1.d8e4b00000000p-9f, 0x1.24ab160000000p-10f, -0x1.06d55e0000000p-12f, 0x1.0ba84a0000000p-15f, -0x1.1fdae20000000p-21f, // phase 2
+    -0x1.06999c0000000p-15f, 0x1.2939e40000000p-12f, -0x1.618d240000000p-10f, 0x1.29922e0000000p-8f, -0x1.92e3c80000000p-7f, 0x1.e594140000000p-6f, -0x1.36d01c0000000p-4f, 0x1.f83bc60000000p-1f, 0x1.83feda0000000p-4f, -0x1.1dbd640000000p-5f, 0x1.ddc4420000000p-7f, -0x1.6b96020000000p-8f, 0x1.c596200000000p-10f, -0x1.9c7e220000000p-12f, 0x1.aeebd80000000p-15f, -0x1.f1277c0000000p-21f, // phase 3
+    -0x1.3ce5640000000p-15f, 0x1.724a760000000p-12f, -0x1.bea0a40000000p-10f, 0x1.7b21ca0000000p-8f, -0x1.0206900000000p-6f, 0x1.378b460000000p-5f, -0x1.8be1ac0000000p-4f, 0x1.f23ebc0000000p-1f, 0x1.0a35bc0000000p-3f, -0x1.8325540000000p-5f, 0x1.43e0f40000000p-6f, -0x1.ef3fee0000000p-8f, 0x1.3752900000000p-9f, -0x1.1ea2aa0000000p-11f, 0x1.32ee7a0000000p-14f, -0x1.877bae0000000p-20f, // phase 4
+    -0x1.64a1a60000000p-15f, 0x1.aecd240000000p-12f, -0x1.07823a0000000p-9f, 0x1.c343120000000p-8f, -0x1.34c78a0000000p-6f, 0x1.758d3a0000000p-5f, -0x1.d76edc0000000p-4f, 0x1.ea9cc60000000p-1f, 0x1.55b6440000000p-3f, -0x1.ea2bf80000000p-5f, 0x1.9a450a0000000p-6f, -0x1.3b1bc40000000p-7f, 0x1.8f33d20000000p-9f, -0x1.740a3e0000000p-11f, 0x1.9809da0000000p-14f, -0x1.240b1e0000000p-19f, // phase 5
+    -0x1.7f31d40000000p-15f, 0x1.df3eb60000000p-12f, -0x1.2964fe0000000p-9f, 0x1.00e4080000000p-7f, -0x1.617f340000000p-6f, 0x1.ac8afa0000000p-5f, -0x1.0cb6aa0000000p-3f, 0x1.e162880000000p-1f, 0x1.a42a780000000p-3f, -0x1.28ebae0000000p-4f, 0x1.f130b40000000p-6f, -0x1.7f93200000000p-7f, 0x1.e99d380000000p-9f, -0x1.cdca160000000p-11f, 0x1.0330400000000p-13f, -0x1.a2598e0000000p-19f, // phase 6
+    -0x1.8e07340000000p-15f, 0x1.021cfe0000000p-11f, -0x1.45143c0000000p-9f, 0x1.1b50b20000000p-7f, -0x1.880b4a0000000p-6f, 0x1.dc54d20000000p-5f, -0x1.28f26c0000000p-3f, 0x1.d69f380000000p-1f, 0x1.f534420000000p-3f, -0x1.5c8f460000000p-4f, 0x1.23dc460000000p-5f, -0x1.c44ce00000000p-7f, 0x1.22d2460000000p-8f, -0x1.158ab20000000p-10f, 0x1.3ea95a0000000p-13f, -0x1.218ac00000000p-18f, // phase 7
+    -0x1.9298f40000000p-15f, 0x1.0f396c0000000p-11f, -0x1.5abcb60000000p-9f, 0x1.30ee4e0000000p-7f, -0x1.a85c360000000p-6f, 0x1.0267de0000000p-4f, -0x1.40775e0000000p-3f, 0x1.ca648a0000000p-1f, 0x1.2437480000000p-2f, -0x1.8f75ac0000000p-4f, 0x1.4e72b00000000p-5f, -0x1.0441ae0000000p-6f, 0x1.5124200000000p-8f, -0x1.457f1a0000000p-10f, 0x1.7e024c0000000p-13f, -0x1.84e2b60000000p-18f, // phase 8
+    -0x1.8e5cea0000000p-15f, 0x1.1758aa0000000p-11f, -0x1.6a9a840000000p-9f, 0x1.41d11c0000000p-7f, -0x1.c274420000000p-6f, 0x1.12fa540000000p-4f, -0x1.535a960000000p-3f, 0x1.bcc6820000000p-1f, 0x1.4eb7040000000p-2f, -0x1.c10e360000000p-4f, 0x1.77db1e0000000p-5f, -0x1.25b3000000000p-6f, 0x1.7f387e0000000p-8f, -0x1.763ada0000000p-10f, 0x1.c0ad540000000p-13f, -0x1.fc70440000000p-18f, // phase 9
+    -0x1.82c13c0000000p-15f, 0x1.1ae6780000000p-11f, -0x1.74f71e0000000p-9f, 0x1.4e19c40000000p-7f, -0x1.d666a40000000p-6f, 0x1.1fe7d00000000p-4f, -0x1.61b92e0000000p-3f, 0x1.addb4a0000000p-1f, 0x1.79e0da0000000p-2f, -0x1.f0c3a80000000p-4f, 0x1.9f916a0000000p-5f, -0x1.460d8c0000000p-6f, 0x1.ac79d20000000p-8f, -0x1.a7269a0000000p-10f, 0x1.02fdc60000000p-12f, -0x1.4469ba0000000p-17f, // phase 10
+    -0x1.7126be0000000p-15f, 0x1.1a53fe0000000p-11f, -0x1.7a27700000000p-9f, 0x1.55f4300000000p-7f, -0x1.e4565c0000000p-6f, 0x1.293f640000000p-4f, -0x1.6bb7ca0000000p-3f, 0x1.9dbb100000000p-1f, 0x1.a579e40000000p-2f, -0x1.0efeba0000000p-3f, 0x1.c50ef80000000p-5f, -0x1.64e0f20000000p-6f, 0x1.d849e00000000p-8f, -0x1.d79bc00000000p-10f, 0x1.268df80000000p-12f, -0x1.94feea0000000p-17f, // phase 11
+    -0x1.5adc3c0000000p-15f, 0x1.1615b80000000p-11f, -0x1.7a89ea0000000p-9f, 0x1.5996500000000p-7f, -0x1.ec74fa0000000p-6f, 0x1.2f188e0000000p-4f, -0x1.71820a0000000p-3f, 0x1.8c7fc60000000p-1f, 0x1.d145440000000p-2f, -0x1.2410740000000p-3f, 0x1.e7cc120000000p-5f, -0x1.81ba640000000p-6f, 0x1.0101920000000p-7f, -0x1.0372be0000000p-9f, 0x1.4a8d7c0000000p-12f, -0x1.ef907c0000000p-17f, // phase 12
+    -0x1.411a740000000p-15f, 0x1.0ea1680000000p-11f, -0x1.76848e0000000p-9f, 0x1.593ede0000000p-7f, -0x1.ef01560000000p-6f, 0x1.3192a20000000p-4f, -0x1.734a080000000p-3f, 0x1.7a44f60000000p-1f, 0x1.fd04880000000p-2f, -0x1.3749420000000p-3f, 0x1.03a0a80000000p-4f, -0x1.9c25e40000000p-6f, 0x1.147d340000000p-7f, -0x1.1a21020000000p-9f, 0x1.6e71580000000p-12f, -0x1.29a7a20000000p-16f, // phase 13
+    -0x1.2500f80000000p-15f, 0x1.046c4e0000000p-11f, -0x1.6e83140000000p-9f, 0x1.55340a0000000p-7f, -0x1.ec461c0000000p-6f, 0x1.30d4140000000p-4f, -0x1.7147ac0000000p-3f, 0x1.6727840000000p-1f, 0x1.143c120000000p-1f, -0x1.485ba40000000p-3f, 0x1.1174900000000p-4f, -0x1.b3af840000000p-6f, 0x1.2640460000000p-7f, -0x1.2f72200000000p-9f, 0x1.919db20000000p-12f, -0x1.5f7ea60000000p-16f, // phase 14
+    -0x1.0793ba0000000p-15f, 0x1.efd2ec0000000p-12f, -0x1.62f50e0000000p-9f, 0x1.4dc2360000000p-7f, -0x1.e498660000000p-6f, 0x1.2d09c20000000p-4f, -0x1.6bb8080000000p-3f, 0x1.5345780000000p-1f, 0x1.29aff40000000p-1f, -0x1.56fb160000000p-3f, 0x1.1d209e0000000p-4f, -0x1.c7e4ce0000000p-6f, 0x1.35f2400000000p-7f, -0x1.42fad20000000p-9f, 0x1.b366800000000p-12f, -0x1.9874240000000p-16f, // phase 15
+    -0x1.d372b00000000p-16f, 0x1.d310900000000p-12f, -0x1.544c380000000p-9f, 0x1.433aa60000000p-7f, -0x1.d8562c0000000p-6f, 0x1.2666260000000p-4f, -0x1.62dcb60000000p-3f, 0x1.3ebdc00000000p-1f, 0x1.3ebdc00000000p-1f, -0x1.62dcb60000000p-3f, 0x1.2666260000000p-4f, -0x1.d8562c0000000p-6f, 0x1.433aa60000000p-7f, -0x1.544c380000000p-9f, 0x1.d310900000000p-12f, -0x1.d372b00000000p-16f, // phase 16
+    -0x1.9874240000000p-16f, 0x1.b366800000000p-12f, -0x1.42fad20000000p-9f, 0x1.35f2400000000p-7f, -0x1.c7e4ce0000000p-6f, 0x1.1d209e0000000p-4f, -0x1.56fb160000000p-3f, 0x1.29aff40000000p-1f, 0x1.5345780000000p-1f, -0x1.6bb8080000000p-3f, 0x1.2d09c20000000p-4f, -0x1.e498660000000p-6f, 0x1.4dc2360000000p-7f, -0x1.62f50e0000000p-9f, 0x1.efd2ec0000000p-12f, -0x1.0793ba0000000p-15f, // phase 17
+    -0x1.5f7ea60000000p-16f, 0x1.919db20000000p-12f, -0x1.2f72200000000p-9f, 0x1.2640460000000p-7f, -0x1.b3af840000000p-6f, 0x1.1174900000000p-4f, -0x1.485ba40000000p-3f, 0x1.143c120000000p-1f, 0x1.6727840000000p-1f, -0x1.7147ac0000000p-3f, 0x1.30d4140000000p-4f, -0x1.ec461c0000000p-6f, 0x1.55340a0000000p-7f, -0x1.6e83140000000p-9f, 0x1.046c4e0000000p-11f, -0x1.2500f80000000p-15f, // phase 18
+    -0x1.29a7a20000000p-16f, 0x1.6e71580000000p-12f, -0x1.1a21020000000p-9f, 0x1.147d340000000p-7f, -0x1.9c25e40000000p-6f, 0x1.03a0a80000000p-4f, -0x1.3749420000000p-3f, 0x1.fd04880000000p-2f, 0x1.7a44f60000000p-1f, -0x1.734a080000000p-3f, 0x1.3192a20000000p-4f, -0x1.ef01560000000p-6f, 0x1.593ede0000000p-7f, -0x1.76848e0000000p-9f, 0x1.0ea1680000000p-11f, -0x1.411a740000000p-15f, // phase 19
+    -0x1.ef907c0000000p-17f, 0x1.4a8d7c0000000p-12f, -0x1.0372be0000000p-9f, 0x1.0101920000000p-7f, -0x1.81ba640000000p-6f, 0x1.e7cc120000000p-5f, -0x1.2410740000000p-3f, 0x1.d145440000000p-2f, 0x1.8c7fc60000000p-1f, -0x1.71820a0000000p-3f, 0x1.2f188e0000000p-4f, -0x1.ec74fa0000000p-6f, 0x1.5996500000000p-7f, -0x1.7a89ea0000000p-9f, 0x1.1615b80000000p-11f, -0x1.5adc3c0000000p-15f, // phase 20
+    -0x1.94feea0000000p-17f, 0x1.268df80000000p-12f, -0x1.d79bc00000000p-10f, 0x1.d849e00000000p-8f, -0x1.64e0f20000000p-6f, 0x1.c50ef80000000p-5f, -0x1.0efeba0000000p-3f, 0x1.a579e40000000p-2f, 0x1.9dbb100000000p-1f, -0x1.6bb7ca0000000p-3f, 0x1.293f640000000p-4f, -0x1.e4565c0000000p-6f, 0x1.55f4300000000p-7f, -0x1.7a27700000000p-9f, 0x1.1a53fe0000000p-11f, -0x1.7126be0000000p-15f, // phase 21
+    -0x1.4469ba0000000p-17f, 0x1.02fdc60000000p-12f, -0x1.a7269a0000000p-10f, 0x1.ac79d20000000p-8f, -0x1.460d8c0000000p-6f, 0x1.9f916a0000000p-5f, -0x1.f0c3a80000000p-4f, 0x1.79e0da0000000p-2f, 0x1.addb4a0000000p-1f, -0x1.61b92e0000000p-3f, 0x1.1fe7d00000000p-4f, -0x1.d666a40000000p-6f, 0x1.4e19c40000000p-7f, -0x1.74f71e0000000p-9f, 0x1.1ae6780000000p-11f, -0x1.82c13c0000000p-15f, // phase 22
+    -0x1.fc70440000000p-18f, 0x1.c0ad540000000p-13f, -0x1.763ada0000000p-10f, 0x1.7f387e0000000p-8f, -0x1.25b3000000000p-6f, 0x1.77db1e0000000p-5f, -0x1.c10e360000000p-4f, 0x1.4eb7040000000p-2f, 0x1.bcc6820000000p-1f, -0x1.535a960000000p-3f, 0x1.12fa540000000p-4f, -0x1.c274420000000p-6f, 0x1.41d11c0000000p-7f, -0x1.6a9a840000000p-9f, 0x1.1758aa0000000p-11f, -0x1.8e5cea0000000p-15f, // phase 23
+    -0x1.84e2b60000000p-18f, 0x1.7e024c0000000p-13f, -0x1.457f1a0000000p-10f, 0x1.5124200000000p-8f, -0x1.0441ae0000000p-6f, 0x1.4e72b00000000p-5f, -0x1.8f75ac0000000p-4f, 0x1.2437480000000p-2f, 0x1.ca648a0000000p-1f, -0x1.40775e0000000p-3f, 0x1.0267de0000000p-4f, -0x1.a85c360000000p-6f, 0x1.30ee4e0000000p-7f, -0x1.5abcb60000000p-9f, 0x1.0f396c0000000p-11f, -0x1.9298f40000000p-15f, // phase 24
+    -0x1.218ac00000000p-18f, 0x1.3ea95a0000000p-13f, -0x1.158ab20000000p-10f, 0x1.22d2460000000p-8f, -0x1.c44ce00000000p-7f, 0x1.23dc460000000p-5f, -0x1.5c8f460000000p-4f, 0x1.f534420000000p-3f, 0x1.d69f380000000p-1f, -0x1.28f26c0000000p-3f, 0x1.dc54d20000000p-5f, -0x1.880b4a0000000p-6f, 0x1.1b50b20000000p-7f, -0x1.45143c0000000p-9f, 0x1.021cfe0000000p-11f, -0x1.8e07340000000p-15f, // phase 25
+    -0x1.a2598e0000000p-19f, 0x1.0330400000000p-13f, -0x1.cdca160000000p-11f, 0x1.e99d380000000p-9f, -0x1.7f93200000000p-7f, 0x1.f130b40000000p-6f, -0x1.28ebae0000000p-4f, 0x1.a42a780000000p-3f, 0x1.e162880000000p-1f, -0x1.0cb6aa0000000p-3f, 0x1.ac8afa0000000p-5f, -0x1.617f340000000p-6f, 0x1.00e4080000000p-7f, -0x1.2964fe0000000p-9f, 0x1.df3eb60000000p-12f, -0x1.7f31d40000000p-15f, // phase 26
+    -0x1.240b1e0000000p-19f, 0x1.9809da0000000p-14f, -0x1.740a3e0000000p-11f, 0x1.8f33d20000000p-9f, -0x1.3b1bc40000000p-7f, 0x1.9a450a0000000p-6f, -0x1.ea2bf80000000p-5f, 0x1.55b6440000000p-3f, 0x1.ea9cc60000000p-1f, -0x1.d76edc0000000p-4f, 0x1.758d3a0000000p-5f, -0x1.34c78a0000000p-6f, 0x1.c343120000000p-8f, -0x1.07823a0000000p-9f, 0x1.aecd240000000p-12f, -0x1.64a1a60000000p-15f, // phase 27
+    -0x1.877bae0000000p-20f, 0x1.32ee7a0000000p-14f, -0x1.1ea2aa0000000p-11f, 0x1.3752900000000p-9f, -0x1.ef3fee0000000p-8f, 0x1.43e0f40000000p-6f, -0x1.8325540000000p-5f, 0x1.0a35bc0000000p-3f, 0x1.f23ebc0000000p-1f, -0x1.8be1ac0000000p-4f, 0x1.378b460000000p-5f, -0x1.0206900000000p-6f, 0x1.7b21ca0000000p-8f, -0x1.bea0a40000000p-10f, 0x1.724a760000000p-12f, -0x1.3ce5640000000p-15f, // phase 28
+    -0x1.f1277c0000000p-21f, 0x1.aeebd80000000p-15f, -0x1.9c7e220000000p-12f, 0x1.c596200000000p-10f, -0x1.6b96020000000p-8f, 0x1.ddc4420000000p-7f, -0x1.1dbd640000000p-5f, 0x1.83feda0000000p-4f, 0x1.f83bc60000000p-1f, -0x1.36d01c0000000p-4f, 0x1.e594140000000p-6f, -0x1.92e3c80000000p-7f, 0x1.29922e0000000p-8f, -0x1.618d240000000p-10f, 0x1.2939e40000000p-12f, -0x1.06999c0000000p-15f, // phase 29
+    -0x1.1fdae20000000p-21f, 0x1.0ba84a0000000p-15f, -0x1.06d55e0000000p-12f, 0x1.24ab160000000p-10f, -0x1.d8e4b00000000p-9f, 0x1.382dde0000000p-7f, -0x1.75bafc0000000p-6f, 0x1.f5875c0000000p-5f, 0x1.fc89f60000000p-1f, -0x1.b0ae140000000p-5f, 0x1.4f48080000000p-6f, -0x1.16a5d80000000p-7f, 0x1.9dc47e0000000p-9f, -0x1.efc3400000000p-11f, 0x1.a683620000000p-13f, -0x1.80e2aa0000000p-16f, // phase 30
+    -0x1.0532bc0000000p-22f, 0x1.f072920000000p-17f, -0x1.f489720000000p-14f, 0x1.1a41880000000p-11f, -0x1.cbb70c0000000p-10f, 0x1.30f3f00000000p-8f, -0x1.6d73e40000000p-7f, 0x1.e517d60000000p-6f, 0x1.ff22240000000p-1f, -0x1.c298920000000p-6f, 0x1.5a25900000000p-7f, -0x1.201c720000000p-8f, 0x1.ae049a0000000p-10f, -0x1.03c39e0000000p-11f, 0x1.c0c0540000000p-14f, -0x1.a4fd660000000p-17f, // phase 31
+};
+// ===========================================================================
+// END FROZEN POLYPHASE COEFFICIENT TABLE
+// ===========================================================================
+
+} // namespace
+
+void resample_audio(const AudioBlock& in, AudioBlock& out) {
+  // Upsampling reconstruction only: the honoring / equal-rate / downsample shapes
+  // keep the caller's 1:1 path, so a mismatch here is a no-op (Constraint 3).
+  if (in.rate == 0 || out.rate == 0 || in.rate >= out.rate || in.layout != out.layout ||
+      in.samples == nullptr || out.samples == nullptr) {
+    return;
+  }
+  const std::uint32_t ch = channel_count(in.layout);
+  const std::int64_t taps = static_cast<std::int64_t>(k_resampler_taps);
+  const std::int64_t phases = static_cast<std::int64_t>(k_resampler_phases);
+  const std::int64_t half = taps / 2 - 1; // N-1: the delta tap offset (phase 0)
+  const std::uint64_t src_rate = in.rate;
+  const std::uint64_t dst_rate = out.rate;
+  const std::int64_t in_frames = static_cast<std::int64_t>(in.frames);
+
+  for (std::uint32_t n = 0; n < out.frames; ++n) {
+    // Output frame n samples native position `n * src_rate / dst_rate`, computed
+    // as an EXACT rational and rounded ONCE to the nearest polyphase phase (doc
+    // 11:216-234) -- never a float accumulation across frames or depth.
+    const std::uint64_t pos_num = static_cast<std::uint64_t>(n) * src_rate;
+    std::int64_t center = static_cast<std::int64_t>(pos_num / dst_rate);
+    const std::uint64_t rem = pos_num % dst_rate;
+    std::uint64_t phase =
+        (rem * static_cast<std::uint64_t>(phases) + dst_rate / 2) / dst_rate; // one rounding
+    if (phase >= static_cast<std::uint64_t>(phases)) {
+      phase -= static_cast<std::uint64_t>(phases); // the top half-step lands on the next sample
+      center += 1;
+    }
+    const float* coef = &k_resampler_coeffs[static_cast<std::size_t>(phase) * k_resampler_taps];
+
+    for (std::uint32_t c = 0; c < ch; ++c) {
+      float acc = 0.0F; // ordered reduction, tap 0..2N-1 (doc 16 determinism)
+      for (std::int64_t k = 0; k < taps; ++k) {
+        const std::int64_t idx = center - half + k;
+        const float s = (idx >= 0 && idx < in_frames)
+                            ? in.samples[static_cast<std::size_t>(idx) * ch + c]
+                            : 0.0F; // taps outside `in` read as zero (edge convention)
+        acc += coef[static_cast<std::size_t>(k)] * s;
+      }
+      out.samples[static_cast<std::size_t>(n) * ch + c] = acc;
+    }
+  }
+}
+
+} // namespace arbc
