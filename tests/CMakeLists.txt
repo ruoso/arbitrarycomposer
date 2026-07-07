@@ -26,6 +26,16 @@ target_link_libraries(
   PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_raster_conformance_t)
 
+# org.arbc.tone contract conformance (pulls kind_tone + arbc-testing). Since
+# factory()->audio() != nullptr the umbrella also runs the audio families;
+# arbc-testing precedes `arbc` on the link line so its unresolved contract
+# symbols resolve from the umbrella.
+add_executable(arbc_tone_conformance_t tone_conformance.t.cpp)
+target_link_libraries(
+  arbc_tone_conformance_t
+  PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_tone_conformance_t)
+
 # org.arbc.nested contract conformance (pulls kind_nested + kind_solid +
 # arbc-testing). arbc-testing precedes `arbc` on the link line (static-archive
 # link order), as with the solid / raster drivers above.

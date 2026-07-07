@@ -1,13 +1,13 @@
 #pragma once
 
-#include <arbc/base/expected.hpp>          // expected
-#include <arbc/base/rational_time.hpp>      // Rational
-#include <arbc/base/time.hpp>               // Time, TimeRange
-#include <arbc/compositor/compositor.hpp>   // Viewport, Backend, SurfacePool, Surface, ContentResolver
-#include <arbc/compositor/counters.hpp>     // CompositorCounters, TileCache
-#include <arbc/runtime/document.hpp>        // Document, DocStatePtr, DocRoot
-#include <arbc/runtime/worker_pool.hpp>     // WorkerPool, WorkerPoolConfig
-#include <arbc/surface/surface_error.hpp>   // SurfaceError
+#include <arbc/base/expected.hpp>         // expected
+#include <arbc/base/rational_time.hpp>    // Rational
+#include <arbc/base/time.hpp>             // Time, TimeRange
+#include <arbc/compositor/compositor.hpp> // Viewport, Backend, SurfacePool, Surface, ContentResolver
+#include <arbc/compositor/counters.hpp>   // CompositorCounters, TileCache
+#include <arbc/runtime/document.hpp>      // Document, DocStatePtr, DocRoot
+#include <arbc/runtime/worker_pool.hpp>   // WorkerPool, WorkerPoolConfig
+#include <arbc/surface/surface_error.hpp> // SurfaceError
 
 #include <cstddef>
 #include <cstdint>
@@ -66,8 +66,7 @@ public:
   // frame surface (or the capability-honest `SurfaceError` if the pinned working
   // space is unstorable). The host keeps, encodes, or muxes the surface -- the
   // engine writes no files and links no codec (doc 12:157, doc 02:6-14).
-  using FrameSink =
-      std::function<void(Time, expected<std::unique_ptr<Surface>, SurfaceError>)>;
+  using FrameSink = std::function<void(Time, expected<std::unique_ptr<Surface>, SurfaceError>)>;
 
   // Construction PINS THE EXPORT (Decision 2): one `DocStatePtr` for the whole
   // sequence, so every frame reads one frozen `DocRoot::revision()`. `viewport` is

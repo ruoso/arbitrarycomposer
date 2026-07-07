@@ -1,10 +1,9 @@
-#include <arbc/runtime/offline_sequence.hpp>
-
-#include <arbc/compositor/pull_service.hpp> // PullServiceImpl, RenderDispatch, PullConfig
-#include <arbc/compositor/refinement.hpp>   // RefinementQueue, poll_refinements
+#include <arbc/compositor/pull_service.hpp>  // PullServiceImpl, RenderDispatch, PullConfig
+#include <arbc/compositor/refinement.hpp>    // RefinementQueue, poll_refinements
 #include <arbc/compositor/tile_planning.hpp> // render_frame_interactive
 #include <arbc/contract/content.hpp>         // Deadline, Exactness
-#include <arbc/surface/surface.hpp>          // Surface
+#include <arbc/runtime/offline_sequence.hpp>
+#include <arbc/surface/surface.hpp> // Surface
 
 #include <optional>
 #include <utility>
@@ -47,16 +46,11 @@ std::vector<Time> frame_times_over(const TimeRange& range, const Rational& outpu
 
 SequenceRenderer::SequenceRenderer(const Document& document, Viewport viewport, Backend& backend,
                                    WorkerPoolConfig pool_config, std::size_t cache_budget_bytes)
-    : d_document(document),
-      d_viewport(std::move(viewport)),
-      d_backend(backend),
+    : d_document(document), d_viewport(std::move(viewport)), d_backend(backend),
       // Pin ONCE for the whole export (Decision 2): this snapshot outlives every
       // frame and every later commit, so the sequence is revision-consistent.
-      d_pinned(document.pin()),
-      d_surfaces(backend),
-      d_cache(cache_budget_bytes),
-      d_parallel(pool_config.worker_count != 0),
-      d_pool(std::move(pool_config)) {}
+      d_pinned(document.pin()), d_surfaces(backend), d_cache(cache_budget_bytes),
+      d_parallel(pool_config.worker_count != 0), d_pool(std::move(pool_config)) {}
 
 expected<std::unique_ptr<Surface>, SurfaceError>
 SequenceRenderer::render_frame_at(Time composition_time) {

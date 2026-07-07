@@ -6,7 +6,9 @@ task kinds "Reference kinds" {
   task tone "org.arbc.tone" {
     effort 1d
     allocate team
-    note "Audio-only content — the hello world of the audio facet: empty visual bounds, procedural tone at any requested rate. Doc 12."
+    complete 100
+    depends contract.audio_facet
+    note "Audio-only content — the hello world of the audio facet: empty visual bounds, procedural tone at any requested rate. Doc 12. Refinement: tasks/refinements/kinds/tone.md"
   }
   task raster "org.arbc.raster" {
     effort 4d

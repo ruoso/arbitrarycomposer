@@ -113,8 +113,9 @@ public:
   std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
   Stability stability() const override { return d_stability; }
   std::optional<arbc::TimeRange> time_extent() const override {
-    return d_stability == Stability::Static ? std::optional<arbc::TimeRange>(std::nullopt)
-                                            : std::optional<arbc::TimeRange>(arbc::TimeRange::all());
+    return d_stability == Stability::Static
+               ? std::optional<arbc::TimeRange>(std::nullopt)
+               : std::optional<arbc::TimeRange>(arbc::TimeRange::all());
   }
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion>) override {
@@ -209,8 +210,8 @@ TEST_CASE("frame_times_over steps the half-open range at the output rate exactly
   const std::int64_t frame = Time::flicks_per_second / 24; // 24 fps native step
 
   SECTION("half-open: start included, end excluded") {
-    const std::vector<Time> times =
-        arbc::frame_times_over(arbc::TimeRange{Time::zero(), Time{frame * 4}}, arbc::Rational(24, 1));
+    const std::vector<Time> times = arbc::frame_times_over(
+        arbc::TimeRange{Time::zero(), Time{frame * 4}}, arbc::Rational(24, 1));
     REQUIRE(times.size() == 4);
     CHECK(times[0].flicks == 0);
     CHECK(times[1].flicks == frame);
@@ -405,8 +406,7 @@ TEST_CASE("an offline export requests content at its time-mapped instant") {
   const arbc::ObjectId cid = document.add_content(content);
   const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
   // local = (composition_time - 0) * 2 + 100.
-  document.set_layer_time_map(layer,
-                              arbc::TimeMap{Time::zero(), arbc::Rational(2, 1), Time{100}});
+  document.set_layer_time_map(layer, arbc::TimeMap{Time::zero(), arbc::Rational(2, 1), Time{100}});
 
   MarkBackend backend;
   arbc::SequenceRenderer renderer(document, one_tile_viewport(), backend);
@@ -430,7 +430,8 @@ TEST_CASE("render_frame_at surfaces an unstorable working space as an error") {
   document.add_layer(cid, arbc::Affine::identity());
 
   RejectingBackend backend;
-  arbc::SequenceRenderer renderer(document, arbc::Viewport{8, 8, arbc::Affine::identity()}, backend);
+  arbc::SequenceRenderer renderer(document, arbc::Viewport{8, 8, arbc::Affine::identity()},
+                                  backend);
   const auto frame = renderer.render_frame_at(Time::zero());
   REQUIRE_FALSE(frame.has_value());
   CHECK(frame.error() == arbc::SurfaceError::UnsupportedFormat);
@@ -523,7 +524,7 @@ TEST_CASE("an offline export pins one revision while a writer keeps editing") {
   exporter.join();
 
   CHECK_FALSE(render_failed.load(std::memory_order_acquire));
-  CHECK_FALSE(mismatch.load(std::memory_order_acquire));  // no exported frame saw an edit
+  CHECK_FALSE(mismatch.load(std::memory_order_acquire));       // no exported frame saw an edit
   CHECK_FALSE(wrong_revision.load(std::memory_order_acquire)); // the pin held throughout
   CHECK(renderer.revision() == pinned);
   // The writer really did advance the model concurrently (the export saw none of it).

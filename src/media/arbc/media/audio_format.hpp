@@ -15,8 +15,8 @@ namespace arbc {
 // `SurfaceFormat` there is no audio analog of `PixelFormat` here. Equality is
 // member-wise so a nesting boundary can compare two working formats at once.
 struct AudioFormat {
-  std::uint32_t sample_rate = 48000;              // working sample rate in Hz
-  ChannelLayout layout = ChannelLayout::Stereo;   // working channel interleaving
+  std::uint32_t sample_rate = 48000;            // working sample rate in Hz
+  ChannelLayout layout = ChannelLayout::Stereo; // working channel interleaving
 
   friend constexpr bool operator==(const AudioFormat&, const AudioFormat&) = default;
 };
