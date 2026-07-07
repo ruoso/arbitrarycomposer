@@ -23,6 +23,18 @@ void Document::set_layer_transform(ObjectId layer, const Affine& transform) {
   txn.commit();
 }
 
+void Document::set_layer_span(ObjectId layer, const TimeRange& span) {
+  auto txn = d_model.transact();
+  txn.set_span(layer, span);
+  txn.commit();
+}
+
+void Document::set_layer_time_map(ObjectId layer, const TimeMap& time_map) {
+  auto txn = d_model.transact();
+  txn.set_time_map(layer, time_map);
+  txn.commit();
+}
+
 ObjectId Document::add_composition(double canvas_w, double canvas_h) {
   auto txn = d_model.transact();
   const ObjectId id = txn.add_composition(canvas_w, canvas_h);

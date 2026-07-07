@@ -233,7 +233,8 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                               std::optional<std::uint64_t> prior_revision, RefinementQueue* pending,
                               CompositorCounters* counters, const DirtyRegion* dirty,
                               Time composition_time, std::vector<LayerTilePlan>* visible_plans,
-                              GraphDiagnostics* diagnostics, PullServiceImpl* pulls) {
+                              GraphDiagnostics* diagnostics, PullServiceImpl* pulls,
+                              Exactness exactness) {
   // The null-`dirty` path clears and re-plans the whole viewport (byte-identical
   // to today). A gated frame composites only the damaged tiles onto the
   // caller-persisted `target`, so it must NOT clear -- the untouched region
@@ -366,9 +367,8 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
           // `02-architecture#miss-becomes-deadline-request`); runtime populates a
           // non-none handle once content-state binding lands, and it flows onto
           // every dispatched render unchanged. `deadline` is stamped as a value.
-          const RenderRequest request{tile.local_rect, rung_px,      local_time,
-                                      plan.snapshot,   tile_surface, Exactness::BestEffort,
-                                      deadline};
+          const RenderRequest request{tile.local_rect, rung_px,   local_time, plan.snapshot,
+                                      tile_surface,    exactness, deadline};
           // Operator identity short-circuit (`compositor.operator_graph`, doc
           // 13:59-65,128). An operator layer resolves its identity chain before
           // issuing a render: an identity pass-through (a fade at envelope == 1)
@@ -466,7 +466,6 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       // affine, the <=1-octave remainder folded into the bilinear tap.
       switch (tile.display_source) {
       case TileSource::Fresh:
-      case TileSource::Stale:
         if (tile.hold.valid()) {
           backend.composite(target, *tile.hold->surface,
                             surface_to_device(composed, tile.local_rect, rung_px), layer.opacity);
@@ -475,15 +474,38 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
           }
         }
         break;
+      case TileSource::Stale:
+        // A degraded display: a prior-revision tile shown while the fresh render is
+        // owed (doc 02:64). Counted as degraded so the offline no-degrade guarantee
+        // is a behavioral zero (`02-architecture#offline-frame-renders-exactly-no-degrade`).
+        if (tile.hold.valid()) {
+          backend.composite(target, *tile.hold->surface,
+                            surface_to_device(composed, tile.local_rect, rung_px), layer.opacity);
+          if (counters != nullptr) {
+            counters->note_composite();
+            counters->note_degraded_composite();
+          }
+        }
+        break;
       case TileSource::Coarser:
+        // A degraded display: a coarser-rung tile rescaled up (doc 02:64).
         if (tile.hold.valid()) {
           composite_coarser(backend, pool, target, tile, composed, selection.rung, layer.opacity,
                             counters);
+          if (counters != nullptr) {
+            counters->note_degraded_composite();
+          }
         }
         break;
       case TileSource::Placeholder:
         // Transparent placeholder: the target was cleared to transparent, so
-        // "nothing yet" is a no-op (doc 02:64 checkerboard/transparent).
+        // "nothing yet" is a no-op paint (doc 02:64 checkerboard/transparent) -- but
+        // it is still a degraded (non-fresh) display, so it is counted as such: an
+        // offline frame that composited a placeholder left a hole, which the
+        // no-degrade guarantee forbids.
+        if (counters != nullptr) {
+          counters->note_degraded_composite();
+        }
         break;
       }
     }

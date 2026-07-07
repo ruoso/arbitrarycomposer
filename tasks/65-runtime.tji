@@ -21,8 +21,9 @@ task runtime "Runtime" {
   task offline_sequences "Offline sequence renderer + export" {
     effort 2d
     allocate team
+    complete 100
     depends !threading, timeline.temporal_placement
-    note "Frame-sequence loop: snapshot per frame time, exact renders, revision-consistent output while editing continues; pairs with the audio export monitor. Docs 02/11/12."
+    note "Frame-sequence loop: snapshot per frame time, exact renders, revision-consistent output while editing continues; pairs with the audio export monitor. Docs 02/11/12. Refinement: tasks/refinements/runtime/offline_sequences.md"
   }
   task host_objects "Viewport/transport/monitor API" {
     effort 2d

@@ -52,17 +52,30 @@ public:
   // of `requests_issued` (every operator render is also a render request); a
   // leaf layer never bumps it, so the counter is 0 on the flat leaf path.
   std::uint64_t operator_renders() const noexcept { return d_operator_renders; }
+  // Composites of a DEGRADED display source -- a stale-revision, coarser-rung,
+  // or placeholder tile shown when the fresh exact tile was not (yet) resident
+  // (doc 02:63-65). The interactive loop expects these during progressive
+  // refinement; the OFFLINE driver asserts this reads ZERO, the behavioral proof
+  // that an exported frame composites only fresh, exact-scale, current-revision
+  // tiles and never substitutes a degraded one (doc 02:73-85,
+  // `02-architecture#offline-frame-renders-exactly-no-degrade`). A subset-free
+  // sibling of `composites()`: it counts the same composite events partitioned
+  // by whether the display source was fresh, so a still-refining interactive
+  // frame reads it non-zero while an offline frame reads it zero.
+  std::uint64_t degraded_composites() const noexcept { return d_degraded_composites; }
 
   void note_request_issued() noexcept { ++d_requests_issued; }
   void note_composite() noexcept { ++d_composites; }
   void note_follow_up_frame() noexcept { ++d_follow_up_frames; }
   void note_operator_render() noexcept { ++d_operator_renders; }
+  void note_degraded_composite() noexcept { ++d_degraded_composites; }
 
 private:
   std::uint64_t d_requests_issued{0};
   std::uint64_t d_composites{0};
   std::uint64_t d_follow_up_frames{0};
   std::uint64_t d_operator_renders{0};
+  std::uint64_t d_degraded_composites{0};
 };
 
 // The composed observability record a host debug panel / downstream

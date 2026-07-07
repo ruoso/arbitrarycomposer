@@ -290,12 +290,25 @@ bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
 // dispatched render carries the layer plan's `snapshot` pin (closing the inert
 // `StateHandle{}` gap, doc 02:124, `02-architecture#miss-becomes-deadline-request`)
 // and the frame `deadline` verbatim.
+//
+// `exactness` is the request discipline stamped onto every miss `RenderRequest`
+// (doc 03:12-13,124-127). The default `BestEffort` is the interactive discipline
+// (a render may answer async, degrade, and observe the deadline) -- byte-identical
+// to every existing caller. The offline sequence driver (`runtime.offline_sequences`)
+// passes `Exact` with `deadline == Deadline::none()`: an exact render must be
+// faithful, may take unbounded time, and ignores the deadline (doc 02:73-85,
+// `02-architecture#offline-frame-renders-exactly-no-degrade`). It changes only the
+// value stamped on the request; the compositor's inline fill renders every miss to
+// completion on both disciplines, so with no deadline pressure an offline frame
+// composites only fresh, exact-scale tiles (the `degraded_composites` counter,
+// bumped below for any stale/coarser/placeholder display, then reads zero).
 void render_frame_interactive(
     const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
     TileCache& cache, Backend& backend, SurfacePool& pool, Surface& target, Deadline deadline,
     std::optional<std::uint64_t> prior_revision, RefinementQueue* pending = nullptr,
     CompositorCounters* counters = nullptr, const DirtyRegion* dirty = nullptr,
     Time composition_time = Time::zero(), std::vector<LayerTilePlan>* visible_plans = nullptr,
-    GraphDiagnostics* diagnostics = nullptr, PullServiceImpl* pulls = nullptr);
+    GraphDiagnostics* diagnostics = nullptr, PullServiceImpl* pulls = nullptr,
+    Exactness exactness = Exactness::BestEffort);
 
 } // namespace arbc

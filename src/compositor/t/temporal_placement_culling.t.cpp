@@ -40,10 +40,10 @@ using arbc::CompositorCounters;
 using arbc::Rational;
 using arbc::RenderResult;
 using arbc::Stability;
+using arbc::TileCache;
 using arbc::Time;
 using arbc::TimeMap;
 using arbc::TimeRange;
-using arbc::TileCache;
 
 // A `Timed` test content that records the request `time` the compositor issued.
 // `quantize_time` is identity (returns the time unchanged, not nullopt) so the
@@ -104,7 +104,8 @@ public:
 
 // A single identity-transform layer bound to a fresh content id, with the given
 // temporal placement (`span` / `time_map`) set through the transactional setters.
-arbc::ObjectId add_placed_layer(arbc::Model& model, const TimeRange& span, const TimeMap& time_map) {
+arbc::ObjectId add_placed_layer(arbc::Model& model, const TimeRange& span,
+                                const TimeMap& time_map) {
   auto txn = model.transact();
   const arbc::ObjectId content_id = txn.add_content(0);
   const arbc::ObjectId layer = txn.add_layer(content_id, arbc::Affine::identity());

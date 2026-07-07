@@ -41,6 +41,7 @@ task milestones "Milestones" {
 
   task m5_video "M5: Video" {
     milestone
+    complete 100
     depends timeline.transport, timeline.temporal_cache, timeline.playback_hints, kinds.imageseq_plugin, runtime.offline_sequences, surfaces.provided_surfaces, compositor.temporal_placement_culling
     note "Timeline, spans, transport, achieved_time coalescing, playback hints, image-sequence playback (content-provided surfaces exercised), and offline frame sequences. Doc 11 realized."
   }
