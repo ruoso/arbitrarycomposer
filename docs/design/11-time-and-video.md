@@ -45,7 +45,15 @@ honestly in "New machinery" below.
   timebase once, at the leaf — the temporal sibling of doc 04's
   "recompute from per-edge matrices, never accumulate". The precision story
   is *simpler* than the spatial one: no rebasing needed, because exact
-  rational composition doesn't degrade with depth.
+  rational composition doesn't degrade with depth. The single leaf rounding
+  is to the nearest flick, ties to even — sign-symmetric so reverse playback
+  (negative rate) is unbiased; because the flick timebase divides all common
+  rates exactly, the rounding is a no-op on realistic rate stacks and bites
+  only on adversarial rationals. Rational composition keeps its operands
+  reduced to lowest terms in a fixed integer width; a composition that would
+  exceed that width even after reduction surfaces as an error value
+  (faults-as-values, doc 10), never a silent wrap or an abort — pathological
+  rate stacks fail honestly rather than corrupting a time.
 
 ## Model changes
 

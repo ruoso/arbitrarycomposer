@@ -1,7 +1,8 @@
 arbc_add_component(
   NAME base
-  SOURCES transform.cpp
+  SOURCES rational_time.cpp transform.cpp
   PUBLIC_HEADERS arbc/base/expected.hpp arbc/base/geometry.hpp arbc/base/ids.hpp
-                 arbc/base/time.hpp arbc/base/transform.hpp)
+                 arbc/base/rational_time.hpp arbc/base/time.hpp arbc/base/transform.hpp)
 
-arbc_component_test(COMPONENT base SOURCES t/transform.t.cpp t/expected.t.cpp)
+arbc_component_test(COMPONENT base SOURCES t/transform.t.cpp t/expected.t.cpp
+                                          t/rational_time.t.cpp)

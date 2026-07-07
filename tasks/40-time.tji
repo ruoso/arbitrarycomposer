@@ -6,7 +6,8 @@ task timeline "Time and video" {
   task rational_time "Rational time math" {
     effort 2d
     allocate team
-    note "Flicks instants, exact rational rates, per-edge time maps composed in rational arithmetic with one rounding at the leaf; half-open span culling. Doc 11."
+    complete 100
+    note "Flicks instants, exact rational rates, per-edge time maps composed in rational arithmetic with one rounding at the leaf; half-open span culling. Doc 11. Refinement: tasks/refinements/timeline/rational_time.md"
   }
   task temporal_placement "Temporal placement in the model" {
     effort 1d
