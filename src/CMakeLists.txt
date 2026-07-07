@@ -11,6 +11,7 @@ add_subdirectory(backend_cpu)
 add_subdirectory(compositor)
 add_subdirectory(kind_solid)
 add_subdirectory(kind_raster)
+add_subdirectory(kind_nested)
 add_subdirectory(runtime)
 
 arbc_finalize_library()

@@ -26,6 +26,38 @@ target_link_libraries(
   PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_raster_conformance_t)
 
+# org.arbc.nested contract conformance (pulls kind_nested + kind_solid +
+# arbc-testing). arbc-testing precedes `arbc` on the link line (static-archive
+# link order), as with the solid / raster drivers above.
+add_executable(arbc_nested_conformance_t nested_conformance.t.cpp)
+target_link_libraries(
+  arbc_nested_conformance_t
+  PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_conformance_t)
+
+# org.arbc.nested byte-exact goldens: nested's output vs the compositor's own
+# per-layer loop over the same layers (the rendering-is-recursion identity), plus
+# snapshot consistency, budget flow-through, and Droste-cycle termination.
+add_executable(arbc_nested_goldens_t nested_goldens.t.cpp)
+target_link_libraries(arbc_nested_goldens_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_goldens_t)
+
+# org.arbc.nested two-level caching behavioral counters: a static subtree is
+# served from the parent cache; only the spine re-renders (requests_issued).
+add_executable(arbc_nested_cache_t nested_cache.t.cpp)
+target_link_libraries(arbc_nested_cache_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_cache_t)
+
+# org.arbc.nested concurrency stress (tier-6, tsan lane): many concurrent renders
+# of one nested content on a real multi-worker WorkerPool are race-free and
+# deterministic (render_thread_safe over a thread-confined target).
+add_executable(arbc_nested_concurrency_t nested_concurrency.t.cpp)
+target_link_libraries(arbc_nested_concurrency_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_concurrency_t)
+
 # Raster render-vs-edit concurrency stress (tier-6, tsan lane): pinned-snapshot
 # readers race an editor painting new versions.
 add_executable(arbc_raster_concurrency_stress_t raster_concurrency_stress.t.cpp)
