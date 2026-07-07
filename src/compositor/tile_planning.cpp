@@ -260,10 +260,33 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     if (!layer.visible() || layer.opacity <= 0.0) {
       return;
     }
+    // Temporal placement (doc 11:60-73, 185-191): cull a layer whose half-open
+    // span `[in, out)` does not contain the current `composition_time` BEFORE
+    // resolving content or evaluating its time map (the cull precedes evaluation
+    // per doc 11:72 and the `rational_time.hpp:158-162` header comment, and is
+    // cheaper -- an absent layer resolves nothing). The default still-layer span
+    // is `TimeRange::all()`, always present, so this gate is byte-neutral for a
+    // layer with no temporal placement.
+    if (!present_in_span(layer.span, composition_time)) {
+      return; // outside span: cull (doc 11:21,72)
+    }
     Content* content = resolve(layer.content);
     if (content == nullptr) {
       return;
     }
+    // The 1D affine map from composition time to content-local time
+    // (`local = (composition_time - in) * rate + offset`, doc 11:66-71): the
+    // time the request is issued at, replacing the raw composition time. The
+    // identity default map (in=0, rate=1/1, offset=0) returns `composition_time`
+    // unchanged, so a still layer is byte-exact. On `TimeError` (overflow of the
+    // fixed flick width) the layer is culled, mirroring the degenerate-affine
+    // cull below -- a layer that cannot be temporally placed is honestly skipped,
+    // never rendered at a wrong/clamped instant (Decision D3).
+    const expected<Time, TimeError> local = layer.time_map.evaluate(composition_time);
+    if (!local.has_value()) {
+      return; // unrepresentable local time: cull (doc 11:66-71, Decision D3)
+    }
+    const Time local_time = *local;
     // Operator-graph awareness (`compositor.operator_graph`): a layer whose
     // content is an operator (`inputs()` non-empty) keys its tiles by the
     // aggregate revision folded over the reachable `inputs()` DAG (doc
@@ -311,9 +334,9 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
 
     // Doc 02 step 3: quantize to the ladder, split into tiles, look each up.
     const RungSelection selection = select_rung(scale);
-    LayerTilePlan plan = plan_layer(cache, layer.content, layer_revision, prior_revision, selection,
-                                    region, composed, content->stability(), composition_time,
-                                    StateHandle{}, deadline, content);
+    LayerTilePlan plan =
+        plan_layer(cache, layer.content, layer_revision, prior_revision, selection, region,
+                   composed, content->stability(), local_time, StateHandle{}, deadline, content);
 
     const double rung_px = rung_scale(selection.rung);
 
@@ -331,17 +354,19 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
           Surface& tile_surface = **owned;
           backend.clear(tile_surface, 0.0F, 0.0F, 0.0F, 0.0F);
 
-          // The requested content-local time is the caller-supplied
-          // `composition_time` (Decision 4); the content quantizes it internally
-          // and reports `achieved_time == quantize_time(composition_time)`, which
-          // by contract equals the plan-built key, so the fill stores under the
-          // key the render lands on -- no post-render re-key (Decision 3). The
-          // request carries the layer plan's `snapshot` pin verbatim (closing the
-          // inert `StateHandle{}` gap, doc 02:124,
+          // The requested content-local time is `local_time` -- the composition
+          // time mapped through this layer's `time_map` above (doc 11:122-124);
+          // for the identity map it equals the caller-supplied `composition_time`
+          // (Decision 4). The content quantizes it internally and reports
+          // `achieved_time == quantize_time(local_time)`, which by contract equals
+          // the plan-built key (`plan_layer` keyed the same `local_time`), so the
+          // fill stores under the key the render lands on -- no post-render re-key
+          // (Decision 3). The request carries the layer plan's `snapshot` pin
+          // verbatim (closing the inert `StateHandle{}` gap, doc 02:124,
           // `02-architecture#miss-becomes-deadline-request`); runtime populates a
           // non-none handle once content-state binding lands, and it flows onto
           // every dispatched render unchanged. `deadline` is stamped as a value.
-          const RenderRequest request{tile.local_rect, rung_px,      composition_time,
+          const RenderRequest request{tile.local_rect, rung_px,      local_time,
                                       plan.snapshot,   tile_surface, Exactness::BestEffort,
                                       deadline};
           // Operator identity short-circuit (`compositor.operator_graph`, doc

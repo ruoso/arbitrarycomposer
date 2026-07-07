@@ -98,9 +98,9 @@ private:
   int d_height;
   Time d_period; // native frame period in flicks (instant_for_index(1))
 
-  mutable std::mutex d_mutex;             // guards the cache + pre-roll state
+  mutable std::mutex d_mutex;                   // guards the cache + pre-roll state
   std::deque<std::pair<int, FramePtr>> d_cache; // bounded decoded-frame cache (LRU)
-  int d_last_index{-1};                   // pre-roll anchor: last resolved frame
+  int d_last_index{-1};                         // pre-roll anchor: last resolved frame
   std::uint64_t d_decodes_issued{0};
 };
 

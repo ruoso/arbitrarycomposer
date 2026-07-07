@@ -14,9 +14,9 @@
 #include <arbc/contract/content.hpp>
 #include <arbc/runtime/playback_hints.hpp>
 
-#include "support/imageseq_fixtures.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/imageseq_fixtures.hpp"
 
 #include <array>
 #include <memory>
@@ -99,6 +99,6 @@ TEST_CASE("imageseq pre-rolls exactly the frames the temporal ring covers") {
         drive_playback_prefetch(paused, participating, cache, anchors, step);
 
     CHECK(content->decodes_issued() == before); // no pre-roll
-    CHECK(want.empty());                         // empty ring
+    CHECK(want.empty());                        // empty ring
   }
 }

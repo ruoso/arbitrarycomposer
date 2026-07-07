@@ -1,6 +1,5 @@
-#include <arbc/kind_imageseq/imageseq_content.hpp>
-
 #include <arbc/base/geometry.hpp>
+#include <arbc/kind_imageseq/imageseq_content.hpp>
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/media/pixel_traits.hpp>
 #include <arbc/media/surface_format.hpp>
@@ -105,8 +104,7 @@ int ImageSeqContent::frame_index_for(Time t) const {
 Time ImageSeqContent::instant_for_index(std::int64_t index) const {
   // round_ties_even(index * fps * den / num). index >= 0 and num > 0, so the
   // operands are non-negative and the tie rule is a plain even-round.
-  const i128 numer =
-      static_cast<i128>(index) * Time::flicks_per_second * d_rate.den();
+  const i128 numer = static_cast<i128>(index) * Time::flicks_per_second * d_rate.den();
   const i128 denom = d_rate.num();
   i128 q = numer / denom;
   const i128 r = numer - q * denom;
@@ -134,7 +132,8 @@ ImageSeqContent::FramePtr ImageSeqContent::resolve_locked(int index) {
     }
   }
 
-  const std::vector<unsigned char> bytes = read_file(d_frames[static_cast<std::size_t>(index)].path);
+  const std::vector<unsigned char> bytes =
+      read_file(d_frames[static_cast<std::size_t>(index)].path);
   if (bytes.empty()) {
     return nullptr;
   }
@@ -192,8 +191,9 @@ std::optional<RenderResult> ImageSeqContent::render(const RenderRequest& request
   // Return the decoded frame as a non-transient refcounted provided surface
   // (Decision 4): capturing `frame` in the release callback retains it for the
   // compositor's consume window even if it is later evicted from the cache.
-  result.provided.emplace(*frame, [frame]() { /* retained until last release */ },
-                          /*transient=*/false);
+  result.provided.emplace(
+      *frame, [frame]() { /* retained until last release */ },
+      /*transient=*/false);
   return result;
 }
 
@@ -212,7 +212,8 @@ void ImageSeqContent::playback_hint(const PlaybackHint& hint) {
   const std::int64_t k = hint.horizon.flicks / period;
   const int anchor = d_last_index >= 0 ? d_last_index : 0;
   for (std::int64_t step = 1; step <= k; ++step) {
-    const long long target = static_cast<long long>(anchor) + static_cast<long long>(hint.direction) * step;
+    const long long target =
+        static_cast<long long>(anchor) + static_cast<long long>(hint.direction) * step;
     if (target < 0 || target >= frame_count()) {
       break; // bounded by the clip edges
     }

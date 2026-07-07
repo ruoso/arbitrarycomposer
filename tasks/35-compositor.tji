@@ -77,7 +77,8 @@ task compositor "Compositor" {
   task temporal_placement_culling "Span culling and time_map evaluation in the compositor" {
     effort 1d
     allocate team
+    complete 100
     depends !temporal_coalescing, timeline.temporal_placement
-    note "Wire present_in_span span-culling and time_map evaluation into render_frame_interactive/plan_layer at composition_time, consuming the landed LayerRecord.span/time_map fields (timeline.temporal_placement). Unblocks imageseq's deferred end-to-end span/time_map compositor assertions. Docs 01/11. Source-of-debt: tasks/refinements/kinds/imageseq_plugin.md"
+    note "Wire present_in_span span-culling and time_map evaluation into render_frame_interactive/plan_layer at composition_time, consuming the landed LayerRecord.span/time_map fields (timeline.temporal_placement). Unblocks imageseq's deferred end-to-end span/time_map compositor assertions. Docs 01/11. Source-of-debt: tasks/refinements/kinds/imageseq_plugin.md. Refinement: tasks/refinements/compositor/temporal_placement_culling.md"
   }
 }

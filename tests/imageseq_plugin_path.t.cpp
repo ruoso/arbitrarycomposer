@@ -61,10 +61,9 @@ TEST_CASE("org.arbc.imageseq registers and constructs across the extern \"C\" bo
     auto target = backend.make_surface(2, 2, k_working_rgba32f);
     REQUIRE(target.has_value());
     auto done = std::make_shared<RenderCompletion>();
-    const RenderRequest request{Rect{0.0, 0.0, 2.0, 2.0}, 1.0,
-                                Time{0},                   StateHandle{},
-                                **target,                  Exactness::Exact,
-                                Deadline::none()};
+    const RenderRequest request{
+        Rect{0.0, 0.0, 2.0, 2.0}, 1.0, Time{0}, StateHandle{}, **target, Exactness::Exact,
+        Deadline::none()};
     const std::optional<RenderResult> result = (*content)->render(request, done);
     REQUIRE(result.has_value());
     REQUIRE(result->achieved_time.has_value());

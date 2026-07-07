@@ -19,9 +19,9 @@
 #include <arbc/model/model.hpp>
 #include <arbc/surface/surface_pool.hpp>
 
-#include "support/imageseq_fixtures.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/imageseq_fixtures.hpp"
 
 #include <array>
 #include <memory>

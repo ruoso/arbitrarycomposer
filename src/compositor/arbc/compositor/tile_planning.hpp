@@ -228,13 +228,20 @@ bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
 // plans the whole viewport, byte-identical to the pre-damage behavior the
 // `tile_planning`/`refinement`/`anchored_viewports` goldens guard.
 //
-// `composition_time` is the caller-supplied content-local time the frame plans
-// at (Decision 4): a `Time` value, not a clock -- the compositor stays stateless
-// and the transport that samples the clock is `runtime.interactive`'s (doc
-// 11:144-149, doc 17:60). It threads into `plan_layer` (which snaps each `Timed`
-// layer to its content grid via `quantize_time`, so a sub-frame advance keys the
-// same native frame and hits the cache) and onto each miss `RenderRequest`.
-// Defaulted `Time::zero()`, so every landed caller and golden is byte-unchanged.
+// `composition_time` is the caller-supplied composition-time instant the frame
+// plans at (Decision 4): a `Time` value, not a clock -- the compositor stays
+// stateless and the transport that samples the clock is `runtime.interactive`'s
+// (doc 11:144-149, doc 17:60). Per-layer it drives temporal placement (doc
+// 11:60-73, 185-191): a layer whose half-open `span` does not contain
+// `composition_time` is culled before content resolve, and a present layer's
+// `time_map` is evaluated at `composition_time` to the content-local time that
+// threads into `plan_layer` (which snaps each `Timed` layer to its content grid
+// via `quantize_time`, so a sub-frame advance keys the same native frame and
+// hits the cache) and onto each miss `RenderRequest`. A time_map that overflows
+// culls the layer (Decision D3). The still-layer default -- `span ==
+// TimeRange::all()` and identity `time_map` -- is present everywhere and maps
+// `composition_time` unchanged, so every landed caller and golden is
+// byte-unchanged. Defaulted `Time::zero()`.
 //
 // When `visible_plans` is non-null the driver surfaces the per-visible-layer
 // `LayerTilePlan`s it composited from: it `assign`s the sink empty at entry, and

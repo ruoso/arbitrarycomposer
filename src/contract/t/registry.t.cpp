@@ -60,7 +60,8 @@ TEST_CASE("Registry maps reverse-DNS ids to factories and metadata") {
   }
 
   SECTION("errors are values: a duplicate id is rejected, leaving the first intact") {
-    REQUIRE(registry.add("org.arbc.imageseq", ok_factory(), KindMetadata{"first", "1"}).has_value());
+    REQUIRE(
+        registry.add("org.arbc.imageseq", ok_factory(), KindMetadata{"first", "1"}).has_value());
     const expected<std::monostate, RegistryError> dup =
         registry.add("org.arbc.imageseq", ok_factory(), KindMetadata{"second", "2"});
     REQUIRE_FALSE(dup.has_value());

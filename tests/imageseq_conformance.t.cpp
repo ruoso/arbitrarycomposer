@@ -16,9 +16,9 @@
 #include <arbc/contract/content.hpp>
 #include <arbc/testing/contract_tests.hpp>
 
-#include "support/imageseq_fixtures.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/imageseq_fixtures.hpp"
 
 #include <memory>
 

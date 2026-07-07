@@ -16,9 +16,9 @@
 #include <arbc/contract/content.hpp>
 #include <arbc/runtime/worker_pool.hpp>
 
-#include "support/imageseq_fixtures.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/imageseq_fixtures.hpp"
 
 #include <atomic>
 #include <memory>
@@ -82,12 +82,9 @@ TEST_CASE("imageseq renders serialize through the per-content queue race-free") 
         // aggregate-initialized in one shot -- it is not default-constructible
         // or assignable.
         RenderTask task{content.get(),
-                        RenderRequest{Rect{0.0, 0.0, fix::k_width, fix::k_height},
-                                      1.0,
-                                      times[static_cast<std::size_t>(i)],
-                                      StateHandle{},
-                                      *targets[static_cast<std::size_t>(i)],
-                                      Exactness::Exact,
+                        RenderRequest{Rect{0.0, 0.0, fix::k_width, fix::k_height}, 1.0,
+                                      times[static_cast<std::size_t>(i)], StateHandle{},
+                                      *targets[static_cast<std::size_t>(i)], Exactness::Exact,
                                       Deadline::none()},
                         dones[static_cast<std::size_t>(i)]};
         pool.submit(std::move(task));

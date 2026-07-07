@@ -6,17 +6,19 @@
 // temporal linkage (timed_insert_key_consistent) directly against imageseq's
 // render/quantize_time pair.
 //
-// NOTE: the interactive compositor does not yet apply layer span culling or the
-// layer time_map at composition_time (it passes composition_time through as the
-// content-local time); those consume the temporal_placement model fields and are
-// a later compositor task. The end-to-end span-cull / time_map re-assertions are
-// therefore deferred to that task (see kinds.imageseq_plugin return summary);
-// #span-cull-is-half-open stays enforced at the value level by
-// src/base/t/rational_time.t.cpp.
+// The interactive compositor now consumes the layer's temporal_placement fields
+// (compositor.temporal_placement_culling): it culls a layer whose half-open span
+// does not contain the frame's composition time and evaluates the layer time_map
+// at composition time to the content-local time it requests. This file discharges
+// the reverse-rate through-compositor golden imageseq_plugin deferred to that
+// task: a placed imageseq layer with a negative-rate time_map, driven at ASCENDING
+// composition times, requests DESCENDING content-local frames and composites the
+// fixture sequence in reverse, byte-for-byte (doc 11:66-71, 122-124).
 
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
+#include <arbc/base/rational_time.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/cache/key_shapes.hpp>
@@ -28,9 +30,9 @@
 #include <arbc/model/model.hpp>
 #include <arbc/surface/surface_pool.hpp>
 
-#include "support/imageseq_fixtures.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/imageseq_fixtures.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -55,18 +57,25 @@ struct Scene {
   Model model;
   std::unique_ptr<arbc::imageseq::ImageSeqContent> content = fix::make_content();
   ObjectId content_id{};
+  ObjectId layer_id{};
 
   Scene() {
     Model::Transaction txn = model.transact();
     content_id = txn.add_content(0);
-    txn.add_layer(content_id, Affine::identity());
+    layer_id = txn.add_layer(content_id, Affine::identity());
+    REQUIRE(txn.commit().has_value());
+  }
+
+  // Place the layer under a time_map (reverse playback is a negative-rate map on
+  // the layer, not a content-rate change -- imageseq_fixtures.hpp:50-52).
+  void set_time_map(const TimeMap& map) {
+    Model::Transaction txn = model.transact();
+    txn.set_time_map(layer_id, map);
     REQUIRE(txn.commit().has_value());
   }
 
   ContentResolver resolver() {
-    return [this](ObjectId id) -> Content* {
-      return id == content_id ? content.get() : nullptr;
-    };
+    return [this](ObjectId id) -> Content* { return id == content_id ? content.get() : nullptr; };
   }
 };
 
@@ -103,7 +112,7 @@ TEST_CASE("imageseq: a sub-frame clock advance issues zero renders and serves id
   // byte-identical to the on-grid frame (coalescing serves the same decode).
   const std::uint64_t hits_before = cache.hits();
   const std::vector<float> sub_frame = drive(Time{instant(1).flicks + 7});
-  CHECK(counters.requests_issued() == 1);   // unchanged: zero renders
+  CHECK(counters.requests_issued() == 1);     // unchanged: zero renders
   CHECK(cache.misses() == misses_after_cold); // no new miss
   CHECK(cache.hits() > hits_before);          // served from the coalesced entry
   CHECK(sub_frame == on_grid);                // byte-exact identical output
@@ -149,4 +158,52 @@ TEST_CASE("imageseq render lands on its own quantize_time grid at the insert sit
   // seek bug would be caught here rather than served).
   const TileKey wrong_key{ObjectId{}, 0, ScaleRung{0}, TileCoord{0, 0}, Time{keyed->flicks + 1}};
   REQUIRE_FALSE(timed_insert_key_consistent(wrong_key, result, Stability::Timed));
+}
+
+// enforces: 11-time-and-video#compositor-retimes-request-through-time-map
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+TEST_CASE("imageseq: a negative-rate layer time_map plays the fixtures in reverse "
+          "through the compositor, byte-for-byte") {
+  const Viewport viewport{256, 256, Affine::identity()};
+
+  auto pixels_at = [&](Scene& scene, TileCache& cache, Time time) {
+    CpuBackend backend;
+    SurfacePool pool(backend);
+    CompositorCounters counters;
+    const DocStatePtr state = scene.model.current();
+    const ContentResolver resolve = scene.resolver();
+    auto target = backend.make_surface(viewport.width, viewport.height, k_working_rgba32f);
+    REQUIRE(target.has_value());
+    render_frame_interactive(*state, resolve, viewport, cache, backend, pool, **target,
+                             Deadline::none(), std::nullopt, nullptr, &counters, nullptr, time);
+    return target_pixels(**target);
+  };
+
+  // Forward reference: an identity-map layer composited at each native frame's
+  // instant is the through-compositor image of that fixture frame. The four
+  // fixtures are distinct solid colors, so the frames are genuinely different.
+  Scene forward_scene;
+  TileCache forward_cache(64u * 1024 * 1024);
+  std::vector<std::vector<float>> forward;
+  for (int f = 0; f < fix::k_frame_count; ++f) {
+    forward.push_back(pixels_at(forward_scene, forward_cache, instant(f)));
+  }
+  for (int f = 1; f < fix::k_frame_count; ++f) {
+    REQUIRE(forward[static_cast<std::size_t>(f)] != forward[static_cast<std::size_t>(f - 1)]);
+  }
+
+  // Reverse playback: a negative-rate time_map maps composition frame `f` to the
+  // content-local instant `(k_frame_count-1 - f) * period`, so advancing the
+  // composition clock walks the fixtures backwards. With `in = 0`, `rate = -1/1`,
+  // `offset = (N-1)*period`: local = -(composition_time) + (N-1)*period.
+  Scene reverse_scene;
+  reverse_scene.set_time_map(TimeMap{Time{0}, Rational{-1, 1}, instant(fix::k_frame_count - 1)});
+  TileCache reverse_cache(64u * 1024 * 1024);
+  for (int f = 0; f < fix::k_frame_count; ++f) {
+    const std::vector<float> got = pixels_at(reverse_scene, reverse_cache, instant(f));
+    // Advancing composition time yields a DECREASING content-local frame: the
+    // frame composited at composition instant f is fixture frame (N-1 - f),
+    // byte-for-byte identical to the forward reference for that fixture.
+    REQUIRE(got == forward[static_cast<std::size_t>(fix::k_frame_count - 1 - f)]);
+  }
 }

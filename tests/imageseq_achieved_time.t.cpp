@@ -14,9 +14,9 @@
 #include <arbc/media/surface_format.hpp>
 #include <arbc/surface/surface.hpp>
 
-#include "support/imageseq_fixtures.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/imageseq_fixtures.hpp"
 
 #include <memory>
 #include <vector>
@@ -83,8 +83,8 @@ TEST_CASE("imageseq achieved_time is the nearest native source-frame instant") {
   }
 
   SECTION("render(time=t).achieved_time equals quantize_time(t)") {
-    for (std::int64_t t : {std::int64_t{5}, fix::k_period_flicks + 12,
-                           2 * fix::k_period_flicks + 3, 100 * fix::k_period_flicks}) {
+    for (std::int64_t t : {std::int64_t{5}, fix::k_period_flicks + 12, 2 * fix::k_period_flicks + 3,
+                           100 * fix::k_period_flicks}) {
       const RenderResult r = render_at(*content, backend, Time{t});
       REQUIRE(r.achieved_time == content->quantize_time(Time{t}));
     }

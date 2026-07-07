@@ -54,8 +54,8 @@ public:
 
   // Register a kind. Returns success, or an error value if the id is empty or
   // already registered -- never throws (boundary discipline, doc 03:177-180).
-  expected<std::monostate, RegistryError>
-  add(std::string_view id, ContentFactory factory, KindMetadata metadata = {});
+  expected<std::monostate, RegistryError> add(std::string_view id, ContentFactory factory,
+                                              KindMetadata metadata = {});
 
   // Look up a factory by id; nullptr if absent.
   const ContentFactory* factory(std::string_view id) const;
