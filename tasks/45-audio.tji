@@ -6,7 +6,8 @@ task audio "Audio" {
   task audio_types "Audio block types + working format" {
     effort 1d
     allocate team
-    note "Float32 blocks, channel layouts, per-composition working sample rate/layout; conversions at edges, nesting boundaries convert. Doc 12."
+    complete 100
+    note "Float32 blocks, channel layouts, per-composition working sample rate/layout; conversions at edges, nesting boundaries convert. Doc 12. Refinement: tasks/refinements/audio/audio_types.md"
   }
   task mix_engine "Pull-based mix engine" {
     effort 3d

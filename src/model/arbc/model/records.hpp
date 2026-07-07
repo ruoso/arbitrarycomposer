@@ -3,6 +3,7 @@
 #include <arbc/base/ids.hpp>
 #include <arbc/base/rational_time.hpp> // TimeMap (transitively TimeRange/Time) -- temporal placement
 #include <arbc/base/transform.hpp>
+#include <arbc/media/audio_format.hpp> // AudioFormat (per-composition working audio format, doc 12)
 #include <arbc/media/surface_format.hpp> // SurfaceFormat (per-composition working space, doc 07)
 #include <arbc/pool/slot_store.hpp>      // SlotIndex
 
@@ -111,10 +112,19 @@ struct LayerOrderChunk {
 // designed default flips on when kernels make it storable. A media descriptor is
 // level-1 vocabulary, so carrying it here is the `model -> media` edge doc 17
 // scopes for exactly this record.
+//
+// `working_audio_format` is the `AudioFormat` (working sample rate + channel
+// layout, float32) the mix engine pulls and converts this composition toward
+// (doc 12:95-105) -- the audio twin of `working_space`, riding the same
+// per-composition-configuration edge and mutated through a `Transaction`
+// (`audio.audio_types`). It defaults to the doc 12 default (`k_working_audio`,
+// 48 kHz stereo), which -- unlike the staged pixel default -- is fully
+// functional from day one.
 struct CompositionRecord {
   double canvas_w{0.0};
   double canvas_h{0.0};
   SurfaceFormat working_space{};
+  AudioFormat working_audio_format{};
   std::uint32_t layer_count{0};
   ObjectId layers[k_max_inline_layers]{};
   ObjectId spill_root{};

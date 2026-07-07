@@ -85,7 +85,8 @@ private:
 // (identity preserved), and `latency()` is left at the `Time::zero()` default.
 class AudioContent : public arbc::Content {
 public:
-  explicit AudioContent(std::optional<arbc::TimeRange> extent, arbc::Stability stability, bool async)
+  explicit AudioContent(std::optional<arbc::TimeRange> extent, arbc::Stability stability,
+                        bool async)
       : d_facet(extent, stability, async) {}
 
   std::optional<arbc::Rect> bounds() const override { return std::nullopt; }

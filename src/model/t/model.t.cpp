@@ -139,6 +139,61 @@ TEST_CASE("set_working_space is a no-op on an absent or non-composition id") {
   REQUIRE(model.current()->find_composition(comp)->working_space == arbc::k_working_rgba32f);
 }
 
+// enforces: 12-audio#composition-carries-working-audio-format
+TEST_CASE("a composition's working audio format defaults, sets via transaction, and versions") {
+  arbc::Model model;
+  arbc::ObjectId comp;
+  {
+    auto txn = model.transact();
+    comp = txn.add_composition(64.0, 64.0);
+    REQUIRE(txn.commit().has_value());
+  }
+  const arbc::DocStatePtr v1 = model.current();
+  // Defaults on a fresh composition; `working_audio_format()` resolves the single
+  // composition, so a fresh document mixes in the doc 12 default (48 kHz stereo).
+  REQUIRE(v1->find_composition(comp)->working_audio_format == arbc::k_working_audio);
+  REQUIRE(v1->working_audio_format() == arbc::k_working_audio);
+
+  // Set to a distinct working audio format: a published version, revision +1.
+  constexpr arbc::AudioFormat mono_44k{44100, arbc::ChannelLayout::Mono};
+  {
+    auto txn = model.transact();
+    txn.set_working_audio_format(comp, mono_44k);
+    REQUIRE(txn.commit().has_value());
+  }
+  const arbc::DocStatePtr v2 = model.current();
+  REQUIRE(v2->revision() == v1->revision() + 1);
+  REQUIRE(v2->find_composition(comp)->working_audio_format == mono_44k);
+  REQUIRE(v2->working_audio_format() == mono_44k);
+
+  // The version pinned before the config edit still sees its own value -- the
+  // doc 14 pinned-version property, extended to the audio format field.
+  REQUIRE(v1->find_composition(comp)->working_audio_format == arbc::k_working_audio);
+  REQUIRE(v1->working_audio_format() == arbc::k_working_audio);
+}
+
+// enforces: 12-audio#composition-carries-working-audio-format
+TEST_CASE("set_working_audio_format is a no-op on an absent or non-composition id") {
+  arbc::Model model;
+  arbc::ObjectId comp;
+  arbc::ObjectId layer;
+  {
+    auto txn = model.transact();
+    comp = txn.add_composition(8.0, 8.0);
+    layer = txn.add_layer(model.allocate_id(), arbc::Affine::identity());
+    REQUIRE(txn.commit().has_value());
+  }
+  constexpr arbc::AudioFormat mono_44k{44100, arbc::ChannelLayout::Mono};
+  {
+    auto txn = model.transact();
+    txn.set_working_audio_format(arbc::ObjectId{424242}, mono_44k); // absent
+    txn.set_working_audio_format(layer, mono_44k);                  // not a composition
+    REQUIRE(txn.commit().has_value());
+  }
+  // The composition keeps the default; a no-op still commits cleanly.
+  REQUIRE(model.current()->find_composition(comp)->working_audio_format == arbc::k_working_audio);
+}
+
 TEST_CASE("set_transform is a no-op on an absent or non-layer id") {
   arbc::Model model;
   arbc::ObjectId layer;

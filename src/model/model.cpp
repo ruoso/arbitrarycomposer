@@ -429,6 +429,29 @@ SurfaceFormat DocRoot::working_space() const {
   return chosen != nullptr ? chosen->working_space : k_working_rgba32f;
 }
 
+AudioFormat DocRoot::working_audio_format() const {
+  // Doc 12: the mix engine pulls the composition at its working audio format --
+  // the audio twin of `working_space()`. Return the single composition's
+  // configured `AudioFormat`, or the doc 12 default when the document has none
+  // yet so a fresh document mixes out of the box. The lowest-id composition wins
+  // so the result is deterministic if several exist.
+  if (!d_root) {
+    return k_working_audio;
+  }
+  std::vector<std::pair<std::uint64_t, SlotRef<ObjectRecord>>> leaves;
+  collect_leaves(d_stores, d_root.slot(), leaves);
+  const CompositionRecord* chosen = nullptr;
+  std::uint64_t chosen_id = 0;
+  for (const auto& [key, edge] : leaves) {
+    const ObjectRecord* r = d_stores.records->peek(edge);
+    if (r->kind == RecordKind::Composition && (chosen == nullptr || key < chosen_id)) {
+      chosen = &r->as.composition;
+      chosen_id = key;
+    }
+  }
+  return chosen != nullptr ? chosen->working_audio_format : k_working_audio;
+}
+
 void DocRoot::for_each_layer(const std::function<void(const LayerRecord&)>& fn) const {
   if (!d_root) {
     return;
@@ -618,6 +641,38 @@ void Model::Transaction::set_working_space(ObjectId composition, const SurfaceFo
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override the config
   nr.as.composition.working_space = format;
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, composition.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(composition);
+  add_damage(Damage{composition, Rect::infinite(), TimeRange::all()});
+}
+
+void Model::Transaction::set_working_audio_format(ObjectId composition, const AudioFormat& format) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, composition.value, old_edge)) {
+    return; // absent: no-op (matches the walking-skeleton contract)
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Composition) {
+    return; // not a composition: no-op
+  }
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return;
+  }
+  ObjectRecord& nr = **rec;
+  nr = *old; // trivial copy of the immutable old record, then override the config
+  nr.as.composition.working_audio_format = format;
 
   expected<Ref<HamtNode>, PoolError> next =
       hamt_insert(d_model->d_bundle, d_root, composition.value, rec->slot());

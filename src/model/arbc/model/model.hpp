@@ -60,6 +60,14 @@ public:
   // traversal.
   SurfaceFormat working_space() const;
 
+  // The working audio format the mix engine pulls this document at (doc 12): the
+  // configured `AudioFormat` of the document's single composition, or the doc 12
+  // default (`k_working_audio`, 48 kHz stereo) when the document has no
+  // composition yet. The audio twin of `working_space()`: same single-composition
+  // resolution (lowest-id composition wins when several exist) and same
+  // refcount-free peek traversal.
+  AudioFormat working_audio_format() const;
+
   // Visit every layer record in ascending object-id order. Object ids are
   // assigned monotonically, so ascending-id order reproduces the walking-
   // skeleton's insertion order (bottom-to-top, doc 02); explicit layer reorder
@@ -233,6 +241,14 @@ public:
     // the revision like any mutation. No-op if the composition is absent or not a
     // composition.
     void set_working_space(ObjectId composition, const SurfaceFormat& format);
+
+    // Replace a composition's working audio format (path-copies its record + its
+    // map path), the per-composition audio configuration of doc 12. The audio
+    // twin of `set_working_space`: a configuration change that invalidates every
+    // mixed sample of the composition, so it auto-damages the whole composition,
+    // all time, once at commit -- and bumps the revision like any mutation. No-op
+    // if the composition is absent or not a composition.
+    void set_working_audio_format(ObjectId composition, const AudioFormat& format);
 
     // Replace an existing layer's transform (path-copies its record + its map
     // path). No-op if the layer is absent.
