@@ -48,15 +48,13 @@ expected<Rational, TimeError> Rational::from_i128(i128 num, i128 den) {
 expected<Rational, TimeError> Rational::mul(const Rational& other) const {
   // Products of two int64 fit in 128 bits (< 2^127), so the only failure is the
   // reduced result exceeding int64.
-  return from_i128(static_cast<i128>(d_num) * other.d_num,
-                   static_cast<i128>(d_den) * other.d_den);
+  return from_i128(static_cast<i128>(d_num) * other.d_num, static_cast<i128>(d_den) * other.d_den);
 }
 
 expected<Rational, TimeError> Rational::add(const Rational& other) const {
   // Each cross-product is < 2^126 and their sum < 2^127, so the 128-bit
   // intermediates never overflow for canonical int64 operands.
-  const i128 num = static_cast<i128>(d_num) * other.d_den +
-                   static_cast<i128>(other.d_num) * d_den;
+  const i128 num = static_cast<i128>(d_num) * other.d_den + static_cast<i128>(other.d_num) * d_den;
   const i128 den = static_cast<i128>(d_den) * other.d_den;
   return from_i128(num, den);
 }
@@ -103,7 +101,7 @@ expected<ComposedTimeMap, TimeError> ComposedTimeMap::then(const TimeMap& edge) 
 }
 
 expected<ComposedTimeMap, TimeError> ComposedTimeMap::compose(const TimeMap* edges,
-                                                             std::size_t count) {
+                                                              std::size_t count) {
   ComposedTimeMap acc = identity();
   for (std::size_t i = 0; i < count; ++i) {
     const auto next = acc.then(edges[i]);

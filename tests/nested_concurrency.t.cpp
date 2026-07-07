@@ -94,8 +94,8 @@ TEST_CASE("nested renders race-free and deterministically across worker threads"
   // Single-threaded reference render.
   auto ref_target = backend.make_surface(8, 8, k_working_rgba32f);
   REQUIRE(ref_target.has_value());
-  const RenderRequest ref_req{region,     1.0,           Time::zero(), StateHandle{},
-                              **ref_target, Exactness::Exact, Deadline::none()};
+  const RenderRequest ref_req{
+      region, 1.0, Time::zero(), StateHandle{}, **ref_target, Exactness::Exact, Deadline::none()};
   auto ref_done = std::make_shared<RenderCompletion>();
   REQUIRE(nested.render(ref_req, ref_done).has_value());
   const std::vector<std::byte> ref_bytes = bytes_of(**ref_target);
@@ -120,8 +120,9 @@ TEST_CASE("nested renders race-free and deterministically across worker threads"
     // The Surface objects live on the heap behind the unique_ptrs, so binding a
     // reference into the RenderRequest is stable regardless of vector growth.
     RenderTask task{&nested,
-                    RenderRequest{region, 1.0, Time::zero(), StateHandle{}, *targets[static_cast<std::size_t>(i)],
-                                  Exactness::Exact, Deadline::none()},
+                    RenderRequest{region, 1.0, Time::zero(), StateHandle{},
+                                  *targets[static_cast<std::size_t>(i)], Exactness::Exact,
+                                  Deadline::none()},
                     dones[static_cast<std::size_t>(i)]};
     pool.submit(std::move(task));
   }

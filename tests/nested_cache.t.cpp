@@ -117,8 +117,8 @@ TEST_CASE("a static nested subtree is served from the parent cache; only the spi
   const Rect region = Rect::from_size(4.0, 4.0);
 
   auto pull_nested = [&](std::int64_t at_time) {
-    const RenderRequest req{region,   1.0,      Time{at_time}, StateHandle{},
-                            **target, Exactness::Exact, Deadline::none()};
+    const RenderRequest req{
+        region, 1.0, Time{at_time}, StateHandle{}, **target, Exactness::Exact, Deadline::none()};
     auto done = std::make_shared<RenderCompletion>();
     parent.pull(&nested, req, done);
   };

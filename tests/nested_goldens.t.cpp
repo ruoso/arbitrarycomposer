@@ -213,8 +213,8 @@ TEST_CASE("nested threads the outer snapshot/deadline/exactness through every pu
   StateHandle snap{};
   snap.slot = 7;
   const Deadline dl{std::chrono::steady_clock::time_point::max() - std::chrono::seconds(1)};
-  const RenderRequest req{Rect{0.0, 0.0, 8.0, 8.0}, 1.0,          Time::zero(), snap,
-                          **target,                 Exactness::Exact, dl};
+  const RenderRequest req{Rect{0.0, 0.0, 8.0, 8.0}, 1.0, Time::zero(), snap, **target,
+                          Exactness::Exact,         dl};
   auto done = std::make_shared<RenderCompletion>();
   (void)nested.render(req, done);
 
@@ -264,8 +264,9 @@ TEST_CASE("a Droste self-cycle terminates on the depth budget with a placeholder
 
   auto target = backend.make_surface(8, 8, k_working_rgba32f);
   REQUIRE(target.has_value());
-  const RenderRequest req{Rect{0.0, 0.0, 8.0, 8.0}, 1.0,           Time::zero(), StateHandle{},
-                          **target,                 Exactness::BestEffort, Deadline::none()};
+  const RenderRequest req{
+      Rect{0.0, 0.0, 8.0, 8.0}, 1.0, Time::zero(), StateHandle{}, **target, Exactness::BestEffort,
+      Deadline::none()};
   auto done = std::make_shared<RenderCompletion>();
   // Terminates (the test completing is the liveness assertion) ...
   const std::optional<RenderResult> r = nested.render(req, done);
@@ -278,8 +279,9 @@ TEST_CASE("a Droste self-cycle terminates on the depth budget with a placeholder
   const std::vector<std::byte> first = bytes_of(**target);
   auto target2 = backend.make_surface(8, 8, k_working_rgba32f);
   REQUIRE(target2.has_value());
-  const RenderRequest req2{Rect{0.0, 0.0, 8.0, 8.0}, 1.0,           Time::zero(), StateHandle{},
-                           **target2,                Exactness::BestEffort, Deadline::none()};
+  const RenderRequest req2{
+      Rect{0.0, 0.0, 8.0, 8.0}, 1.0, Time::zero(), StateHandle{}, **target2, Exactness::BestEffort,
+      Deadline::none()};
   auto done2 = std::make_shared<RenderCompletion>();
   (void)nested.render(req2, done2);
   REQUIRE(bytes_equal(first, bytes_of(**target2)));

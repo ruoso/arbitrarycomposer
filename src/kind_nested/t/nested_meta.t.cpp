@@ -146,7 +146,7 @@ TEST_CASE("nested composes bounds and stability from the reachable child layers"
     StubLeaf a(std::nullopt, Stability::Static); // unbounded leaf...
     StubLeaf b(Rect{0.0, 0.0, 2.0, 2.0}, Stability::Static);
     Scene scene;
-  build_scene(scene, &a, &b, /*declare_canvas=*/true);
+    build_scene(scene, &a, &b, /*declare_canvas=*/true);
     const DocStatePtr doc = scene.model.current();
     NullPull pull;
     NullBackend backend;

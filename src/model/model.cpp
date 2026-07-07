@@ -662,6 +662,70 @@ void Model::Transaction::set_transform(ObjectId layer, const Affine& transform) 
   add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
 }
 
+void Model::Transaction::set_span(ObjectId layer, const TimeRange& span) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, layer.value, old_edge)) {
+    return; // absent: no-op (matches the walking-skeleton contract)
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Layer) {
+    return;
+  }
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return;
+  }
+  ObjectRecord& nr = **rec;
+  nr = *old; // trivial copy of the immutable old record, then override placement
+  nr.as.layer.span = span;
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, layer.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(layer);
+  add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
+}
+
+void Model::Transaction::set_time_map(ObjectId layer, const TimeMap& time_map) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, layer.value, old_edge)) {
+    return; // absent: no-op (matches the walking-skeleton contract)
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Layer) {
+    return;
+  }
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return;
+  }
+  ObjectRecord& nr = **rec;
+  nr = *old; // trivial copy of the immutable old record, then override placement
+  nr.as.layer.time_map = time_map;
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, layer.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(layer);
+  add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
+}
+
 void Model::Transaction::set_opacity(ObjectId layer, double opacity) {
   if (!d_status) {
     return;

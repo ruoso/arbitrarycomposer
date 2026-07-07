@@ -130,9 +130,8 @@ private:
   // One child layer, re-expressing the compositor's per-layer predicate loop
   // (Decision: only the thin loop is duplicated, never the heavy machinery),
   // pulling `content` through the injected service and compositing the result.
-  void compose_child_layer(const LayerRecord& layer, const Affine& camera,
-                           const Rect& device_rect, const RenderRequest& request, Backend& backend,
-                           Surface& target) const;
+  void compose_child_layer(const LayerRecord& layer, const Affine& camera, const Rect& device_rect,
+                           const RenderRequest& request, Backend& backend, Surface& target) const;
 
   ObjectId d_child;
   PullService* d_pull{nullptr};

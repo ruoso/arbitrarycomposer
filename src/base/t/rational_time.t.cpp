@@ -128,10 +128,10 @@ TEST_CASE("leaf rounding is nearest flick, ties to even, sign-symmetric") {
   const TimeMap half{Time{0}, Rational(1, 2), Time{0}}; // local = parent/2
 
   // Half-flick ties round to the even neighbor, positive side.
-  REQUIRE(half.evaluate(Time{1})->flicks == 0);  // 0.5 -> 0
-  REQUIRE(half.evaluate(Time{3})->flicks == 2);  // 1.5 -> 2
-  REQUIRE(half.evaluate(Time{5})->flicks == 2);  // 2.5 -> 2
-  REQUIRE(half.evaluate(Time{7})->flicks == 4);  // 3.5 -> 4
+  REQUIRE(half.evaluate(Time{1})->flicks == 0); // 0.5 -> 0
+  REQUIRE(half.evaluate(Time{3})->flicks == 2); // 1.5 -> 2
+  REQUIRE(half.evaluate(Time{5})->flicks == 2); // 2.5 -> 2
+  REQUIRE(half.evaluate(Time{7})->flicks == 4); // 3.5 -> 4
 
   // Negative mirrors: symmetric, unbiased under reverse playback.
   REQUIRE(half.evaluate(Time{-1})->flicks == 0);  // -0.5 -> 0
@@ -164,9 +164,9 @@ TEST_CASE("evaluate faults rather than wrapping when the instant overflows the w
 // enforces: 11-time-and-video#span-cull-is-half-open
 TEST_CASE("span culling is half-open: in included, out excluded") {
   const TimeRange span{Time{10}, Time{20}};
-  REQUIRE(present_in_span(span, Time{10}));      // in included
-  REQUIRE(present_in_span(span, Time{15}));      // interior
-  REQUIRE(present_in_span(span, Time{19}));      // just below out
+  REQUIRE(present_in_span(span, Time{10}));       // in included
+  REQUIRE(present_in_span(span, Time{15}));       // interior
+  REQUIRE(present_in_span(span, Time{19}));       // just below out
   REQUIRE_FALSE(present_in_span(span, Time{20})); // out excluded
   REQUIRE_FALSE(present_in_span(span, Time{9}));  // before in
 
@@ -212,17 +212,19 @@ TEST_CASE("composition faults propagate as values through every fold step") {
   // from(): the in*rate product overflows.
   REQUIRE_FALSE(ComposedTimeMap::from(TimeMap{Time{kMax}, Rational(kMax, 1), Time{0}}).has_value());
   // from(): in*rate is fine but offset - in*rate overflows.
-  REQUIRE_FALSE(ComposedTimeMap::from(TimeMap{Time{-1}, Rational(kMax, 1), Time{kMax}}).has_value());
-  // then() surfaces a faulting edge from identity.
   REQUIRE_FALSE(
-      ComposedTimeMap::identity().then(TimeMap{Time{kMax}, Rational(kMax, 1), Time{0}}).has_value());
+      ComposedTimeMap::from(TimeMap{Time{-1}, Rational(kMax, 1), Time{kMax}}).has_value());
+  // then() surfaces a faulting edge from identity.
+  REQUIRE_FALSE(ComposedTimeMap::identity()
+                    .then(TimeMap{Time{kMax}, Rational(kMax, 1), Time{0}})
+                    .has_value());
 
   // and_then(): each of the three rational ops can fault.
   const ComposedTimeMap max_rate{Rational(kMax, 1), Rational(0, 1)};
   const ComposedTimeMap max_off{Rational(1, 1), Rational(kMax, 1)};
-  REQUIRE_FALSE(max_rate.and_then(max_rate).has_value());          // rate * rate
-  REQUIRE_FALSE(max_off.and_then(max_rate).has_value());           // rate * offset
-  REQUIRE_FALSE(max_off.and_then(max_off).has_value());            // offset + offset
+  REQUIRE_FALSE(max_rate.and_then(max_rate).has_value()); // rate * rate
+  REQUIRE_FALSE(max_off.and_then(max_rate).has_value());  // rate * offset
+  REQUIRE_FALSE(max_off.and_then(max_off).has_value());   // offset + offset
 }
 
 // ---- Tier 5: numeric invariant / property test ---------------------------
@@ -269,7 +271,7 @@ std::optional<RefRat> ref_add(RefRat a, RefRat b) {
 // enforces: 11-time-and-video#rational-rate-composition-is-exact
 TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and fault on overflow") {
   const std::array<Rational, 6> pool{Rational(24000, 1001), Rational(30000, 1001), Rational(1, 2),
-                                     Rational(2, 1),         Rational(-1, 2),       Rational(1, 1)};
+                                     Rational(2, 1),        Rational(-1, 2),       Rational(1, 1)};
   std::mt19937 rng(0xC0FFEEu);
   std::uniform_int_distribution<int> depth_dist(1, 7);
   std::uniform_int_distribution<std::size_t> rate_dist(0, pool.size() - 1);
@@ -338,8 +340,8 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
     // the halves yields the identical composed affine (depth invariance).
     const int cut = depth / 2;
     const auto left = ComposedTimeMap::compose(edges.data(), static_cast<std::size_t>(cut));
-    const auto right = ComposedTimeMap::compose(edges.data() + cut,
-                                                static_cast<std::size_t>(depth - cut));
+    const auto right =
+        ComposedTimeMap::compose(edges.data() + cut, static_cast<std::size_t>(depth - cut));
     if (left.has_value() && right.has_value()) {
       const auto recombined = left->and_then(*right);
       if (recombined.has_value()) {
@@ -352,8 +354,8 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
     const std::int64_t p = parent_dist(rng);
     i128 term = A->n * static_cast<i128>(p);
     i128 nn = 0;
-    const bool eval_overflow = __builtin_mul_overflow(term, B->d, &term) ||
-                               __builtin_add_overflow(term, B->n * A->d, &nn);
+    const bool eval_overflow =
+        __builtin_mul_overflow(term, B->d, &term) || __builtin_add_overflow(term, B->n * A->d, &nn);
     if (!eval_overflow) {
       const i128 dd = A->d * B->d;
       i128 q = nn / dd;
@@ -367,7 +369,8 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
         q += 1;
       }
       const auto evaluated = composed->evaluate(Time{p});
-      if (q > static_cast<i128>(kMax) || q < static_cast<i128>(std::numeric_limits<std::int64_t>::min())) {
+      if (q > static_cast<i128>(kMax) ||
+          q < static_cast<i128>(std::numeric_limits<std::int64_t>::min())) {
         CHECK_FALSE(evaluated.has_value());
       } else {
         REQUIRE(evaluated.has_value());

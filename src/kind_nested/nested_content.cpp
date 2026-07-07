@@ -81,8 +81,8 @@ void NestedContent::ensure_memo() const {
                    std::max(acc->x1, mapped.x1), std::max(acc->y1, mapped.y1)};
       }
     }
-    d_memo.bounds =
-        unbounded ? std::optional<Rect>{} : std::optional<Rect>{acc.value_or(Rect{0.0, 0.0, 0.0, 0.0})};
+    d_memo.bounds = unbounded ? std::optional<Rect>{}
+                              : std::optional<Rect>{acc.value_or(Rect{0.0, 0.0, 0.0, 0.0})};
   }
 
   // Stability: Static iff every reachable child layer is Static; else Live if any
@@ -225,8 +225,8 @@ void NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   // The sub-request carries the outer request's snapshot, exactness, and deadline
   // VERBATIM (doc 05:93-101, constraint 2) -- never reset, recomputed, or
   // sub-budgeted per level. Only region/scale/target are the layer's own.
-  const RenderRequest sub{region,           scale, request.time,      request.snapshot,
-                          temp,             request.exactness,        request.deadline};
+  const RenderRequest sub{
+      region, scale, request.time, request.snapshot, temp, request.exactness, request.deadline};
 
   // Reuse the injected PullService, never `content->render` (doc 13:69-71): cache
   // lookup, worker dispatch, snapshot/deadline inheritance, aggregate revision,

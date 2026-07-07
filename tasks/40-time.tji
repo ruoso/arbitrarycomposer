@@ -12,8 +12,9 @@ task timeline "Time and video" {
   task temporal_placement "Temporal placement in the model" {
     effort 1d
     allocate team
+    complete 100
     depends !rational_time
-    note "span + time_map on layer records beside the spatial transform; default (-inf, +inf) keeps stills the degenerate case. Docs 01/11."
+    note "span + time_map on layer records beside the spatial transform; default (-inf, +inf) keeps stills the degenerate case. Docs 01/11. Refinement: tasks/refinements/timeline/temporal_placement.md"
   }
   task transport "Transport" {
     effort 2d

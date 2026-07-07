@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arbc/base/ids.hpp>
+#include <arbc/base/rational_time.hpp> // TimeMap (transitively TimeRange/Time) -- temporal placement
 #include <arbc/base/transform.hpp>
 #include <arbc/media/surface_format.hpp> // SurfaceFormat (per-composition working space, doc 07)
 #include <arbc/pool/slot_store.hpp>      // SlotIndex
@@ -63,6 +64,15 @@ struct LayerRecord {
   Affine transform{};
   double opacity{1.0};
   std::uint32_t flags{k_layer_visible};
+  // Temporal placement beside the spatial `transform` (doc 11:59-71, doc
+  // 01:33-36): the parent-time span the layer exists over, and the 1D affine
+  // map from parent time to content-local time. The defaults make a layer with
+  // no temporal placement a still -- always-present span, identity time map --
+  // so a still is the degenerate case, not a special record (doc 11:61-64).
+  // Trailing, default-initialized members: `add_layer`'s aggregate init stays
+  // valid and every construction path gets the still-default for free.
+  TimeRange span{TimeRange::all()};
+  TimeMap time_map{};
 
   bool visible() const noexcept { return (flags & k_layer_visible) != 0; }
 };

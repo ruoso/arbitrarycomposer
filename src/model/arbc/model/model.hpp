@@ -2,6 +2,7 @@
 
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
+#include <arbc/base/rational_time.hpp> // TimeRange span / TimeMap time_map setter params
 #include <arbc/base/transform.hpp>
 #include <arbc/model/damage.hpp>
 #include <arbc/model/hamt.hpp>
@@ -242,6 +243,20 @@ public:
     // auto-damages the whole layer, all time, once at commit. No-op if the layer
     // is absent or not a layer.
     void set_opacity(ObjectId layer, double opacity);
+
+    // Replace an existing layer's temporal span (path-copies its record + its
+    // map path), the parent-time interval `[in, out)` the layer exists over
+    // (doc 11:59-73). The temporal sibling of `set_transform`: it stores the
+    // span, it does not cull by it. Auto-damages the whole layer, all time, once
+    // at commit. No-op if the layer is absent or not a layer.
+    void set_span(ObjectId layer, const TimeRange& span);
+
+    // Replace an existing layer's time map (path-copies its record + its map
+    // path), the 1D affine map from parent time to content-local time; a
+    // negative rate is first-class reverse playback (doc 11:65-71). Stores the
+    // map, it does not compose or round it. Auto-damages the whole layer, all
+    // time, once at commit. No-op if the layer is absent or not a layer.
+    void set_time_map(ObjectId layer, const TimeMap& time_map);
 
     // Insert `layer` into `composition`'s ordered membership at `at_index`
     // (bottom-to-top, doc 01:6-11); an `at_index` at or past the current count
