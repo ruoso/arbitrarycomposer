@@ -79,3 +79,13 @@ Append one `###` block per item, newest at the bottom:
 - **Source**: closer for `compositor.pull_service` (see accompanying commit); Open questions and implementer return summary.
 - **Question**: `PullServiceImpl` implements only the visual `pull`; the audio pull (`pull_audio`, doc 13:80, `content.hpp:324-326`) is assigned to the `audio` stream / `arbc::audio-engine` component and joins the `PullService` interface when `contract.audio_facet` fixes `AudioRequest`. Should the `audio` stream's refinement_writer scope a `pull_audio` WBS leaf under `tasks/45-audio.tji` once `contract.audio_facet` lands?
 - **Why parked**: The leaf's effort, dependencies, and exact home within the audio stream depend on the `AudioRequest` type that `contract.audio_facet` will define — not yet landed. The interface comment (`content.hpp:324-326`) already assigns ownership to the audio stream. Human call for the audio stream's refinement_writer once `contract.audio_facet` is complete.
+
+### 2026-07-07 — Zero-copy adoption of a non-transient provided surface as a cache value
+- **Source**: closer for `surfaces.provided_surfaces` (see accompanying commit); flagged in refinement Open questions and Decisions.
+- **Question**: Doc 09 permits caching a provided surface by holding the `SurfaceRef` directly as a `TileValue` (no copy). v1 always copies into a cache-owned surface. Should a follow-up task add zero-copy adoption (holding `SurfaceRef` inside `TileValue`) once a GPU backend makes the copy cost measurable?
+- **Why parked**: The optimization requires a `TileValue` variant that owns either a `unique_ptr<Surface>` or a `SurfaceRef`, plus updated byte-accounting and pin logic — a `cache`-layer change whose payoff is real only for GPU textures (a backend not yet built). Profiling-dependent judgment call; no WBS task until the GPU backend exists and a measured copy cost motivates it.
+
+### 2026-07-07 — Cross-tag convert-at-composite for content-provided surfaces
+- **Source**: closer for `surfaces.provided_surfaces` (see accompanying commit); flagged in refinement Open questions and Decisions.
+- **Question**: Doc 09:102-105 allows a provided surface to carry a differently-tagged format (e.g. sRGB8) and have the backend convert at composite time. v1 requires a working-space tag because the CPU backend stores one format and asserts tag agreement. Should convert-at-composite be added once a backend advertises a second storable format?
+- **Why parked**: The conversion extension is gated on a backend that supports multiple storable formats (`color.kernels` / GPU backends) — a capability not yet built. The owning task for that backend should add the conversion at that time. No standalone WBS task needed; this entry is the trigger pointer.

@@ -5,6 +5,7 @@
 #include <arbc/base/time.hpp>
 #include <arbc/model/records.hpp> // StateHandle (L3->model edge, doc 17:53,68-72)
 #include <arbc/surface/surface.hpp>
+#include <arbc/surface/surface_ref.hpp> // SurfaceRef (content-provided surface, doc 09)
 
 #include <atomic>
 #include <chrono>
@@ -96,6 +97,19 @@ struct RenderResult {
   // `std::optional<Time>` over the trivially copyable `Time` keeps
   // `RenderResult` a cheap by-value descriptor -- no allocation or atomic.
   std::optional<Time> achieved_time{};
+  // The content's OWN surface, answering the request in place of filling
+  // `request.target` (doc 09:87-100). Absent (`nullopt`) is the default and the
+  // overwhelming-majority case: the content filled the target the ordinary way,
+  // so `RenderResult` stays the cheap trivial-copy descriptor above -- the
+  // shared_ptr atomic in `SurfaceRef` is paid ONLY when a surface is genuinely
+  // adopted. Present implies (doc 09:97-98): the compositor composites/caches
+  // from `provided` instead of the target, honoring the request's region and
+  // scale, and returns the untouched target to the pool. The surface must carry
+  // the composition working-space tag (v1; cross-tag convert-at-composite is
+  // gated on a multi-format backend, doc 09:102-105). `SurfaceRef::transient`
+  // marks a framebuffer the content reuses every frame: consume-within-frame,
+  // copy-to-cache, never retained (doc 09:106-112).
+  std::optional<SurfaceRef> provided{};
 };
 
 // A thread-safe, one-shot completion handle (doc 03:62-67). The renderer

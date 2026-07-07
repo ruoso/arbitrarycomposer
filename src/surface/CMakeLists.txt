@@ -4,7 +4,9 @@ arbc_add_component(
   PUBLIC_HEADERS arbc/surface/backend.hpp arbc/surface/surface.hpp
                  arbc/surface/typed_span.hpp arbc/surface/capabilities.hpp
                  arbc/surface/surface_error.hpp arbc/surface/surface_pool.hpp
+                 arbc/surface/surface_ref.hpp
   DEPENDS base media)
 
 arbc_component_test(COMPONENT surface SOURCES t/capabilities.t.cpp
-                                             t/surface_pool.t.cpp)
+                                             t/surface_pool.t.cpp
+                                             t/surface_ref.t.cpp)

@@ -1,5 +1,8 @@
 #include <arbc/base/expected.hpp>
+#include <arbc/base/transform.hpp>
+#include <arbc/compositor/provided_surface.hpp>
 #include <arbc/compositor/refinement.hpp>
+#include <arbc/surface/backend.hpp>
 
 #include <cassert>
 #include <span>
@@ -66,7 +69,7 @@ std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
 }
 
 std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
-                                     CompositorCounters* counters) {
+                                     CompositorCounters* counters, Backend* backend) {
   std::vector<Damage> damage;
   std::vector<PendingTile> retained;
   retained.reserve(queue.tiles.size());
@@ -79,12 +82,25 @@ std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
 
     const std::optional<expected<RenderResult, RenderError>> settled = pending.done->take();
     if (settled.has_value() && settled->has_value()) {
-      const RenderResult result = **settled;
+      RenderResult result = **settled;
       // Insert-key temporal linkage (doc 11:134-137): this async arrival is keyed
       // at the pre-quantized plan instant; assert the render landed on it before it
       // is cached, exactly as the inline insert sites do (a no-op for conformant
       // content, fires only on a doc-11 MUST violation).
       assert(timed_insert_key_consistent(pending.key, result, pending.stability));
+      // Honor a content-provided surface arriving async (doc 09:87-100): copy it
+      // into the cache-owned `pending.surface` (cleared to transparent at record
+      // time, so a source-over copy is exact) and release it, exactly as the inline
+      // sites do -- the cache never learns the surface was provided
+      // (doc 09:109-112,328-340). Absent, the worker filled `pending.surface` and
+      // there is nothing to copy. `backend` is non-null on the production drain
+      // (`runtime.interactive`); a null backend only reaches here in a test with no
+      // provided surface, so the copy branch is never taken without one.
+      consume_render_result(result, *pending.surface, [&](const Surface& src) {
+        if (&src != pending.surface.get() && backend != nullptr) {
+          backend->composite(*pending.surface, src, Affine::identity(), 1.0);
+        }
+      });
       // The arrival is placed under its exact request key so a follow-up frame at
       // the same revision plans it Fresh (doc 02:100-104 pin), then dropped from
       // the queue by simply not retaining it.

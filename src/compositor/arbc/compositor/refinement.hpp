@@ -56,6 +56,11 @@
 
 namespace arbc {
 
+// Forward-declared so `poll_refinements` can take an optional `Backend*` for the
+// copy-to-cache of an async-arriving content-provided surface (doc 09:87-100)
+// without pulling the backend header into this one.
+class Backend;
+
 // One deferred (async) tile render, recorded by `render_frame_interactive` and
 // drained by `poll_refinements`. Frame-to-frame state, so the *caller* (the
 // runtime frame loop) owns the queue -- planning stays pure and lock-free (doc
@@ -142,7 +147,14 @@ std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
 // When `counters` is non-null, `follow_up_frames` bumps once per arrival that
 // settled into the cache and emitted damage (doc 16:54-62, `counters.hpp`);
 // null (the default) is behavior-identical.
+//
+// `backend` (optional) is used only to copy an async arrival that carried a
+// content-provided surface into its cache-owned tile surface (doc 09:87-100),
+// exactly as the inline consumption sites do; an ordinary arrival that filled
+// its target ignores it, so a null `backend` (the default) is behavior-identical
+// for every arrival that did not provide a surface.
 std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
-                                     CompositorCounters* counters = nullptr);
+                                     CompositorCounters* counters = nullptr,
+                                     Backend* backend = nullptr);
 
 } // namespace arbc

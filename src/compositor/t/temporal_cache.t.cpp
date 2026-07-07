@@ -169,10 +169,9 @@ arbc::Surface* render_and_insert(TileCache& cache, arbc::Backend& backend, arbc:
   REQUIRE(owned.has_value());
   arbc::Surface* const inserted = owned->get();
 
-  const arbc::RenderRequest request{one_tile_region(),  arbc::rung_scale(key.rung),
-                                    time,                arbc::StateHandle{},
-                                    **owned,             arbc::Exactness::BestEffort,
-                                    arbc::Deadline::none()};
+  const arbc::RenderRequest request{
+      one_tile_region(),           arbc::rung_scale(key.rung), time, arbc::StateHandle{}, **owned,
+      arbc::Exactness::BestEffort, arbc::Deadline::none()};
   auto done = std::make_shared<arbc::RenderCompletion>();
   const std::optional<RenderResult> result = content.render(request, done);
   REQUIRE(result.has_value());
@@ -238,7 +237,8 @@ TEST_CASE("live-cache round-trip: a coalesced Timed tile is reused at the KeyedS
 
   // Rendering that boundary instant inserts a SECOND, distinct entry: both native
   // frames now coexist in the cache, each returning its own stored surface.
-  arbc::Surface* const inserted_next = render_and_insert(cache, backend, content, key_next, k_t_next);
+  arbc::Surface* const inserted_next =
+      render_and_insert(cache, backend, content, key_next, k_t_next);
   std::optional<CacheHold<TileValue>> h0 = cache.lookup(key0);
   std::optional<CacheHold<TileValue>> hn = cache.lookup(key_next);
   REQUIRE(h0.has_value());
@@ -260,10 +260,9 @@ TEST_CASE("insert-key linkage: a render off its own quantize grid is caught at t
   REQUIRE(key.achieved_time == std::optional<arbc::Time>{k_frame7});
 
   BufferSurface target(arbc::k_tile_size, arbc::k_tile_size);
-  const arbc::RenderRequest request{one_tile_region(),  arbc::rung_scale(key.rung),
-                                    k_t0,                arbc::StateHandle{},
-                                    target,              arbc::Exactness::BestEffort,
-                                    arbc::Deadline::none()};
+  const arbc::RenderRequest request{
+      one_tile_region(),           arbc::rung_scale(key.rung), k_t0, arbc::StateHandle{}, target,
+      arbc::Exactness::BestEffort, arbc::Deadline::none()};
   auto done = std::make_shared<arbc::RenderCompletion>();
 
   // The misbehaving render reports the raw t0, OFF the frame-7 grid the tile is

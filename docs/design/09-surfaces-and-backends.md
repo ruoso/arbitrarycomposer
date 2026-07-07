@@ -123,6 +123,38 @@ This keeps the pull contract intact — the request still names region and
 scale, and content that provides its own surface must still honor them —
 while removing the forced copy exactly where it hurts.
 
+**Realization addendum (`surfaces.provided_surfaces`).** The contract above
+is fully specified; the v1 implementation pins three points it left implicit:
+
+1. **`provided` is a `SurfaceRef`.** The handle is a `std::shared_ptr<Surface>`
+   whose deleter *is* the release callback to the content (the shared control
+   block is the thread-safe atomic refcount the Threading note requires), plus
+   the `transient` bool. The flag lives on the handle, not on `RenderResult`,
+   since it is the *surface* whose lifetime it bounds. `RenderResult.provided`
+   is a `std::optional<SurfaceRef>` — `nullopt` by default, so the common
+   target-filling render stays a trivial by-value copy paying no atomic.
+2. **The compositor v1 branch: composite inline, copy to cache.** At every
+   `RenderResult`-consumption site a single helper honors `provided`: on the
+   inline (non-cache) composite it composites *directly from* the provided
+   surface (zero copy); on the cache path it **copies** the provided surface
+   into a cache-owned `unique_ptr<Surface>` (a source-over blit over a freshly
+   cleared destination) — for **both** transient and non-transient providers —
+   so the tile cache stays entirely oblivious that a surface was ever provided.
+   The `SurfaceRef` is released the instant the compositor has composited or
+   copied it, never before, and is never stored in a structure outliving the
+   frame. Zero-copy *adoption* of a non-transient provided surface as a cache
+   value (holding the `SurfaceRef` in the cache rather than copying) is a
+   parking-lot item: its payoff is real only on a GPU backend where the copy is
+   a measured cost, and it forces a cache-layer change not yet warranted.
+3. **v1 requires a working-space tag.** The tag-compatibility clause above
+   (a differently-tagged provided surface converting at composite time) is
+   latent until a backend advertises a second storable format: the CPU backend
+   stores one working format and asserts tag agreement in `composite`, so v1
+   requires the provided surface to carry the composition working-space tag.
+   Cross-tag convert-at-composite lands with the multi-format/GPU backend work
+   (`color.kernels` / GPU backends) that introduces the second format — a
+   parking-lot item tied to that capability, not a standalone task.
+
 ## Threading note
 
 Backend objects follow the doc-02 model: surface allocation and composite

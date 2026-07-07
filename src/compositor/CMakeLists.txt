@@ -11,6 +11,7 @@ arbc_add_component(
                  arbc/compositor/damage_planning.hpp
                  arbc/compositor/operator_graph.hpp
                  arbc/compositor/pull_service.hpp
+                 arbc/compositor/provided_surface.hpp
   DEPENDS contract cache)
 
 arbc_component_test(COMPONENT compositor SOURCES t/scale_ladder.t.cpp

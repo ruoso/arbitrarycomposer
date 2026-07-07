@@ -1,5 +1,6 @@
 #include <arbc/compositor/damage_planning.hpp>
 #include <arbc/compositor/operator_graph.hpp>
+#include <arbc/compositor/provided_surface.hpp>
 #include <arbc/compositor/pull_service.hpp>
 #include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/tile_planning.hpp>
@@ -392,13 +393,25 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
             if (inline_settled) {
               const std::optional<expected<RenderResult, RenderError>> settled = done->take();
               if (settled.has_value() && settled->has_value()) {
-                const RenderResult result = **settled;
+                RenderResult result = **settled;
                 // Insert-key temporal linkage (doc 11:134-137): the tile was keyed
                 // at `quantize_time(time)` before this render; assert the render
                 // landed on that same instant so the coalesced entry serves the
                 // frame it is keyed under (a no-op for conformant content, fires
                 // only on a doc-11 MUST violation).
                 assert(timed_insert_key_consistent(tile.key, result, content->stability()));
+                // Honor a content-provided surface (doc 09:87-100): the cache path
+                // always COPIES it into the cache-owned `tile_surface` (never
+                // adopts, v1 -- so `TileValue` and the cache stay oblivious,
+                // doc 09:109-112,328-340), then releases it. `tile_surface` was
+                // cleared to transparent above, so a source-over copy yields exactly
+                // the provided pixels. Absent, the content already filled
+                // `tile_surface` and there is nothing to copy.
+                consume_render_result(result, tile_surface, [&](const Surface& src) {
+                  if (&src != &tile_surface) {
+                    backend.composite(tile_surface, src, Affine::identity(), 1.0);
+                  }
+                });
                 const std::size_t bytes = tile_byte_cost(tile_surface);
                 tile.hold = cache.insert(
                     tile.key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},

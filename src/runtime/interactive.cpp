@@ -137,7 +137,7 @@ InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& r
   // Insert settled arrivals into the cache and collect their content-local
   // damage. A failed/cancelled arrival is dropped by `poll_refinements` (no
   // insert, no damage) -- degrading to the placeholder policy, never thrown.
-  const std::vector<Damage> arrival = poll_refinements(d_pending, cache, &d_counters);
+  const std::vector<Damage> arrival = poll_refinements(d_pending, cache, &d_counters, &backend);
   // A follow-up frame is owed exactly when the arrival damage maps to a non-empty
   // device dirty region (doc 02:69-71). The carried copy re-plans those tiles
   // Fresh on the next frame (device mapping happens fresh there in case the

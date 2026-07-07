@@ -12,8 +12,9 @@ task surfaces "Surfaces and backends" {
   task provided_surfaces "Content-provided surfaces" {
     effort 2d
     allocate team
-    depends !capabilities
-    note "RenderResult.provided: refcounted with release callback, transient marking (consume-within-frame, copy-to-cache), compositor path honoring it. Doc 09."
+    complete 100
+    depends !capabilities, !surface_pool
+    note "RenderResult.provided: refcounted with release callback, transient marking (consume-within-frame, copy-to-cache), compositor path honoring it. Doc 09. Refinement: tasks/refinements/surfaces/provided_surfaces.md"
   }
   task import "External import (wrap-or-copy)" {
     effort 2d

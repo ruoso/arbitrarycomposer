@@ -1,4 +1,5 @@
 #include <arbc/compositor/compositor.hpp>
+#include <arbc/compositor/provided_surface.hpp>
 
 #include <cmath>
 
@@ -80,14 +81,23 @@ void render_layer(const ContentResolver& resolve, const LayerRecord& layer, cons
   if (!settled.has_value() || !settled->has_value()) {
     return; // inline content failed to produce pixels: cull this layer
   }
-  const RenderResult result = **settled;
+  RenderResult result = **settled;
 
   // temp pixel (i, j) covers local (region origin + (i, j) / achieved):
-  // map temp space through local space to device space.
+  // map temp space through local space to device space. A content-provided
+  // surface covers the same region at the same achieved scale (doc 09:122-124),
+  // so it rides the identical mapping.
   const Affine temp_to_dst = compose(
       composed, compose(Affine::translation(region.x0, region.y0),
                         Affine::scaling(1.0 / result.achieved_scale, 1.0 / result.achieved_scale)));
-  backend.composite(target, temp, temp_to_dst, layer.opacity);
+  // Honor a content-provided surface (doc 09:87-100): composite directly FROM
+  // it -- zero copy, the exact inline-path win doc 09 targets (09:122-124) --
+  // instead of the pooled temp, and release it right after; the temp is returned
+  // to the pool untouched (09:80). Absent, this composites the filled temp
+  // exactly as before.
+  consume_render_result(result, temp, [&](const Surface& src) {
+    backend.composite(target, src, temp_to_dst, layer.opacity);
+  });
 }
 
 void render_frame(const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,

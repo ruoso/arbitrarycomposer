@@ -1,5 +1,7 @@
 #include <arbc/base/expected.hpp>
+#include <arbc/base/transform.hpp>
 #include <arbc/compositor/operator_graph.hpp>
+#include <arbc/compositor/provided_surface.hpp>
 #include <arbc/compositor/pull_service.hpp>
 #include <arbc/compositor/scale_ladder.hpp>
 #include <arbc/compositor/tile_planning.hpp> // k_tile_size, tiles_covering
@@ -180,12 +182,22 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
   if (done && done->settled()) {
     const std::optional<expected<RenderResult, RenderError>> settled = done->take();
     if (settled.has_value() && settled->has_value()) {
-      const RenderResult result = **settled;
+      RenderResult result = **settled;
       // Insert-key temporal linkage (doc 11:134-137): the pull keyed this tile at
       // `quantize_time(request.time)` before dispatching; assert the render landed
       // on that same instant so the cached tile serves the frame it is keyed under
       // (a no-op for conformant content, fires only on a doc-11 MUST violation).
       assert(timed_insert_key_consistent(key, result, stability));
+      // Honor a content-provided surface (doc 09:87-100): copy it into the
+      // cache-owned `tile_surface` (cleared to transparent above, so a source-over
+      // copy is exact) and release it -- the cache never learns the surface was
+      // provided (doc 09:109-112,328-340). Absent, the content filled
+      // `tile_surface` and there is nothing to copy.
+      consume_render_result(result, tile_surface, [&](const Surface& src) {
+        if (&src != &tile_surface) {
+          d_backend.composite(tile_surface, src, Affine::identity(), 1.0);
+        }
+      });
       const std::size_t bytes = tile_byte_cost(tile_surface);
       d_cache.insert(key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
                      bytes, PriorityClass::Visible);

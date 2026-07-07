@@ -75,6 +75,11 @@ target_link_libraries(arbc_surface_pool_integration_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_surface_pool_integration_t)
 
+add_executable(arbc_provided_surfaces_t provided_surfaces.t.cpp)
+target_link_libraries(arbc_provided_surfaces_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_provided_surfaces_t)
+
 add_executable(arbc_offline_working_space_t offline_working_space.t.cpp)
 target_link_libraries(arbc_offline_working_space_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
