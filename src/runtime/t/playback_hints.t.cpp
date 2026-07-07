@@ -1,11 +1,10 @@
-#include <arbc/runtime/playback_hints.hpp>
-
 #include <arbc/base/ids.hpp>
 #include <arbc/base/rational_time.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/cache/key_shapes.hpp>
 #include <arbc/cache/keyed_store.hpp>
 #include <arbc/contract/content.hpp>
+#include <arbc/runtime/playback_hints.hpp>
 #include <arbc/runtime/transport.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -223,7 +222,7 @@ TEST_CASE("drive_playback_prefetch primes the temporal ring from a transport-der
   REQUIRE(want.size() == 1);
   CHECK(want[0] == timed_tile(1020));
   CHECK(want[0].achieved_time->flicks > 1000);  // forward of the anchor
-  CHECK(want[0].achieved_time->flicks <= 1030);  // within the horizon
+  CHECK(want[0].achieved_time->flicks <= 1030); // within the horizon
 
   // (b) Priming is residency-only: nothing rendered, inserted, or evicted.
   CHECK(cache.resident_bytes() == bytes_before);
@@ -275,8 +274,8 @@ TEST_CASE("drive_playback_prefetch over a Static-only scene builds no ring (stil
   CHECK(want.empty());                           // Static anchor -> no ring
   CHECK(cache.resident_bytes() == bytes_before); // nothing touched
   CHECK(cache.evictions() == 0);
-  CHECK(content.renders == 0);         // zero renders
-  REQUIRE(content.hints.size() == 1);  // participating content still notified once
+  CHECK(content.renders == 0);        // zero renders
+  REQUIRE(content.hints.size() == 1); // participating content still notified once
 }
 
 // enforces: 11-time-and-video#playback-prefetch-drives-temporal-ring

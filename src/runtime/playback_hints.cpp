@@ -1,7 +1,6 @@
-#include <arbc/runtime/playback_hints.hpp>
-
 #include <arbc/cache/keyed_store.hpp> // PriorityClass
 #include <arbc/cache/prefetch.hpp>    // temporal_prefetch_ring, prime_ring
+#include <arbc/runtime/playback_hints.hpp>
 
 namespace arbc {
 

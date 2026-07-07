@@ -95,6 +95,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
 endif()
 
+# The out-of-lib reference plugin (own deps, doc 17:171). Added after src/ so the
+# umbrella `arbc` target it links exists; it is a shipped artifact, so it builds
+# regardless of BUILD_TESTING (its tests live under tests/, gated there).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/plugins/imageseq/CMakeLists.txt")
+  add_subdirectory(plugins/imageseq)
+endif()
+
 # The contract conformance suite (arbc-testing) needs Catch2 for its assertion
 # runtime and the component targets (declared in src/) for their public-header
 # include dirs, so it is added after src/ and only under BUILD_TESTING.

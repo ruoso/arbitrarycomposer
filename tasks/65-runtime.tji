@@ -33,6 +33,7 @@ task runtime "Runtime" {
   task plugin_loading "dlopen plugin loading" {
     effort 2d
     allocate team
+    depends kinds.imageseq_plugin
     note "extern C registration entry point, explicit host registration first, opt-in ARBC_PLUGIN_PATH scan; errors as values across the boundary. Docs 03/10."
   }
   task housekeeping "Housekeeping" {

@@ -142,3 +142,85 @@ add_executable(arbc_pull_service_async_t pull_service_async.t.cpp)
 target_link_libraries(arbc_pull_service_async_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_pull_service_async_t)
+
+# --- org.arbc.imageseq (kinds.imageseq_plugin) --------------------------------
+# The out-of-lib reference Timed kind's enforcing tests. They live here (not in
+# plugins/) because check_claims.py / check_levels.py scan src/tests/testing, not
+# plugins/; the ones that construct the content link the plugin's impl archive
+# (`arbc-plugin-imageseq-impl`), while the dlopen/containment drivers reach the
+# built artifacts only through the paths passed as compile definitions. The
+# checked-in fixture sequence lives under the plugin's test data (doc 17:171).
+set(ARBC_IMAGESEQ_FIXTURE_DIR "${CMAKE_SOURCE_DIR}/plugins/imageseq/t/fixtures")
+
+# Contract conformance over org.arbc.imageseq (arbc-testing before arbc; impl
+# archive before both so ImageSeqContent resolves).
+add_executable(arbc_imageseq_conformance_t imageseq_conformance.t.cpp)
+target_link_libraries(
+  arbc_imageseq_conformance_t
+  PRIVATE arbc-plugin-imageseq-impl arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_imageseq_conformance_t
+                           PRIVATE ARBC_IMAGESEQ_FIXTURE_DIR="${ARBC_IMAGESEQ_FIXTURE_DIR}")
+catch_discover_tests(arbc_imageseq_conformance_t)
+
+# Content-local achieved_time contract + byte-exact goldens + decode counter.
+add_executable(arbc_imageseq_achieved_time_t imageseq_achieved_time.t.cpp)
+target_link_libraries(arbc_imageseq_achieved_time_t
+                      PRIVATE arbc-plugin-imageseq-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_imageseq_achieved_time_t
+                           PRIVATE ARBC_IMAGESEQ_FIXTURE_DIR="${ARBC_IMAGESEQ_FIXTURE_DIR}")
+catch_discover_tests(arbc_imageseq_achieved_time_t)
+
+# Through-compositor achieved-time coalescing (counters + cache hits/misses).
+add_executable(arbc_imageseq_temporal_t imageseq_temporal.t.cpp)
+target_link_libraries(arbc_imageseq_temporal_t
+                      PRIVATE arbc-plugin-imageseq-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_imageseq_temporal_t
+                           PRIVATE ARBC_IMAGESEQ_FIXTURE_DIR="${ARBC_IMAGESEQ_FIXTURE_DIR}")
+catch_discover_tests(arbc_imageseq_temporal_t)
+
+# Temporal prefetch ring + decoder pre-roll (playback_hint) behavioral counters.
+add_executable(arbc_imageseq_prefetch_t imageseq_prefetch.t.cpp)
+target_link_libraries(arbc_imageseq_prefetch_t
+                      PRIVATE arbc-plugin-imageseq-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_imageseq_prefetch_t
+                           PRIVATE ARBC_IMAGESEQ_FIXTURE_DIR="${ARBC_IMAGESEQ_FIXTURE_DIR}")
+catch_discover_tests(arbc_imageseq_prefetch_t)
+
+# Provided-surface honored/released + advisory-hint byte-identity (constraint 6).
+add_executable(arbc_imageseq_provided_surface_t imageseq_provided_surface.t.cpp)
+target_link_libraries(arbc_imageseq_provided_surface_t
+                      PRIVATE arbc-plugin-imageseq-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_imageseq_provided_surface_t
+                           PRIVATE ARBC_IMAGESEQ_FIXTURE_DIR="${ARBC_IMAGESEQ_FIXTURE_DIR}")
+catch_discover_tests(arbc_imageseq_provided_surface_t)
+
+# Per-content serialization (render_thread_safe() == false) stress (tsan lane).
+add_executable(arbc_imageseq_concurrency_stress_t imageseq_concurrency_stress.t.cpp)
+target_link_libraries(arbc_imageseq_concurrency_stress_t
+                      PRIVATE arbc-plugin-imageseq-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_imageseq_concurrency_stress_t
+                           PRIVATE ARBC_IMAGESEQ_FIXTURE_DIR="${ARBC_IMAGESEQ_FIXTURE_DIR}")
+catch_discover_tests(arbc_imageseq_concurrency_stress_t)
+
+# The permanent end-to-end dlopen plugin-path test: boundary-only (no impl link),
+# reaching the kind solely through extern "C" arbc_plugin_register.
+add_executable(arbc_imageseq_plugin_path_t imageseq_plugin_path.t.cpp)
+target_link_libraries(arbc_imageseq_plugin_path_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags ${CMAKE_DL_LIBS})
+target_compile_definitions(
+  arbc_imageseq_plugin_path_t
+  PRIVATE ARBC_IMAGESEQ_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-imageseq>"
+          ARBC_IMAGESEQ_FIXTURE_DIR="${ARBC_IMAGESEQ_FIXTURE_DIR}")
+catch_discover_tests(arbc_imageseq_plugin_path_t)
+
+# The codec-line containment proof: no decode symbol in libarbc, present in the
+# plugin's impl archive and loadable module (byte scan of the built artifacts).
+add_executable(arbc_imageseq_containment_t imageseq_containment.t.cpp)
+target_link_libraries(arbc_imageseq_containment_t
+                      PRIVATE Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(
+  arbc_imageseq_containment_t
+  PRIVATE ARBC_LIBARBC_FILE="$<TARGET_FILE:arbc>"
+          ARBC_IMAGESEQ_IMPL_FILE="$<TARGET_FILE:arbc-plugin-imageseq-impl>"
+          ARBC_IMAGESEQ_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-imageseq>")
+catch_discover_tests(arbc_imageseq_containment_t)

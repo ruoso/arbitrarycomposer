@@ -61,8 +61,9 @@ task kinds "Reference kinds" {
   task imageseq_plugin "arbc-plugin-imageseq" {
     effort 2d
     allocate team
+    complete 100
     depends timeline.temporal_cache
-    note "Out-of-lib plugin artifact carrying the decode dependency (doc 17 codec line): Timed visual content, spans, achieved_time on source frames, temporal prefetch; the permanent end-to-end test of the runtime plugin path. Docs 11/17."
+    note "Out-of-lib plugin artifact carrying the decode dependency (doc 17 codec line): Timed visual content, spans, achieved_time on source frames, temporal prefetch; the permanent end-to-end test of the runtime plugin path. Docs 11/17. Refinement: tasks/refinements/kinds/imageseq_plugin.md"
   }
   task dual_build "Dual-build dlopen proof" {
     effort 1d

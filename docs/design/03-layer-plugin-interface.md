@@ -205,5 +205,14 @@ one even though serialization itself is deferred.
 | `org.arbc.crossfade` | Two-input operator (doc 13); extent union, the temporal transition primitive. |
 | `org.arbc.nested` | Recursive composition (doc 05); an operator over a child composition — exercises snapshots, async, cache layering, and both facets. |
 
-Together these three cover every interesting branch of the contract, which
+Together these cover every interesting branch of the contract, which
 is the real reason they live in the core repo.
+
+**`org.arbc.imageseq` is the exception to this section's heading.** It lives
+in the core *repo* but ships *outside* `libarbc`, as the separate
+`arbc-plugin-imageseq` shared-library artifact carrying its own decode
+dependency (stb-class) — the resolution of doc 17's "codec line" (a codec
+must never enter an embedder's link line, doc 10). It is therefore the
+permanent, out-of-lib exercise of the `extern "C" arbc_plugin_register(Registry&)`
+path above; the other six kinds link into `libarbc` and only exercise that
+path through the CI-only dual-build (doc 17). See doc 17 "The codec line".
