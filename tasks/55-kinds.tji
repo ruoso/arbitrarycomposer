@@ -45,8 +45,15 @@ task kinds "Reference kinds" {
   task nested_audio "org.arbc.nested audio facet" {
     effort 2d
     allocate team
+    complete 100
     depends !nested, contract.audio_facet
-    note "Implement org.arbc.nested's audio facet: aggregate the child composition's AudioFacet through the synthetic monitor, time-map + gain remix, sub-audible/depth-budget termination — the recursion reference proof for the audio facet. Docs 12/05. Source-of-debt: tasks/refinements/kinds/nested.md"
+    note "Implement org.arbc.nested's audio facet: aggregate the child composition's AudioFacet through the synthetic monitor, time-map + gain remix, sub-audible/depth-budget termination — the recursion reference proof for the audio facet. Docs 12/05. Source-of-debt: tasks/refinements/kinds/nested.md Refinement: tasks/refinements/kinds/nested_audio.md"
+  }
+  task nested_audio_resampling "org.arbc.nested audio cross-rate resampling quality" {
+    effort 2d
+    allocate team
+    depends !nested_audio
+    note "Replace the baseline nearest/hold cross-rate fill introduced in kinds.nested_audio with a higher-order deterministic resampler (e.g. polyphase / windowed-sinc) for children that report achieved_rate < request.sample_rate; each filter pinned by byte-exact per-filter goldens; keeps the mix seam, swaps the kernel — the audio analog of kinds.raster_resampling_quality. Docs 12/05. Source-of-debt: tasks/refinements/kinds/nested_audio.md"
   }
   task nested_working_space_conversion "org.arbc.nested heterogeneous working-space conversion" {
     effort 2d

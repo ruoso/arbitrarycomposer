@@ -37,8 +37,13 @@ enum class RecordKind : std::uint32_t {
 inline constexpr SlotIndex k_state_none = 0xFFFFFFFFu;
 
 // Layer visibility bit (the low bit of the flag word). Room is left for the
-// remaining placement flags (span/time-map presence, etc.) the timeline tasks add.
+// remaining placement flags the timeline tasks add.
 inline constexpr std::uint32_t k_layer_visible = 1u;
+
+// Layer audibility bit (doc 12:89-92): the audio twin of `k_layer_visible`. A
+// layer whose audio does not contribute to the mix clears it (the audio `visible`
+// cull). Default-set on every new layer, exactly as `k_layer_visible` is.
+inline constexpr std::uint32_t k_layer_audible = 1u << 1;
 
 // A slab reference to a content object's editable state (doc 15:237-239). A
 // fixed-size, index-only handle -- SlotRef-shaped -- defined but INERT here: no
@@ -64,7 +69,14 @@ struct LayerRecord {
   ObjectId content{};
   Affine transform{};
   double opacity{1.0};
-  std::uint32_t flags{k_layer_visible};
+  // The audio placement gain (doc 12:89-92), the additive-mix twin of `opacity`:
+  // 0..inf (unclamped -- boosting is legitimate), scaling this layer's audio
+  // contribution. A visual-only layer carries the harmless default and never
+  // reads it; the audio facet of a nesting kind (`org.arbc.nested`) is its first
+  // consumer. Placed beside `opacity` (the two placement doubles) so the record
+  // stays fixed-size and standard-layout.
+  double gain{1.0};
+  std::uint32_t flags{k_layer_visible | k_layer_audible};
   // Temporal placement beside the spatial `transform` (doc 11:59-71, doc
   // 01:33-36): the parent-time span the layer exists over, and the 1D affine
   // map from parent time to content-local time. The defaults make a layer with
@@ -76,6 +88,7 @@ struct LayerRecord {
   TimeMap time_map{};
 
   bool visible() const noexcept { return (flags & k_layer_visible) != 0; }
+  bool audible() const noexcept { return (flags & k_layer_audible) != 0; }
 };
 
 // A composition holds its ordered layer list inline up to this fixed cap; beyond

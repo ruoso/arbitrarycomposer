@@ -4,10 +4,37 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <utility>
+#include <vector>
 
 namespace arbc {
+
+namespace {
+
+// Map a child-local audio extent back into parent time through a layer's time
+// map inverse (doc 11:59-71). The per-edge map is `local = (parent - in)*rate +
+// offset`, so the inverse is `parent = (local - offset)/rate + in`, itself an
+// affine time map with rate `1/rate`, in `offset`, offset `in`. A zero rate (a
+// degenerate map collapsing all parent time to one instant) and an overflowing
+// evaluation are treated as UNBOUNDED (`nullopt`) -- a conservative extent that
+// never wrongly silences a layer. A negative rate flips the interval, so the
+// mapped endpoints are min/max-ordered.
+std::optional<TimeRange> map_child_extent_to_parent(const TimeMap& tm, const TimeRange& child) {
+  if (tm.rate.num() == 0) {
+    return std::nullopt;
+  }
+  const TimeMap inverse{tm.offset, Rational{tm.rate.den(), tm.rate.num()}, tm.in};
+  const expected<Time, TimeError> a = inverse.evaluate(child.start);
+  const expected<Time, TimeError> b = inverse.evaluate(child.end);
+  if (!a.has_value() || !b.has_value()) {
+    return std::nullopt;
+  }
+  return TimeRange{Time{std::min(a->flicks, b->flicks)}, Time{std::max(a->flicks, b->flicks)}};
+}
+
+} // namespace
 
 NestedContent::NestedContent(ObjectId child) : d_child(child) {}
 
@@ -45,7 +72,10 @@ void NestedContent::ensure_memo() const {
   }
 
   // Gather the child's member-layer contents (bottom-to-top membership, the
-  // order `inputs()` exposes) plus their embedding transforms.
+  // order `inputs()` exposes) plus their embedding transforms. The same pass
+  // folds the audio metadata (doc 12:202-208): stability, and the time-mapped
+  // union of the reachable audible child audio extents.
+  bool audio_unbounded = false;
   d_doc->for_each_layer_in(d_child, [&](ObjectId layer_id) {
     const LayerRecord* layer = d_doc->find_layer(layer_id);
     if (layer == nullptr) {
@@ -57,7 +87,45 @@ void NestedContent::ensure_memo() const {
     }
     d_memo.inputs.push_back(ChildInput{content, layer->transform, layer->opacity});
     d_memo.input_refs.push_back(content);
+
+    // Audio metadata fold (constraint 4): an inaudible layer or a layer with no
+    // audio facet contributes nothing. Stability is Static iff every reachable
+    // audible child audio facet is Static (Live dominates, else Timed).
+    if (!layer->audible()) {
+      return;
+    }
+    AudioFacet* af = content->audio();
+    if (af == nullptr) {
+      return;
+    }
+    const Stability s = af->audio_stability();
+    if (s == Stability::Live) {
+      d_memo.audio_stability = Stability::Live;
+    } else if (s == Stability::Timed && d_memo.audio_stability != Stability::Live) {
+      d_memo.audio_stability = Stability::Timed;
+    }
+    // Extent: the time-mapped union of the reachable child extents; a
+    // Static-unbounded (nullopt) child (or a non-invertible map) makes the whole
+    // extent unbounded (doc 12:26-29, constraint 4).
+    const std::optional<TimeRange> ce = af->audio_extent();
+    if (!ce.has_value()) {
+      audio_unbounded = true;
+    } else if (!audio_unbounded) {
+      const std::optional<TimeRange> mapped = map_child_extent_to_parent(layer->time_map, *ce);
+      if (!mapped.has_value()) {
+        audio_unbounded = true;
+      } else if (!d_memo.audio_extent.has_value()) {
+        d_memo.audio_extent = *mapped;
+      } else {
+        d_memo.audio_extent =
+            TimeRange{Time{std::min(d_memo.audio_extent->start.flicks, mapped->start.flicks)},
+                      Time{std::max(d_memo.audio_extent->end.flicks, mapped->end.flicks)}};
+      }
+    }
   });
+  if (audio_unbounded) {
+    d_memo.audio_extent = std::nullopt; // any unbounded reachable child audio -> unbounded
+  }
 
   // Bounds: the child canvas rect if declared, else the recursive union of the
   // reachable child-layer bounds mapped through their transforms; unbounded if
@@ -304,6 +372,188 @@ std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
   });
 
   return RenderResult{request.scale, true};
+}
+
+// --- audio (the synthetic monitor; "the aggregate revision covers audio", 12:208)
+
+AudioFacet* NestedContent::audio() { return &d_audio_facet; }
+
+std::optional<TimeRange> NestedContent::NestedAudioFacet::audio_extent() const {
+  const std::lock_guard<std::recursive_mutex> lock(d_owner->d_mutex);
+  d_owner->ensure_memo();
+  return d_owner->d_memo.audio_extent;
+}
+
+Stability NestedContent::NestedAudioFacet::audio_stability() const {
+  const std::lock_guard<std::recursive_mutex> lock(d_owner->d_mutex);
+  d_owner->ensure_memo();
+  return d_owner->d_memo.audio_stability;
+}
+
+void NestedContent::mix_child_layer(const LayerRecord& layer, const CompositionRecord& comp,
+                                    const AudioRequest& request, std::uint32_t& achieved,
+                                    bool& exact) const {
+  // Audio visibility cull (doc 12:86-87,129-130): an inaudible or zero-gain layer
+  // contributes nothing.
+  if (!layer.audible() || layer.gain <= 0.0) {
+    return;
+  }
+  Content* content = d_resolver ? d_resolver(layer.content) : nullptr;
+  if (content == nullptr) {
+    return; // unresolved layer: silence for this layer (doc 05:50)
+  }
+  AudioFacet* af = content->audio();
+  if (af == nullptr) {
+    return; // no audio facet: skipped at zero cost (doc 12:86-87)
+  }
+
+  // Span cull (doc 11:62-73): a degenerate span, or one that does not overlap the
+  // request window, contributes nothing.
+  if (layer.span.empty() || request.window.end.flicks <= layer.span.start.flicks ||
+      layer.span.end.flicks <= request.window.start.flicks) {
+    return;
+  }
+
+  // Varispeed (doc 12:107-118): request the child at the composed rational rate
+  // `child_rate = request.sample_rate / rate` (rate = num/den), so a rate-1/2
+  // layer requests at twice the rate and pitches the child down an octave. The
+  // rate is recomputed from the per-edge rational every descent -- never
+  // accumulated (doc 11:216-234). Reverse / zero-rate audio (num <= 0) is out of
+  // scope (deferred with time-stretch, doc 12:118): cull rather than mis-mix.
+  const std::int64_t num = layer.time_map.rate.num();
+  const std::int64_t den = layer.time_map.rate.den();
+  if (num <= 0) {
+    return;
+  }
+  const std::uint32_t child_rate =
+      static_cast<std::uint32_t>(static_cast<std::int64_t>(request.sample_rate) * den / num);
+  if (child_rate == 0) {
+    return;
+  }
+
+  // Child-local window start: the parent window start mapped through the layer
+  // time map. A procedural child then samples frame f at child_start + f *
+  // flicks_per_second/child_rate == the time-mapped parent frame instant, so a
+  // nested-of-tones scene is byte-exact at any depth.
+  const expected<Time, TimeError> child_start = layer.time_map.evaluate(request.window.start);
+  if (!child_start.has_value()) {
+    return; // time-map overflow: cull (doc 11:52-56)
+  }
+
+  // Request the child at its working-format layout (the nesting boundary converts,
+  // doc 12:95-105) and the composed rate. A homogeneous tree pays nothing (child
+  // layout == request layout -> a direct mix); a layout mismatch is remixed inline.
+  const std::uint32_t out_ch = channel_count(request.layout);
+  const ChannelLayout child_layout = comp.working_audio_format.layout;
+  const std::uint32_t in_ch = channel_count(child_layout);
+  const std::uint32_t frames = request.target.frames;
+  const std::int64_t fpf_child = Time::flicks_per_second / static_cast<std::int64_t>(child_rate);
+
+  std::vector<float> child_buf(static_cast<std::size_t>(frames) * in_ch, 0.0F);
+  AudioBlock child_block{child_buf.data(), frames, child_layout, child_rate};
+  const AudioRequest child_req{
+      TimeRange{*child_start,
+                Time{child_start->flicks + static_cast<std::int64_t>(frames) * fpf_child}},
+      child_rate,
+      child_layout,
+      child_block,
+      request.exactness, // carried verbatim (constraint 2)
+      request.snapshot,  // carried verbatim (constraint 8)
+  };
+
+  // Pull through the injected service, NEVER `af->render_audio` directly (doc 13
+  // operator rule, audio twin): block-cache serve, worker dispatch, and the
+  // recursion-depth backstop are the service's, exactly as the visual descent
+  // relies on `pull` (constraint 2, 7).
+  auto done = std::make_shared<AudioCompletion>();
+  d_pull->pull_audio(content, child_req, done);
+  if (!done->settled()) {
+    // The service deferred to a worker (a miss): this pass mixes silence for the
+    // layer (doc 05:50-52), exactly as the visual descent shows the placeholder.
+    done->cancel();
+    return;
+  }
+  const std::optional<expected<AudioResult, RenderError>> settled = done->take();
+  if (!settled.has_value() || !settled->has_value()) {
+    return; // budget-exceeded / unavailable pull (a Droste backstop): silence
+  }
+  const AudioResult cr = **settled;
+
+  // Additive Flat-mode mix (doc 12:129-130): contribution = gain * child, summed
+  // into the target, remixed to the request layout. Placement is 1:1 -- the child
+  // was requested at the composed rate over `frames` frames.
+  const float gain = static_cast<float>(layer.gain);
+  for (std::uint32_t f = 0; f < frames; ++f) {
+    for (std::uint32_t c = 0; c < out_ch; ++c) {
+      float s = 0.0F;
+      if (in_ch == out_ch) {
+        s = child_buf[static_cast<std::size_t>(f) * in_ch + c];
+      } else if (in_ch == 1) {
+        s = child_buf[f]; // mono child -> every request channel
+      } else {
+        // stereo child -> mono request: average the channels (baseline downmix).
+        s = 0.5F * (child_buf[static_cast<std::size_t>(f) * 2] +
+                    child_buf[static_cast<std::size_t>(f) * 2 + 1]);
+      }
+      request.target.samples[static_cast<std::size_t>(f) * out_ch + c] += gain * s;
+    }
+  }
+
+  // achieved_rate / exact honesty (constraint 6). A child honoring the composed
+  // rate keeps the boundary at the request rate; a below-rate child (its block
+  // reinterpreted by a baseline nearest/hold fill -- high-quality resampling is
+  // the deferred `kinds.nested_audio_resampling`) lowers the aggregate and marks
+  // it inexact.
+  if (!cr.exact || cr.achieved_rate != child_rate) {
+    exact = false;
+    const std::uint64_t eff =
+        static_cast<std::uint64_t>(cr.achieved_rate) * request.sample_rate / child_rate;
+    achieved = std::min(achieved, static_cast<std::uint32_t>(eff));
+  }
+}
+
+std::optional<AudioResult>
+NestedContent::NestedAudioFacet::render_audio(const AudioRequest& request,
+                                              std::shared_ptr<AudioCompletion>) {
+  NestedContent& self = *d_owner;
+  assert(self.d_pull != nullptr && self.d_doc != nullptr &&
+         "NestedContent audio rendered before attach");
+
+  // The composed block is an ordinary content's samples (doc 12:202-208): start
+  // from silence, then additively mix each audible child layer. Settles INLINE --
+  // nested's descent is synchronous; only the leaf audio pulls are what the
+  // service may defer, mirroring the visual `render`.
+  const std::uint32_t ch = channel_count(request.layout);
+  const std::size_t n = static_cast<std::size_t>(request.target.frames) * ch;
+  for (std::size_t i = 0; i < n; ++i) {
+    request.target.samples[i] = 0.0F;
+  }
+
+  const CompositionRecord* comp = self.d_doc->find_composition(self.d_child);
+  if (comp == nullptr) {
+    // Unresolved / not-yet-loaded child (doc 05:50-52): a silent block, honest.
+    return AudioResult{request.sample_rate, true};
+  }
+
+  // achieved_rate = min over contributing children (a honoring child keeps it at
+  // the request rate); exact = the conjunction. No contributor -> a faithful
+  // silent block at the request rate.
+  std::uint32_t achieved = request.sample_rate;
+  bool exact = true;
+
+  // Bottom-to-top over the child's members at the pinned version (doc 02/05:71-75)
+  // -- membership read from the frozen `DocRoot`, so a Droste audio scene sees the
+  // same revisions on every visit within the frame (the audio revision space is
+  // the visual one, doc 12:208).
+  self.d_doc->for_each_layer_in(self.d_child, [&](ObjectId layer_id) {
+    const LayerRecord* layer = self.d_doc->find_layer(layer_id);
+    if (layer == nullptr) {
+      return;
+    }
+    self.mix_child_layer(*layer, *comp, request, achieved, exact);
+  });
+
+  return AudioResult{achieved, exact};
 }
 
 } // namespace arbc

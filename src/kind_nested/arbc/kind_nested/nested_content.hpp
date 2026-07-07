@@ -35,11 +35,15 @@ using NestedResolver = std::function<Content*(ObjectId)>;
 // Scope (doc 05 machinery): the VISUAL facet, HOMOGENEOUS working-space trees
 // ("homogeneous trees pay nothing", doc 07:34-35), two-level caching (the
 // service's leaf cache plus the parent's cache of nested's composed result),
-// cycle/Droste termination, and snapshot consistency. The audio facet
-// (`kinds.nested_audio`) and heterogeneous working-space conversion
-// (`kinds.nested_working_space_conversion`) are deferred follow-ups whose
-// prerequisites (`contract.audio_facet`; a `Backend` conversion operation) are
-// not yet landed.
+// cycle/Droste termination, and snapshot consistency. The AUDIO facet
+// (`kinds.nested_audio`, doc 12:202-208) is the 1D-signal twin over the same
+// scaffold: `render_audio` re-expresses the per-layer descent for samples exactly
+// as `render` does for pixels -- a synthetic MONITOR mixing each audible child
+// layer's audio (pulled through `PullService::pull_audio`, time-mapped +
+// gain-scaled, additively mixed) the way the synthetic viewport composites its
+// pixels. Heterogeneous working-space conversion
+// (`kinds.nested_working_space_conversion`) remains a deferred follow-up whose
+// prerequisite (a `Backend` conversion operation) is not yet landed.
 //
 // Levelization (doc 17:59): the kind depends only on `contract`. It re-expresses
 // the compositor's per-layer cull/compose loop directly (it may not name the
@@ -83,6 +87,12 @@ public:
   // concurrently for distinct requests (doc contract, content.hpp:262-275).
   bool render_thread_safe() const override { return true; }
 
+  // --- audio facet (doc 12:202-208, the recursion reference proof) ------------
+  // Nested always exposes the audio facet (like any nesting boundary is a
+  // synthetic monitor); a child composition with no audio content simply mixes to
+  // silence, exactly as a child with no visible content composites to nothing.
+  AudioFacet* audio() override;
+
   // --- operator graph (doc 13:39-67) ---
   // The child composition's member-layer contents, in bottom-to-top order, so
   // the core folds them for aggregate revision, cycle detection, and damage
@@ -119,6 +129,14 @@ private:
     std::optional<Rect> bounds{};
     Stability stability{Stability::Static};
     std::optional<TimeRange> time_extent{};
+    // Audio metadata aggregated from the reachable child-layer audio facets and
+    // memoized on the SAME aggregate revision as the visual metadata (doc
+    // 12:208, "the aggregate revision covers audio damage since it is the same
+    // revision space"): Static iff every reachable audible child audio facet is
+    // Static; the time-mapped union of reachable child extents (nullopt if any
+    // reachable child audio is Static-unbounded).
+    Stability audio_stability{Stability::Static};
+    std::optional<TimeRange> audio_extent{};
     std::vector<ChildInput> inputs{};
     std::vector<ContentRef> input_refs{}; // stable storage backing `inputs()`
   };
@@ -132,6 +150,37 @@ private:
   // pulling `content` through the injected service and compositing the result.
   void compose_child_layer(const LayerRecord& layer, const Affine& camera, const Rect& device_rect,
                            const RenderRequest& request, Backend& backend, Surface& target) const;
+
+  // One child layer's audio contribution, the audio twin of `compose_child_layer`:
+  // time-map the request window into child-local time at the composed varispeed
+  // rate, pull the child's audio through the injected service, and additively mix
+  // the settled block into `request.target` scaled by the layer's `gain` and
+  // remixed to the request layout. Folds this layer's honesty into the running
+  // `achieved`/`exact` aggregate. Skips (contributes silence) a layer that is
+  // inaudible, has zero gain, resolves to no content, exposes no audio facet, is
+  // culled by its span, or whose child pull does not settle inline.
+  void mix_child_layer(const LayerRecord& layer, const CompositionRecord& comp,
+                       const AudioRequest& request, std::uint32_t& achieved, bool& exact) const;
+
+  // The audio facet nested exposes from `audio()` (doc 12:63-70), mirroring
+  // tone's inner `ToneFacet`. Holds only a back-pointer to its owner; every query
+  // reads the owner's immutable-after-attach services and the pinned snapshot, so
+  // it inherits `render_thread_safe()`'s argument (doc 12:154-164, audio renders
+  // ahead on workers, never the device callback). The metadata methods read the
+  // shared aggregate-revision memo; `render_audio` re-walks the pinned membership
+  // exactly as `render` does.
+  class NestedAudioFacet final : public AudioFacet {
+  public:
+    explicit NestedAudioFacet(NestedContent* owner) : d_owner(owner) {}
+
+    std::optional<TimeRange> audio_extent() const override;
+    Stability audio_stability() const override;
+    std::optional<AudioResult> render_audio(const AudioRequest& request,
+                                            std::shared_ptr<AudioCompletion> done) override;
+
+  private:
+    NestedContent* d_owner;
+  };
 
   ObjectId d_child;
   PullService* d_pull{nullptr};
@@ -147,6 +196,11 @@ private:
   mutable std::recursive_mutex d_mutex;
   mutable Memo d_memo;
   mutable std::uint64_t d_metadata_recomputes{0};
+
+  // The audio facet handed out by `audio()`. A stable-address member (pointer
+  // identity across calls -- the #audio-facet-optional contract), constructed
+  // with a back-pointer to this content.
+  NestedAudioFacet d_audio_facet{this};
 };
 
 } // namespace arbc

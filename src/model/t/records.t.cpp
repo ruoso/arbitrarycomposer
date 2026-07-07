@@ -35,7 +35,7 @@ TEST_CASE("object records round-trip through a SlotRef edge resolved by peek") {
     owner->kind = arbc::RecordKind::Layer;
     owner->id = arbc::ObjectId{7};
     owner->as.layer = arbc::LayerRecord{arbc::ObjectId{99}, arbc::Affine::scaling(3.0, 3.0), 0.5,
-                                        arbc::k_layer_visible};
+                                        1.0, arbc::k_layer_visible};
     Edge edge{owner.slot()};
 
     const arbc::ObjectRecord* resolved = records.peek(edge.ref);
@@ -43,6 +43,7 @@ TEST_CASE("object records round-trip through a SlotRef edge resolved by peek") {
     REQUIRE(resolved->id == arbc::ObjectId{7});
     REQUIRE(resolved->as.layer.content == arbc::ObjectId{99});
     REQUIRE(resolved->as.layer.opacity == 0.5);
+    REQUIRE(resolved->as.layer.gain == 1.0);
     REQUIRE(resolved->as.layer.visible());
   }
 

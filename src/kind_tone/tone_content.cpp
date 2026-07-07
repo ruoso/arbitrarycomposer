@@ -1,5 +1,4 @@
 #include <arbc/kind_tone/tone_content.hpp>
-
 #include <arbc/media/audio_block.hpp>
 #include <arbc/media/pixel_traits.hpp>
 #include <arbc/surface/typed_span.hpp>
@@ -112,8 +111,7 @@ float tone_sample(std::uint32_t frequency_hz, float amplitude, std::int64_t t) {
 std::optional<AudioResult> ToneContent::ToneFacet::render_audio(const AudioRequest& request,
                                                                 std::shared_ptr<AudioCompletion>) {
   const std::uint32_t ch = channel_count(request.layout);
-  const std::int64_t fpf =
-      Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
   for (std::uint32_t f = 0; f < request.target.frames; ++f) {
     const std::int64_t t = request.window.start.flicks + static_cast<std::int64_t>(f) * fpf;
     const float value = tone_sample(d_frequency_hz, d_amplitude, t);

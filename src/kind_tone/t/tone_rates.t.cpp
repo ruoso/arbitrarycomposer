@@ -29,8 +29,7 @@ TEST_CASE("org.arbc.tone renders a procedural tone at any requested sample rate"
       std::vector<float> samples(static_cast<std::size_t>(frames) * 2U, -1.0F);
       AudioBlock block{samples.data(), frames, ChannelLayout::Stereo, rate};
 
-      const std::int64_t fpf =
-          Time::flicks_per_second / static_cast<std::int64_t>(rate);
+      const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(rate);
       const AudioRequest request{
           TimeRange{Time::zero(), Time{static_cast<std::int64_t>(frames) * fpf}}, rate,
           ChannelLayout::Stereo, block, exactness};

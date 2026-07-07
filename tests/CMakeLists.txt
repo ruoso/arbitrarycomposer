@@ -53,6 +53,23 @@ target_link_libraries(arbc_nested_goldens_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_nested_goldens_t)
 
+# org.arbc.nested audio-facet byte-exact goldens + behavioral counters: nested's
+# mixed samples vs directly mixing the same tones (the audio rendering-is-recursion
+# identity), gain/remix/varispeed/two-level, Droste termination, and the one-pull-
+# per-audible-child + snapshot/exactness-verbatim counters (pulls kind_tone).
+add_executable(arbc_nested_audio_goldens_t nested_audio_goldens.t.cpp)
+target_link_libraries(arbc_nested_audio_goldens_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_audio_goldens_t)
+
+# org.arbc.nested audio concurrency stress (tier-6, tsan lane): many concurrent
+# render_audio calls of one nested audio scene through a stateless multi-thread
+# PullService audio double are race-free and deterministic.
+add_executable(arbc_nested_audio_concurrency_t nested_audio_concurrency.t.cpp)
+target_link_libraries(arbc_nested_audio_concurrency_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_audio_concurrency_t)
+
 # org.arbc.nested two-level caching behavioral counters: a static subtree is
 # served from the parent cache; only the spine re-renders (requests_issued).
 add_executable(arbc_nested_cache_t nested_cache.t.cpp)

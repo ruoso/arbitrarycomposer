@@ -58,6 +58,65 @@ TEST_CASE("a layer added with no temporal placement is a still: all-present span
   REQUIRE(rec->time_map.in == arbc::Time{0});
   REQUIRE(rec->time_map.rate == arbc::Rational{1, 1});
   REQUIRE(rec->time_map.offset == arbc::Time{0});
+  // Audio placement defaults (doc 12:89-92): unit gain, audible-by-default -- the
+  // audio twins of full opacity + visible.
+  REQUIRE(rec->gain == 1.0);
+  REQUIRE(rec->audible());
+}
+
+TEST_CASE("set_gain / set_audible round-trip the audio placement fields") {
+  arbc::Model model;
+  arbc::ObjectId layer;
+  {
+    auto txn = model.transact();
+    layer = txn.add_layer(k_dummy_content, arbc::Affine::identity());
+    REQUIRE(txn.commit().has_value());
+  }
+
+  SECTION("set_gain stores an arbitrary unclamped gain") {
+    {
+      auto txn = model.transact("gain");
+      txn.set_gain(layer, 2.5); // > 1 is legitimate (boosting), never clamped
+      REQUIRE(txn.commit().has_value());
+    }
+    const arbc::LayerRecord* rec = model.current()->find_layer(layer);
+    REQUIRE(rec->gain == 2.5);
+    REQUIRE(rec->audible()); // untouched by a gain edit
+  }
+
+  SECTION("set_audible clears then re-sets the audible bit, leaving gain intact") {
+    {
+      auto txn = model.transact("gain then mute");
+      txn.set_gain(layer, 0.5);
+      txn.set_audible(layer, false);
+      REQUIRE(txn.commit().has_value());
+    }
+    const arbc::LayerRecord* muted = model.current()->find_layer(layer);
+    REQUIRE_FALSE(muted->audible());
+    REQUIRE(muted->visible()); // the visible bit is independent of the audible bit
+    REQUIRE(muted->gain == 0.5);
+    {
+      auto txn = model.transact("unmute");
+      txn.set_audible(layer, true);
+      REQUIRE(txn.commit().has_value());
+    }
+    const arbc::LayerRecord* live = model.current()->find_layer(layer);
+    REQUIRE(live->audible());
+    REQUIRE(live->gain == 0.5);
+  }
+
+  SECTION("set_gain / set_audible on an absent or non-layer id is a no-op") {
+    {
+      auto txn = model.transact("noop");
+      txn.set_gain(arbc::ObjectId{0xDEAD}, 3.0);
+      txn.set_audible(arbc::ObjectId{0xDEAD}, false);
+      REQUIRE(txn.commit().has_value());
+    }
+    // The absent-id edits changed nothing: the real layer is untouched.
+    const arbc::LayerRecord* rec = model.current()->find_layer(layer);
+    REQUIRE(rec->gain == 1.0);
+    REQUIRE(rec->audible());
+  }
 }
 
 TEST_CASE("set_span round-trips an arbitrary half-open span, including a one-frame flash") {
@@ -150,7 +209,7 @@ TEST_CASE("setting placement on one layer leaves siblings and its own other fiel
   REQUIRE(ra->span == span);
   REQUIRE(ra->transform == a_transform);
   REQUIRE(ra->opacity == 0.25);
-  REQUIRE(ra->flags == arbc::k_layer_visible);
+  REQUIRE(ra->flags == (arbc::k_layer_visible | arbc::k_layer_audible));
   REQUIRE(ra->time_map == arbc::TimeMap{}); // the untouched sibling field on `a`
 
   // `b` is untouched: same placement AND the same slab slot (structural sharing).

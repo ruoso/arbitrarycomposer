@@ -260,6 +260,20 @@ public:
     // is absent or not a layer.
     void set_opacity(ObjectId layer, double opacity);
 
+    // Replace an existing layer's audio placement gain (path-copies its record +
+    // its map path), the additive-mix twin of `set_opacity` (doc 12:89-92). An
+    // audio-placement change that auto-damages the whole layer, all time, once at
+    // commit -- the audio revision space is the visual one (doc 12:208), so the
+    // whole-object/all-time damage covers the layer's mixed samples too. No-op if
+    // the layer is absent or not a layer.
+    void set_gain(ObjectId layer, double gain);
+
+    // Set or clear an existing layer's audibility (the `k_layer_audible` flag bit,
+    // path-copies its record + its map path), the audio twin of the `visible`
+    // flag (doc 12:89-92). Auto-damages the whole layer, all time, once at commit.
+    // No-op if the layer is absent or not a layer.
+    void set_audible(ObjectId layer, bool audible);
+
     // Replace an existing layer's temporal span (path-copies its record + its
     // map path), the parent-time interval `[in, out)` the layer exists over
     // (doc 11:59-73). The temporal sibling of `set_transform`: it stores the

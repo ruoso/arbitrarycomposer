@@ -551,7 +551,8 @@ ObjectId Model::Transaction::add_layer(ObjectId content, const Affine& transform
   ObjectRecord& r = **rec;
   r.kind = RecordKind::Layer;
   r.id = id;
-  r.as.layer = LayerRecord{content, transform, opacity, k_layer_visible};
+  // gain / flags (audible+visible) / span / time_map take their still-defaults.
+  r.as.layer = LayerRecord{content, transform, opacity};
 
   expected<Ref<HamtNode>, PoolError> next =
       hamt_insert(d_model->d_bundle, d_root, id.value, rec->slot());
@@ -801,6 +802,74 @@ void Model::Transaction::set_opacity(ObjectId layer, double opacity) {
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override placement
   nr.as.layer.opacity = opacity;
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, layer.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(layer);
+  add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
+}
+
+void Model::Transaction::set_gain(ObjectId layer, double gain) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, layer.value, old_edge)) {
+    return; // absent: no-op (matches the walking-skeleton contract)
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Layer) {
+    return;
+  }
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return;
+  }
+  ObjectRecord& nr = **rec;
+  nr = *old; // trivial copy of the immutable old record, then override placement
+  nr.as.layer.gain = gain;
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, layer.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(layer);
+  add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
+}
+
+void Model::Transaction::set_audible(ObjectId layer, bool audible) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, layer.value, old_edge)) {
+    return; // absent: no-op (matches the walking-skeleton contract)
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Layer) {
+    return;
+  }
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return;
+  }
+  ObjectRecord& nr = **rec;
+  nr = *old; // trivial copy of the immutable old record, then override placement
+  if (audible) {
+    nr.as.layer.flags |= k_layer_audible;
+  } else {
+    nr.as.layer.flags &= ~k_layer_audible;
+  }
 
   expected<Ref<HamtNode>, PoolError> next =
       hamt_insert(d_model->d_bundle, d_root, layer.value, rec->slot());
