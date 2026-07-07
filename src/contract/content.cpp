@@ -16,4 +16,13 @@ std::optional<std::size_t> Content::identity(const RenderRequest& /*request*/) c
   return std::nullopt;
 }
 
+// Default audio pull (doc 12 Decision 5): a `PullService` that predates
+// `arbc::audio-engine` genuinely has no audio pull, so it settles `done` --
+// once, never leaving the caller hung -- as "no audio available". The real
+// override lands with the L4 mix engine.
+void PullService::pull_audio(ContentRef /*input*/, const AudioRequest& /*request*/,
+                             std::shared_ptr<AudioCompletion> done) {
+  done->fail(RenderError::ResourceUnavailable);
+}
+
 } // namespace arbc

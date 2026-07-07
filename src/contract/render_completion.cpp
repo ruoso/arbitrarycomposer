@@ -8,7 +8,8 @@ namespace arbc {
 // caller won the race. A second settle (`complete`-after-`complete`,
 // `fail`-after-`complete`, or any settle after `take`) loses the CAS and is
 // ignored -- the first settlement stands.
-bool RenderCompletion::try_settle(expected<RenderResult, RenderError> settlement) {
+template <class Result>
+bool Completion<Result>::try_settle(expected<Result, RenderError> settlement) {
   int expected_state = k_pending;
   if (!d_state.compare_exchange_strong(expected_state, k_claimed, std::memory_order_acq_rel,
                                        std::memory_order_acquire)) {
@@ -20,26 +21,28 @@ bool RenderCompletion::try_settle(expected<RenderResult, RenderError> settlement
   return true;
 }
 
-void RenderCompletion::complete(RenderResult result) {
-  try_settle(expected<RenderResult, RenderError>(std::move(result)));
+template <class Result> void Completion<Result>::complete(Result result) {
+  try_settle(expected<Result, RenderError>(std::move(result)));
 }
 
-void RenderCompletion::fail(RenderError error) {
-  try_settle(expected<RenderResult, RenderError>(unexpected<RenderError>(error)));
+template <class Result> void Completion<Result>::fail(RenderError error) {
+  try_settle(expected<Result, RenderError>(unexpected<RenderError>(error)));
 }
 
-bool RenderCompletion::cancelled() const noexcept {
+template <class Result> bool Completion<Result>::cancelled() const noexcept {
   return d_cancelled.load(std::memory_order_acquire);
 }
 
-void RenderCompletion::cancel() noexcept { d_cancelled.store(true, std::memory_order_release); }
+template <class Result> void Completion<Result>::cancel() noexcept {
+  d_cancelled.store(true, std::memory_order_release);
+}
 
-bool RenderCompletion::settled() const noexcept {
+template <class Result> bool Completion<Result>::settled() const noexcept {
   const int s = d_state.load(std::memory_order_acquire);
   return s == k_published || s == k_taken;
 }
 
-std::optional<expected<RenderResult, RenderError>> RenderCompletion::take() {
+template <class Result> std::optional<expected<Result, RenderError>> Completion<Result>::take() {
   if (d_state.load(std::memory_order_acquire) != k_published) {
     return std::nullopt; // pending, mid-claim, or already taken
   }
@@ -48,9 +51,16 @@ std::optional<expected<RenderResult, RenderError>> RenderCompletion::take() {
                                        std::memory_order_acquire)) {
     return std::nullopt; // a concurrent take() drained it first
   }
-  std::optional<expected<RenderResult, RenderError>> out = std::move(d_payload);
+  std::optional<expected<Result, RenderError>> out = std::move(d_payload);
   d_payload.reset();
   return out;
 }
+
+// One template body, both facets (doc 12 Decision 3): the render facet's
+// `RenderCompletion` and the audio facet's `AudioCompletion` are the only two
+// instantiations, emitted once here so the concurrency-critical logic compiles
+// and is TSan-covered exactly once.
+template class Completion<RenderResult>;
+template class Completion<AudioResult>;
 
 } // namespace arbc

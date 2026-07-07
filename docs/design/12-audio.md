@@ -52,8 +52,8 @@ struct AudioRequest {
   ChannelLayout layout;    // working layout
   AudioBlock& target;      // float32, zero-initialized
   Exactness exactness;     // BestEffort (lookahead) | Exact (offline)
-  const SnapshotToken* snapshot;
-};
+  StateHandle snapshot;    // the pinned content state (doc 14), the audio
+};                         //  twin of RenderRequest.snapshot
 
 struct AudioResult {
   uint32_t achieved_rate;  // native rate if lower than requested
@@ -66,9 +66,20 @@ public:
   virtual Stability audio_stability() const = 0;
   virtual Time latency() const { return Time::zero(); }  // see "Sync"
   virtual std::optional<AudioResult>
-  render_audio(const AudioRequest&, std::shared_ptr<RenderCompletion>) = 0;
+  render_audio(const AudioRequest&, std::shared_ptr<AudioCompletion>) = 0;
 };
 ```
+
+The completion is `AudioCompletion`, the audio instantiation of the one shared
+one-shot settlement primitive — `RenderCompletion` and `AudioCompletion` are
+both `Completion<Result>` (over `RenderResult` / `AudioResult`), so the
+thread-safe settle/cancel/`take` machinery is written and verified once and
+`render_audio` answers along the identical "return inline or settle later via
+the completion" code path as `Content::render` (doc 03). Likewise
+`AudioRequest.snapshot` is the same `StateHandle` a `RenderRequest` pins (doc
+14): audio and video share one content object and one revision space, so they
+must pin the same frozen state or a clip's samples could come from a different
+revision than its pixels.
 
 Audio-only content (a music track, a synth plugin) implements the audio
 facet and reports empty visual bounds; it is culled from every visual pass

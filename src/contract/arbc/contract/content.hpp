@@ -4,13 +4,15 @@
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/rational_time.hpp> // Rational (PlaybackHint rate)
 #include <arbc/base/time.hpp>
-#include <arbc/model/records.hpp> // StateHandle (L3->model edge, doc 17:53,68-72)
+#include <arbc/media/audio_block.hpp> // ChannelLayout/AudioBlock (audio facet vocabulary, doc 17:50)
+#include <arbc/model/records.hpp>     // StateHandle (L3->model edge, doc 17:53,68-72)
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_ref.hpp> // SurfaceRef (content-provided surface, doc 09)
 
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -132,14 +134,21 @@ struct PlaybackHint {
   Time horizon{};
 };
 
-// A thread-safe, one-shot completion handle (doc 03:62-67). The renderer
-// settles it EXACTLY ONCE via `complete(RenderResult)` or `fail(RenderError)`
-// (mutually exclusive; a second settle -- or a settle after `take()` -- is
-// silently ignored, never UB); the caller drains the single settlement with
-// the non-blocking `take()`. Inline and off-thread settlements both flow
-// through this same primitive, which is what makes the compositor's "one code
-// path" real (doc 03:117-121): a returned-inline `RenderResult` is folded in
-// via `complete` and read back through `take` exactly as a deferred render is.
+// A thread-safe, one-shot completion handle (doc 03:62-67), generic over its
+// settled payload `Result`. The renderer settles it EXACTLY ONCE via
+// `complete(Result)` or `fail(RenderError)` (mutually exclusive; a second
+// settle -- or a settle after `take()` -- is silently ignored, never UB); the
+// caller drains the single settlement with the non-blocking `take()`. Inline
+// and off-thread settlements both flow through this same primitive, which is
+// what makes the compositor's "one code path" real (doc 03:117-121): a
+// returned-inline `Result` is folded in via `complete` and read back through
+// `take` exactly as a deferred render is.
+//
+// One template body, two facets (doc 12 Decision 3): the render facet
+// instantiates `Completion<RenderResult>` (`RenderCompletion`) and the audio
+// facet `Completion<AudioResult>` (`AudioCompletion`), so the subtle
+// release/acquire + single-settle CAS logic is written and TSan-verified once
+// and both facets reuse it. `RenderError` is the shared failure type.
 //
 // Thread safety: `complete`/`fail` may run on a renderer thread while
 // `cancel`/`cancelled`/`take`/`settled` run on the caller (compositor/runtime)
@@ -150,14 +159,14 @@ struct PlaybackHint {
 // (doc 03:66,122-123) -- it only tells a long render it *may* abandon work.
 // How the caller is *woken* on completion (condvar/eventfd) is runtime policy
 // and is out of scope (doc 17:39-41).
-class RenderCompletion {
+template <class Result> class Completion {
 public:
-  RenderCompletion() = default;
-  RenderCompletion(const RenderCompletion&) = delete;
-  RenderCompletion& operator=(const RenderCompletion&) = delete;
+  Completion() = default;
+  Completion(const Completion&) = delete;
+  Completion& operator=(const Completion&) = delete;
 
   // --- renderer side ---
-  void complete(RenderResult result);
+  void complete(Result result);
   void fail(RenderError error);
   bool cancelled() const noexcept;
 
@@ -166,7 +175,7 @@ public:
   bool settled() const noexcept;
   // The single settlement, or `nullopt` if not yet settled (non-blocking).
   // Yields the settlement at most once; subsequent calls return `nullopt`.
-  std::optional<expected<RenderResult, RenderError>> take();
+  std::optional<expected<Result, RenderError>> take();
 
 private:
   // pending -> claimed (payload being written) -> published (readable) ->
@@ -177,12 +186,17 @@ private:
 
   // Claim the single settle slot and publish `settlement`; returns whether
   // this caller won (a second settle loses the CAS and is ignored).
-  bool try_settle(expected<RenderResult, RenderError> settlement);
+  bool try_settle(expected<Result, RenderError> settlement);
 
   std::atomic<int> d_state{k_pending};
   std::atomic<bool> d_cancelled{false};
-  std::optional<expected<RenderResult, RenderError>> d_payload;
+  std::optional<expected<Result, RenderError>> d_payload;
 };
+
+// The render facet's completion: the one-shot settlement of a `RenderResult`.
+// An alias for the shared template above, so every existing call site is
+// byte-unchanged (doc 12 Decision 3).
+using RenderCompletion = Completion<RenderResult>;
 
 // A non-owning graph edge to a `Content` input (doc 13:48-52, Decision 1).
 // Input edges are core-owned structure (doc 13:142), so an operator is a
@@ -193,6 +207,90 @@ private:
 // trivially copyable and keeps `inputs()` and the pull seam allocation-free.
 class Content;
 using ContentRef = Content*;
+
+// What the audio pull answers with (doc 12:58-61): the temporal-resolution twin
+// of `RenderResult`. `achieved_rate` is the native rate the facet actually
+// produced (< `request.sample_rate` when a `BestEffort` lookahead render
+// degrades, the temporal analog of `achieved_scale`); `exact` is false when the
+// block is not a faithful answer to the request. Trivially copyable -- no
+// allocation, no atomic -- so `render_audio` stays a cheap by-value answer.
+struct AudioResult {
+  std::uint32_t achieved_rate{0};
+  bool exact{true};
+};
+
+// The audio completion: the one-shot settlement of an `AudioResult` through the
+// shared `Completion<Result>` primitive (doc 12 Decision 3). `render_audio` and
+// `PullService::pull_audio` settle it exactly as `render` settles a
+// `RenderCompletion` -- inline or later off-thread, one code path.
+using AudioCompletion = Completion<AudioResult>;
+
+// What the mix engine wants rendered (doc 12:49-56): the 1D-signal twin of
+// `RenderRequest` -- a time window at a working sample rate and channel layout,
+// over a pinned content-state snapshot, into a caller-owned block. It stays a
+// cheap by-value descriptor (no allocation, no refcount, no atomic on the
+// request path): `target` is a non-owning `AudioBlock&` the caller
+// zero-initializes and owns (doc 12:54); `layout` is a by-value `ChannelLayout`;
+// and `snapshot` is the same index-only `model::StateHandle` a `RenderRequest`
+// pins (doc 12 Decision 2, doc 14). Audio and video share one content object and
+// one revision space, so a clip's samples pin the SAME frozen state as its
+// pixels -- they cannot drift under editing. Audio never carries a `Deadline`:
+// it renders ahead (lookahead), not on a deadline (doc 12:33-34), so there is no
+// deadline field. `Exactness` reuses the render discipline -- `Exact` (offline
+// export) requests are faithful, `BestEffort` (interactive lookahead) may
+// degrade the achieved rate.
+struct AudioRequest {
+  TimeRange window;
+  std::uint32_t sample_rate{0};
+  ChannelLayout layout{ChannelLayout::Stereo};
+  AudioBlock& target;
+  Exactness exactness{Exactness::BestEffort};
+  StateHandle snapshot{};
+};
+
+// The optional audio facet (doc 12:63-70): a content's 1D-signal contract, the
+// audio twin of `Content::render` and the visual description methods. A content
+// with audio (a tone, a video clip's sound, a synth) implements this and returns
+// it from `Content::audio()`; purely visual content omits it (the `nullptr`
+// default) and costs the audio engine nothing (doc 12:73-77). The shape mirrors
+// `Editable`: pure virtuals, a virtual destructor, non-copyable, a protected
+// default ctor -- the L3 interface only (doc 17:53), no state and no mix
+// machinery (that is `arbc::audio-engine`, L4). Because audio and video are two
+// facets of the SAME content object, its audio and pixels can never drift under
+// editing (doc 12:37-41).
+class AudioFacet {
+public:
+  AudioFacet(const AudioFacet&) = delete;
+  AudioFacet& operator=(const AudioFacet&) = delete;
+  virtual ~AudioFacet() = default;
+
+  // The local media-time range over which this content's audio varies or
+  // exists, or `nullopt` for time-invariant (`Static`) audio -- the 1D-signal
+  // twin of `Content::time_extent()` (doc 12:26-29). A tone is `Static` and
+  // reports `nullopt`; most audio is `Timed`.
+  virtual std::optional<TimeRange> audio_extent() const = 0;
+  // The audio stability (doc 12:26-29): `Static` (a tone, ignores the window),
+  // `Timed` (deterministic per window -- the common case), or `Live` (a
+  // microphone). The same `Stability` enum the visual facet reports.
+  virtual Stability audio_stability() const = 0;
+  // The constant processing latency the facet introduces (doc 12:182-188),
+  // honored by the L4 lookahead scheduler's pre-roll. The contract carries the
+  // *value only* (default `Time::zero()`, no latency); enforcing it is runtime
+  // policy, exactly as `Deadline` carries a value the runtime enforces.
+  virtual Time latency() const { return Time::zero(); }
+  // Render `request.window` into `request.target`, one code path sync and async
+  // (doc 12:139-159): return an `AudioResult` to settle INLINE, or return
+  // `nullopt` and settle later via `done->complete(result)`/`done->fail(error)`
+  // -- the identical discipline as `Content::render`. Audio renders AHEAD, never
+  // against a deadline; `Exact` (offline export) requests must be faithful,
+  // `BestEffort` (interactive lookahead) may report `achieved_rate <
+  // request.sample_rate` / `exact == false`.
+  virtual std::optional<AudioResult> render_audio(const AudioRequest& request,
+                                                  std::shared_ptr<AudioCompletion> done) = 0;
+
+protected:
+  AudioFacet() = default;
+};
 
 // The editable-state facet (doc 03:98, doc 14:110-123). A content with mutable,
 // undoable state (a raster's pixel buffer) implements this and returns it from
@@ -329,6 +427,16 @@ public:
   // implementer (doc 14:164-171); every walking-skeleton kind keeps the default.
   virtual Editable* editable() { return nullptr; }
 
+  // The audio facet, or `nullptr` for purely visual content (doc 12:46,73-77).
+  // The exact twin of `editable()`: a null-default discovery virtual the audio
+  // engine probes to find a content's audio, allocation-free. A content that
+  // overrides it returns its `AudioFacet` (a video clip, a tone, a synth);
+  // every existing visual-only kind keeps the `nullptr` default and the audio
+  // engine descends no audio path into it, costing it nothing. Because audio and
+  // video are two facets of one content object, a clip's samples and pixels can
+  // never drift under editing (doc 12:37-41).
+  virtual AudioFacet* audio() { return nullptr; }
+
   // --- operator graph (doc 13:39-67) ---
   // The operator's input edges, visible to the core for aggregate revisions,
   // snapshot consistency, cycle detection, and damage routing (doc 13:48-51).
@@ -382,6 +490,17 @@ public:
   // does -- inline via `done->complete`/`done->fail` or later off-thread.
   virtual void pull(ContentRef input, const RenderRequest& request,
                     std::shared_ptr<RenderCompletion> done) = 0;
+
+  // Render `input`'s audio for `request`, settling `done` exactly as `pull`
+  // settles a render (doc 12 Decision 5, doc 13:80). DEFAULTED, not pure: the
+  // audio pull deferred here by `operator_members` lands its stable signature
+  // now (so `arbc::audio-engine` can override it) while leaving every existing
+  // `PullService` implementer -- all of which predate audio -- byte-identical.
+  // The default settles `done` as `unexpected(RenderError::ResourceUnavailable)`
+  // exactly once: a service with no audio pull answers "no audio" safely and
+  // never hangs the caller.
+  virtual void pull_audio(ContentRef input, const AudioRequest& request,
+                          std::shared_ptr<AudioCompletion> done);
 
 protected:
   PullService() = default;

@@ -6,4 +6,5 @@ arbc_add_component(
 
 arbc_component_test(COMPONENT contract SOURCES t/snapshot_pins.t.cpp t/async_render.t.cpp
                                                 t/operator_members.t.cpp t/temporal_fields.t.cpp
-                                                t/playback_hint.t.cpp t/registry.t.cpp)
+                                                t/playback_hint.t.cpp t/registry.t.cpp
+                                                t/audio_facet.t.cpp)

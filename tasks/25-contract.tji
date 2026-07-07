@@ -27,7 +27,8 @@ task contract "Layer contract" {
   task audio_facet "Audio facet interface" {
     effort 1d
     allocate team
-    note "AudioFacet: audio_extent, audio_stability, latency, render_audio over blocks; facet discovery via null-default virtual. Doc 12."
+    complete 100
+    note "AudioFacet: audio_extent, audio_stability, latency, render_audio over blocks; facet discovery via null-default virtual. Doc 12. Refinement: tasks/refinements/contract/audio_facet.md"
   }
   task operator_members "Operator graph members" {
     effort 1d
