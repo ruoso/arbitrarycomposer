@@ -2,6 +2,7 @@
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/contract/content.hpp>
+#include <arbc/media/audio_block.hpp>
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
@@ -133,6 +134,39 @@ bool contains_center(const Rect& r, int x, int y) {
   const double cx = static_cast<double>(x) + 0.5;
   const double cy = static_cast<double>(y) + 0.5;
   return cx >= r.x0 && cx < r.x1 && cy >= r.y0 && cy < r.y1;
+}
+
+// --- Audio generators -------------------------------------------------------
+//
+// Working-format rates (doc 12:94-104): both evenly divide `flicks_per_second`
+// (705'600'000 / 48'000 == 14'700, / 44'100 == 16'000), so a sample frame is an
+// integer number of flicks and a window split at a frame boundary is exact --
+// the premise the block-continuity comparison rests on.
+std::uint32_t gen_sample_rate(Prng& rng) { return (rng.next() & 1U) != 0U ? 48'000U : 44'100U; }
+
+ChannelLayout gen_layout(Prng& rng) {
+  return (rng.next() & 1U) != 0U ? ChannelLayout::Stereo : ChannelLayout::Mono;
+}
+
+// Integer flicks per sample frame for a working-format rate (exact by the
+// divisibility above).
+std::int64_t flicks_per_frame(std::uint32_t rate) {
+  return Time::flicks_per_second / static_cast<std::int64_t>(rate);
+}
+
+// Drive one audio render to its single settlement, whichever path the facet
+// takes (doc 12:139-159): an inline `AudioResult`, or `nullopt` with an
+// `AudioCompletion` the facet settled. REQUIREs a successful settlement.
+AudioResult drive_audio(AudioFacet& facet, const AudioRequest& request) {
+  auto done = std::make_shared<AudioCompletion>();
+  const std::optional<AudioResult> inline_result = facet.render_audio(request, done);
+  if (inline_result.has_value()) {
+    return *inline_result;
+  }
+  std::optional<expected<AudioResult, RenderError>> settled = done->take();
+  REQUIRE(settled.has_value());
+  REQUIRE(settled->has_value());
+  return **settled;
 }
 
 } // namespace
@@ -411,6 +445,186 @@ void check_facet_consistency(const ContentFactory& factory, const Options& optio
   }
 }
 
+void check_audio_facet_consistency(const ContentFactory& factory, const Options& options) {
+  Prng rng(options.seed ^ 0x0AU);
+  for (int c = 0; c < options.cases; ++c) {
+    auto content = factory();
+    AudioFacet* af = content->audio();
+    if (af == nullptr) {
+      continue; // visual-only content exposes no audio facet -- skip at no cost.
+    }
+
+    // The description methods are idempotent -- repeated queries agree.
+    REQUIRE(af->audio_extent() == af->audio_extent());
+    REQUIRE(af->audio_stability() == af->audio_stability());
+    REQUIRE(af->latency() == af->latency());
+
+    const Stability stab = af->audio_stability();
+    const std::optional<TimeRange> extent = af->audio_extent();
+    // ... and mutually coherent: Static audio declares no extent, Timed audio
+    // does (doc 12:26-29). (claim #audio-facet-consistent)
+    if (stab == Stability::Static) {
+      REQUIRE(extent == std::nullopt);
+    } else if (stab == Stability::Timed) {
+      REQUIRE(extent.has_value());
+    }
+
+    if (stab == Stability::Live) {
+      continue; // Live audio opts out of the determinism-dependent checks.
+    }
+
+    const std::uint32_t rate = gen_sample_rate(rng);
+    const ChannelLayout layout = gen_layout(rng);
+    const std::uint32_t ch = channel_count(layout);
+    const std::int64_t fpf = flicks_per_frame(rate);
+    const std::uint32_t total = static_cast<std::uint32_t>(rng.in_range(2, 16));
+    const std::uint32_t split =
+        static_cast<std::uint32_t>(rng.in_range(1, static_cast<int>(total) - 1));
+
+    // Anchor the window on a frame boundary. For Timed audio, start it inside
+    // the declared extent so the samples are non-trivial; for Static, anywhere.
+    const std::int64_t base = (extent.has_value() ? extent->start.flicks : fpf) +
+                              static_cast<std::int64_t>(rng.in_range(0, 8)) * fpf;
+    const TimeRange full{Time{base}, Time{base + static_cast<std::int64_t>(total) * fpf}};
+
+    // Determinism: two requests with equal inputs settle to bit-identical
+    // samples. (claim #audio-facet-consistent)
+    std::vector<float> a(static_cast<std::size_t>(total) * ch, 0.0F);
+    std::vector<float> b(static_cast<std::size_t>(total) * ch, 0.0F);
+    AudioBlock block_a{a.data(), total, layout, rate};
+    AudioBlock block_b{b.data(), total, layout, rate};
+    AudioRequest ra{full, rate, layout, block_a, Exactness::Exact, StateHandle{}};
+    AudioRequest rb{full, rate, layout, block_b, Exactness::Exact, StateHandle{}};
+    const AudioResult r1 = drive_audio(*af, ra);
+    drive_audio(*af, rb);
+    REQUIRE(a == b);
+
+    // achieved_rate honesty: never above the request, and an Exact render is
+    // faithful (doc 12:58-61, Constraint 5).
+    REQUIRE(r1.achieved_rate <= rate);
+    REQUIRE(r1.exact);
+    REQUIRE(r1.achieved_rate == rate);
+
+    // Block continuity: rendering [base, mid) and [mid, end) and concatenating
+    // is bit-identical to rendering the whole window at once -- no boundary seam
+    // (doc 12 Decision 4). (claim #audio-facet-consistent)
+    const std::int64_t mid = base + static_cast<std::int64_t>(split) * fpf;
+    const TimeRange w1{Time{base}, Time{mid}};
+    const TimeRange w2{Time{mid}, full.end};
+    std::vector<float> s1(static_cast<std::size_t>(split) * ch, 0.0F);
+    std::vector<float> s2(static_cast<std::size_t>(total - split) * ch, 0.0F);
+    AudioBlock block_1{s1.data(), split, layout, rate};
+    AudioBlock block_2{s2.data(), total - split, layout, rate};
+    AudioRequest rq1{w1, rate, layout, block_1, Exactness::Exact, StateHandle{}};
+    AudioRequest rq2{w2, rate, layout, block_2, Exactness::Exact, StateHandle{}};
+    drive_audio(*af, rq1);
+    drive_audio(*af, rq2);
+    std::vector<float> concat;
+    concat.reserve(a.size());
+    concat.insert(concat.end(), s1.begin(), s1.end());
+    concat.insert(concat.end(), s2.begin(), s2.end());
+    REQUIRE(concat == a);
+
+    // Extent honesty: a window entirely past the declared extent renders silence
+    // (all-zero samples). Static audio (nullopt extent) has no "outside".
+    // (claim #audio-facet-consistent)
+    if (extent.has_value() && !extent->empty()) {
+      const std::int64_t after = extent->end.flicks + fpf; // strictly past the end
+      const std::uint32_t sframes = 4;
+      const TimeRange outside{Time{after}, Time{after + static_cast<std::int64_t>(sframes) * fpf}};
+      std::vector<float> silent(static_cast<std::size_t>(sframes) * ch, 0.0F);
+      AudioBlock block_s{silent.data(), sframes, layout, rate};
+      AudioRequest rs{outside, rate, layout, block_s, Exactness::Exact, StateHandle{}};
+      drive_audio(*af, rs);
+      REQUIRE(std::all_of(silent.begin(), silent.end(), [](float v) { return v == 0.0F; }));
+    }
+  }
+}
+
+void check_audio_async(const ContentFactory& factory, const Options& options) {
+  Prng rng(options.seed ^ 0x0BU);
+
+  // (1) render_audio answers along one settle path, and both paths yield a
+  // single settlement drained by take(). (claim #audio-facet-optional)
+  for (int c = 0; c < options.cases; ++c) {
+    auto content = factory();
+    AudioFacet* af = content->audio();
+    if (af == nullptr) {
+      continue;
+    }
+    const std::uint32_t rate = gen_sample_rate(rng);
+    const ChannelLayout layout = gen_layout(rng);
+    const std::uint32_t frames = static_cast<std::uint32_t>(rng.in_range(1, 8));
+    std::vector<float> buf(static_cast<std::size_t>(frames) * channel_count(layout), 0.0F);
+    AudioBlock block{buf.data(), frames, layout, rate};
+    const TimeRange window{Time{0},
+                           Time{static_cast<std::int64_t>(frames) * flicks_per_frame(rate)}};
+    AudioRequest r{window, rate, layout, block, Exactness::BestEffort, StateHandle{}};
+
+    auto done = std::make_shared<AudioCompletion>();
+    const std::optional<AudioResult> inline_result = af->render_audio(r, done);
+    if (inline_result.has_value()) {
+      done->complete(*inline_result); // fold the inline value through complete()
+    }
+    std::optional<expected<AudioResult, RenderError>> settled = done->take();
+    REQUIRE(settled.has_value());
+    REQUIRE(settled->has_value());
+    REQUIRE(done->take() == std::nullopt); // yields at most once
+  }
+
+  // (2) An AudioCompletion settles exactly once under concurrent
+  // complete / cancel / take from different threads, and cancel is advisory --
+  // the audio twin of check_async_cancellation, over the AudioResult
+  // instantiation of the shared Completion<Result>. This is the TSan-covered
+  // family (Constraint 6). (claim #audio-facet-optional)
+  for (int c = 0; c < options.cases; ++c) {
+    auto done = std::make_shared<AudioCompletion>();
+    std::atomic<bool> go{false};
+    std::optional<expected<AudioResult, RenderError>> taken;
+
+    std::thread completer([&] {
+      while (!go.load(std::memory_order_acquire)) {
+      }
+      done->complete(AudioResult{48'000U, true});
+    });
+    std::thread canceller([&] {
+      while (!go.load(std::memory_order_acquire)) {
+      }
+      done->cancel();
+    });
+    std::thread taker([&] {
+      while (!go.load(std::memory_order_acquire)) {
+      }
+      for (int i = 0; i < 64; ++i) {
+        auto t = done->take();
+        if (t.has_value()) {
+          taken = t;
+          break;
+        }
+      }
+    });
+
+    go.store(true, std::memory_order_release);
+    completer.join();
+    canceller.join();
+    taker.join();
+
+    // cancel() is advisory: it does not prevent the settlement.
+    REQUIRE(done->settled());
+    // Exactly one settlement is observable across the racing taker and the
+    // final drain.
+    const auto remainder = done->take();
+    REQUIRE(taken.has_value() != remainder.has_value());
+    // A second settle attempt after settlement is ignored.
+    done->fail(RenderError::ContentFailed);
+    REQUIRE(done->take() == std::nullopt);
+
+    const expected<AudioResult, RenderError> settlement = taken.has_value() ? *taken : *remainder;
+    REQUIRE(settlement.has_value());
+    REQUIRE(settlement->achieved_rate == 48'000U);
+  }
+}
+
 void check_leaf_no_operator_graph(const ContentFactory& factory, const Options& options) {
   Prng rng(options.seed ^ 0x07U);
   auto content = factory();
@@ -566,6 +780,15 @@ void contract_tests(const testing::ContentFactory& factory, const testing::Optio
   }
   if (options.facet_consistency) {
     check_facet_consistency(factory, options);
+  }
+  // Audio families run only when the content exposes an `AudioFacet`; a
+  // visual-only content (audio() == nullptr) skips them at zero cost.
+  const bool has_audio = factory()->audio() != nullptr;
+  if (options.audio_consistency && has_audio) {
+    check_audio_facet_consistency(factory, options);
+  }
+  if (options.audio_async && has_audio) {
+    check_audio_async(factory, options);
   }
   if (options.operator_graph && factory()->inputs().empty()) {
     check_leaf_no_operator_graph(factory, options);

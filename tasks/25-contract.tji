@@ -51,7 +51,8 @@ task contract "Layer contract" {
   task audio_conformance "Audio facet conformance (arbc-testing extension)" {
     effort 1d
     allocate team
+    complete 100
     depends !audio_facet, !conformance_suite
-    note "Extend arbc-testing facet-consistency and async families to AudioFacet; register 03-layer-plugin-interface#audio-facet-consistent. Source: tasks/refinements/contract/conformance_suite.md. Docs 12/16."
+    note "Extend arbc-testing facet-consistency and async families to AudioFacet; register 03-layer-plugin-interface#audio-facet-consistent. Source: tasks/refinements/contract/conformance_suite.md. Docs 12/16. Refinement: tasks/refinements/contract/audio_conformance.md"
   }
 }

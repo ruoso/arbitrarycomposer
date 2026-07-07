@@ -29,7 +29,8 @@
 #include <arbc/base/geometry.hpp> // Rect
 #include <arbc/base/time.hpp>     // Time
 #include <arbc/contract/content.hpp>
-#include <arbc/model/records.hpp> // StateHandle
+#include <arbc/media/audio_block.hpp> // AudioBlock, ChannelLayout
+#include <arbc/model/records.hpp>     // StateHandle
 
 #include <cstdint>
 #include <functional>
@@ -68,6 +69,12 @@ struct Options {
   bool async_cancellation{true};
   bool facet_consistency{true};
   bool operator_graph{true};
+
+  // Audio-facet families (contract.audio_conformance). Run by the umbrella only
+  // when the content exposes an `AudioFacet` (`Content::audio() != nullptr`);
+  // visual-only content pays nothing.
+  bool audio_consistency{true};
+  bool audio_async{true};
 };
 
 // --- The seven doc-16 property families, as granular entry points so a
@@ -113,6 +120,32 @@ void check_async_cancellation(const ContentFactory& factory, const Options& opti
 // (`bounds`/`stability`/`time_extent`) are idempotent and mutually coherent
 // (`Static` <=> `nullopt` `time_extent`; `Timed` => a `time_extent`).
 void check_facet_consistency(const ContentFactory& factory, const Options& options = {});
+
+// --- Audio facet families (contract.audio_conformance, doc 12) --------------
+//     Discovered via `Content::audio()`: a factory whose content returns
+//     `nullptr` is skipped at zero cost. Drive the L3 `AudioFacet` surface only
+//     (doc 17:53) -- never the L4 audio engine.
+
+// Audio facet consistency (`#audio-facet-consistent`): the 1D twin of
+// `check_facet_consistency`. The description methods
+// (`audio_extent`/`audio_stability`/`latency`) are idempotent and mutually
+// coherent (`Static` <=> `nullopt` `audio_extent`; `Timed` => a present
+// `audio_extent`). A `render_audio` window lying entirely outside
+// `audio_extent()` yields an all-zero (silent) block. For `Static`/`Timed`
+// audio the target samples are a deterministic, block-continuous function of
+// `(snapshot, window, rate, layout)`: identical requests settle to bit-identical
+// samples, and splitting a window at an interior frame boundary then
+// concatenating the two sub-renders is bit-identical to the single-window
+// render. `Live` audio opts out of the determinism-dependent checks.
+void check_audio_facet_consistency(const ContentFactory& factory, const Options& options = {});
+
+// Audio async completion + cancellation (re-runs `#audio-facet-optional`):
+// `render_audio` answers along one settle path (inline `AudioResult` OR
+// `nullopt`+`AudioCompletion`); an `AudioCompletion` settles exactly once and
+// `cancel()` is advisory -- verified under concurrent `complete`/`cancel`/`take`
+// (the TSan-covered family, Constraint 6), over the `AudioResult` instantiation
+// of the shared `Completion<Result>` template.
+void check_audio_async(const ContentFactory& factory, const Options& options = {});
 
 // --- Operator-graph member properties (doc 03:98-102 / doc 13, Decision 3).
 

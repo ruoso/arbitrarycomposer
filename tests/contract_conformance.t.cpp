@@ -14,6 +14,7 @@
 #include <arbc/base/time.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
+#include <arbc/media/audio_block.hpp>
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
@@ -220,6 +221,81 @@ private:
   std::array<ContentRef, 1> d_inputs;
 };
 
+// --- Audio fixtures (contract.audio_conformance) ----------------------------
+
+// An `AudioFacet` whose samples are a deterministic, block-continuous function
+// of each output frame's ABSOLUTE media time -- the frame at flick `t` always
+// carries the same sample regardless of which window it was rendered in, so a
+// window split at a frame boundary produces bit-identical concatenated samples.
+// Frames whose time lies outside the declared extent render silence (zero).
+// Sample values are integer-derived (no transcendental) so float comparisons
+// are byte-exact. Settles inline, or asynchronously via `done->complete` when
+// `async`.
+class ToneFacet final : public AudioFacet {
+public:
+  ToneFacet(std::optional<TimeRange> extent, Stability stability, bool async)
+      : d_extent(extent), d_stability(stability), d_async(async) {}
+
+  std::optional<TimeRange> audio_extent() const override { return d_extent; }
+  Stability audio_stability() const override { return d_stability; }
+
+  std::optional<AudioResult> render_audio(const AudioRequest& req,
+                                          std::shared_ptr<AudioCompletion> done) override {
+    fill_block(req);
+    const AudioResult result{req.sample_rate, true};
+    if (d_async) {
+      done->complete(result); // settle later (immediately, off the return path)
+      return std::nullopt;
+    }
+    return result; // settle inline
+  }
+
+private:
+  void fill_block(const AudioRequest& req) const {
+    const std::uint32_t ch = channel_count(req.layout);
+    const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(req.sample_rate);
+    for (std::uint32_t f = 0; f < req.target.frames; ++f) {
+      const std::int64_t t = req.window.start.flicks + static_cast<std::int64_t>(f) * fpf;
+      const bool present = !d_extent.has_value() || d_extent->contains(Time{t});
+      for (std::uint32_t c = 0; c < ch; ++c) {
+        req.target.samples[static_cast<std::size_t>(f) * ch + c] = present ? sample_at(t, c) : 0.0F;
+      }
+    }
+  }
+
+  static float sample_at(std::int64_t t, std::uint32_t c) {
+    const std::int64_t v = (t / 1000) + static_cast<std::int64_t>(c) * 7;
+    return static_cast<float>(v & 0xFFFF) * 0.5F; // small, exactly representable
+  }
+
+  std::optional<TimeRange> d_extent;
+  Stability d_stability;
+  bool d_async;
+};
+
+// A `Content` exposing a `ToneFacet` through `audio()` (a tone / clip / synth).
+// Its visual side is a benign Static fill so the umbrella's visual families pass
+// too; the audio families drive `d_facet`.
+class AudioFixture final : public Content {
+public:
+  AudioFixture(std::optional<TimeRange> extent, Stability audio_stability, bool async)
+      : d_facet(extent, audio_stability, async) {}
+
+  std::optional<Rect> bounds() const override { return std::nullopt; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<RenderResult> render(const RenderRequest& req,
+                                     std::shared_ptr<RenderCompletion>) override {
+    fill_constant(req, 9.0F);
+    return RenderResult{req.scale, true, std::nullopt};
+  }
+
+  AudioFacet* audio() override { return &d_facet; }
+
+private:
+  ToneFacet d_facet;
+};
+
 testing::ContentFactory solid_factory() {
   return []() -> std::unique_ptr<Content> {
     return std::make_unique<SolidContent>(Rgba{0.5F, 0.25F, 0.125F, 1.0F});
@@ -304,4 +380,41 @@ TEST_CASE("a single-input operator covers input damage and is identity-faithful"
   arbc::testing::check_operator_damage_covers(op_factory, edit);
 
   arbc::testing::check_operator_identity_faithful(op_factory, arbc::Time::zero());
+}
+
+// A Static tone: nullopt audio_extent, deterministic block-continuous samples.
+// enforces: 03-layer-plugin-interface#audio-facet-consistent
+TEST_CASE("a Static tone's audio facet passes the contract conformance suite") {
+  arbc::contract_tests([]() -> std::unique_ptr<arbc::Content> {
+    return std::make_unique<AudioFixture>(std::nullopt, arbc::Stability::Static, /*async=*/false);
+  });
+}
+
+// A Timed audio facet: present extent, a deterministic function of its window,
+// silent past the extent, seam-free across a block-boundary split.
+// enforces: 03-layer-plugin-interface#audio-facet-consistent
+TEST_CASE("a Timed audio facet is a deterministic, block-continuous function of its window") {
+  const arbc::TimeRange extent{arbc::Time::zero(), arbc::Time{arbc::Time::flicks_per_second}};
+  arbc::contract_tests([extent]() -> std::unique_ptr<arbc::Content> {
+    return std::make_unique<AudioFixture>(extent, arbc::Stability::Timed, /*async=*/false);
+  });
+}
+
+// An async-settling audio facet drains once through the shared AudioCompletion
+// under concurrent complete/cancel/take (the re-run of the settle-once
+// invariant over generated audio content).
+// enforces: 03-layer-plugin-interface#audio-facet-optional
+TEST_CASE("an async-settling audio facet settles exactly once through the one audio path") {
+  const arbc::TimeRange extent{arbc::Time::zero(), arbc::Time{arbc::Time::flicks_per_second}};
+  arbc::contract_tests([extent]() -> std::unique_ptr<arbc::Content> {
+    return std::make_unique<AudioFixture>(extent, arbc::Stability::Timed, /*async=*/true);
+  });
+}
+
+// Visual-only content exposes no audio facet: the umbrella probes audio(),
+// finds nullptr, and runs no audio family over it (skip at zero cost).
+TEST_CASE("visual-only content exposes no audio facet and skips the audio families") {
+  auto probe = solid_factory()();
+  REQUIRE(probe->audio() == nullptr);
+  arbc::contract_tests(solid_factory());
 }
