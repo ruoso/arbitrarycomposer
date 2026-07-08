@@ -94,9 +94,10 @@ using BlockCache = KeyedStore<BlockKey, AudioBlockValue>;
 
 // The 1D block index a request's window start maps to at its working rate: the
 // sample-frame index `floor(window.start / (flicks_per_second / rate))`. The
-// block key's temporal axis (doc 12:169-170); the fixed block *size* / prepared-
-// block ring is the `audio.lookahead` leaf's, so this task keys per window-start
-// sample directly. `rate == 0` yields index 0 (a degenerate request).
+// block key's temporal axis (doc 12:169-170); `audio.lookahead`'s
+// `LookaheadRing`/`LookaheadPump` own the fixed block *size* and the prepared-
+// block ring above this per-window-start key. `rate == 0` yields index 0 (a
+// degenerate request).
 std::int64_t audio_block_index(const AudioRequest& request);
 
 // The per-frame hooks a `PullServiceImpl` threads, all caller-owned and defaulted
@@ -135,7 +136,8 @@ struct PullConfig {
   AudioDispatch audio_dispatch{};
   // The 1D block cache `pull_audio` probes cache-first (doc 12:169-185). Null ->
   // every `pull_audio` is a miss (no fill here -- the prefetch-ring fill is
-  // `audio.lookahead`'s, so nothing but the caller ever populates it this task).
+  // `audio.lookahead`'s: `runtime::LookaheadPump` renders the ring's want-list on
+  // the audio worker pool and inserts the blocks, so a primed pull hits here).
   BlockCache* blocks{nullptr};
 };
 

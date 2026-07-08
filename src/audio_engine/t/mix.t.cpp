@@ -1,5 +1,4 @@
 #include <arbc/audio_engine/mix.hpp>
-
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/contract/content.hpp>
@@ -74,9 +73,8 @@ private:
       const std::int64_t fpf =
           Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
       for (std::uint32_t f = 0; f < request.target.frames; ++f) {
-        const float v =
-            parab_sine(request.window.start.flicks + static_cast<std::int64_t>(f) * fpf, d_freq,
-                       d_amp);
+        const float v = parab_sine(request.window.start.flicks + static_cast<std::int64_t>(f) * fpf,
+                                   d_freq, d_amp);
         for (std::uint32_t c = 0; c < ch; ++c) {
           request.target.samples[static_cast<std::size_t>(f) * ch + c] = v;
         }
@@ -363,7 +361,7 @@ TEST_CASE("mix_composition remixes a mono child up to a stereo target") {
 TEST_CASE("culled layers contribute exactly zero and dispatch nothing") {
   SineLeaf audible_a(300, 0.5F);
   SineLeaf audible_b(600, 0.5F);
-  VisualLeaf visual;   // no audio facet
+  VisualLeaf visual; // no audio facet
   SineLeaf muted(440, 0.5F);
   SineLeaf zero_gain(440, 0.5F);
   SineLeaf out_of_span(440, 0.5F);
@@ -475,8 +473,7 @@ TEST_CASE("mix_composition on an absent composition mixes a faithful silent bloc
   std::vector<float> got;
   AudioBlock got_block{};
   const AudioRequest req = make_request(got_block, got, k_rate, ChannelLayout::Stereo, k_frames);
-  const AudioResult r =
-      mix_composition(*doc, ObjectId{9'999}, scene.resolver(), pull, req);
+  const AudioResult r = mix_composition(*doc, ObjectId{9'999}, scene.resolver(), pull, req);
 
   REQUIRE(pull.pulls() == 0);
   for (const float v : got) {
@@ -559,7 +556,8 @@ TEST_CASE("mix_composition is deterministic: two calls settle bit-identical") {
 
   std::vector<float> first;
   AudioBlock first_block{};
-  const AudioRequest req1 = make_request(first_block, first, k_rate, ChannelLayout::Stereo, k_frames);
+  const AudioRequest req1 =
+      make_request(first_block, first, k_rate, ChannelLayout::Stereo, k_frames);
   mix_composition(*doc, scene.comp, scene.resolver(), pull, req1);
 
   std::vector<float> second;

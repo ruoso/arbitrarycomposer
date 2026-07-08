@@ -19,8 +19,15 @@ task audio "Audio" {
   task lookahead "Lookahead scheduler" {
     effort 4d
     allocate team
+    complete 100
     depends !mix_engine
-    note "Render-ahead ring of prepared blocks; workers run all plugin code; transport changes flush and re-prime; audio never renders against a deadline. Doc 12."
+    note "Render-ahead ring of prepared blocks; workers run all plugin code; transport changes flush and re-prime; audio never renders against a deadline. Doc 12. Refinement: tasks/refinements/audio/lookahead.md"
+  }
+  task lookahead_recursive_prefetch "Threaded recursive pre-fill for nested contributors" {
+    effort 1d
+    allocate team
+    depends !lookahead
+    note "Warm nested (recursive descent) and below-rate native contributor BlockKeys in the LookaheadPump's fill so the threaded path (worker_count>0) covers recursion depth + native re-requests, completing the nested-of-tones byte-exact golden under worker_count>0. Source: audio.lookahead implementation gap; see tasks/refinements/audio/lookahead.md Status block. Doc 12."
   }
   task device_monitor "Device monitor + clock mastering" {
     effort 3d

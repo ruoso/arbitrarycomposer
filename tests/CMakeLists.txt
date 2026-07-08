@@ -100,6 +100,15 @@ target_link_libraries(arbc_pull_audio_concurrency_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_pull_audio_concurrency_t)
 
+# Lookahead scheduler concurrency stress (tier-6, tsan lane): the audio worker pool
+# + lookahead ring under concurrent worker fill + drain -- settle-once holds, the
+# ring and BlockCache see no data race, and the drained samples equal the inline
+# goldens (the audio twin of the render WorkerPool TSan case).
+add_executable(arbc_audio_lookahead_concurrency_t audio_lookahead_concurrency.t.cpp)
+target_link_libraries(arbc_audio_lookahead_concurrency_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_audio_lookahead_concurrency_t)
+
 # org.arbc.nested two-level caching behavioral counters: a static subtree is
 # served from the parent cache; only the spine re-renders (requests_issued).
 add_executable(arbc_nested_cache_t nested_cache.t.cpp)

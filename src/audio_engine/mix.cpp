@@ -1,5 +1,4 @@
 #include <arbc/audio_engine/mix.hpp>
-
 #include <arbc/base/expected.hpp>
 #include <arbc/base/rational_time.hpp>
 #include <arbc/base/time.hpp>

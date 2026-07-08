@@ -1,5 +1,4 @@
 #include <arbc/audio_engine/mix.hpp>
-
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
@@ -349,9 +348,8 @@ TEST_CASE("mix engine dispatches zero for an all-culled composition and N for N 
 
   RealPull culled_pull(ids);
   AudioResult culled_result{};
-  const std::vector<float> culled =
-      mix(*doc, culled_comp, map_resolver(binding), *culled_pull.service, k_rate, k_frames,
-          culled_result);
+  const std::vector<float> culled = mix(*doc, culled_comp, map_resolver(binding),
+                                        *culled_pull.service, k_rate, k_frames, culled_result);
   REQUIRE(culled_pull.counters.audio_dispatches() == 0); // costs the audio engine nothing
   for (const float v : culled) {
     REQUIRE(v == 0.0F);

@@ -320,9 +320,11 @@ void PullServiceImpl::pull_audio(ContentRef input, const AudioRequest& request,
 
   // Miss: dispatch exactly once onto the audio worker seam, carrying the request's
   // snapshot / exactness / rate verbatim (doc 12:31-34). No block-cache *fill*
-  // here -- the prefetch-ring fill of prepared blocks is `audio.lookahead`'s (doc
-  // 12:183-190). An unconfigured audio worker has no audio pull, so it settles the
-  // placeholder, exactly as the base `PullService` stub does (`content.cpp:19-26`).
+  // here -- the prefetch-ring fill is `audio.lookahead`'s: `runtime::LookaheadPump`
+  // renders the ring's want-list on the audio worker pool and inserts the blocks so
+  // primed pulls hit above (doc 12:183-190). An unconfigured audio worker has no
+  // audio pull, so it settles the placeholder, exactly as the base `PullService`
+  // stub does (`content.cpp:19-26`).
   if (!d_config.audio_dispatch) {
     settle_placeholder_audio(done);
     return;

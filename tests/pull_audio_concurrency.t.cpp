@@ -235,7 +235,6 @@ TEST_CASE("pull_audio: concurrent same/distinct-key pulls settle race-free, each
     }
   }
   // No fill happened on any path -- the resident set is exactly what was seeded.
-  CHECK(blocks.resident_bytes() ==
-        static_cast<std::size_t>(k_distinct / 2) * (static_cast<std::size_t>(k_frames) * 2) *
-            sizeof(float));
+  CHECK(blocks.resident_bytes() == static_cast<std::size_t>(k_distinct / 2) *
+                                       (static_cast<std::size_t>(k_frames) * 2) * sizeof(float));
 }

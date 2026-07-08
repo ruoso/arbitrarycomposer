@@ -1,8 +1,8 @@
 #pragma once
 
-#include <arbc/base/ids.hpp>          // ObjectId
-#include <arbc/contract/content.hpp>  // PullService, AudioRequest, AudioResult, Content, AudioFacet
-#include <arbc/model/model.hpp>       // DocRoot
+#include <arbc/base/ids.hpp>         // ObjectId
+#include <arbc/contract/content.hpp> // PullService, AudioRequest, AudioResult, Content, AudioFacet
+#include <arbc/model/model.hpp>      // DocRoot
 
 #include <functional>
 
