@@ -1,8 +1,10 @@
 #include <arbc/media/audio_resampler.hpp>
+#include <arbc/media/streaming_resampler.hpp>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace arbc {
 
@@ -557,6 +559,58 @@ constexpr std::array<float, 512> k_resampler_coeffs = {
 // END FROZEN POLYPHASE COEFFICIENT TABLE
 // ===========================================================================
 
+// The exact-integer phase math shared by the block kernel and the streaming
+// front-end (Constraint 2, doc 11:216-234): for output frame `n` at the ratio
+// src:dst, the native center frame + polyphase phase index, computed as an EXACT
+// rational and rounded ONCE -- never a float accumulation across frames.
+struct FramePos {
+  std::int64_t center;
+  std::uint64_t phase;
+};
+
+inline FramePos frame_pos(std::int64_t n, std::uint64_t src_rate, std::uint64_t dst_rate) {
+  const std::uint64_t phases = static_cast<std::uint64_t>(k_resampler_phases);
+  const std::uint64_t pos_num = static_cast<std::uint64_t>(n) * src_rate;
+  std::int64_t center = static_cast<std::int64_t>(pos_num / dst_rate);
+  const std::uint64_t rem = pos_num % dst_rate;
+  std::uint64_t phase = (rem * phases + dst_rate / 2) / dst_rate; // one rounding
+  if (phase >= phases) {
+    phase -= phases; // the top half-step lands on the next sample
+    center += 1;
+  }
+  return {center, phase};
+}
+
+// One output frame's ordered per-channel MAC over the 16-tap window (doc 16
+// determinism): `sample(idx, c)` returns the native sample at absolute frame
+// `idx` for channel `c` (0 for a tap outside the input, the edge convention). The
+// single tap loop shared by both callers guarantees they run bit-identical MACs.
+template <typename Sample>
+inline void mac_frame(const FramePos& fp, std::uint32_t ch, Sample&& sample, float* out_frame) {
+  const std::int64_t taps = static_cast<std::int64_t>(k_resampler_taps);
+  const std::int64_t half = taps / 2 - 1; // N-1: the delta tap offset (phase 0)
+  const float* coef = &k_resampler_coeffs[static_cast<std::size_t>(fp.phase) * k_resampler_taps];
+  for (std::uint32_t c = 0; c < ch; ++c) {
+    float acc = 0.0F; // ordered reduction, tap 0..2N-1
+    for (std::int64_t k = 0; k < taps; ++k) {
+      const std::int64_t idx = fp.center - half + k;
+      acc += coef[static_cast<std::size_t>(k)] * sample(idx, c);
+    }
+    out_frame[c] = acc;
+  }
+}
+
+// The oldest absolute input index the filter support of output frame `n` reaches
+// (center - half), and the newest (center + half + 1). Shared so the streaming
+// front-end's retain/ready bounds stay locked to the kernel's tap window.
+inline std::int64_t support_oldest(const FramePos& fp) {
+  return fp.center - (static_cast<std::int64_t>(k_resampler_taps) / 2 - 1);
+}
+inline std::int64_t support_newest(const FramePos& fp) {
+  const std::int64_t taps = static_cast<std::int64_t>(k_resampler_taps);
+  return fp.center + (taps - 1) - (taps / 2 - 1);
+}
+
 } // namespace
 
 void resample_audio(const AudioBlock& in, AudioBlock& out) {
@@ -567,40 +621,96 @@ void resample_audio(const AudioBlock& in, AudioBlock& out) {
     return;
   }
   const std::uint32_t ch = channel_count(in.layout);
-  const std::int64_t taps = static_cast<std::int64_t>(k_resampler_taps);
-  const std::int64_t phases = static_cast<std::int64_t>(k_resampler_phases);
-  const std::int64_t half = taps / 2 - 1; // N-1: the delta tap offset (phase 0)
   const std::uint64_t src_rate = in.rate;
   const std::uint64_t dst_rate = out.rate;
   const std::int64_t in_frames = static_cast<std::int64_t>(in.frames);
 
   for (std::uint32_t n = 0; n < out.frames; ++n) {
-    // Output frame n samples native position `n * src_rate / dst_rate`, computed
-    // as an EXACT rational and rounded ONCE to the nearest polyphase phase (doc
-    // 11:216-234) -- never a float accumulation across frames or depth.
-    const std::uint64_t pos_num = static_cast<std::uint64_t>(n) * src_rate;
-    std::int64_t center = static_cast<std::int64_t>(pos_num / dst_rate);
-    const std::uint64_t rem = pos_num % dst_rate;
-    std::uint64_t phase =
-        (rem * static_cast<std::uint64_t>(phases) + dst_rate / 2) / dst_rate; // one rounding
-    if (phase >= static_cast<std::uint64_t>(phases)) {
-      phase -= static_cast<std::uint64_t>(phases); // the top half-step lands on the next sample
-      center += 1;
-    }
-    const float* coef = &k_resampler_coeffs[static_cast<std::size_t>(phase) * k_resampler_taps];
+    const FramePos fp = frame_pos(static_cast<std::int64_t>(n), src_rate, dst_rate);
+    mac_frame(
+        fp, ch,
+        [&](std::int64_t idx, std::uint32_t c) -> float {
+          // Taps outside `in` read as zero (the defined edge convention).
+          return (idx >= 0 && idx < in_frames) ? in.samples[static_cast<std::size_t>(idx) * ch + c]
+                                               : 0.0F;
+        },
+        out.samples + static_cast<std::size_t>(n) * ch);
+  }
+}
 
-    for (std::uint32_t c = 0; c < ch; ++c) {
-      float acc = 0.0F; // ordered reduction, tap 0..2N-1 (doc 16 determinism)
-      for (std::int64_t k = 0; k < taps; ++k) {
-        const std::int64_t idx = center - half + k;
-        const float s = (idx >= 0 && idx < in_frames)
-                            ? in.samples[static_cast<std::size_t>(idx) * ch + c]
-                            : 0.0F; // taps outside `in` read as zero (edge convention)
-        acc += coef[static_cast<std::size_t>(k)] * s;
-      }
-      out.samples[static_cast<std::size_t>(n) * ch + c] = acc;
+void StreamingResampler::configure(std::uint32_t src_rate, std::uint32_t dst_rate,
+                                   std::uint32_t channels, std::uint32_t block_frames) {
+  d_src_rate = src_rate;
+  d_dst_rate = dst_rate;
+  d_channels = channels;
+  // One pushed block plus the filter-support residual retained across a produce
+  // boundary (<= 2*taps-1 live frames between pushes; D5 pre-sizing). Storage is
+  // allocated here and never grows on the RT path.
+  d_capacity_frames = block_frames + 2u * static_cast<std::uint32_t>(k_resampler_taps);
+  d_history.assign(static_cast<std::size_t>(d_capacity_frames) * channels, 0.0F);
+  reset();
+}
+
+void StreamingResampler::reset() noexcept {
+  d_hist_len = 0;
+  d_hist_base = 0;
+  d_out_index = 0;
+}
+
+bool StreamingResampler::can_produce() const noexcept {
+  if (d_dst_rate == 0) {
+    return false;
+  }
+  const FramePos fp = frame_pos(d_out_index, d_src_rate, d_dst_rate);
+  // Ready once the newest tap the next output frame reaches is resident.
+  return d_hist_base + static_cast<std::int64_t>(d_hist_len) > support_newest(fp);
+}
+
+void StreamingResampler::produce(float* out_frame) noexcept {
+  const FramePos fp = frame_pos(d_out_index, d_src_rate, d_dst_rate);
+  mac_frame(
+      fp, d_channels,
+      [&](std::int64_t idx, std::uint32_t c) -> float {
+        const std::int64_t local = idx - d_hist_base;
+        // idx < 0 (before the stream start) and any not-yet-resident tap read as
+        // zero -- the same edge convention as `resample_audio`.
+        if (local < 0 || local >= static_cast<std::int64_t>(d_hist_len)) {
+          return 0.0F;
+        }
+        return d_history[static_cast<std::size_t>(local) * d_channels + c];
+      },
+      out_frame);
+  ++d_out_index;
+}
+
+void StreamingResampler::push_input(const float* samples, std::uint32_t frames) {
+  if (frames == 0) {
+    return;
+  }
+  // Drop history frames no future output can reach: the oldest index the next
+  // output frame needs is support_oldest(center(out_index)). Compaction is an
+  // allocation-free memmove and preserves d_hist_base + d_hist_len == frames-ever-
+  // pushed, so a bounded window stays within the configured capacity.
+  const FramePos fp = frame_pos(d_out_index, d_src_rate, d_dst_rate);
+  const std::int64_t retain = support_oldest(fp);
+  if (d_hist_len > 0) {
+    std::int64_t drop = retain - d_hist_base;
+    if (drop > static_cast<std::int64_t>(d_hist_len)) {
+      drop = static_cast<std::int64_t>(d_hist_len); // never in practice (upsampling)
+    }
+    if (drop > 0) {
+      const std::size_t off = static_cast<std::size_t>(drop) * d_channels;
+      const std::size_t remain =
+          static_cast<std::size_t>(d_hist_len - static_cast<std::uint32_t>(drop)) * d_channels;
+      std::memmove(d_history.data(), d_history.data() + off, remain * sizeof(float));
+      d_hist_len -= static_cast<std::uint32_t>(drop);
+      d_hist_base += drop;
     }
   }
+  const std::size_t dst = static_cast<std::size_t>(d_hist_len) * d_channels;
+  std::memcpy(d_history.data() + dst, samples,
+              static_cast<std::size_t>(frames) * d_channels * sizeof(float));
+  d_hist_len += frames;
 }
 
 } // namespace arbc

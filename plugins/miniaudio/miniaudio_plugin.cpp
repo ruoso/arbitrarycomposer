@@ -17,6 +17,4 @@ extern "C" ARBC_PLUGIN_EXPORT arbc::DeviceSink* arbc_device_sink_create(unsigned
   return sink.has_value() ? sink.value().release() : nullptr;
 }
 
-extern "C" ARBC_PLUGIN_EXPORT void arbc_device_sink_destroy(arbc::DeviceSink* sink) {
-  delete sink;
-}
+extern "C" ARBC_PLUGIN_EXPORT void arbc_device_sink_destroy(arbc::DeviceSink* sink) { delete sink; }

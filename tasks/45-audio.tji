@@ -40,8 +40,15 @@ task audio "Audio" {
   task device_edge_resample "Device-edge sample-rate conversion" {
     effort 1d
     allocate team
+    complete 100
     depends !device_monitor
-    note "Device-edge sample-rate conversion when device_rate ≠ working_rate (currently rejected at construction), reusing the shipped windowed-sinc polyphase resampler. Source: audio.device_monitor implementation gap; see tasks/refinements/audio/device_monitor.md Status block. Doc 12."
+    note "Device-edge sample-rate conversion when device_rate ≠ working_rate (currently rejected at construction), reusing the shipped windowed-sinc polyphase resampler. Source: audio.device_monitor implementation gap; see tasks/refinements/audio/device_monitor.md Status block. Doc 12. Refinement: tasks/refinements/audio/device_edge_resample.md"
+  }
+  task device_edge_decimation "Device-edge decimating SRC (widened-lowpass)" {
+    effort 1d
+    allocate team
+    depends !device_edge_resample
+    note "Add a ratio-scaled widened-lowpass decimating path to the polyphase resampler so device_rate < working_rate (e.g. 48 kHz → 44.1 kHz) stays anti-aliased at the device edge, removing the remaining downsample rejection at construction. Source: audio.device_edge_resample tech-debt; see tasks/refinements/audio/device_edge_resample.md Status block. Doc 12."
   }
   task seek_drain_realign "Post-seek RT drain cursor realignment" {
     effort 1d

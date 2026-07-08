@@ -41,7 +41,8 @@ TEST_CASE("the miniaudio reference sink opens/closes a stream when a device is p
   }
   MiniaudioSink sink{DeviceFormat{48'000, ChannelLayout::Stereo}};
   std::atomic<std::uint64_t> frames{0};
-  sink.start([&frames](float*, std::uint32_t n) { frames.fetch_add(n, std::memory_order_relaxed); });
+  sink.start(
+      [&frames](float*, std::uint32_t n) { frames.fetch_add(n, std::memory_order_relaxed); });
   sink.stop();
   REQUIRE(frames.load(std::memory_order_relaxed) > 0); // the backend drove the fill callback
 }

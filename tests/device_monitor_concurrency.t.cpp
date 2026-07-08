@@ -229,8 +229,8 @@ public:
     d_fill = std::move(fill);
     d_stop.store(false, std::memory_order_release);
     d_thread = std::thread([this] {
-      std::vector<float> buf(static_cast<std::size_t>(k_block_frames) * channel_count(d_format.layout),
-                             0.0F);
+      std::vector<float> buf(
+          static_cast<std::size_t>(k_block_frames) * channel_count(d_format.layout), 0.0F);
       while (!d_stop.load(std::memory_order_acquire)) {
         d_fill(buf.data(), k_block_frames);
         std::this_thread::yield();
@@ -375,5 +375,112 @@ TEST_CASE("TSan: mastered-clock publish races the pump + a viewport; goldens sur
     std::this_thread::yield();
   }
   REQUIRE(pool.tasks_submitted() > 0);
+  REQUIRE(pool.tasks_completed() == pool.tasks_submitted());
+}
+
+// enforces: 12-audio#device-edge-resamples-working-to-device
+TEST_CASE("TSan: the device-edge streaming resampler runs on the RT callback under upsampling") {
+  // device_rate (96k) > working_rate (48k): the streaming resampler runs on the RT
+  // device thread concurrently with the master thread and the viewport reader. It is
+  // RT-thread-single-owner (like d_scratch), so the only new cross-thread channel is
+  // the atomic flush flag the owner sets on a seek -- no shared mutable DSP state. The
+  // TSan lane flags any race on it, on the published snapshot, or on the delivered
+  // counter. A mid-race seek exercises the flush handoff.
+  constexpr std::uint32_t working_rate = 48'000;
+  constexpr std::uint32_t device_rate = 96'000;
+
+  SineLeaf a(300, 0.6F);
+  SineLeaf b(700, 0.4F);
+  Scene scene;
+  scene.add(&a);
+  scene.add(&b);
+  const DocStatePtr doc = scene.model.current();
+
+  BlockCache blocks{64u * 1024 * 1024};
+  CachingPull pull(&blocks, scene.id_of(), doc->revision());
+
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(working_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  LookaheadRingConfig ringcfg;
+  ringcfg.composition = scene.comp;
+  ringcfg.resolve = scene.resolver();
+  ringcfg.sample_rate = working_rate;
+  ringcfg.layout = ChannelLayout::Stereo;
+  ringcfg.block_frames = k_block_frames;
+  ringcfg.revision = doc->revision();
+  LookaheadRing ring(*doc, pull, ringcfg);
+
+  AudioWorkerPoolConfig poolcfg;
+  poolcfg.worker_count = 8;
+  AudioWorkerPool pool(poolcfg);
+
+  Transport transport{Time::zero()};
+  std::atomic<DeviceMonitor*> monptr{nullptr};
+
+  std::atomic<std::uint64_t> fake_tick{0};
+  LookaheadPumpConfig pumpcfg;
+  pumpcfg.horizon = Time{(k_blocks - 1) * span};
+  pumpcfg.resolve = scene.resolver();
+  pumpcfg.sample_rate = working_rate;
+  pumpcfg.layout = ChannelLayout::Stereo;
+  pumpcfg.block_frames = k_block_frames;
+  pumpcfg.tick_period = std::chrono::milliseconds(1);
+  pumpcfg.tick_source = [&fake_tick] { return fake_tick.fetch_add(1, std::memory_order_relaxed); };
+  pumpcfg.playhead_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->playhead_snapshot() : Time::zero();
+  };
+  pumpcfg.direction_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->direction_snapshot() : 1;
+  };
+  LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+  ThreadedDeviceSink sink{DeviceFormat{device_rate, ChannelLayout::Stereo}};
+  DeviceMonitorConfig moncfg;
+  moncfg.working_rate = working_rate;
+  moncfg.working_layout = ChannelLayout::Stereo;
+  moncfg.block_frames = k_block_frames;
+  moncfg.master_period = std::chrono::milliseconds(1);
+  DeviceMonitor monitor(transport, pump, sink, moncfg);
+  monptr.store(&monitor, std::memory_order_release);
+
+  std::atomic<bool> reader_stop{false};
+  std::atomic<std::uint64_t> reads{0};
+  std::thread viewport([&] {
+    while (!reader_stop.load(std::memory_order_acquire)) {
+      (void)monitor.playhead_snapshot();
+      (void)monitor.direction_snapshot();
+      reads.fetch_add(1, std::memory_order_relaxed);
+      std::this_thread::yield();
+    }
+  });
+
+  // Master concurrently while the device thread resamples + delivers; a mid-race seek
+  // drives the owner->RT flush handoff (the atomic flag) through TSan.
+  const std::uint64_t target = static_cast<std::uint64_t>(k_blocks) * k_block_frames * 8;
+  bool sought = false;
+  while (monitor.delivered_frames() < target) {
+    monitor.flush_master();
+    if (!sought && monitor.delivered_frames() > target / 2) {
+      monitor.seek(Time::zero());
+      sought = true;
+    }
+  }
+  monitor.flush_master();
+
+  sink.stop();
+  reader_stop.store(true, std::memory_order_release);
+  viewport.join();
+
+  REQUIRE(monitor.delivered_frames() >= target);
+  REQUIRE(reads.load(std::memory_order_relaxed) > 0);
+  REQUIRE(monitor.master_steps() > 0);
+
+  pump.request_stop();
+  while (pool.tasks_completed() < pool.tasks_submitted()) {
+    std::this_thread::yield();
+  }
   REQUIRE(pool.tasks_completed() == pool.tasks_submitted());
 }

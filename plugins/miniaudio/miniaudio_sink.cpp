@@ -1,5 +1,4 @@
 #include <arbc/device_miniaudio/miniaudio_sink.hpp>
-
 #include <arbc/media/audio_block.hpp> // channel_count
 
 #include <maudio.h> // private backend dep (PRIVATE include dir; never in libarbc)
@@ -32,17 +31,11 @@ MiniaudioSink::MiniaudioSink(DeviceFormat format) : d_impl(std::make_unique<Impl
   d_impl->format = format;
 }
 
-MiniaudioSink::~MiniaudioSink() {
-  stop();
-}
+MiniaudioSink::~MiniaudioSink() { stop(); }
 
-DeviceFormat MiniaudioSink::format() const {
-  return d_impl->format;
-}
+DeviceFormat MiniaudioSink::format() const { return d_impl->format; }
 
-bool MiniaudioSink::device_available() {
-  return maudio_device_count() > 0;
-}
+bool MiniaudioSink::device_available() { return maudio_device_count() > 0; }
 
 void MiniaudioSink::start(DeviceFillCallback fill) {
   d_impl->fill = std::move(fill);

@@ -43,16 +43,30 @@ DeviceMonitor::DeviceMonitor(Transport& transport, LookaheadPump& pump, DeviceSi
   if (config.working_rate == 0 || config.block_frames == 0) {
     throw std::invalid_argument("DeviceMonitor: working_rate and block_frames must be non-zero");
   }
-  if (d_device.sample_rate != config.working_rate) {
-    // Device-edge sample-rate conversion (reusing the shipped windowed-sinc
-    // resampler) is deferred; v1 masters and drains at a matched rate so the drained
-    // bytes stay byte-identical to the working-rate mix oracle (Constraint 9).
-    throw std::invalid_argument(
-        "DeviceMonitor: device sample rate must equal the working rate (edge SRC is out of scope)");
+  if (d_device.sample_rate < config.working_rate) {
+    // Downsampling needs the reconstruction filter cut at the lower device Nyquist to
+    // stay anti-aliased -- an extension of the fixed-cutoff bank, not a reuse of it
+    // (D3). Deferred to `audio.device_edge_decimation`; a host can sidestep by setting
+    // the working rate to the device rate.
+    throw std::invalid_argument("DeviceMonitor: device sample rate below the working rate needs "
+                                "decimating edge SRC (deferred to audio.device_edge_decimation)");
   }
+  d_resampling = d_device.sample_rate > config.working_rate;
 
+  // Two rate axes, kept distinct (Constraint 3): the clock advance is device-rate
+  // framed; the drain block span is working-rate framed. They coincide only at a
+  // matched rate.
   d_flicks_per_frame = Time::flicks_per_second / static_cast<std::int64_t>(d_device.sample_rate);
+  d_working_flicks_per_frame =
+      Time::flicks_per_second / static_cast<std::int64_t>(config.working_rate);
   d_scratch.assign(static_cast<std::size_t>(config.block_frames) * d_working_channels, 0.0F);
+  if (d_resampling) {
+    // Pre-size the RT-owned resampler state and its device-frame batch buffer (D5):
+    // no allocation on the callback thread.
+    d_resampler.configure(config.working_rate, d_device.sample_rate, d_working_channels,
+                          config.block_frames);
+    d_src_out.assign(static_cast<std::size_t>(config.block_frames) * d_working_channels, 0.0F);
+  }
   d_drain_index = start_block_index();
   d_published.store(transport.position(), std::memory_order_release);
   d_direction.store(rate_sign(transport.rate()), std::memory_order_release);
@@ -93,9 +107,10 @@ DeviceMonitor::~DeviceMonitor() {
 std::int64_t DeviceMonitor::start_block_index() const {
   // The first output-block index the device draws from: the block covering the
   // transport's current playhead, so the drain cursor and the mastered clock start
-  // aligned (both derive from the same position).
+  // aligned (both derive from the same position). The drain block index is in
+  // WORKING-rate frames (Constraint 3), so span uses the working-rate duration.
   const std::int64_t span =
-      static_cast<std::int64_t>(d_config.block_frames) * d_flicks_per_frame;
+      static_cast<std::int64_t>(d_config.block_frames) * d_working_flicks_per_frame;
   if (span == 0) {
     return 0;
   }
@@ -106,8 +121,7 @@ std::int64_t DeviceMonitor::start_block_index() const {
 
 void DeviceMonitor::convert_frames(const float* src, float* dst, std::uint32_t frames) const {
   if (d_config.working_layout == d_device.layout) {
-    std::memcpy(dst, src,
-                static_cast<std::size_t>(frames) * d_working_channels * sizeof(float));
+    std::memcpy(dst, src, static_cast<std::size_t>(frames) * d_working_channels * sizeof(float));
     return;
   }
   const std::uint32_t sc = d_working_channels;
@@ -130,31 +144,78 @@ void DeviceMonitor::convert_frames(const float* src, float* dst, std::uint32_t f
   }
 }
 
+void DeviceMonitor::drain_block() {
+  AudioBlock block{d_scratch.data(), d_config.block_frames, d_config.working_layout,
+                   d_config.working_rate};
+  AudioResult meta{};
+  // Prepared block copied out, or silence + an underrun on a starved block --
+  // never an inline mix (the RT-safety invariant the whole engine buys).
+  if (!d_pump.drain(d_drain_index, block, meta)) {
+    d_underruns.fetch_add(1, std::memory_order_relaxed);
+  }
+  ++d_drain_index;
+  d_carry_frames = d_config.block_frames;
+  d_carry_pos = 0;
+}
+
 void DeviceMonitor::fill_rt(float* out, std::uint32_t frames) {
   // RT-safe (Constraint 1): only `pump.drain` (never a mix), a pure layout
-  // conversion, and one atomic increment. No allocation -- `d_scratch` is
+  // conversion (and the pre-sized streaming resampler under SRC), and one atomic
+  // increment. No allocation -- `d_scratch` / `d_src_out` / the resampler are
   // pre-sized; `out` is the caller's device buffer.
+  if (!d_resampling) {
+    // Matched-rate 1:1 drain: byte-for-byte the working mix, zero SRC (Constraint 5).
+    std::uint32_t written = 0;
+    while (written < frames) {
+      if (d_carry_frames == 0) {
+        drain_block();
+      }
+      const std::uint32_t n = frames - written < d_carry_frames ? frames - written : d_carry_frames;
+      convert_frames(d_scratch.data() + static_cast<std::size_t>(d_carry_pos) * d_working_channels,
+                     out + static_cast<std::size_t>(written) * d_device_channels, n);
+      written += n;
+      d_carry_pos += n;
+      d_carry_frames -= n;
+    }
+    d_delivered.fetch_add(frames, std::memory_order_release);
+    return;
+  }
+
+  // Device-edge SRC (device_rate > working_rate). A transport change flushes the
+  // resampler's filter memory so post-flush output restarts byte-exact (D4); the
+  // pre-change working carry is dropped with it (drain-cursor realignment is the
+  // peer leaf `audio.seek_drain_realign`, Constraint 8).
+  if (d_resampler_flush.exchange(false, std::memory_order_acquire)) {
+    d_resampler.reset();
+    d_carry_frames = 0;
+    d_carry_pos = 0;
+  }
   std::uint32_t written = 0;
   while (written < frames) {
-    if (d_carry_frames == 0) {
-      AudioBlock block{d_scratch.data(), d_config.block_frames, d_config.working_layout,
-                       d_config.working_rate};
-      AudioResult meta{};
-      // Prepared block copied out, or silence + an underrun on a starved block --
-      // never an inline mix (the RT-safety invariant the whole engine buys).
-      if (!d_pump.drain(d_drain_index, block, meta)) {
-        d_underruns.fetch_add(1, std::memory_order_relaxed);
+    // Feed working-rate blocks until the next device frame's filter support is
+    // resident. Under upsampling this consumes fewer working frames than it emits.
+    while (!d_resampler.can_produce()) {
+      if (d_carry_frames == 0) {
+        drain_block();
       }
-      ++d_drain_index;
-      d_carry_frames = d_config.block_frames;
-      d_carry_pos = 0;
+      d_resampler.push_input(d_scratch.data() +
+                                 static_cast<std::size_t>(d_carry_pos) * d_working_channels,
+                             d_carry_frames);
+      d_carry_pos += d_carry_frames;
+      d_carry_frames = 0;
     }
-    const std::uint32_t n = frames - written < d_carry_frames ? frames - written : d_carry_frames;
-    convert_frames(d_scratch.data() + static_cast<std::size_t>(d_carry_pos) * d_working_channels,
-                   out + static_cast<std::size_t>(written) * d_device_channels, n);
-    written += n;
-    d_carry_pos += n;
-    d_carry_frames -= n;
+    // Reconstruct a batch of device-rate frames (working layout) then remix to the
+    // device layout, bounded by one block-worth of `d_src_out` scratch.
+    std::uint32_t produced = 0;
+    const std::uint32_t want = frames - written;
+    while (produced < want && produced < d_config.block_frames && d_resampler.can_produce()) {
+      d_resampler.produce(d_src_out.data() +
+                          static_cast<std::size_t>(produced) * d_working_channels);
+      ++produced;
+    }
+    convert_frames(d_src_out.data(), out + static_cast<std::size_t>(written) * d_device_channels,
+                   produced);
+    written += produced;
   }
   // The device frame count IS the clock: publish the delivered total for the owner
   // thread to master from (release-paired with the owner's acquire load).
@@ -200,6 +261,12 @@ void DeviceMonitor::master_step() {
   // A transport change flushes + reprimes; a plain advance only nudges the pump to
   // prime further ahead of the freshly-published playhead.
   if (rebased) {
+    if (d_resampling) {
+      // Ask the RT callback to flush the resampler's filter memory before it next
+      // fills, so post-seek/-rate output carries no pre-change tail (D4). A control
+      // flag only: the DSP buffers stay RT-single-owner.
+      d_resampler_flush.store(true, std::memory_order_release);
+    }
     d_pump.notify_transport_change();
   } else {
     d_pump.poke();

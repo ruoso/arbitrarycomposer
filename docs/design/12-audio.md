@@ -103,6 +103,21 @@ working → device. Nested compositions may declare different working
 formats; the nesting boundary converts (resample + remix), homogeneous
 trees pay nothing.
 
+The working → device edge reuses the same band-limited polyphase resampler
+as the nesting boundary and the below-native reconstruction (one shipped
+windowed-sinc kernel, not a second algorithm) — the audio analog of the
+single raster resampler serving every zoom remainder. A device whose rate
+equals the working rate keeps a byte-for-byte 1:1 drain (no SRC cost); a
+device rate *above* the working rate is upsampled at the edge. Downsampling
+(device rate *below* the working rate) needs the reconstruction filter cut
+at the lower device Nyquist to stay anti-aliased, an extension of the
+fixed-cutoff kernel that is **deferred** (like time-stretch below); until it
+lands a monitor whose device rate is below the working rate is rejected, and
+a host can always sidestep by setting the composition's working rate to the
+device rate. Because the device edge is downstream of the pull graph, the
+resampler's constant group delay is absorbed by the monitor's lookahead
+pre-roll, not declared through a facet `latency()`.
+
 ## Rate maps, varispeed, and pitch
 
 The layer time map (doc 11) applies to audio as to video: a rate-½ layer

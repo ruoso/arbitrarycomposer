@@ -1,11 +1,12 @@
 #pragma once
 
-#include <arbc/base/rational_time.hpp>    // Rational
-#include <arbc/base/time.hpp>             // Time
-#include <arbc/media/audio_block.hpp>     // ChannelLayout
-#include <arbc/runtime/device_sink.hpp>   // DeviceSink, DeviceFormat
-#include <arbc/runtime/lookahead_pump.hpp> // LookaheadPump
-#include <arbc/runtime/transport.hpp>     // Transport
+#include <arbc/base/rational_time.hpp>        // Rational
+#include <arbc/base/time.hpp>                 // Time
+#include <arbc/media/audio_block.hpp>         // ChannelLayout
+#include <arbc/media/streaming_resampler.hpp> // StreamingResampler
+#include <arbc/runtime/device_sink.hpp>       // DeviceSink, DeviceFormat
+#include <arbc/runtime/lookahead_pump.hpp>    // LookaheadPump
+#include <arbc/runtime/transport.hpp>         // Transport
 
 #include <atomic>
 #include <chrono>
@@ -68,10 +69,12 @@ struct DeviceMonitorConfig {
 class DeviceMonitor {
 public:
   // Binds `transport`, `pump`, and `sink` (references, not owned). Starts the owner
-  // (mastering) thread and opens the device stream. Throws `std::logic_error` if
-  // `transport` already has a device monitor, and `std::invalid_argument` on a
-  // degenerate config or a device rate != working rate (device-edge sample-rate
-  // conversion is out of scope; see the return summary).
+  // (mastering) thread and opens the device stream. A device rate ABOVE the working
+  // rate is upsampled at the edge through the shipped polyphase kernel
+  // (audio.device_edge_resample); a device rate EQUAL to it keeps the 1:1 drain.
+  // Throws `std::logic_error` if `transport` already has a device monitor, and
+  // `std::invalid_argument` on a degenerate config or a device rate BELOW the
+  // working rate (decimating SRC is deferred to `audio.device_edge_decimation`).
   DeviceMonitor(Transport& transport, LookaheadPump& pump, DeviceSink& sink,
                 DeviceMonitorConfig config);
   ~DeviceMonitor();
@@ -82,15 +85,11 @@ public:
   // The lock-free mastered-playhead snapshot (acquire): wire the pump's
   // `playhead_source` and any video viewport on this transport to it so they chase
   // the audio clock (D3).
-  Time playhead_snapshot() const noexcept {
-    return d_published.load(std::memory_order_acquire);
-  }
+  Time playhead_snapshot() const noexcept { return d_published.load(std::memory_order_acquire); }
 
   // The playback direction (sign of the transport rate; 0-rate -> forward), sampled
   // lock-free for the pump's `direction_source`.
-  int direction_snapshot() const noexcept {
-    return d_direction.load(std::memory_order_acquire);
-  }
+  int direction_snapshot() const noexcept { return d_direction.load(std::memory_order_acquire); }
 
   // Host controls, routed to the single owner thread (which alone mutates the
   // `Transport`): each rebases the master's sample origin and reprimes the pump
@@ -108,20 +107,19 @@ public:
   std::uint64_t delivered_frames() const noexcept {
     return d_delivered.load(std::memory_order_acquire);
   }
-  std::uint64_t underruns() const noexcept {
-    return d_underruns.load(std::memory_order_acquire);
-  }
+  std::uint64_t underruns() const noexcept { return d_underruns.load(std::memory_order_acquire); }
   std::uint64_t master_steps() const noexcept {
     return d_master_steps.load(std::memory_order_acquire);
   }
 
 private:
   void fill_rt(float* out, std::uint32_t frames); // the device RT callback body
+  void drain_block();                             // pull one working block into d_scratch (RT)
   void run_master();                              // the owner-thread loop
   void master_step();
-  // Convert `frames` interleaved working-format frames to the device layout. Pure,
-  // allocation-free (memcpy for an identity layout; average/duplicate for a
-  // mono<->stereo remap). Device rate == working rate is a construction precondition.
+  // Remix `frames` interleaved working-LAYOUT frames (already at the device RATE --
+  // the resampler runs first) to the device layout. Pure, allocation-free (memcpy
+  // for an identity layout; average/duplicate for a mono<->stereo remap).
   void convert_frames(const float* src, float* dst, std::uint32_t frames) const;
   // The first output-block index the device draws from: the block covering the
   // transport's current playhead, so the drain cursor starts aligned with the clock.
@@ -132,21 +130,32 @@ private:
   DeviceSink& d_sink;
   DeviceMonitorConfig d_config;
   DeviceFormat d_device{};
-  std::int64_t d_flicks_per_frame{0};
+  std::int64_t d_flicks_per_frame{0};         // device-rate frame duration (clock advance)
+  std::int64_t d_working_flicks_per_frame{0}; // working-rate frame duration (drain block span)
   std::uint32_t d_working_channels{0};
   std::uint32_t d_device_channels{0};
+  bool d_resampling{false}; // device_rate > working_rate: engage the streaming resampler
 
   // --- RT-callback-owned state (touched only on the device thread) ------------
   std::vector<float> d_scratch;  // one working-format block, pre-allocated
   std::int64_t d_drain_index{0}; // next output-block index to drain
   std::uint32_t d_carry_frames{0};
   std::uint32_t d_carry_pos{0};
+  // Device-edge sample-rate conversion state (D1/D5), pre-sized at construction and
+  // owned solely by the RT callback (like `d_scratch`); idle when `!d_resampling`.
+  StreamingResampler d_resampler;
+  std::vector<float> d_src_out; // one device-frame batch, working layout, pre-allocated
 
   // --- cross-thread published surface (D3) ------------------------------------
   std::atomic<std::uint64_t> d_delivered{0};   // RT writes (release), owner reads
   std::atomic<Time> d_published{Time::zero()}; // owner writes (release), readers acquire
   std::atomic<int> d_direction{1};             // owner writes, readers acquire
   std::atomic<std::uint64_t> d_underruns{0};   // RT writes
+  // Transport-change flush request for the RT-owned resampler (D4/Constraint 8): the
+  // owner sets it on a rebase (release), the RT callback consumes it (acquire) and
+  // flushes the resampler's phase + history. A control channel only -- the resampler
+  // DSP buffers stay RT-single-owner, adding no shared mutable audio state.
+  std::atomic<bool> d_resampler_flush{false};
 
   // --- owner-thread-owned state -----------------------------------------------
   std::uint64_t d_last_delivered{0};
