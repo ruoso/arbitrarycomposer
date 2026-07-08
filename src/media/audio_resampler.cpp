@@ -2,9 +2,11 @@
 #include <arbc/media/streaming_resampler.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace arbc {
 
@@ -581,15 +583,19 @@ inline FramePos frame_pos(std::int64_t n, std::uint64_t src_rate, std::uint64_t 
   return {center, phase};
 }
 
-// One output frame's ordered per-channel MAC over the 16-tap window (doc 16
-// determinism): `sample(idx, c)` returns the native sample at absolute frame
-// `idx` for channel `c` (0 for a tap outside the input, the edge convention). The
-// single tap loop shared by both callers guarantees they run bit-identical MACs.
+// One output frame's ordered per-channel MAC over a `taps`-wide polyphase window
+// (doc 16 determinism): `sample(idx, c)` returns the native sample at absolute
+// frame `idx` for channel `c` (0 for a tap outside the input, the edge
+// convention). `coeffs` is the active bank (the frozen input-Nyquist table for
+// upsampling; the generated widened device-Nyquist bank for decimation), laid out
+// phase-major with `taps` coefficients per phase. The single tap loop shared by
+// both the whole-stream and the streaming callers guarantees they run
+// bit-identical MACs over the same bank.
 template <typename Sample>
-inline void mac_frame(const FramePos& fp, std::uint32_t ch, Sample&& sample, float* out_frame) {
-  const std::int64_t taps = static_cast<std::int64_t>(k_resampler_taps);
+inline void mac_frame(const FramePos& fp, std::uint32_t ch, const float* coeffs, std::int64_t taps,
+                      Sample&& sample, float* out_frame) {
   const std::int64_t half = taps / 2 - 1; // N-1: the delta tap offset (phase 0)
-  const float* coef = &k_resampler_coeffs[static_cast<std::size_t>(fp.phase) * k_resampler_taps];
+  const float* coef = coeffs + static_cast<std::size_t>(fp.phase) * static_cast<std::size_t>(taps);
   for (std::uint32_t c = 0; c < ch; ++c) {
     float acc = 0.0F; // ordered reduction, tap 0..2N-1
     for (std::int64_t k = 0; k < taps; ++k) {
@@ -601,22 +607,100 @@ inline void mac_frame(const FramePos& fp, std::uint32_t ch, Sample&& sample, flo
 }
 
 // The oldest absolute input index the filter support of output frame `n` reaches
-// (center - half), and the newest (center + half + 1). Shared so the streaming
-// front-end's retain/ready bounds stay locked to the kernel's tap window.
-inline std::int64_t support_oldest(const FramePos& fp) {
-  return fp.center - (static_cast<std::int64_t>(k_resampler_taps) / 2 - 1);
+// (center - half), and the newest (center + half + 1), for a `taps`-wide window.
+// Shared so the streaming front-end's retain/ready bounds stay locked to the
+// active bank's tap window (widened under decimation).
+inline std::int64_t support_oldest(const FramePos& fp, std::int64_t taps) {
+  return fp.center - (taps / 2 - 1);
 }
-inline std::int64_t support_newest(const FramePos& fp) {
-  const std::int64_t taps = static_cast<std::int64_t>(k_resampler_taps);
+inline std::int64_t support_newest(const FramePos& fp, std::int64_t taps) {
   return fp.center + (taps - 1) - (taps / 2 - 1);
+}
+
+// ---------------------------------------------------------------------------
+// Ratio-scaled widened-lowpass decimation bank (D2/D3, Constraint 2).
+// ---------------------------------------------------------------------------
+// For `src_rate > dst_rate` the reconstruction/anti-alias lowpass is cut at the
+// lower DEVICE Nyquist (`dst_rate/2`), not the fixed input Nyquist: the impulse
+// response widens by the decimation ratio `src_rate/dst_rate` and the tap support
+// scales with it so stopband attenuation is preserved. The bank is generated over
+// the SAME Blackman-Harris windowed-sinc prototype and 32-phase bank as the frozen
+// upsampling table -- one generator, not a second algorithm -- but its cutoff is
+// ratio-dependent so it cannot be pre-frozen (a continuous device rate has no single
+// table). Generation runs OFF the RT thread only (construction / the whole-stream
+// oracle); it is the sole place libm's `std::sin`/`std::cos` are evaluated. The RT
+// inner loop then MACs over the resident float32 table, no-libm (Constraint 1).
+//
+// Unlike the upsampling table there is NO forced phase-0 Kronecker delta: an aligned
+// integer-ratio sample must NOT be reproduced verbatim (that would defeat the
+// anti-aliasing) -- every phase is a genuine device-Nyquist lowpass.
+struct DecimationBank {
+  std::vector<float> coeffs; // phase-major, `taps` per phase
+  std::int64_t taps{0};
+};
+
+inline double sinc_pi(double x) {
+  if (x == 0.0) {
+    return 1.0;
+  }
+  const double pix = 3.14159265358979323846 * x;
+  return std::sin(pix) / pix;
+}
+
+// Blackman-Harris window over [-half_span, half_span]. The generator only ever
+// evaluates `x` inside that support by construction (the widest tap lands at exactly
+// +half_span, the narrowest above -half_span), so `t` is always in [0, 1].
+inline double bh_window(double x, double half_span) {
+  const double t = (x + half_span) / (2.0 * half_span); // in [0, 1]
+  constexpr double a0 = 0.35875, a1 = 0.48829, a2 = 0.14128, a3 = 0.01168;
+  constexpr double two_pi = 6.28318530717958647692;
+  return a0 - a1 * std::cos(two_pi * t) + a2 * std::cos(2.0 * two_pi * t) -
+         a3 * std::cos(3.0 * two_pi * t);
+}
+
+inline DecimationBank generate_decimation_bank(std::uint64_t src_rate, std::uint64_t dst_rate) {
+  const std::uint64_t phases = static_cast<std::uint64_t>(k_resampler_phases);
+  const std::uint64_t half_base = k_resampler_taps / 2; // 8 lobes/side at the input Nyquist
+  // ceil(half_base * src/dst): scale the half support by the decimation ratio so the
+  // widened sinc keeps the base filter's lobe count (its stopband quality).
+  const std::uint64_t half_lobes = (half_base * src_rate + dst_rate - 1) / dst_rate;
+  const std::int64_t taps = static_cast<std::int64_t>(2 * half_lobes);
+  const std::int64_t half = taps / 2 - 1;
+  const double fc = static_cast<double>(dst_rate) / static_cast<double>(src_rate); // < 1
+  const double half_span = static_cast<double>(taps) / 2.0;
+
+  DecimationBank bank;
+  bank.taps = taps;
+  bank.coeffs.assign(static_cast<std::size_t>(phases) * static_cast<std::size_t>(taps), 0.0F);
+  std::vector<double> row(static_cast<std::size_t>(taps), 0.0);
+  for (std::uint64_t p = 0; p < phases; ++p) {
+    double sum = 0.0;
+    for (std::int64_t k = 0; k < taps; ++k) {
+      // Offset of tap `k` from the output instant, in input-sample units (mirrors
+      // `mac_frame`'s idx = center - half + k against center + phase/phases).
+      const double x =
+          static_cast<double>(k - half) - static_cast<double>(p) / static_cast<double>(phases);
+      const double c = fc * sinc_pi(fc * x) * bh_window(x, half_span);
+      row[static_cast<std::size_t>(k)] = c;
+      sum += c;
+    }
+    // Per-phase DC normalization (unity passband gain), then freeze to float32.
+    const double inv = sum != 0.0 ? 1.0 / sum : 1.0;
+    for (std::int64_t k = 0; k < taps; ++k) {
+      bank.coeffs[static_cast<std::size_t>(p) * static_cast<std::size_t>(taps) +
+                  static_cast<std::size_t>(k)] =
+          static_cast<float>(row[static_cast<std::size_t>(k)] * inv);
+    }
+  }
+  return bank;
 }
 
 } // namespace
 
 void resample_audio(const AudioBlock& in, AudioBlock& out) {
-  // Upsampling reconstruction only: the honoring / equal-rate / downsample shapes
-  // keep the caller's 1:1 path, so a mismatch here is a no-op (Constraint 3).
-  if (in.rate == 0 || out.rate == 0 || in.rate >= out.rate || in.layout != out.layout ||
+  // Both rate directions are reconstructed here; only the equal-rate / layout /
+  // null shapes keep the caller's 1:1 path, so those remain a no-op (Constraint 3).
+  if (in.rate == 0 || out.rate == 0 || in.rate == out.rate || in.layout != out.layout ||
       in.samples == nullptr || out.samples == nullptr) {
     return;
   }
@@ -625,10 +709,25 @@ void resample_audio(const AudioBlock& in, AudioBlock& out) {
   const std::uint64_t dst_rate = out.rate;
   const std::int64_t in_frames = static_cast<std::int64_t>(in.frames);
 
+  // Upsampling reuses the FROZEN input-Nyquist table; decimation generates the
+  // ratio-scaled widened device-Nyquist bank once (off the RT thread -- this whole-
+  // stream function is the oracle, never the callback). Both MAC over the same
+  // exact-integer phase math (`frame_pos`), so the two directions differ only in the
+  // active bank/tap-count (D1/D2).
+  const bool decimating = src_rate > dst_rate;
+  DecimationBank dec;
+  const float* coeffs = k_resampler_coeffs.data();
+  std::int64_t taps = static_cast<std::int64_t>(k_resampler_taps);
+  if (decimating) {
+    dec = generate_decimation_bank(src_rate, dst_rate);
+    coeffs = dec.coeffs.data();
+    taps = dec.taps;
+  }
+
   for (std::uint32_t n = 0; n < out.frames; ++n) {
     const FramePos fp = frame_pos(static_cast<std::int64_t>(n), src_rate, dst_rate);
     mac_frame(
-        fp, ch,
+        fp, ch, coeffs, taps,
         [&](std::int64_t idx, std::uint32_t c) -> float {
           // Taps outside `in` read as zero (the defined edge convention).
           return (idx >= 0 && idx < in_frames) ? in.samples[static_cast<std::size_t>(idx) * ch + c]
@@ -643,10 +742,23 @@ void StreamingResampler::configure(std::uint32_t src_rate, std::uint32_t dst_rat
   d_src_rate = src_rate;
   d_dst_rate = dst_rate;
   d_channels = channels;
+  // Select the active bank once, off the RT thread (D3/D5): the frozen input-Nyquist
+  // table for upsampling / matched, the generated widened device-Nyquist bank for
+  // decimation. The generated coefficients are owned here and never regenerated on
+  // the RT path; `d_taps` is the widened tap count (== k_resampler_taps upsampling).
+  if (src_rate > dst_rate) {
+    d_dec_coeffs = generate_decimation_bank(src_rate, dst_rate).coeffs;
+    d_taps = static_cast<std::uint32_t>(d_dec_coeffs.size() /
+                                        (static_cast<std::size_t>(k_resampler_phases)));
+  } else {
+    d_dec_coeffs.clear();
+    d_taps = static_cast<std::uint32_t>(k_resampler_taps);
+  }
   // One pushed block plus the filter-support residual retained across a produce
-  // boundary (<= 2*taps-1 live frames between pushes; D5 pre-sizing). Storage is
-  // allocated here and never grows on the RT path.
-  d_capacity_frames = block_frames + 2u * static_cast<std::uint32_t>(k_resampler_taps);
+  // boundary (<= 2*taps-1 live frames between pushes; D5 pre-sizing). The residual
+  // scales with the widened tap count so decimation stays allocation-free (Constraint
+  // 6). Storage is allocated here and never grows on the RT path.
+  d_capacity_frames = block_frames + 2u * d_taps;
   d_history.assign(static_cast<std::size_t>(d_capacity_frames) * channels, 0.0F);
   reset();
 }
@@ -663,13 +775,17 @@ bool StreamingResampler::can_produce() const noexcept {
   }
   const FramePos fp = frame_pos(d_out_index, d_src_rate, d_dst_rate);
   // Ready once the newest tap the next output frame reaches is resident.
-  return d_hist_base + static_cast<std::int64_t>(d_hist_len) > support_newest(fp);
+  return d_hist_base + static_cast<std::int64_t>(d_hist_len) >
+         support_newest(fp, static_cast<std::int64_t>(d_taps));
 }
 
 void StreamingResampler::produce(float* out_frame) noexcept {
+  // Select the active bank without a stored pointer (copy-safe): the frozen
+  // input-Nyquist table upsampling / matched, the generated widened bank decimating.
+  const float* coeffs = d_dec_coeffs.empty() ? k_resampler_coeffs.data() : d_dec_coeffs.data();
   const FramePos fp = frame_pos(d_out_index, d_src_rate, d_dst_rate);
   mac_frame(
-      fp, d_channels,
+      fp, d_channels, coeffs, static_cast<std::int64_t>(d_taps),
       [&](std::int64_t idx, std::uint32_t c) -> float {
         const std::int64_t local = idx - d_hist_base;
         // idx < 0 (before the stream start) and any not-yet-resident tap read as
@@ -692,11 +808,15 @@ void StreamingResampler::push_input(const float* samples, std::uint32_t frames) 
   // allocation-free memmove and preserves d_hist_base + d_hist_len == frames-ever-
   // pushed, so a bounded window stays within the configured capacity.
   const FramePos fp = frame_pos(d_out_index, d_src_rate, d_dst_rate);
-  const std::int64_t retain = support_oldest(fp);
+  const std::int64_t retain = support_oldest(fp, static_cast<std::int64_t>(d_taps));
   if (d_hist_len > 0) {
     std::int64_t drop = retain - d_hist_base;
     if (drop > static_cast<std::int64_t>(d_hist_len)) {
-      drop = static_cast<std::int64_t>(d_hist_len); // never in practice (upsampling)
+      // Under decimation the output stride skips more than one input frame per output,
+      // so the next needed input can lie entirely past the resident window: drop it
+      // all (the base advances to the running push count -- the newly pushed frames'
+      // absolute origin). Unreachable while upsampling (stride < 1).
+      drop = static_cast<std::int64_t>(d_hist_len);
     }
     if (drop > 0) {
       const std::size_t off = static_cast<std::size_t>(drop) * d_channels;

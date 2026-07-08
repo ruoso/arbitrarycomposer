@@ -10,15 +10,18 @@
 #include <vector>
 
 // Component-level tests for the `arbc::media` streaming front-end over the shipped
-// block-anchored polyphase kernel (audio.device_edge_resample, Constraint 2/4).
-// The whole point is a tolerance-free equivalence: a long stream fed in arbitrary
-// successive chunks is BYTE-IDENTICAL to a single whole-stream `resample_audio`
-// reconstruction of the concatenated input -- no per-chunk phase restart, no
-// interior boundary click -- reusing the SAME frozen coefficient table and exact
-// phase math (no second algorithm). Plus `reset()` restarts a fresh
-// reconstruction (the device-edge transport-change flush, D4).
+// block-anchored polyphase kernel (audio.device_edge_resample / _decimation,
+// Constraint 2/4). The whole point is a tolerance-free equivalence: a long stream
+// fed in arbitrary successive chunks is BYTE-IDENTICAL to a single whole-stream
+// `resample_audio` of the concatenated input -- no per-chunk phase restart, no
+// interior boundary click -- over the SAME exact phase math and the SAME bank as
+// `resample_audio` for the direction in play (the frozen input-Nyquist table
+// upsampling; the generated widened device-Nyquist bank decimating), no second
+// algorithm. Plus `reset()` restarts a fresh reconstruction (the device-edge
+// transport-change flush, D4).
 //
 // enforces: 12-audio#device-edge-resamples-working-to-device
+// enforces: 12-audio#device-edge-decimates-working-to-device
 
 namespace {
 
@@ -109,6 +112,34 @@ TEST_CASE("streaming resampler is byte-identical to a whole-stream reconstructio
   const std::vector<float> got = stream_in_chunks(in, channels, 32'000, 48'000, 24, chunks);
   const std::uint32_t out_frames = static_cast<std::uint32_t>(got.size() / channels);
   const std::vector<float> want = whole_stream(in, channels, 32'000, 48'000, out_frames);
+  REQUIRE(out_frames > 0);
+  REQUIRE(bytes_equal(got, want));
+}
+
+// enforces: 12-audio#device-edge-decimates-working-to-device
+TEST_CASE("streaming resampler is byte-identical to a whole-stream decimation (integer 2:1)") {
+  // The decimation direction (src_rate > dst_rate) over the widened device-Nyquist
+  // bank: the streaming path is byte-identical to a single whole-stream decimation of
+  // the concatenated input, no per-chunk phase restart, no tolerance (Constraint 3).
+  // Decimation consumes MORE input per output, so `in` is sized above 2x the output.
+  const std::uint32_t channels = 2;
+  const std::vector<float> in = make_signal(400, channels);
+  const std::vector<std::uint32_t> chunks = {7, 13, 32, 5, 19};
+  const std::vector<float> got = stream_in_chunks(in, channels, 48'000, 24'000, 32, chunks);
+  const std::uint32_t out_frames = static_cast<std::uint32_t>(got.size() / channels);
+  const std::vector<float> want = whole_stream(in, channels, 48'000, 24'000, out_frames);
+  REQUIRE(out_frames > 0);
+  REQUIRE(bytes_equal(got, want)); // no tolerance
+}
+
+// enforces: 12-audio#device-edge-decimates-working-to-device
+TEST_CASE("streaming resampler is byte-identical to a whole-stream decimation (coprime 3:2)") {
+  const std::uint32_t channels = 2;
+  const std::vector<float> in = make_signal(360, channels);
+  const std::vector<std::uint32_t> chunks = {11, 24, 3, 17, 24};
+  const std::vector<float> got = stream_in_chunks(in, channels, 48'000, 32'000, 24, chunks);
+  const std::uint32_t out_frames = static_cast<std::uint32_t>(got.size() / channels);
+  const std::vector<float> want = whole_stream(in, channels, 48'000, 32'000, out_frames);
   REQUIRE(out_frames > 0);
   REQUIRE(bytes_equal(got, want));
 }

@@ -47,8 +47,9 @@ task audio "Audio" {
   task device_edge_decimation "Device-edge decimating SRC (widened-lowpass)" {
     effort 1d
     allocate team
+    complete 100
     depends !device_edge_resample
-    note "Add a ratio-scaled widened-lowpass decimating path to the polyphase resampler so device_rate < working_rate (e.g. 48 kHz → 44.1 kHz) stays anti-aliased at the device edge, removing the remaining downsample rejection at construction. Source: audio.device_edge_resample tech-debt; see tasks/refinements/audio/device_edge_resample.md Status block. Doc 12."
+    note "Add a ratio-scaled widened-lowpass decimating path to the polyphase resampler so device_rate < working_rate (e.g. 48 kHz → 44.1 kHz) stays anti-aliased at the device edge, removing the remaining downsample rejection at construction. Source: audio.device_edge_resample tech-debt; see tasks/refinements/audio/device_edge_resample.md Status block. Doc 12. Refinement: tasks/refinements/audio/device_edge_decimation.md"
   }
   task seek_drain_realign "Post-seek RT drain cursor realignment" {
     effort 1d

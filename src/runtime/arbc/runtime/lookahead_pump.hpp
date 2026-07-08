@@ -89,6 +89,10 @@ public:
   // tick count. Waits on the tick counter (a condition), never a wall clock.
   std::uint64_t flush();
 
+  // Stop the loop and BLOCK until it has quiesced (the loop thread is joined). Once this
+  // returns, no further `d_pool.submit` can occur, so a caller may drain the pool to a
+  // settle-once equilibrium (completed == submitted) without a late fill racing in.
+  // Idempotent and safe to call before the dtor.
   void request_stop() noexcept;
   std::uint64_t ticks() const noexcept { return d_ticks.load(std::memory_order_acquire); }
 

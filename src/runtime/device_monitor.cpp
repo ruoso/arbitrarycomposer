@@ -43,15 +43,11 @@ DeviceMonitor::DeviceMonitor(Transport& transport, LookaheadPump& pump, DeviceSi
   if (config.working_rate == 0 || config.block_frames == 0) {
     throw std::invalid_argument("DeviceMonitor: working_rate and block_frames must be non-zero");
   }
-  if (d_device.sample_rate < config.working_rate) {
-    // Downsampling needs the reconstruction filter cut at the lower device Nyquist to
-    // stay anti-aliased -- an extension of the fixed-cutoff bank, not a reuse of it
-    // (D3). Deferred to `audio.device_edge_decimation`; a host can sidestep by setting
-    // the working rate to the device rate.
-    throw std::invalid_argument("DeviceMonitor: device sample rate below the working rate needs "
-                                "decimating edge SRC (deferred to audio.device_edge_decimation)");
-  }
-  d_resampling = d_device.sample_rate > config.working_rate;
+  // Either device-rate direction engages the streaming resampler at the edge: above
+  // the working rate upsamples through the frozen input-Nyquist table; below it
+  // decimates through a ratio-scaled widened lowpass cut at the device Nyquist
+  // (audio.device_edge_decimation, D2). Only a matched rate keeps the 1:1 drain.
+  d_resampling = d_device.sample_rate != config.working_rate;
 
   // Two rate axes, kept distinct (Constraint 3): the clock advance is device-rate
   // framed; the drain block span is working-rate framed. They coincide only at a
@@ -195,7 +191,8 @@ void DeviceMonitor::fill_rt(float* out, std::uint32_t frames) {
     return;
   }
 
-  // Device-edge SRC (device_rate > working_rate). A transport change flushes the
+  // Device-edge SRC (device_rate != working_rate: upsample above, decimate below).
+  // A transport change flushes the
   // resampler's filter memory so post-flush output restarts byte-exact (D4). The
   // drain cursor was already re-seated at the top of `fill_rt` (the realign consume,
   // audio.seek_drain_realign), which also dropped the pre-change working carry; this
@@ -208,7 +205,10 @@ void DeviceMonitor::fill_rt(float* out, std::uint32_t frames) {
   std::uint32_t written = 0;
   while (written < frames) {
     // Feed working-rate blocks until the next device frame's filter support is
-    // resident. Under upsampling this consumes fewer working frames than it emits.
+    // resident. Upsampling consumes fewer working frames than it emits; decimation
+    // consumes MORE (the widened support strides past several input frames per output
+    // frame), so this feed loop may pull several working blocks before one device
+    // frame is producible -- the inverse frame-count direction (Constraint 4).
     while (!d_resampler.can_produce()) {
       if (d_carry_frames == 0) {
         drain_block();

@@ -112,9 +112,10 @@ TEST_CASE("resample_audio is deterministic and stereo-channel-independent") {
 }
 
 // enforces: 12-audio#nested-boundary-resamples-below-rate-children
-TEST_CASE("resample_audio leaves the output untouched on a non-upsampling shape") {
+TEST_CASE("resample_audio leaves the output untouched on an equal-rate shape") {
   const std::vector<float> in(k_native.begin(), k_native.end());
-  // equal-rate and downsample are the caller's 1:1 path -- the kernel is a no-op.
+  // Equal rate is the caller's 1:1 path -- the kernel is a no-op. (Downsampling is no
+  // longer a no-op: it decimates through the widened bank, audio.device_edge_decimation.)
   std::vector<float> out(4, 7.0F);
   AudioBlock in_block{const_cast<float*>(in.data()), static_cast<std::uint32_t>(in.size()),
                       ChannelLayout::Mono, 48'000};

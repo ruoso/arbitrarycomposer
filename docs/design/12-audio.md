@@ -108,13 +108,15 @@ as the nesting boundary and the below-native reconstruction (one shipped
 windowed-sinc kernel, not a second algorithm) — the audio analog of the
 single raster resampler serving every zoom remainder. A device whose rate
 equals the working rate keeps a byte-for-byte 1:1 drain (no SRC cost); a
-device rate *above* the working rate is upsampled at the edge. Downsampling
-(device rate *below* the working rate) needs the reconstruction filter cut
-at the lower device Nyquist to stay anti-aliased, an extension of the
-fixed-cutoff kernel that is **deferred** (like time-stretch below); until it
-lands a monitor whose device rate is below the working rate is rejected, and
-a host can always sidestep by setting the composition's working rate to the
-device rate. Because the device edge is downstream of the pull graph, the
+device rate *above* the working rate is upsampled at the edge through the
+fixed input-Nyquist table. Downsampling (device rate *below* the working
+rate) is decimated at the edge with a **ratio-scaled widened lowpass cut at
+the device Nyquist** — generated off the RT thread over the same
+windowed-sinc prototype and 32-phase bank (the impulse response widened by
+the decimation ratio so it stays anti-aliased below the device Nyquist, an
+extension of the fixed-cutoff table, not a reuse of it). Both rate directions
+are now handled; only a device rate *equal* to the working rate takes the 1:1
+drain. Because the device edge is downstream of the pull graph, the
 resampler's constant group delay is absorbed by the monitor's lookahead
 pre-roll, not declared through a facet `latency()`.
 

@@ -70,11 +70,12 @@ class DeviceMonitor {
 public:
   // Binds `transport`, `pump`, and `sink` (references, not owned). Starts the owner
   // (mastering) thread and opens the device stream. A device rate ABOVE the working
-  // rate is upsampled at the edge through the shipped polyphase kernel
-  // (audio.device_edge_resample); a device rate EQUAL to it keeps the 1:1 drain.
+  // rate is upsampled at the edge through the frozen input-Nyquist polyphase table
+  // (audio.device_edge_resample); a device rate BELOW it is decimated through a
+  // ratio-scaled widened lowpass cut at the device Nyquist
+  // (audio.device_edge_decimation); a device rate EQUAL to it keeps the 1:1 drain.
   // Throws `std::logic_error` if `transport` already has a device monitor, and
-  // `std::invalid_argument` on a degenerate config or a device rate BELOW the
-  // working rate (decimating SRC is deferred to `audio.device_edge_decimation`).
+  // `std::invalid_argument` on a degenerate config (zero working rate / block).
   DeviceMonitor(Transport& transport, LookaheadPump& pump, DeviceSink& sink,
                 DeviceMonitorConfig config);
   ~DeviceMonitor();
@@ -140,7 +141,7 @@ private:
   std::int64_t d_working_flicks_per_frame{0}; // working-rate frame duration (drain block span)
   std::uint32_t d_working_channels{0};
   std::uint32_t d_device_channels{0};
-  bool d_resampling{false}; // device_rate > working_rate: engage the streaming resampler
+  bool d_resampling{false}; // device_rate != working_rate: engage the streaming resampler
 
   // --- RT-callback-owned state (touched only on the device thread) ------------
   std::vector<float> d_scratch;  // one working-format block, pre-allocated

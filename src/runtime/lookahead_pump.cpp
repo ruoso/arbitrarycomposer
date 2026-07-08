@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <utility>
 
 namespace arbc {
@@ -26,7 +27,7 @@ LookaheadPump::LookaheadPump(LookaheadRing& ring, BlockCache& blocks, AudioWorke
 }
 
 LookaheadPump::~LookaheadPump() {
-  request_stop();
+  request_stop(); // joins the loop thread; the join below is then a no-op
   if (d_thread.joinable()) {
     d_thread.join();
   }
@@ -83,6 +84,17 @@ void LookaheadPump::request_stop() noexcept {
   }
   d_wake_cv.notify_one();
   d_progress_cv.notify_all(); // wake a flush() waiting for a tick that will never come
+
+  // Quiesce the loop before returning: once it has exited, no further `d_pool.submit`
+  // can race in. This is what makes "no more submits after request_stop" a true
+  // precondition for a settle-once drain (completed == submitted) -- otherwise a tick
+  // already past its `d_stop` check could submit one last fill after the caller began
+  // draining, leaving submitted transiently ahead with the loop gone. Guarded against a
+  // self-join in case a tick-thread callback ever calls this (join-from-self would throw
+  // through this noexcept). Idempotent: the dtor's own request_stop then no-ops.
+  if (d_thread.joinable() && d_thread.get_id() != std::this_thread::get_id()) {
+    d_thread.join();
+  }
 }
 
 void LookaheadPump::fill_and_insert(const std::vector<PrefetchWant>& wants) {

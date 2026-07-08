@@ -505,3 +505,115 @@ TEST_CASE("TSan: the device-edge streaming resampler runs on the RT callback und
   }
   REQUIRE(pool.tasks_completed() == pool.tasks_submitted());
 }
+
+// enforces: 12-audio#device-edge-decimates-working-to-device
+// enforces: 12-audio#device-drain-realigns-on-transport-change
+TEST_CASE("TSan: the device-edge streaming resampler runs on the RT callback under decimation") {
+  // device_rate (48k) < working_rate (96k): the WIDENED streaming resampler decimates on
+  // the RT device thread concurrently with the master thread and the viewport reader. Like
+  // the upsample case it is RT-thread-single-owner (the widened history + generated bank
+  // are pre-sized/generated at construction and owned by the callback, like d_scratch), so
+  // it adds no new shared mutable DSP state -- the only owner->RT channels are the atomic
+  // flush + realign flags. The TSan lane flags any race on them, the published snapshot, or
+  // the delivered counter. A mid-race seek storm exercises the flush + realign handoff.
+  constexpr std::uint32_t working_rate = 96'000;
+  constexpr std::uint32_t device_rate = 48'000;
+
+  SineLeaf a(300, 0.6F);
+  SineLeaf b(700, 0.4F);
+  Scene scene;
+  scene.add(&a);
+  scene.add(&b);
+  const DocStatePtr doc = scene.model.current();
+
+  BlockCache blocks{64u * 1024 * 1024};
+  CachingPull pull(&blocks, scene.id_of(), doc->revision());
+
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(working_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  LookaheadRingConfig ringcfg;
+  ringcfg.composition = scene.comp;
+  ringcfg.resolve = scene.resolver();
+  ringcfg.sample_rate = working_rate;
+  ringcfg.layout = ChannelLayout::Stereo;
+  ringcfg.block_frames = k_block_frames;
+  ringcfg.revision = doc->revision();
+  LookaheadRing ring(*doc, pull, ringcfg);
+
+  AudioWorkerPoolConfig poolcfg;
+  poolcfg.worker_count = 8;
+  AudioWorkerPool pool(poolcfg);
+
+  Transport transport{Time::zero()};
+  std::atomic<DeviceMonitor*> monptr{nullptr};
+
+  std::atomic<std::uint64_t> fake_tick{0};
+  LookaheadPumpConfig pumpcfg;
+  pumpcfg.horizon = Time{(k_blocks - 1) * span};
+  pumpcfg.resolve = scene.resolver();
+  pumpcfg.sample_rate = working_rate;
+  pumpcfg.layout = ChannelLayout::Stereo;
+  pumpcfg.block_frames = k_block_frames;
+  pumpcfg.tick_period = std::chrono::milliseconds(1);
+  pumpcfg.tick_source = [&fake_tick] { return fake_tick.fetch_add(1, std::memory_order_relaxed); };
+  pumpcfg.playhead_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->playhead_snapshot() : Time::zero();
+  };
+  pumpcfg.direction_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->direction_snapshot() : 1;
+  };
+  LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+  ThreadedDeviceSink sink{DeviceFormat{device_rate, ChannelLayout::Stereo}};
+  DeviceMonitorConfig moncfg;
+  moncfg.working_rate = working_rate;
+  moncfg.working_layout = ChannelLayout::Stereo;
+  moncfg.block_frames = k_block_frames;
+  moncfg.master_period = std::chrono::milliseconds(1);
+  DeviceMonitor monitor(transport, pump, sink, moncfg);
+  monptr.store(&monitor, std::memory_order_release);
+
+  std::atomic<bool> reader_stop{false};
+  std::atomic<std::uint64_t> reads{0};
+  std::thread viewport([&] {
+    while (!reader_stop.load(std::memory_order_acquire)) {
+      (void)monitor.playhead_snapshot();
+      (void)monitor.direction_snapshot();
+      reads.fetch_add(1, std::memory_order_relaxed);
+      std::this_thread::yield();
+    }
+  });
+
+  // Master concurrently while the device thread decimates + delivers; a seed-perturbed
+  // seek storm drives BOTH co-triggered owner->RT handoffs (the resampler-flush flag AND
+  // the drain-realign channel, audio.seek_drain_realign) through TSan on every rebase.
+  const std::uint64_t target = static_cast<std::uint64_t>(k_blocks) * k_block_frames * 8;
+  std::uint64_t rng = 0x2545F4914F6CDD1DULL; // fixed seed; interleaving perturbs the race
+  while (monitor.delivered_frames() < target) {
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    const std::int64_t block =
+        static_cast<std::int64_t>((rng >> 33) % static_cast<std::uint64_t>(k_blocks));
+    monitor.seek(Time{block * span}); // drives the realign + resampler-flush handoff
+    monitor.flush_master();
+  }
+  monitor.flush_master();
+
+  sink.stop();
+  reader_stop.store(true, std::memory_order_release);
+  viewport.join();
+
+  REQUIRE(monitor.delivered_frames() >= target);
+  REQUIRE(reads.load(std::memory_order_relaxed) > 0);
+  REQUIRE(monitor.master_steps() > 0);
+  // The owner->RT realign channel fired under the race (wall-clock-free counter).
+  REQUIRE(monitor.drain_realigns() > 0);
+
+  pump.request_stop();
+  while (pool.tasks_completed() < pool.tasks_submitted()) {
+    std::this_thread::yield();
+  }
+  REQUIRE(pool.tasks_completed() == pool.tasks_submitted());
+}

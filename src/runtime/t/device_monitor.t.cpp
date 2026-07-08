@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -90,6 +91,54 @@ private:
                                    d_freq, d_amp);
         for (std::uint32_t c = 0; c < ch; ++c) {
           request.target.samples[static_cast<std::size_t>(f) * ch + c] = v;
+        }
+      }
+      return AudioResult{request.sample_rate, true};
+    }
+
+  private:
+    std::uint32_t d_freq;
+    float d_amp;
+  };
+  Facet d_facet;
+};
+
+// A clean-tone leaf for the anti-alias spectral assertion: a genuine `std::sin`
+// sinusoid over an exact flick phase (this is TEST code -- not the RT/portability
+// path, so libm is fine here). Unlike `SineLeaf`'s parabolic approximation it has no
+// harmonics, so the decimation stopband can be measured against a single alias bin.
+class PureSineLeaf final : public Content {
+public:
+  PureSineLeaf(std::uint32_t freq_hz, float amp) : d_facet(freq_hz, amp) {}
+  std::optional<Rect> bounds() const override { return std::nullopt; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<RenderResult> render(const RenderRequest&,
+                                     std::shared_ptr<RenderCompletion> done) override {
+    done->fail(RenderError::ContentFailed);
+    return std::nullopt;
+  }
+  AudioFacet* audio() override { return &d_facet; }
+
+private:
+  class Facet final : public AudioFacet {
+  public:
+    Facet(std::uint32_t freq_hz, float amp) : d_freq(freq_hz), d_amp(amp) {}
+    std::optional<TimeRange> audio_extent() const override { return std::nullopt; }
+    Stability audio_stability() const override { return Stability::Static; }
+    std::optional<AudioResult> render_audio(const AudioRequest& request,
+                                            std::shared_ptr<AudioCompletion>) override {
+      const std::uint32_t ch = channel_count(request.layout);
+      const std::int64_t fpf =
+          Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
+      const double fps = static_cast<double>(Time::flicks_per_second);
+      for (std::uint32_t f = 0; f < request.target.frames; ++f) {
+        const std::int64_t t = request.window.start.flicks + static_cast<std::int64_t>(f) * fpf;
+        const double v = static_cast<double>(d_amp) *
+                         std::sin(2.0 * 3.14159265358979323846 * static_cast<double>(d_freq) *
+                                  static_cast<double>(t) / fps);
+        for (std::uint32_t c = 0; c < ch; ++c) {
+          request.target.samples[static_cast<std::size_t>(f) * ch + c] = static_cast<float>(v);
         }
       }
       return AudioResult{request.sample_rate, true};
@@ -805,7 +854,8 @@ TEST_CASE("device monitor upsamples working->device byte-exact vs a whole-stream
 }
 
 // enforces: 12-audio#device-edge-resamples-working-to-device
-TEST_CASE("matched device rate keeps the 1:1 drain; a below-working device rate is rejected") {
+// enforces: 12-audio#device-edge-decimates-working-to-device
+TEST_CASE("matched device rate keeps the 1:1 drain; a below-working device rate decimates") {
   constexpr std::uint32_t working_rate = 48'000;
   constexpr std::uint32_t block_frames = 32;
   constexpr std::int64_t horizon_blocks = 16;
@@ -830,52 +880,120 @@ TEST_CASE("matched device rate keeps the 1:1 drain; a below-working device rate 
     REQUIRE(bytes_equal(got, want));
   }
 
-  // Below-working device rate: rejected at construction (decimating SRC deferred to
-  // audio.device_edge_decimation, closing the previously-untested guard).
+  // Below-working device rate: now decimated at the edge (audio.device_edge_decimation),
+  // no longer rejected. The drained device bytes equal a whole-stream resample_audio
+  // decimation of the working mix -- the same 44.1 kHz-under-48 kHz config the
+  // predecessor rejected at construction, now succeeding and anti-aliased.
   {
-    SineLeaf a(440, 0.5F);
+    SineLeaf a(300, 0.6F);
+    SineLeaf b(700, 0.4F);
     Scene scene;
     scene.add(&a);
+    scene.add(&b);
+    const DocStatePtr doc = scene.model.current();
+    constexpr std::uint32_t device_rate = 44'100; // below working
+    const std::vector<float> working = working_stream(*doc, scene.comp, scene.resolver(),
+                                                      working_rate, block_frames, horizon_blocks);
+    const std::vector<float> got =
+        drive_device(doc, scene.comp, scene.resolver(), scene.id_of(), working_rate, device_rate,
+                     block_frames, /*worker_count=*/0, horizon_blocks, chunks);
+    const std::uint32_t out_frames = static_cast<std::uint32_t>(got.size() / 2);
+    const std::vector<float> want =
+        whole_stream_resample(working, working_rate, device_rate, out_frames);
+    REQUIRE(out_frames > 0);
+    REQUIRE(bytes_equal(got, want)); // byte-exact vs the whole-stream decimation oracle
+  }
+}
+
+// enforces: 12-audio#device-edge-decimates-working-to-device
+TEST_CASE("device monitor decimates working->device byte-exact vs a whole-stream oracle") {
+  // Two ratios exercise the phase accumulator + widened history carry: the integer 2:1
+  // (48k->24k) and the flagship coprime 160:147 (48k->44.1k). Many small deliver()
+  // chunks pin continuity across callback seams (no per-block phase restart -- the
+  // continuity golden of Constraint 3/4). Each is byte-identical between worker_count 0
+  // and >0 via the shared whole-stream oracle. Decimation consumes MORE working frames
+  // than it emits, so the horizon is sized well above the device-output span.
+  struct Config {
+    std::uint32_t working_rate;
+    std::uint32_t device_rate;
+    std::uint32_t block_frames;
+  };
+  const std::vector<Config> configs = {{48'000, 24'000, 32}, {48'000, 44'100, 32}};
+  const std::vector<std::uint32_t> chunks = {17, 31, 5, 40, 33, 22, 48, 11, 29, 39};
+  constexpr std::int64_t horizon_blocks = 40;
+
+  for (const Config& cfg : configs) {
+    SineLeaf a(300, 0.6F);
+    SineLeaf b(700, 0.4F);
+    Scene scene;
+    scene.add(&a);
+    scene.add(&b);
     const DocStatePtr doc = scene.model.current();
 
-    BlockCache blocks{4u * 1024 * 1024};
-    CachingPull pull(&blocks, scene.id_of(), doc->revision());
+    const std::vector<float> working = working_stream(
+        *doc, scene.comp, scene.resolver(), cfg.working_rate, cfg.block_frames, horizon_blocks);
 
-    LookaheadRingConfig ringcfg;
-    ringcfg.composition = scene.comp;
-    ringcfg.resolve = scene.resolver();
-    ringcfg.sample_rate = working_rate;
-    ringcfg.layout = ChannelLayout::Stereo;
-    ringcfg.block_frames = block_frames;
-    ringcfg.revision = doc->revision();
-    LookaheadRing ring(*doc, pull, ringcfg);
-
-    AudioWorkerPoolConfig poolcfg;
-    poolcfg.worker_count = 0;
-    AudioWorkerPool pool(poolcfg);
-
-    LookaheadPumpConfig pumpcfg;
-    pumpcfg.horizon = Time::zero();
-    pumpcfg.resolve = scene.resolver();
-    pumpcfg.sample_rate = working_rate;
-    pumpcfg.layout = ChannelLayout::Stereo;
-    pumpcfg.block_frames = block_frames;
-    pumpcfg.tick_period = std::chrono::hours(1);
-    pumpcfg.tick_source = [] { return std::uint64_t{0}; };
-    pumpcfg.playhead_source = [] { return Time::zero(); };
-    LookaheadPump pump(ring, blocks, pool, pumpcfg);
-
-    Transport transport{Time::zero()};
-    FakeDeviceSink sink{DeviceFormat{44'100, ChannelLayout::Stereo}}; // below working
-    DeviceMonitorConfig moncfg;
-    moncfg.working_rate = working_rate;
-    moncfg.working_layout = ChannelLayout::Stereo;
-    moncfg.block_frames = block_frames;
-    moncfg.master_period = std::chrono::hours(1);
-    REQUIRE_THROWS_AS(DeviceMonitor(transport, pump, sink, moncfg), std::invalid_argument);
-
-    pump.request_stop();
+    for (const std::size_t worker_count : {std::size_t{0}, std::size_t{4}}) {
+      const std::vector<float> got =
+          drive_device(doc, scene.comp, scene.resolver(), scene.id_of(), cfg.working_rate,
+                       cfg.device_rate, cfg.block_frames, worker_count, horizon_blocks, chunks);
+      const std::uint32_t out_frames = static_cast<std::uint32_t>(got.size() / 2);
+      const std::vector<float> want =
+          whole_stream_resample(working, cfg.working_rate, cfg.device_rate, out_frames);
+      REQUIRE(out_frames > 0);
+      REQUIRE(bytes_equal(got, want)); // byte-exact, no tolerance
+    }
   }
+}
+
+// enforces: 12-audio#device-edge-decimates-working-to-device
+TEST_CASE("device-edge decimation is anti-aliased: above-device-Nyquist content is suppressed") {
+  // The one JUSTIFIED tolerance (doc 16): a stopband is inherently a threshold, not a
+  // byte match. Decimating 48k -> 24k (device Nyquist 12 kHz), a 20 kHz working-rate
+  // tone lies above the device Nyquist; without the ratio-scaled widened lowpass it
+  // would fold to 24k-20k = 4 kHz at (near) full amplitude. The widened bank cut at the
+  // device Nyquist attenuates it into the stopband, so the 4 kHz alias-band energy is
+  // >= 60 dB below an in-band 4 kHz control tone driven through the same monitor. A
+  // fixed-cutoff (un-widened, input-Nyquist) decimation passes 20 kHz unattenuated and
+  // FAILS this -- the non-degenerate check distinguishing anti-aliasing from a naive
+  // stride (D2).
+  constexpr std::uint32_t working_rate = 48'000;
+  constexpr std::uint32_t device_rate = 24'000;
+  constexpr std::uint32_t block_frames = 32;
+  constexpr std::int64_t horizon_blocks = 48;
+  const std::vector<std::uint32_t> chunks = {512}; // integer cycles of 4 kHz at 24k
+
+  // Left-channel single-bin magnitude at `freq` over the device output (device rate).
+  const auto bin_mag = [](const std::vector<float>& out, double freq, std::uint32_t rate) {
+    const std::size_t frames = out.size() / 2;
+    double re = 0.0;
+    double im = 0.0;
+    for (std::size_t n = 0; n < frames; ++n) {
+      const double s = static_cast<double>(out[n * 2]);
+      const double ang =
+          2.0 * 3.14159265358979323846 * freq * static_cast<double>(n) / static_cast<double>(rate);
+      re += s * std::cos(ang);
+      im += s * std::sin(ang);
+    }
+    return frames > 0 ? 2.0 * std::hypot(re, im) / static_cast<double>(frames) : 0.0;
+  };
+
+  const auto drive_tone = [&](std::uint32_t freq_hz) {
+    PureSineLeaf tone(freq_hz, 0.5F);
+    Scene scene;
+    scene.add(&tone);
+    const DocStatePtr doc = scene.model.current();
+    return drive_device(doc, scene.comp, scene.resolver(), scene.id_of(), working_rate, device_rate,
+                        block_frames, /*worker_count=*/0, horizon_blocks, chunks);
+  };
+
+  const std::vector<float> control = drive_tone(4'000);   // in-band, passes
+  const std::vector<float> aliasing = drive_tone(20'000); // > device Nyquist, must be killed
+  const double control_mag = bin_mag(control, 4'000.0, device_rate);
+  const double alias_mag = bin_mag(aliasing, 4'000.0, device_rate);
+
+  REQUIRE(control_mag > 0.1);                // the in-band control genuinely passes
+  REQUIRE(alias_mag < control_mag * 1.0e-3); // >= 60 dB suppression of the folded tone
 }
 
 // enforces: 12-audio#device-edge-resamples-working-to-device
@@ -979,6 +1097,7 @@ TEST_CASE(
 }
 
 // enforces: 12-audio#device-drain-realigns-on-transport-change
+// enforces: 12-audio#device-edge-decimates-working-to-device
 TEST_CASE("post-seek/-rate device output realigns the drain to the reprimed window byte-exact") {
   // A NON-degenerate two-tone mix (300 Hz + 700 Hz, period not dividing the 32-frame
   // block) so consecutive working blocks differ and a mis-aligned drain cursor yields
@@ -998,14 +1117,16 @@ TEST_CASE("post-seek/-rate device output realigns the drain to the reprimed wind
 
   struct Case {
     std::uint32_t working_rate;
-    std::uint32_t device_rate; // == working: matched 1:1 path; > working: device-edge SRC
+    std::uint32_t device_rate; // == working: matched 1:1; > working: upsample; < working: decimate
     bool use_rate;             // true: a set_rate rebase; false: a block-aligned seek
   };
   const std::vector<Case> cases = {
       {48'000, 48'000, false}, // matched-rate seek
-      {48'000, 96'000, false}, // device-edge SRC seek
+      {48'000, 96'000, false}, // device-edge upsample seek
+      {48'000, 24'000, false}, // device-edge decimation seek
       {48'000, 48'000, true},  // matched-rate set_rate
-      {48'000, 96'000, true},  // device-edge SRC set_rate
+      {48'000, 96'000, true},  // device-edge upsample set_rate
+      {48'000, 24'000, true},  // device-edge decimation set_rate
   };
 
   for (const Case& c : cases) {
