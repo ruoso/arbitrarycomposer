@@ -187,7 +187,10 @@ it pulls the mix. Two implementations matter:
 - **Export monitor** (offline): sample-exact rendering of the mix over a
   time range, driven by the offline renderer's frame loop; snapshot
   semantics per doc 02 keep an export consistent with concurrently-edited
-  scenes. Muxing audio with exported frames is the host's business (or a
+  scenes. The mix is produced at the composition working rate; converting to
+  a different container output rate is the same shared working → edge
+  resampler the device monitor uses (a separate export-edge step), not a
+  second path. Muxing audio with exported frames is the host's business (or a
   container plugin's), not the core's.
 
 **Clock mastering.** When a device monitor is attached to a transport, the

@@ -5,6 +5,7 @@
 #include <arbc/base/time.hpp>          // TimeRange (set_layer_span)
 #include <arbc/base/transform.hpp>
 #include <arbc/contract/content.hpp>
+#include <arbc/media/audio_format.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/model.hpp>
 
@@ -32,6 +33,26 @@ public:
   // drivers read these off the pinned layer record for span-cull + retiming.
   void set_layer_span(ObjectId layer, const TimeRange& span);
   void set_layer_time_map(ObjectId layer, const TimeMap& time_map);
+
+  // Attach `layer` at the top of `composition`'s ordered membership (doc 14): the
+  // host-facing wrapper over the model's transactional attach, mirroring
+  // `set_layer_transform`. The audio mix drives composition membership
+  // (`mix_composition` walks `for_each_layer_in`, `mix.hpp:59`), so a composition an
+  // export monitor mixes has its layers attached here. Commits its own version.
+  void attach_layer(ObjectId composition, ObjectId layer);
+
+  // Configure a layer's audio placement (doc 12:89-92): the additive-mix `gain`
+  // (analog of opacity, not clamped at 1) and the `audible` flag (analog of
+  // `visible`). Host-facing wrappers over the model's transactional
+  // `set_gain`/`set_audible`, the audio siblings of `set_layer_transform`. Each
+  // commits its own version.
+  void set_layer_gain(ObjectId layer, double gain);
+  void set_layer_audible(ObjectId layer, bool audible);
+
+  // Configure a composition's working audio format (doc 12:94-104): the working
+  // sample rate + channel layout the mix is produced at, the audio twin of
+  // `set_working_space`. Committed as its own version, bumping the revision.
+  void set_working_audio_format(ObjectId composition, const AudioFormat& format);
 
   // Insert a composition (doc 07 rule 2: the unit that owns a working space). Its
   // working space defaults to the doc 07 walking-skeleton format; the render

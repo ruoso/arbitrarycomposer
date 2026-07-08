@@ -35,6 +35,30 @@ void Document::set_layer_time_map(ObjectId layer, const TimeMap& time_map) {
   txn.commit();
 }
 
+void Document::attach_layer(ObjectId composition, ObjectId layer) {
+  auto txn = d_model.transact();
+  txn.attach_layer(composition, layer);
+  txn.commit();
+}
+
+void Document::set_layer_gain(ObjectId layer, double gain) {
+  auto txn = d_model.transact();
+  txn.set_gain(layer, gain);
+  txn.commit();
+}
+
+void Document::set_layer_audible(ObjectId layer, bool audible) {
+  auto txn = d_model.transact();
+  txn.set_audible(layer, audible);
+  txn.commit();
+}
+
+void Document::set_working_audio_format(ObjectId composition, const AudioFormat& format) {
+  auto txn = d_model.transact();
+  txn.set_working_audio_format(composition, format);
+  txn.commit();
+}
+
 ObjectId Document::add_composition(double canvas_w, double canvas_h) {
   auto txn = d_model.transact();
   const ObjectId id = txn.add_composition(canvas_w, canvas_h);

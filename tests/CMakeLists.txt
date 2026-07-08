@@ -120,6 +120,15 @@ target_link_libraries(arbc_device_monitor_concurrency_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_device_monitor_concurrency_t)
 
+# arbc::ExportMonitor byte-exact integration golden through the REAL PullServiceImpl
+# + org.arbc.tone: an offline export of a multi-tone composition over a range equals
+# summing the tone renders directly, and is identical between two block sizes (the
+# offline sample-exact drive of the mix core, doc 12:187-191).
+add_executable(arbc_audio_export_goldens_t audio_export_goldens.t.cpp)
+target_link_libraries(arbc_audio_export_goldens_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_audio_export_goldens_t)
+
 # Recursive lookahead fill goldens + counters (audio.lookahead_recursive_prefetch):
 # a nested composition and a below-rate native contributor driven through the real
 # LookaheadPump + AudioWorkerPool at worker_count>0 drain byte-identical to the inline

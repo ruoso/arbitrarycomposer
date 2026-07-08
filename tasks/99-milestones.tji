@@ -48,7 +48,7 @@ task milestones "Milestones" {
 
   task m6_audio "M6: Audio" {
     milestone
-    depends audio.device_monitor, audio.device_edge_resample, audio.device_edge_decimation, audio.seek_drain_realign, audio.export_monitor, audio.rt_safety, audio.latency, audio.spatial_policy, audio.lookahead_recursive_prefetch, kinds.tone, contract.audio_conformance, kinds.nested_audio, kinds.nested_audio_resampling
+    depends audio.device_monitor, audio.device_edge_resample, audio.device_edge_decimation, audio.seek_drain_realign, audio.export_monitor, audio.export_edge_resample, audio.rt_safety, audio.latency, audio.spatial_policy, audio.lookahead_recursive_prefetch, kinds.tone, contract.audio_conformance, kinds.nested_audio, kinds.nested_audio_resampling
     note "Glitch-free device playback mastering the transport clock, sample-exact export, RT-safety enforced by build. Doc 12 realized."
   }
 
