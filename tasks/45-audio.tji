@@ -53,8 +53,9 @@ task audio "Audio" {
   task seek_drain_realign "Post-seek RT drain cursor realignment" {
     effort 1d
     allocate team
+    complete 100
     depends !device_monitor
-    note "Realign the RT drain cursor to the reprimed block window on seek/rate change so post-seek device output is byte-exact; the device_monitor task lands the clock rebase + pump reprime but the RT cursor is free-running. Source: audio.device_monitor implementation gap; see tasks/refinements/audio/device_monitor.md Status block. Doc 12."
+    note "Realign the RT drain cursor to the reprimed block window on seek/rate change so post-seek device output is byte-exact; the device_monitor task lands the clock rebase + pump reprime but the RT cursor is free-running. Source: audio.device_monitor implementation gap; see tasks/refinements/audio/device_monitor.md Status block. Doc 12. Refinement: tasks/refinements/audio/seek_drain_realign.md"
   }
   task export_monitor "Export monitor" {
     effort 2d

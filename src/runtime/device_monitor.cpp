@@ -163,6 +163,20 @@ void DeviceMonitor::fill_rt(float* out, std::uint32_t frames) {
   // conversion (and the pre-sized streaming resampler under SRC), and one atomic
   // increment. No allocation -- `d_scratch` / `d_src_out` / the resampler are
   // pre-sized; `out` is the caller's device buffer.
+  //
+  // Drain-cursor realign (audio.seek_drain_realign, D1/Constraint 3): on a rebase the
+  // owner published the block index covering the reprimed playhead; re-seat the cursor
+  // to it and drop the stale pre-change working carry so BOTH drain paths restart
+  // byte-exact from the first post-change frame. Precedes the `d_resampling` branch so
+  // the matched-rate and SRC paths realign identically; a single acquire-`exchange`
+  // consumes the request exactly once (Constraint 6), no allocation/lock/refcount.
+  // enforces: 12-audio#device-drain-realigns-on-transport-change
+  if (d_realign_request.exchange(false, std::memory_order_acquire)) {
+    d_drain_index = d_realign_index.load(std::memory_order_acquire);
+    d_carry_frames = 0;
+    d_carry_pos = 0;
+    d_drain_realigns.fetch_add(1, std::memory_order_relaxed);
+  }
   if (!d_resampling) {
     // Matched-rate 1:1 drain: byte-for-byte the working mix, zero SRC (Constraint 5).
     std::uint32_t written = 0;
@@ -182,9 +196,10 @@ void DeviceMonitor::fill_rt(float* out, std::uint32_t frames) {
   }
 
   // Device-edge SRC (device_rate > working_rate). A transport change flushes the
-  // resampler's filter memory so post-flush output restarts byte-exact (D4); the
-  // pre-change working carry is dropped with it (drain-cursor realignment is the
-  // peer leaf `audio.seek_drain_realign`, Constraint 8).
+  // resampler's filter memory so post-flush output restarts byte-exact (D4). The
+  // drain cursor was already re-seated at the top of `fill_rt` (the realign consume,
+  // audio.seek_drain_realign), which also dropped the pre-change working carry; this
+  // co-triggered flush independently resets the resampler's DSP state (Constraint 3).
   if (d_resampler_flush.exchange(false, std::memory_order_acquire)) {
     d_resampler.reset();
     d_carry_frames = 0;
@@ -261,10 +276,20 @@ void DeviceMonitor::master_step() {
   // A transport change flushes + reprimes; a plain advance only nudges the pump to
   // prime further ahead of the freshly-published playhead.
   if (rebased) {
+    // Re-seat the RT drain cursor to the block covering the freshly-published
+    // playhead so the device drain tracks the reprimed ring window from the first
+    // post-change frame (audio.seek_drain_realign, D1/D3). `start_block_index()`
+    // reads the transport, which the owner alone owns (Constraint 2/D3), so it is
+    // evaluated HERE and only the resulting integer crosses to the RT thread. Publish
+    // the index (release) before the request flag (release) so the RT callback's
+    // acquire-`exchange` of the flag sees the matching index.
+    d_realign_index.store(start_block_index(), std::memory_order_release);
+    d_realign_request.store(true, std::memory_order_release);
     if (d_resampling) {
       // Ask the RT callback to flush the resampler's filter memory before it next
       // fills, so post-seek/-rate output carries no pre-change tail (D4). A control
-      // flag only: the DSP buffers stay RT-single-owner.
+      // flag only: the DSP buffers stay RT-single-owner. Co-triggered with the
+      // realign above but a distinct concern (block cursor vs. filter memory).
       d_resampler_flush.store(true, std::memory_order_release);
     }
     d_pump.notify_transport_change();

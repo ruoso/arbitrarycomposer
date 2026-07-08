@@ -111,6 +111,12 @@ public:
   std::uint64_t master_steps() const noexcept {
     return d_master_steps.load(std::memory_order_acquire);
   }
+  // Count of drain-cursor realignments consumed by the RT callback: one per applied
+  // seek/rate rebase, incremented when `fill_rt` re-seats `d_drain_index` to the
+  // reprimed block window (audio.seek_drain_realign). Wall-clock-free.
+  std::uint64_t drain_realigns() const noexcept {
+    return d_drain_realigns.load(std::memory_order_acquire);
+  }
 
 private:
   void fill_rt(float* out, std::uint32_t frames); // the device RT callback body
@@ -147,15 +153,25 @@ private:
   std::vector<float> d_src_out; // one device-frame batch, working layout, pre-allocated
 
   // --- cross-thread published surface (D3) ------------------------------------
-  std::atomic<std::uint64_t> d_delivered{0};   // RT writes (release), owner reads
-  std::atomic<Time> d_published{Time::zero()}; // owner writes (release), readers acquire
-  std::atomic<int> d_direction{1};             // owner writes, readers acquire
-  std::atomic<std::uint64_t> d_underruns{0};   // RT writes
+  std::atomic<std::uint64_t> d_delivered{0};      // RT writes (release), owner reads
+  std::atomic<Time> d_published{Time::zero()};    // owner writes (release), readers acquire
+  std::atomic<int> d_direction{1};                // owner writes, readers acquire
+  std::atomic<std::uint64_t> d_underruns{0};      // RT writes
+  std::atomic<std::uint64_t> d_drain_realigns{0}; // RT writes
   // Transport-change flush request for the RT-owned resampler (D4/Constraint 8): the
   // owner sets it on a rebase (release), the RT callback consumes it (acquire) and
   // flushes the resampler's phase + history. A control channel only -- the resampler
   // DSP buffers stay RT-single-owner, adding no shared mutable audio state.
   std::atomic<bool> d_resampler_flush{false};
+  // Transport-change drain-realign request (audio.seek_drain_realign, D1): on a
+  // rebase the owner computes the block index covering the reprimed playhead and
+  // publishes it in `d_realign_index` (release), then sets `d_realign_request`
+  // (release). The RT callback `exchange`-consumes the flag (acquire) at the top of
+  // `fill_rt`, re-seats `d_drain_index` to the published index, and drops the
+  // pre-change working carry. A control channel only -- `d_drain_index` stays
+  // RT-single-owner; the owner never writes it (D1, Constraint 1).
+  std::atomic<std::int64_t> d_realign_index{0};
+  std::atomic<bool> d_realign_request{false};
 
   // --- owner-thread-owned state -----------------------------------------------
   std::uint64_t d_last_delivered{0};

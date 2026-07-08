@@ -32,11 +32,13 @@
 // callback while the monitor's single owner thread masters the transport (advancing
 // it + republishing the lock-free `Time` snapshot) and both the lookahead pump and a
 // simulated video viewport read that snapshot concurrently -- "video chases audio".
-// It asserts: no data race on the published snapshot / delivered counter / direction
-// (the TSan lane flags any); the `Transport` is mutated on the single owner thread
-// only (the RT device thread never touches it); each AudioCompletion settles exactly
-// once (pool tasks_completed == tasks_submitted); and the ring/cache survive the race
-// so a reprimed drain is byte-identical to the single-threaded inline goldens.
+// It asserts: no data race on the published snapshot / delivered counter / direction /
+// the owner->RT drain-realign channel (`d_realign_index` / `d_realign_request`, which a
+// seed-perturbed seek storm exercises -- audio.seek_drain_realign) (the TSan lane flags
+// any); the `Transport` is mutated on the single owner thread only (the RT device thread
+// never touches it); each AudioCompletion settles exactly once (pool tasks_completed ==
+// tasks_submitted); and the ring/cache survive the race so a reprimed drain is
+// byte-identical to the single-threaded inline goldens.
 // Cross-component, so it lives in top-level `tests/` (not level-checked) and links
 // the umbrella `arbc`. Local Content / PullService doubles keep it deterministic.
 
@@ -256,6 +258,7 @@ private:
 
 // enforces: 12-audio#device-clock-masters-transport
 // enforces: 12-audio#device-callback-consumes-prepared-blocks-only
+// enforces: 12-audio#device-drain-realigns-on-transport-change
 TEST_CASE("TSan: mastered-clock publish races the pump + a viewport; goldens survive the race") {
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
   const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
@@ -334,9 +337,20 @@ TEST_CASE("TSan: mastered-clock publish races the pump + a viewport; goldens sur
   // the device thread delivers frames and the viewport reads the snapshot -- the
   // genuine three-way race on the published surface. Bounded by delivered frames, no
   // wall clock in the assertion path.
+  // A seed-perturbed seek storm during the LIVE race exercises the new owner->RT
+  // drain-realign channel (audio.seek_drain_realign): each seek publishes a realign
+  // request that the still-running device thread's `fill_rt` consumes, re-seating
+  // `d_drain_index` -- the TSan lane flags any race on `d_realign_index` /
+  // `d_realign_request`. Targets sweep varied block-aligned playheads via a seeded LCG
+  // (deterministic, no wall clock); genuine thread scheduling perturbs the interleaving.
   const std::uint64_t target = static_cast<std::uint64_t>(k_blocks) * k_block_frames * 16;
+  std::uint64_t rng = 0x9E3779B97F4A7C15ULL; // fixed seed; interleaving is the perturbation
   while (monitor.delivered_frames() < target) {
-    monitor.flush_master(); // forces one owner-thread mastering step, races the device
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    const std::int64_t block =
+        static_cast<std::int64_t>((rng >> 33) % static_cast<std::uint64_t>(k_blocks));
+    monitor.seek(Time{block * span}); // storms the owner->RT realign channel
+    monitor.flush_master();           // forces one owner-thread mastering step, races the device
   }
   monitor.flush_master(); // one more to master the final delivered frames
 
@@ -352,6 +366,9 @@ TEST_CASE("TSan: mastered-clock publish races the pump + a viewport; goldens sur
   REQUIRE(reads.load(std::memory_order_relaxed) > 0);
   REQUIRE(monitor.master_steps() > 0);
   REQUIRE(transport.position() != Time::zero());
+  // The owner->RT realign channel fired under the race: the running device thread
+  // consumed realign requests during the seek storm (wall-clock-free counter).
+  REQUIRE(monitor.drain_realigns() > 0);
 
   // The ring + BlockCache survived the concurrent mastering race: reprime around 0
   // and drain blocks 0..k_blocks-1 -- byte-identical to the single-threaded oracle.
@@ -379,6 +396,7 @@ TEST_CASE("TSan: mastered-clock publish races the pump + a viewport; goldens sur
 }
 
 // enforces: 12-audio#device-edge-resamples-working-to-device
+// enforces: 12-audio#device-drain-realigns-on-transport-change
 TEST_CASE("TSan: the device-edge streaming resampler runs on the RT callback under upsampling") {
   // device_rate (96k) > working_rate (48k): the streaming resampler runs on the RT
   // device thread concurrently with the master thread and the viewport reader. It is
@@ -457,16 +475,17 @@ TEST_CASE("TSan: the device-edge streaming resampler runs on the RT callback und
     }
   });
 
-  // Master concurrently while the device thread resamples + delivers; a mid-race seek
-  // drives the owner->RT flush handoff (the atomic flag) through TSan.
+  // Master concurrently while the device thread resamples + delivers; a seed-perturbed
+  // seek storm drives BOTH co-triggered owner->RT handoffs (the resampler-flush flag AND
+  // the drain-realign channel, audio.seek_drain_realign) through TSan on every rebase.
   const std::uint64_t target = static_cast<std::uint64_t>(k_blocks) * k_block_frames * 8;
-  bool sought = false;
+  std::uint64_t rng = 0xD1B54A32D192ED03ULL; // fixed seed; interleaving perturbs the race
   while (monitor.delivered_frames() < target) {
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    const std::int64_t block =
+        static_cast<std::int64_t>((rng >> 33) % static_cast<std::uint64_t>(k_blocks));
+    monitor.seek(Time{block * span}); // drives the realign + resampler-flush handoff
     monitor.flush_master();
-    if (!sought && monitor.delivered_frames() > target / 2) {
-      monitor.seek(Time::zero());
-      sought = true;
-    }
   }
   monitor.flush_master();
 
@@ -477,6 +496,8 @@ TEST_CASE("TSan: the device-edge streaming resampler runs on the RT callback und
   REQUIRE(monitor.delivered_frames() >= target);
   REQUIRE(reads.load(std::memory_order_relaxed) > 0);
   REQUIRE(monitor.master_steps() > 0);
+  // The owner->RT realign channel fired under the race (wall-clock-free counter).
+  REQUIRE(monitor.drain_realigns() > 0);
 
   pump.request_stop();
   while (pool.tasks_completed() < pool.tasks_submitted()) {

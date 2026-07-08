@@ -241,19 +241,24 @@ private:
   DeviceFillCallback d_fill;
 };
 
-// The concatenated working-rate stereo mix over blocks [0, blocks) -- the input a
-// whole-stream `resample_audio` reconstructs to build the device-edge oracle.
-std::vector<float> working_stream(const DocRoot& doc, ObjectId comp, const MixResolver& resolve,
-                                  std::uint32_t working_rate, std::uint32_t block_frames,
-                                  std::int64_t blocks) {
+// The concatenated working-rate stereo mix over blocks [start, start+blocks) -- the
+// input a whole-stream `resample_audio` reconstructs, and (at a matched rate) the bytes
+// the device drains directly. A post-seek/-rate realign resumes the drain at the block
+// covering the reprimed playhead (start_block_index()), so the oracle for post-change
+// output starts at THAT block, not at block 0 (audio.seek_drain_realign).
+std::vector<float> working_stream_from(const DocRoot& doc, ObjectId comp,
+                                       const MixResolver& resolve, std::uint32_t working_rate,
+                                       std::uint32_t block_frames, std::int64_t start,
+                                       std::int64_t blocks) {
   CachingPull inline_pull(nullptr, {}, 0);
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(working_rate);
   const std::int64_t span = static_cast<std::int64_t>(block_frames) * fpf;
   std::vector<float> all;
   for (std::int64_t i = 0; i < blocks; ++i) {
+    const std::int64_t bi = start + i;
     std::vector<float> buf(static_cast<std::size_t>(block_frames) * 2, 0.0F);
     AudioBlock block{buf.data(), block_frames, ChannelLayout::Stereo, working_rate};
-    const AudioRequest req{TimeRange{Time{i * span}, Time{i * span + span}},
+    const AudioRequest req{TimeRange{Time{bi * span}, Time{bi * span + span}},
                            working_rate,
                            ChannelLayout::Stereo,
                            block,
@@ -263,6 +268,14 @@ std::vector<float> working_stream(const DocRoot& doc, ObjectId comp, const MixRe
     all.insert(all.end(), buf.begin(), buf.end());
   }
   return all;
+}
+
+// The concatenated working-rate stereo mix over blocks [0, blocks) -- the input a
+// whole-stream `resample_audio` reconstructs to build the device-edge oracle.
+std::vector<float> working_stream(const DocRoot& doc, ObjectId comp, const MixResolver& resolve,
+                                  std::uint32_t working_rate, std::uint32_t block_frames,
+                                  std::int64_t blocks) {
+  return working_stream_from(doc, comp, resolve, working_rate, block_frames, 0, blocks);
 }
 
 // A single whole-stream `resample_audio` of a working-layout stereo stream to the
@@ -349,6 +362,107 @@ std::vector<float> drive_device(const DocStatePtr& doc, ObjectId comp, const Mix
   REQUIRE(monitor.underruns() == 0); // the horizon covers the delivered window
   pump.request_stop();
   return out;
+}
+
+// The post-seek-drain-realign fixture (audio.seek_drain_realign): build the pipeline,
+// prime, deliver `pre_chunks` device frames, apply a transport change (a block-aligned
+// `seek_to`, a `rate` change, both, or neither -> a plain advance), reprime, then
+// deliver `post_chunks` and return ONLY the post-change device output plus the
+// wall-clock-free counters the assertions pin. Mirrors `drive_device`.
+struct SeekDrainResult {
+  std::vector<float> post;          // device output drained AFTER the transport change
+  std::int64_t start_block{0};      // block the drain re-seats to (floor(playhead/span))
+  std::uint64_t drain_realigns{0};  // realign consumes counted by the RT callback
+  std::uint64_t underruns_delta{0}; // underruns incurred by the post-change drain only
+};
+
+SeekDrainResult
+drive_seek_realign(const DocStatePtr& doc, ObjectId comp, const MixResolver& resolve,
+                   const std::function<ObjectId(const Content*)>& id_of, std::uint32_t working_rate,
+                   std::uint32_t device_rate, std::uint32_t block_frames, std::size_t worker_count,
+                   std::int64_t horizon_blocks, const std::vector<std::uint32_t>& pre_chunks,
+                   std::optional<Time> seek_to, std::optional<Rational> rate,
+                   const std::vector<std::uint32_t>& post_chunks) {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(working_rate);
+  const std::int64_t span = static_cast<std::int64_t>(block_frames) * fpf;
+
+  BlockCache blocks{64u * 1024 * 1024};
+  CachingPull pull(&blocks, id_of, doc->revision());
+
+  LookaheadRingConfig ringcfg;
+  ringcfg.composition = comp;
+  ringcfg.resolve = resolve;
+  ringcfg.sample_rate = working_rate;
+  ringcfg.layout = ChannelLayout::Stereo;
+  ringcfg.block_frames = block_frames;
+  ringcfg.revision = doc->revision();
+  LookaheadRing ring(*doc, pull, ringcfg);
+
+  AudioWorkerPoolConfig poolcfg;
+  poolcfg.worker_count = worker_count;
+  AudioWorkerPool pool(poolcfg);
+
+  Transport transport{Time::zero()};
+  std::atomic<DeviceMonitor*> monptr{nullptr};
+
+  LookaheadPumpConfig pumpcfg;
+  pumpcfg.horizon = Time{(horizon_blocks - 1) * span};
+  pumpcfg.resolve = resolve;
+  pumpcfg.sample_rate = working_rate;
+  pumpcfg.layout = ChannelLayout::Stereo;
+  pumpcfg.block_frames = block_frames;
+  pumpcfg.tick_period = std::chrono::hours(1);
+  pumpcfg.tick_source = [] { return std::uint64_t{0}; };
+  pumpcfg.playhead_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->playhead_snapshot() : Time::zero();
+  };
+  pumpcfg.direction_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->direction_snapshot() : 1;
+  };
+  LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+  FakeDeviceSink sink{DeviceFormat{device_rate, ChannelLayout::Stereo}};
+  DeviceMonitorConfig moncfg;
+  moncfg.working_rate = working_rate;
+  moncfg.working_layout = ChannelLayout::Stereo;
+  moncfg.block_frames = block_frames;
+  moncfg.master_period = std::chrono::hours(1);
+  DeviceMonitor monitor(transport, pump, sink, moncfg);
+  monptr.store(&monitor, std::memory_order_release);
+
+  pump.flush();
+  pump.flush();
+
+  for (const std::uint32_t n : pre_chunks) {
+    sink.deliver(n);
+  }
+
+  // Apply the transport change on the owner thread, then reprime the ring around the
+  // freshly-published playhead (mirrors the seek/resampler-flush tests).
+  if (seek_to.has_value()) {
+    monitor.seek(*seek_to);
+  }
+  if (rate.has_value()) {
+    monitor.set_rate(*rate);
+  }
+  monitor.flush_master();
+  pump.flush();
+  pump.flush();
+
+  SeekDrainResult res;
+  const std::int64_t playhead = monitor.playhead_snapshot().flicks;
+  res.start_block = span != 0 ? playhead / span : 0; // playhead >= 0 in these fixtures
+  const std::uint64_t underruns_before = monitor.underruns();
+  for (const std::uint32_t n : post_chunks) {
+    const std::vector<float> got = sink.deliver(n);
+    res.post.insert(res.post.end(), got.begin(), got.end());
+  }
+  res.drain_realigns = monitor.drain_realigns();
+  res.underruns_delta = monitor.underruns() - underruns_before;
+  pump.request_stop();
+  return res;
 }
 
 } // namespace
@@ -862,6 +976,118 @@ TEST_CASE(
 
     pump.request_stop();
   }
+}
+
+// enforces: 12-audio#device-drain-realigns-on-transport-change
+TEST_CASE("post-seek/-rate device output realigns the drain to the reprimed window byte-exact") {
+  // A NON-degenerate two-tone mix (300 Hz + 700 Hz, period not dividing the 32-frame
+  // block) so consecutive working blocks differ and a mis-aligned drain cursor yields
+  // observably wrong bytes -- unlike the degenerate 1500 Hz case above, where every
+  // block is identical (D5). After a block-aligned seek OR a rate rebase the drain must
+  // resume at the block covering the reprimed playhead: matched-rate bytes equal a fresh
+  // `mix_composition` oracle at that block, device-edge SRC bytes equal a fresh
+  // whole-stream `resample_audio` of it -- byte-identical between worker_count 0 and >0,
+  // no tolerance (Constraint 7). A partial pre-change block (`pre = {50}`) exercises the
+  // carry drop (Constraint 4 / D4).
+  constexpr std::uint32_t block_frames = 32;
+  constexpr std::int64_t horizon_blocks = 16;
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(48'000);
+  const std::int64_t span = static_cast<std::int64_t>(block_frames) * fpf;
+  const std::vector<std::uint32_t> pre_chunks = {50}; // a partial pre-change block, dropped
+  const std::vector<std::uint32_t> post_chunks = {32, 32, 32, 32};
+
+  struct Case {
+    std::uint32_t working_rate;
+    std::uint32_t device_rate; // == working: matched 1:1 path; > working: device-edge SRC
+    bool use_rate;             // true: a set_rate rebase; false: a block-aligned seek
+  };
+  const std::vector<Case> cases = {
+      {48'000, 48'000, false}, // matched-rate seek
+      {48'000, 96'000, false}, // device-edge SRC seek
+      {48'000, 48'000, true},  // matched-rate set_rate
+      {48'000, 96'000, true},  // device-edge SRC set_rate
+  };
+
+  for (const Case& c : cases) {
+    SineLeaf a(300, 0.6F);
+    SineLeaf b(700, 0.4F);
+    Scene scene;
+    scene.add(&a);
+    scene.add(&b);
+    const DocStatePtr doc = scene.model.current();
+
+    const std::optional<Time> seek_to =
+        c.use_rate ? std::nullopt : std::optional<Time>{Time{5 * span}};
+    const std::optional<Rational> rate =
+        c.use_rate ? std::optional<Rational>{Rational{2, 1}} : std::nullopt;
+
+    std::optional<std::vector<float>> golden; // pinned across worker counts
+    for (const std::size_t worker_count : {std::size_t{0}, std::size_t{4}}) {
+      const SeekDrainResult r = drive_seek_realign(
+          doc, scene.comp, scene.resolver(), scene.id_of(), c.working_rate, c.device_rate,
+          block_frames, worker_count, horizon_blocks, pre_chunks, seek_to, rate, post_chunks);
+      REQUIRE(r.drain_realigns == 1);  // exactly one realign consumed (Constraint 6)
+      REQUIRE(r.underruns_delta == 0); // the realigned cursor finds the resident window
+      REQUIRE(!r.post.empty());
+
+      const std::uint32_t out_frames = static_cast<std::uint32_t>(r.post.size() / 2);
+      const std::vector<float> working =
+          working_stream_from(*doc, scene.comp, scene.resolver(), c.working_rate, block_frames,
+                              r.start_block, horizon_blocks);
+      std::vector<float> want;
+      if (c.device_rate == c.working_rate) {
+        want.assign(working.begin(), working.begin() + static_cast<std::ptrdiff_t>(r.post.size()));
+      } else {
+        want = whole_stream_resample(working, c.working_rate, c.device_rate, out_frames);
+      }
+      REQUIRE(bytes_equal(r.post, want)); // byte-exact vs a fresh oracle at the new block
+
+      if (!golden.has_value()) {
+        golden = r.post;
+      } else {
+        REQUIRE(bytes_equal(r.post, *golden)); // worker_count 0 == worker_count 4
+      }
+    }
+  }
+}
+
+// enforces: 12-audio#device-drain-realigns-on-transport-change
+TEST_CASE("the RT drain-realign counter fires once per rebase and never on a plain advance") {
+  constexpr std::uint32_t rate = 48'000;
+  constexpr std::uint32_t block_frames = 32;
+  constexpr std::int64_t horizon_blocks = 16;
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(rate);
+  const std::int64_t span = static_cast<std::int64_t>(block_frames) * fpf;
+
+  SineLeaf a(300, 0.6F);
+  SineLeaf b(700, 0.4F);
+  Scene scene;
+  scene.add(&a);
+  scene.add(&b);
+  const DocStatePtr doc = scene.model.current();
+
+  // A plain advance (no seek/rate) publishes no realign request: the counter stays put.
+  const SeekDrainResult plain =
+      drive_seek_realign(doc, scene.comp, scene.resolver(), scene.id_of(), rate, rate, block_frames,
+                         /*worker_count=*/0, horizon_blocks, /*pre=*/{50}, std::nullopt,
+                         std::nullopt, /*post=*/{32, 32});
+  REQUIRE(plain.drain_realigns == 0);
+
+  // One seek + flush_master + fills consumes exactly one realign; the resident reprimed
+  // window means the realigned cursor finds prepared blocks (zero extra underruns).
+  const SeekDrainResult sought = drive_seek_realign(
+      doc, scene.comp, scene.resolver(), scene.id_of(), rate, rate, block_frames,
+      /*worker_count=*/0, horizon_blocks, /*pre=*/{50}, std::optional<Time>{Time{5 * span}},
+      std::nullopt, /*post=*/{32, 32, 32, 32});
+  REQUIRE(sought.drain_realigns == 1);
+  REQUIRE(sought.underruns_delta == 0);
+
+  // A set_rate rebase also realigns exactly once.
+  const SeekDrainResult rated =
+      drive_seek_realign(doc, scene.comp, scene.resolver(), scene.id_of(), rate, rate, block_frames,
+                         /*worker_count=*/0, horizon_blocks, /*pre=*/{50}, std::nullopt,
+                         std::optional<Rational>{Rational{2, 1}}, /*post=*/{32, 32, 32, 32});
+  REQUIRE(rated.drain_realigns == 1);
 }
 
 // enforces: 12-audio#device-clock-masters-transport

@@ -190,7 +190,10 @@ frames against it — video chases audio, never the reverse (the universal
 A/V discipline, because the ear detects timing error the eye forgives).
 A transport without a device monitor free-runs on the system clock as
 before. One device monitor per transport; multiple transports (doc 11's
-independent playheads) may each have their own.
+independent playheads) may each have their own. On such a rebase the device
+drain cursor is re-seated to the block covering the reprimed playhead — the
+pre-change working carry is dropped — so post-seek/-rate device output is
+byte-exact from the first delivered frame.
 
 **Prefetch and caching.** The block cache is the tile cache with 1D keys —
 `(content id, revision, block index, rate)` — with the temporal prefetch

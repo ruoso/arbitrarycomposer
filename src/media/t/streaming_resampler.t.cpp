@@ -94,8 +94,7 @@ TEST_CASE("streaming resampler is byte-identical to a whole-stream reconstructio
   const std::vector<float> in = make_signal(200, channels);
   // Chunk sizes deliberately not aligned to any block boundary.
   const std::vector<std::uint32_t> chunks = {7, 13, 32, 5, 19};
-  const std::vector<float> got =
-      stream_in_chunks(in, channels, 48'000, 96'000, 32, chunks);
+  const std::vector<float> got = stream_in_chunks(in, channels, 48'000, 96'000, 32, chunks);
   const std::uint32_t out_frames = static_cast<std::uint32_t>(got.size() / channels);
   const std::vector<float> want = whole_stream(in, channels, 48'000, 96'000, out_frames);
   REQUIRE(out_frames > 0);
@@ -107,8 +106,7 @@ TEST_CASE("streaming resampler is byte-identical to a whole-stream reconstructio
   const std::uint32_t channels = 2;
   const std::vector<float> in = make_signal(240, channels);
   const std::vector<std::uint32_t> chunks = {11, 24, 3, 17, 24};
-  const std::vector<float> got =
-      stream_in_chunks(in, channels, 32'000, 48'000, 24, chunks);
+  const std::vector<float> got = stream_in_chunks(in, channels, 32'000, 48'000, 24, chunks);
   const std::uint32_t out_frames = static_cast<std::uint32_t>(got.size() / channels);
   const std::vector<float> want = whole_stream(in, channels, 32'000, 48'000, out_frames);
   REQUIRE(out_frames > 0);
@@ -154,7 +152,8 @@ TEST_CASE("streaming resampler reset restarts a fresh whole-stream reconstructio
   std::vector<float> got;
   const std::uint32_t second_frames = static_cast<std::uint32_t>(second.size() / channels);
   for (std::uint32_t pos = 0; pos < second_frames; pos += block_frames) {
-    const std::uint32_t n = pos + block_frames <= second_frames ? block_frames : second_frames - pos;
+    const std::uint32_t n =
+        pos + block_frames <= second_frames ? block_frames : second_frames - pos;
     r.push_input(second.data() + static_cast<std::size_t>(pos) * channels, n);
     while (r.can_produce()) {
       r.produce(frame.data());

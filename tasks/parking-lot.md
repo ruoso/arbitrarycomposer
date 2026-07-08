@@ -95,6 +95,11 @@ Append one `###` block per item, newest at the bottom:
 - **Question**: `compositor.temporal_placement_culling` uses single-edge `TimeMap::evaluate` because the compositor's `for_each_layer` is a flat walk with one time_map per layer. When the compositor gains nested-composition recursion, each nested boundary adds a second (or deeper) time_map edge and the correct evaluation becomes `ComposedTimeMap::compose` over an edge stack (multi-edge fold). Should that fold replace the current `evaluate` call, and should a WBS leaf be registered for it?
 - **Why parked**: No nested-composition recursion path exists yet — the spatial+temporal axis is blocked on unbuilt nested-composition rendering. Registering a WBS leaf now would encode unknown prerequisites and the "revisit" anti-pattern. The future nested-composition-rendering task is the natural owner; it will introduce the fold as part of recursing. Human call for the compositor stream's refinement_writer once nested-composition rendering is in scope.
 
+### 2026-07-08 — Sub-block (sample-exact) seek phase for device drain
+- **Source**: closer for `audio.seek_drain_realign` (see accompanying commit); Decision D2 and Constraint 5 in the refinement.
+- **Question**: Should a follow-up task add sub-block (sample-exact) seek phase to the device drain — i.e. starting the post-seek drain mid-block at the exact sample offset of the new playhead, rather than flooring to the block boundary?
+- **Why parked**: The device drain has always been block-granular; making seek sample-exact requires changes to the ring's window model, the block-index compute, and the carry logic — a scope larger than a 1d realignment leaf. It is neither a regression introduced by `audio.seek_drain_realign` nor a behavior any predecessor delivered. The effort and priority are a human judgment call; no agent-implementable prerequisite has landed that makes this the natural next step.
+
 ### 2026-07-08 — Device-loss / hot-plug / mid-stream device-format-change resilience
 - **Source**: closer for `audio.device_monitor` (see accompanying commit); flagged in implementer return summary and refinement Acceptance criteria ("Registers no successor").
 - **Question**: Should a v1-scope leaf be added for resilience to device-loss, hot-plug, and mid-stream device-format-change events (graceful reconnect, format renegotiation)?
