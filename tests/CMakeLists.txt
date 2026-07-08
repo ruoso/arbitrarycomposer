@@ -109,6 +109,15 @@ target_link_libraries(arbc_audio_lookahead_concurrency_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_audio_lookahead_concurrency_t)
 
+# Recursive lookahead fill goldens + counters (audio.lookahead_recursive_prefetch):
+# a nested composition and a below-rate native contributor driven through the real
+# LookaheadPump + AudioWorkerPool at worker_count>0 drain byte-identical to the inline
+# recursion oracle -- the fill warmed the whole transitive contributor closure.
+add_executable(arbc_audio_lookahead_recursive_t audio_lookahead_recursive.t.cpp)
+target_link_libraries(arbc_audio_lookahead_recursive_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_audio_lookahead_recursive_t)
+
 # org.arbc.nested two-level caching behavioral counters: a static subtree is
 # served from the parent cache; only the spine re-renders (requests_issued).
 add_executable(arbc_nested_cache_t nested_cache.t.cpp)

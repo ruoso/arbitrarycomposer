@@ -1,10 +1,10 @@
 #pragma once
 
-#include <arbc/audio_engine/lookahead.hpp>       // LookaheadRing, PrefetchWant
-#include <arbc/base/time.hpp>                     // Time, TimeRange
-#include <arbc/compositor/pull_service.hpp>       // BlockCache, AudioBlockValue
-#include <arbc/media/audio_block.hpp>             // AudioBlock, ChannelLayout
-#include <arbc/runtime/audio_worker_pool.hpp>     // AudioWorkerPool
+#include <arbc/audio_engine/lookahead.hpp>    // LookaheadRing, PrefetchWant
+#include <arbc/base/time.hpp>                 // Time, TimeRange
+#include <arbc/compositor/pull_service.hpp>   // BlockCache, AudioBlockValue
+#include <arbc/media/audio_block.hpp>         // AudioBlock, ChannelLayout
+#include <arbc/runtime/audio_worker_pool.hpp> // AudioWorkerPool
 
 #include <atomic>
 #include <chrono>
@@ -45,8 +45,8 @@ namespace arbc {
 // pool's `submit` and `PullConfig::blocks` to that same cache (closing the two
 // mix-engine pull gaps) before constructing the pump.
 struct LookaheadPumpConfig {
-  Time horizon{};                                   // lookahead budget (doc 12:157, e.g. 100-500ms)
-  MixResolver resolve;                              // ObjectId -> Content* (fill target lookup)
+  Time horizon{};      // lookahead budget (doc 12:157, e.g. 100-500ms)
+  MixResolver resolve; // ObjectId -> Content* (fill target lookup)
   std::uint32_t sample_rate{0};
   ChannelLayout layout{ChannelLayout::Stereo};
   std::uint32_t block_frames{0};

@@ -1,9 +1,12 @@
 #include <arbc/audio_engine/lookahead.hpp>
 #include <arbc/audio_engine/mix.hpp>
+#include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/compositor/pull_service.hpp> // BlockCache, AudioBlockValue
 #include <arbc/contract/content.hpp>
+#include <arbc/kind_nested/nested_content.hpp>
+#include <arbc/kind_tone/tone_content.hpp>
 #include <arbc/media/audio_block.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/audio_worker_pool.hpp>
@@ -11,6 +14,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -285,5 +289,226 @@ TEST_CASE("TSan: concurrent worker fill + drain equals the inline goldens, settl
     AudioResult meta{};
     REQUIRE(pump.drain(i, out, meta));
     REQUIRE(bytes_equal(got, direct_mix(*doc, scene.comp, scene.resolver(), i)));
+  }
+}
+
+namespace {
+
+// A below-rate native source for the recursive TSan case: honors at/below its native
+// rate, reports achieved==native / exact==false above it. Stateless -> race-free.
+class BelowRateSource final : public Content {
+public:
+  explicit BelowRateSource(std::uint32_t native_rate) : d_native_rate(native_rate), d_facet(this) {}
+  std::optional<Rect> bounds() const override { return std::nullopt; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<RenderResult> render(const RenderRequest&,
+                                     std::shared_ptr<RenderCompletion> done) override {
+    done->fail(RenderError::ContentFailed);
+    return std::nullopt;
+  }
+  AudioFacet* audio() override { return &d_facet; }
+
+private:
+  class Facet final : public AudioFacet {
+  public:
+    explicit Facet(BelowRateSource* owner) : d_owner(owner) {}
+    std::optional<TimeRange> audio_extent() const override { return std::nullopt; }
+    Stability audio_stability() const override { return Stability::Static; }
+    std::optional<AudioResult> render_audio(const AudioRequest& request,
+                                            std::shared_ptr<AudioCompletion>) override {
+      const std::uint32_t ch = channel_count(request.layout);
+      const std::int64_t fpf =
+          Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
+      for (std::uint32_t f = 0; f < request.target.frames; ++f) {
+        const float v = parab_sine(request.window.start.flicks + static_cast<std::int64_t>(f) * fpf,
+                                   3000, 0.6F);
+        for (std::uint32_t c = 0; c < ch; ++c) {
+          request.target.samples[static_cast<std::size_t>(f) * ch + c] = v;
+        }
+      }
+      const std::uint32_t achieved = std::min(request.sample_rate, d_owner->d_native_rate);
+      return AudioResult{achieved, request.sample_rate <= d_owner->d_native_rate};
+    }
+
+  private:
+    BelowRateSource* d_owner;
+  };
+
+  std::uint32_t d_native_rate;
+  Facet d_facet;
+};
+
+std::vector<float> tone_block(std::uint32_t freq, float amp, std::int64_t index) {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+  const std::int64_t t0 = index * span;
+  std::vector<float> buf(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+  ToneContent tone(freq, amp);
+  AudioBlock block{buf.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+  const AudioRequest req{TimeRange{Time{t0}, Time{t0 + span}},
+                         k_rate,
+                         ChannelLayout::Stereo,
+                         block,
+                         Exactness::Exact,
+                         StateHandle{}};
+  auto done = std::make_shared<AudioCompletion>();
+  (void)tone.audio()->render_audio(req, done);
+  return buf;
+}
+
+std::vector<float> belowrate_block(const DocRoot& doc, ObjectId comp, const MixResolver& resolve,
+                                   std::int64_t index) {
+  CachingPull inline_pull(nullptr, {}, 0); // no cache -> discovery + native re-request inline
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+  const std::int64_t t0 = index * span;
+  std::vector<float> buf(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+  AudioBlock block{buf.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+  const AudioRequest req{TimeRange{Time{t0}, Time{t0 + span}},
+                         k_rate,
+                         ChannelLayout::Stereo,
+                         block,
+                         Exactness::BestEffort,
+                         StateHandle{}};
+  mix_composition(doc, comp, resolve, inline_pull, req);
+  return buf;
+}
+
+} // namespace
+
+// enforces: 12-audio#lookahead-warms-recursive-contributor-closure
+TEST_CASE("TSan: threaded recursive fill of nested + below-rate drains the inline goldens") {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  ToneContent tone_a(440, 0.5F);
+  ToneContent tone_b(660, 0.25F);
+  BelowRateSource src(24'000);
+
+  Model model;
+  std::unordered_map<ObjectId, Content*> binding;
+  std::unordered_map<const Content*, ObjectId> ids;
+  ObjectId c_inner{};
+  ObjectId c_root{};
+  ObjectId c_nest{};
+  ObjectId c_br_only{}; // a below-rate-only composition, for the inline oracle
+  {
+    auto tx = model.transact("nested + below-rate scene");
+    c_inner = tx.add_composition(0.0, 0.0);
+    const ObjectId ca = tx.add_content(1);
+    const ObjectId cb = tx.add_content(1);
+    tx.attach_layer(c_inner, tx.add_layer(ca, Affine::identity()));
+    tx.attach_layer(c_inner, tx.add_layer(cb, Affine::identity()));
+    c_nest = tx.add_content(1);
+    const ObjectId csrc = tx.add_content(1);
+    c_root = tx.add_composition(0.0, 0.0);
+    tx.attach_layer(c_root, tx.add_layer(c_nest, Affine::identity()));
+    tx.attach_layer(c_root, tx.add_layer(csrc, Affine::identity()));
+    c_br_only = tx.add_composition(0.0, 0.0);
+    tx.attach_layer(c_br_only, tx.add_layer(csrc, Affine::identity()));
+    tx.commit();
+    binding[ca] = &tone_a;
+    binding[cb] = &tone_b;
+    binding[csrc] = &src;
+    ids[&tone_a] = ca;
+    ids[&tone_b] = cb;
+    ids[&src] = csrc;
+  }
+  const DocStatePtr doc = model.current();
+
+  auto resolver = [&binding](ObjectId id) -> Content* {
+    const auto it = binding.find(id);
+    return it != binding.end() ? it->second : nullptr;
+  };
+  auto id_of = [&ids](const Content* c) {
+    const auto it = ids.find(c);
+    return it != ids.end() ? it->second : ObjectId{};
+  };
+
+  BlockCache blocks{64u * 1024 * 1024};
+  CachingPull pull(&blocks, id_of, doc->revision());
+
+  CpuBackend backend;
+  NestedContent nested(c_inner);
+  nested.attach(pull, backend, resolver, *doc);
+  binding[c_nest] = &nested;
+  ids[&nested] = c_nest;
+
+  LookaheadRingConfig ringcfg;
+  ringcfg.composition = c_root;
+  ringcfg.resolve = resolver;
+  ringcfg.sample_rate = k_rate;
+  ringcfg.layout = ChannelLayout::Stereo;
+  ringcfg.block_frames = k_block_frames;
+  ringcfg.revision = doc->revision();
+  ringcfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
+    return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
+  };
+  LookaheadRing ring(*doc, pull, ringcfg);
+
+  AudioWorkerPoolConfig poolcfg;
+  poolcfg.worker_count = 8;
+  // Serialize the cache-reading nested contributor renders so at most one worker
+  // touches the single-writer BlockCache at a time (the per-content serialization gate
+  // under recursive re-entry); the leaf tone / below-rate renders never touch it.
+  poolcfg.serialize_predicate = [&nested](const Content* c) { return c == &nested; };
+  AudioWorkerPool pool(poolcfg);
+
+  std::atomic<std::uint64_t> fake_tick{0};
+  LookaheadPumpConfig pumpcfg;
+  pumpcfg.horizon = Time{(k_blocks - 1) * span};
+  pumpcfg.resolve = resolver;
+  pumpcfg.sample_rate = k_rate;
+  pumpcfg.layout = ChannelLayout::Stereo;
+  pumpcfg.block_frames = k_block_frames;
+  pumpcfg.tick_period = std::chrono::hours(1);
+  pumpcfg.tick_source = [&fake_tick] { return fake_tick.fetch_add(1, std::memory_order_relaxed); };
+  pumpcfg.playhead_source = [] { return Time::zero(); };
+  LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+  // A consumer drains concurrently with the recursive fill/mix ticks.
+  std::atomic<bool> stop{false};
+  std::thread consumer([&] {
+    while (!stop.load(std::memory_order_acquire)) {
+      for (std::int64_t i = 0; i < k_blocks; ++i) {
+        std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+        AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+        AudioResult meta{};
+        (void)pump.drain(i, out, meta);
+      }
+      std::this_thread::yield();
+    }
+  });
+
+  for (int t = 0; t < 5; ++t) {
+    pump.flush();
+  }
+
+  stop.store(true, std::memory_order_release);
+  consumer.join();
+  pump.request_stop();
+
+  // Every dispatched fill (each tone leaf, the nested contributor, each below-rate
+  // discovery + native re-request) settled exactly once.
+  REQUIRE(pool.tasks_completed() == pool.tasks_submitted());
+  REQUIRE(pool.tasks_completed() > 0);
+  REQUIRE(ring.silence_mixed() == 0);
+
+  // The concurrently-filled recursive ring drains byte-identical to the inline
+  // oracle: (tone_a + tone_b) [nested] + the below-rate reconstruction.
+  for (std::int64_t i = 0; i < k_blocks; ++i) {
+    std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+    AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+    AudioResult meta{};
+    REQUIRE(pump.drain(i, out, meta));
+    std::vector<float> want = tone_block(440, 0.5F, i);
+    const std::vector<float> tb = tone_block(660, 0.25F, i);
+    const std::vector<float> br = belowrate_block(*doc, c_br_only, resolver, i);
+    for (std::size_t k = 0; k < want.size(); ++k) {
+      want[k] += tb[k];
+      want[k] += br[k];
+    }
+    REQUIRE(bytes_equal(got, want));
   }
 }

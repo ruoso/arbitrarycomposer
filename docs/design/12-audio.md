@@ -207,6 +207,20 @@ viewport of doc 05 gains a synthetic monitor; budgets flow through as in
 doc 05; the aggregate revision covers audio damage since it is the same
 revision space.
 
+Under lookahead (the device monitor above) recursion has one operational
+consequence. Because worker threads render `render_audio` *off* the device
+thread, the fill must warm the **transitive contributor closure** — the
+recursive descent through nested compositions *and* the below-rate native
+re-request a resampling boundary provokes — so that when a worker renders a
+nested contributor its own descendants are already resident. A contributor
+block is dispatched only once its closure is resident, and an output block
+is mixed only at full transitive residency; the threaded fill
+(`worker_count > 0`) is therefore byte-identical to the inline fill
+(`worker_count == 0`) — the recursion never mixes silence for a
+not-yet-rendered descendant. The closure the fill warms is exactly the tree
+the mixer would walk: the doc-05 recursion-depth budget and the Flat-mode
+sub-audible/`gain ≤ 0`/facet-less/out-of-span culls bound it identically.
+
 ## Deferred
 
 Audio effects now have their mechanism — operator content (doc 13), fade's

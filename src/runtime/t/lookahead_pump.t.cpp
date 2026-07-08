@@ -1,5 +1,3 @@
-#include <arbc/runtime/lookahead_pump.hpp>
-
 #include <arbc/audio_engine/lookahead.hpp>
 #include <arbc/audio_engine/mix.hpp>
 #include <arbc/base/time.hpp>
@@ -9,6 +7,7 @@
 #include <arbc/media/audio_block.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/audio_worker_pool.hpp>
+#include <arbc/runtime/lookahead_pump.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -278,8 +277,12 @@ TEST_CASE("the pump renders ahead: drain consumes prepared blocks, worker-count-
     const std::uint64_t before_probe = pull.dispatches();
     std::vector<float> probe(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
     AudioBlock pblock{probe.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
-    const AudioRequest preq{TimeRange{Time::zero(), Time{span}}, k_rate, ChannelLayout::Stereo,
-                            pblock, Exactness::BestEffort, StateHandle{}};
+    const AudioRequest preq{TimeRange{Time::zero(), Time{span}},
+                            k_rate,
+                            ChannelLayout::Stereo,
+                            pblock,
+                            Exactness::BestEffort,
+                            StateHandle{}};
     auto pdone = std::make_shared<AudioCompletion>();
     pull.pull_audio(&a, preq, pdone);
     REQUIRE(pdone->settled());

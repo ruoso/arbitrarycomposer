@@ -112,14 +112,19 @@ struct Target {
   std::unique_ptr<AudioBlock> block; // stable address: AudioRequest holds AudioBlock&
   explicit Target(std::int64_t start_frame = 0)
       : buf(static_cast<std::size_t>(k_frames) * 2, 0.0F) {
-    block = std::make_unique<AudioBlock>(AudioBlock{buf.data(), k_frames, ChannelLayout::Stereo,
-                                                    k_rate});
+    block = std::make_unique<AudioBlock>(
+        AudioBlock{buf.data(), k_frames, ChannelLayout::Stereo, k_rate});
     (void)start_frame;
   }
   AudioRequest request(std::int64_t start = 0) const {
     const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
-    return AudioRequest{TimeRange{Time{start}, Time{start + static_cast<std::int64_t>(k_frames) * fpf}},
-                        k_rate, ChannelLayout::Stereo, *block, Exactness::BestEffort, StateHandle{}};
+    return AudioRequest{
+        TimeRange{Time{start}, Time{start + static_cast<std::int64_t>(k_frames) * fpf}},
+        k_rate,
+        ChannelLayout::Stereo,
+        *block,
+        Exactness::BestEffort,
+        StateHandle{}};
   }
 };
 

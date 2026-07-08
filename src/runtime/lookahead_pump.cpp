@@ -1,7 +1,6 @@
-#include <arbc/runtime/lookahead_pump.hpp>
-
 #include <arbc/base/time.hpp>
 #include <arbc/contract/content.hpp> // AudioRequest, AudioCompletion, Exactness
+#include <arbc/runtime/lookahead_pump.hpp>
 
 #include <cstddef>
 #include <memory>
@@ -72,9 +71,8 @@ std::uint64_t LookaheadPump::flush() {
   const std::uint64_t target = d_ticks.load(std::memory_order_relaxed) + 1;
   d_poke = true;
   d_wake_cv.notify_one();
-  d_progress_cv.wait(lock, [this, target] {
-    return d_stop || d_ticks.load(std::memory_order_acquire) >= target;
-  });
+  d_progress_cv.wait(
+      lock, [this, target] { return d_stop || d_ticks.load(std::memory_order_acquire) >= target; });
   return d_ticks.load(std::memory_order_relaxed);
 }
 
@@ -103,7 +101,7 @@ void LookaheadPump::fill_and_insert(const std::vector<PrefetchWant>& wants) {
     bufs[i].assign(static_cast<std::size_t>(w.frames) * channel_count(w.layout), 0.0F);
     targets[i] = AudioBlock{bufs[i].data(), w.frames, w.layout, w.rate};
     dones[i] = std::make_shared<AudioCompletion>();
-    const AudioRequest req{w.window, w.rate, w.layout, targets[i], Exactness::BestEffort,
+    const AudioRequest req{w.window,     w.rate, w.layout, targets[i], Exactness::BestEffort,
                            StateHandle{}};
     d_pool.submit(AudioTask{content, req, dones[i]});
   }
@@ -129,9 +127,8 @@ void LookaheadPump::fill_and_insert(const std::vector<PrefetchWant>& wants) {
   for (std::size_t i = 0; i < count; ++i) {
     const PrefetchWant& w = wants[i];
     const std::optional<expected<AudioResult, RenderError>> settled = dones[i]->take();
-    const AudioResult meta = (settled.has_value() && settled->has_value())
-                                 ? **settled
-                                 : AudioResult{w.rate, false};
+    const AudioResult meta =
+        (settled.has_value() && settled->has_value()) ? **settled : AudioResult{w.rate, false};
     const std::size_t bytes = bufs[i].size() * sizeof(float);
     d_blocks.insert(w.key, AudioBlockValue{std::move(bufs[i]), w.frames, w.layout, w.rate, meta},
                     bytes, PriorityClass::Temporal);

@@ -1,10 +1,11 @@
 #include <arbc/audio_engine/lookahead.hpp>
-
 #include <arbc/base/expected.hpp>      // expected
 #include <arbc/base/rational_time.hpp> // Rational, TimeMap, TimeError
 #include <arbc/base/time.hpp>
 
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <utility>
 
 namespace arbc {
@@ -59,14 +60,31 @@ std::vector<std::int64_t> LookaheadRing::horizon_blocks(Time playhead, Time hori
 std::vector<LookaheadRing::Contribution>
 LookaheadRing::contributions_for(std::int64_t index) const {
   std::vector<Contribution> out;
-  const CompositionRecord* comp = d_doc.find_composition(d_config.composition);
+  // The root composition's layers are pulled at descent depth 1 (`mix_block` mixes
+  // the root itself, then `mix_layer` pulls each layer at `d_depth 0 -> 1`), so the
+  // transitive descent bottoms out on the same `pull_audio` depth backstop the
+  // mixer does (Constraint 5).
+  descend(d_config.composition, d_config.sample_rate, block_start(index), 1, out);
+  return out;
+}
+
+void LookaheadRing::descend(ObjectId composition, std::uint32_t request_rate, Time window_start,
+                            std::uint32_t depth, std::vector<Contribution>& out) const {
+  const CompositionRecord* comp = d_doc.find_composition(composition);
   if (comp == nullptr) {
-    return out;
+    return;
   }
-  const Time win_start = block_start(index);
-  const std::int64_t win_end = win_start.flicks + d_block_span_flicks;
+  // The request window at THIS level's rate (`window_start` is composition-local):
+  // the span cull compares layer spans in this composition's local time, exactly as
+  // `mix_layer` / `mix_child_layer` compare against `request.window` (mix.cpp:44-45,
+  // nested_content.cpp:413-414).
+  const std::int64_t fpf_req =
+      request_rate != 0 ? Time::flicks_per_second / static_cast<std::int64_t>(request_rate) : 0;
+  const std::int64_t win_start = window_start.flicks;
+  const std::int64_t win_end =
+      win_start + static_cast<std::int64_t>(d_config.block_frames) * fpf_req;
   const ChannelLayout child_layout = comp->working_audio_format.layout;
-  d_doc.for_each_layer_in(d_config.composition, [&](ObjectId layer_id) {
+  d_doc.for_each_layer_in(composition, [&](ObjectId layer_id) {
     const LayerRecord* layer = d_doc.find_layer(layer_id);
     if (layer == nullptr) {
       return;
@@ -82,27 +100,40 @@ LookaheadRing::contributions_for(std::int64_t index) const {
       return;
     }
     if (layer->span.empty() || win_end <= layer->span.start.flicks ||
-        layer->span.end.flicks <= win_start.flicks) {
+        layer->span.end.flicks <= win_start) {
       return;
     }
+    // Varispeed: the composed rational rate `request_rate * den/num`, recomputed per
+    // edge, never accumulated (doc 11:187-188) -- identical to `mix_layer`:55-64.
     const std::int64_t num = layer->time_map.rate.num();
     const std::int64_t den = layer->time_map.rate.den();
     if (num <= 0) {
       return;
     }
-    const std::uint32_t child_rate = static_cast<std::uint32_t>(
-        static_cast<std::int64_t>(d_config.sample_rate) * den / num);
+    const std::uint32_t child_rate =
+        static_cast<std::uint32_t>(static_cast<std::int64_t>(request_rate) * den / num);
     if (child_rate == 0) {
       return;
     }
-    const expected<Time, TimeError> child_start = layer->time_map.evaluate(win_start);
+    const expected<Time, TimeError> child_start = layer->time_map.evaluate(window_start);
     if (!child_start.has_value()) {
       return;
     }
-    out.push_back(
-        Contribution{layer->content, child_rate, child_layout, d_config.block_frames, *child_start});
+    Contribution c{layer->content,        child_rate,   child_layout,
+                   d_config.block_frames, *child_start, {}};
+    // Recurse into a nested-composition contributor (the structural edge the runtime
+    // pump injects, Decision D2), bounded by the shared depth budget so a Droste
+    // scene terminates on the doc-05 backstop rather than building an infinite tree
+    // (Constraint 5). Descent stops one level before the mixer's `pull_audio`
+    // backstop would (`depth < max_depth`), matching the tree the mixer walks.
+    if (d_config.nested_composition && depth < d_config.max_depth) {
+      const std::optional<ObjectId> child_comp = d_config.nested_composition(layer->content);
+      if (child_comp.has_value()) {
+        descend(*child_comp, child_rate, *child_start, depth + 1, c.children);
+      }
+    }
+    out.push_back(std::move(c));
   });
-  return out;
 }
 
 BlockKey LookaheadRing::contribution_key(const Contribution& c) const {
@@ -115,6 +146,44 @@ BlockKey LookaheadRing::contribution_key(const Contribution& c) const {
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(c.rate);
   const std::int64_t block_index = fpf != 0 ? c.window_start.flicks / fpf : 0;
   return BlockKey{c.content, d_config.revision, block_index, c.rate};
+}
+
+PrefetchWant LookaheadRing::make_want(const Contribution& c) const {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(c.rate);
+  return PrefetchWant{contribution_key(c),
+                      c.content,
+                      TimeRange{c.window_start, Time{c.window_start.flicks +
+                                                     static_cast<std::int64_t>(c.frames) * fpf}},
+                      c.rate,
+                      c.layout,
+                      c.frames};
+}
+
+std::optional<PrefetchWant>
+LookaheadRing::native_rerequest_want(const Contribution& c, std::uint32_t achieved_rate) const {
+  // A rate-honoring contributor conveys no native re-request (mix.cpp:127): the mix
+  // keeps the working-rate discovery block 1:1.
+  if (achieved_rate == 0 || achieved_rate >= c.rate) {
+    return std::nullopt;
+  }
+  // The exact second pull `mix_layer` issues (mix.cpp:127-148): `native_frames` spans
+  // the SAME child-local window at the native rate; the key's `rate` field is the
+  // native rate, so it is a distinct `BlockKey` from the discovery block. One
+  // rounding at the leaf (doc 11:187-188).
+  const std::int64_t fpf_native =
+      Time::flicks_per_second / static_cast<std::int64_t>(achieved_rate);
+  const std::uint32_t native_frames =
+      static_cast<std::uint32_t>(static_cast<std::uint64_t>(c.frames) * achieved_rate / c.rate + 1);
+  const std::int64_t block_index = fpf_native != 0 ? c.window_start.flicks / fpf_native : 0;
+  const BlockKey key{c.content, d_config.revision, block_index, achieved_rate};
+  return PrefetchWant{
+      key,
+      c.content,
+      TimeRange{c.window_start, Time{c.window_start.flicks +
+                                     static_cast<std::int64_t>(native_frames) * fpf_native}},
+      achieved_rate,
+      c.layout,
+      native_frames};
 }
 
 void LookaheadRing::mix_block(std::int64_t index) {

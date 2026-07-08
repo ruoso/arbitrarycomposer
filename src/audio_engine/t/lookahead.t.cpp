@@ -1,5 +1,4 @@
 #include <arbc/audio_engine/lookahead.hpp>
-
 #include <arbc/audio_engine/mix.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
@@ -321,7 +320,7 @@ TEST_CASE("priming classifies contributors onto the prefetch ring and fills the 
   // no block is mixed yet (the mixer would miss).
   std::vector<PrefetchWant> wants =
       ring.prime<LocalBlock>(&cache, Time::zero(), Time{span}, +1); // blocks 0..1
-  REQUIRE(wants.size() == 4);        // 2 tones x 2 blocks
+  REQUIRE(wants.size() == 4);                                       // 2 tones x 2 blocks
   REQUIRE(ring.blocks_mixed() == 0); // nothing mixed against a cold cache
 
   // Fill the wants (the pump's worker path), then re-prime: now resident -> mixed.
@@ -329,8 +328,9 @@ TEST_CASE("priming classifies contributors onto the prefetch ring and fills the 
     fill_want(cache, scene.resolver(), w);
   }
   const int dispatches_before = pull.dispatches();
-  const std::vector<PrefetchWant> wants2 = ring.prime<LocalBlock>(&cache, Time::zero(), Time{span}, +1);
-  REQUIRE(wants2.empty());          // fully warm
+  const std::vector<PrefetchWant> wants2 =
+      ring.prime<LocalBlock>(&cache, Time::zero(), Time{span}, +1);
+  REQUIRE(wants2.empty());           // fully warm
   REQUIRE(ring.blocks_mixed() == 2); // both blocks mixed
   // The mix pass hit the warmed cache for every contributor: ZERO new dispatch.
   REQUIRE(pull.dispatches() == dispatches_before);
@@ -339,8 +339,12 @@ TEST_CASE("priming classifies contributors onto the prefetch ring and fills the 
   const int dispatches_probe = pull.dispatches();
   std::vector<float> probe(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
   AudioBlock pblock{probe.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
-  const AudioRequest preq{TimeRange{Time::zero(), Time{span}}, k_rate, ChannelLayout::Stereo, pblock,
-                          Exactness::BestEffort, StateHandle{}};
+  const AudioRequest preq{TimeRange{Time::zero(), Time{span}},
+                          k_rate,
+                          ChannelLayout::Stereo,
+                          pblock,
+                          Exactness::BestEffort,
+                          StateHandle{}};
   auto pdone = std::make_shared<AudioCompletion>();
   pull.pull_audio(&a, preq, pdone);
   REQUIRE(pdone->settled());
@@ -365,9 +369,9 @@ TEST_CASE("reprime retains overlapping blocks and re-mixes only the newly-needed
   // Nudge the playhead forward by one block: window is now blocks 1..4. Blocks 1,2,3
   // are RETAINED (not re-mixed); block 0 is flushed; only block 4 is newly mixed.
   ring.reprime<LocalBlock>(nullptr, Time{span}, Time{3 * span}, +1); // blocks 1,2,3,4
-  REQUIRE(ring.blocks_mixed() == 5); // 4 + exactly one new block
-  REQUIRE_FALSE(ring.is_prepared(0)); // flushed
-  REQUIRE(ring.is_prepared(4));       // freshly mixed
+  REQUIRE(ring.blocks_mixed() == 5);                                 // 4 + exactly one new block
+  REQUIRE_FALSE(ring.is_prepared(0));                                // flushed
+  REQUIRE(ring.is_prepared(4));                                      // freshly mixed
   REQUIRE(ring.prepared_count() == 4);
 }
 
@@ -399,4 +403,248 @@ TEST_CASE("invalidate drops exactly the overlapped prepared blocks and re-mixes 
   ring.prime<LocalBlock>(nullptr, Time::zero(), Time{3 * span}, +1);
   REQUIRE(ring.blocks_mixed() == 5); // 4 + the one re-mixed block
   REQUIRE(ring.is_prepared(2));
+}
+
+namespace {
+
+// A below-rate leaf: honors at/below its native rate, reports achieved==native /
+// exact==false above it -- the below-rate contributor the ring's native re-request
+// warming targets (a tone always honors, so it cannot exercise this path).
+class BelowRateLeaf final : public Content {
+public:
+  explicit BelowRateLeaf(std::uint32_t native_rate) : d_native_rate(native_rate), d_facet(this) {}
+  std::optional<Rect> bounds() const override { return std::nullopt; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<RenderResult> render(const RenderRequest&,
+                                     std::shared_ptr<RenderCompletion> done) override {
+    done->fail(RenderError::ContentFailed);
+    return std::nullopt;
+  }
+  AudioFacet* audio() override { return &d_facet; }
+
+private:
+  class Facet final : public AudioFacet {
+  public:
+    explicit Facet(BelowRateLeaf* owner) : d_owner(owner) {}
+    std::optional<TimeRange> audio_extent() const override { return std::nullopt; }
+    Stability audio_stability() const override { return Stability::Static; }
+    std::optional<AudioResult> render_audio(const AudioRequest& request,
+                                            std::shared_ptr<AudioCompletion>) override {
+      const std::uint32_t ch = channel_count(request.layout);
+      for (std::uint32_t f = 0; f < request.target.frames; ++f) {
+        for (std::uint32_t c = 0; c < ch; ++c) {
+          request.target.samples[static_cast<std::size_t>(f) * ch + c] = 0.25F;
+        }
+      }
+      const std::uint32_t achieved = std::min(request.sample_rate, d_owner->d_native_rate);
+      return AudioResult{achieved, request.sample_rate <= d_owner->d_native_rate};
+    }
+
+  private:
+    BelowRateLeaf* d_owner;
+  };
+  std::uint32_t d_native_rate;
+  Facet d_facet;
+};
+
+} // namespace
+
+// enforces: 12-audio#lookahead-warms-recursive-contributor-closure
+TEST_CASE("the fill descends recursively and gates a nested contributor on its child closure") {
+  // A root composition embedding a (structurally simulated) nested composition of two
+  // leaves. The ring descends via the injected `nested_composition` enumerator (an L3
+  // NestedContent is exercised in tests/); here a leaf stands in for the nested
+  // content object, and the enumerator supplies the child-composition edge.
+  SineLeaf nested_stub(0, 0.0F); // the nested contributor placeholder (has an audio facet)
+  SineLeaf a(300, 0.6F);
+  SineLeaf b(700, 0.4F);
+
+  Model model;
+  std::unordered_map<ObjectId, Content*> binding;
+  std::unordered_map<const Content*, ObjectId> ids;
+  ObjectId c_inner{};
+  ObjectId c_root{};
+  ObjectId c_nest{};
+  {
+    auto tx = model.transact("nested scene");
+    c_inner = tx.add_composition(0.0, 0.0);
+    const ObjectId ca = tx.add_content(1);
+    const ObjectId cb = tx.add_content(1);
+    tx.attach_layer(c_inner, tx.add_layer(ca, Affine::identity()));
+    tx.attach_layer(c_inner, tx.add_layer(cb, Affine::identity()));
+    c_root = tx.add_composition(0.0, 0.0);
+    c_nest = tx.add_content(1);
+    tx.attach_layer(c_root, tx.add_layer(c_nest, Affine::identity()));
+    tx.commit();
+    binding[ca] = &a;
+    binding[cb] = &b;
+    binding[c_nest] = &nested_stub;
+    ids[&a] = ca;
+    ids[&b] = cb;
+    ids[&nested_stub] = c_nest;
+  }
+  const DocStatePtr doc = model.current();
+
+  LocalCache cache{64u * 1024 * 1024};
+  CachingPull pull(
+      &cache,
+      [&ids](const Content* c) {
+        const auto it = ids.find(c);
+        return it != ids.end() ? it->second : ObjectId{};
+      },
+      0);
+
+  LookaheadRingConfig cfg;
+  cfg.composition = c_root;
+  cfg.resolve = [&binding](ObjectId id) -> Content* {
+    const auto it = binding.find(id);
+    return it != binding.end() ? it->second : nullptr;
+  };
+  cfg.sample_rate = k_rate;
+  cfg.layout = ChannelLayout::Stereo;
+  cfg.block_frames = k_block_frames;
+  cfg.revision = 0;
+  cfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
+    return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
+  };
+  LookaheadRing ring(*doc, pull, cfg);
+
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  // Round 1: only the two GRANDCHILD leaves are dispatched (the nested contributor is
+  // gated on its child closure, warming bottom-up); nothing mixes yet.
+  std::vector<PrefetchWant> w1 = ring.prime<LocalBlock>(&cache, Time::zero(), Time{span}, +1);
+  REQUIRE(w1.size() == 4); // 2 leaves x 2 blocks
+  REQUIRE(ring.blocks_mixed() == 0);
+  for (const PrefetchWant& w : w1) {
+    fill_want(cache, cfg.resolve, w);
+  }
+
+  // Round 2: the grandchildren are resident, so the nested contributor is now
+  // dispatched (one per block); still no mix (the nested block is not yet resident).
+  std::vector<PrefetchWant> w2 = ring.prime<LocalBlock>(&cache, Time::zero(), Time{span}, +1);
+  REQUIRE(w2.size() == 2); // the nested contributor at blocks 0..1
+  REQUIRE(ring.blocks_mixed() == 0);
+  for (const PrefetchWant& w : w2) {
+    fill_want(cache, cfg.resolve, w);
+  }
+
+  // Round 3: the whole closure is resident -> both output blocks mix, no more wants,
+  // and the gate never mixed silence for an absent descendant.
+  std::vector<PrefetchWant> w3 = ring.prime<LocalBlock>(&cache, Time::zero(), Time{span}, +1);
+  REQUIRE(w3.empty());
+  REQUIRE(ring.blocks_mixed() == 2);
+  REQUIRE(ring.silence_mixed() == 0);
+}
+
+// enforces: 12-audio#lookahead-warms-recursive-contributor-closure
+TEST_CASE("the fill discovers a below-rate native re-request lazily from resident achieved_rate") {
+  BelowRateLeaf src(24'000); // native 24 kHz < 48 kHz working rate
+  Scene scene;
+  scene.add(&src);
+  const DocStatePtr doc = scene.model.current();
+
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  LocalCache cache{64u * 1024 * 1024};
+  CachingPull pull(&cache, scene.id_of(), 0);
+  LookaheadRing ring(*doc, pull, ring_config(scene));
+
+  // Round 1: the working-rate discovery block is the only want (the native rate is a
+  // render RESULT, unknowable yet); no mix.
+  std::vector<PrefetchWant> w1 = ring.prime<LocalBlock>(&cache, Time::zero(), Time{span}, +1);
+  REQUIRE(w1.size() == 2); // discovery block at blocks 0..1
+  for (const PrefetchWant& w : w1) {
+    REQUIRE(w.rate == k_rate);
+    fill_want(cache, scene.resolver(), w);
+  }
+  REQUIRE(ring.blocks_mixed() == 0);
+
+  // Round 2: the discovery block is resident and reports achieved_rate 24 kHz < 48 kHz,
+  // so the native re-request (a DISTINCT BlockKey at the native rate) is now emitted.
+  std::vector<PrefetchWant> w2 = ring.prime<LocalBlock>(&cache, Time::zero(), Time{span}, +1);
+  REQUIRE(w2.size() == 2); // one native re-request per block
+  for (const PrefetchWant& w : w2) {
+    REQUIRE(w.rate == 24'000); // the native rate, not the working rate
+    fill_want(cache, scene.resolver(), w);
+  }
+  REQUIRE(ring.blocks_mixed() == 0);
+
+  // Round 3: discovery + native both resident -> the blocks mix at full residency.
+  std::vector<PrefetchWant> w3 = ring.prime<LocalBlock>(&cache, Time::zero(), Time{span}, +1);
+  REQUIRE(w3.empty());
+  REQUIRE(ring.blocks_mixed() == 2);
+  REQUIRE(ring.silence_mixed() == 0);
+}
+
+// enforces: 12-audio#lookahead-warms-recursive-contributor-closure
+TEST_CASE("the recursive descent honors the Flat-mode culls: an inaudible child warms nothing") {
+  SineLeaf nested_stub(0, 0.0F);
+  SineLeaf a(300, 0.6F);
+  SineLeaf b(700, 0.4F);
+
+  Model model;
+  std::unordered_map<ObjectId, Content*> binding;
+  std::unordered_map<const Content*, ObjectId> ids;
+  ObjectId c_inner{};
+  ObjectId c_root{};
+  ObjectId c_nest{};
+  ObjectId lb{};
+  {
+    auto tx = model.transact("nested with a muted child");
+    c_inner = tx.add_composition(0.0, 0.0);
+    const ObjectId ca = tx.add_content(1);
+    const ObjectId cb = tx.add_content(1);
+    tx.attach_layer(c_inner, tx.add_layer(ca, Affine::identity()));
+    lb = tx.add_layer(cb, Affine::identity());
+    tx.attach_layer(c_inner, lb);
+    c_root = tx.add_composition(0.0, 0.0);
+    c_nest = tx.add_content(1);
+    tx.attach_layer(c_root, tx.add_layer(c_nest, Affine::identity()));
+    tx.commit();
+    binding[ca] = &a;
+    binding[cb] = &b;
+    binding[c_nest] = &nested_stub;
+    ids[&a] = ca;
+    ids[&b] = cb;
+    ids[&nested_stub] = c_nest;
+  }
+  {
+    auto tx = model.transact("mute the second child");
+    tx.set_audible(lb, false); // the inaudible cull (doc 12:86-87)
+    tx.commit();
+  }
+  const DocStatePtr doc = model.current();
+
+  LocalCache cache{64u * 1024 * 1024};
+  CachingPull pull(
+      &cache,
+      [&ids](const Content* c) {
+        const auto it = ids.find(c);
+        return it != ids.end() ? it->second : ObjectId{};
+      },
+      0);
+
+  LookaheadRingConfig cfg;
+  cfg.composition = c_root;
+  cfg.resolve = [&binding](ObjectId id) -> Content* {
+    const auto it = binding.find(id);
+    return it != binding.end() ? it->second : nullptr;
+  };
+  cfg.sample_rate = k_rate;
+  cfg.layout = ChannelLayout::Stereo;
+  cfg.block_frames = k_block_frames;
+  cfg.revision = 0;
+  cfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
+    return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
+  };
+  LookaheadRing ring(*doc, pull, cfg);
+
+  // Only the ONE audible grandchild is warmed (the muted child pulls nothing), so a
+  // single leaf want appears for block 0 -- the descent honors the mixer's cull.
+  std::vector<PrefetchWant> w1 = ring.prime<LocalBlock>(&cache, Time::zero(), Time{0}, +1);
+  REQUIRE(w1.size() == 1);
 }
