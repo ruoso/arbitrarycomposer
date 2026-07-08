@@ -23,6 +23,12 @@ jobs:
         run: python3 scripts/check_levels.py
       - name: claims register
         run: python3 scripts/check_claims.py
+      # RT-safety grep-lint (audio.rt_safety, doc 16:194-198, Decision D5): the
+      # non-Clang backstop for the ARBC_RT_NONBLOCKING call graph -- catches a
+      # forbidden token (new/malloc/lock/shared_ptr) in an annotated function on
+      # every push, even the GCC/MSVC matrix members that carry no RealtimeSanitizer.
+      - name: rt-safety lint
+        run: python3 scripts/check_rt_safety.py
 
   build-test:
     strategy:
@@ -39,6 +45,13 @@ jobs:
           # (validated green), so no test is excluded; the hidden `[.nightly]`
           # wide seed-sweeps are auto-excluded from ctest and run in nightly.
           - { name: gcc-tsan, os: ubuntu-latest, cxx: g++, preset: tsan }
+          # RealtimeSanitizer lane (audio.rt_safety, doc 16:70-73, Decision D1
+          # Layer A): Clang builds + runs the tiers under `-fsanitize=realtime`
+          # so the `[[clang::nonblocking]]` annotations on the device RT callback
+          # chain fire at runtime -- any lock/allocation/blocking syscall in the
+          # annotated graph is a failure. RTSan is Clang-only, so this rides the
+          # clang lane; GCC/MSVC keep Layer B + the grep-lint.
+          - { name: clang-rtsan, os: ubuntu-latest, cxx: clang++, preset: rtsan }
           - { name: msvc-debug, os: windows-latest, cxx: "", preset: win-dev }
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

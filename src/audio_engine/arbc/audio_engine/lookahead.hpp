@@ -2,6 +2,7 @@
 
 #include <arbc/audio_engine/mix.hpp>  // MixResolver, MixPolicy, mix_composition
 #include <arbc/base/ids.hpp>          // ObjectId
+#include <arbc/base/rt_safety.hpp>    // ARBC_RT_NONBLOCKING (the RT drain annotation)
 #include <arbc/base/time.hpp>         // Time, TimeRange
 #include <arbc/cache/key_shapes.hpp>  // BlockKey
 #include <arbc/cache/keyed_store.hpp> // KeyedStore, PriorityClass
@@ -9,12 +10,14 @@
 #include <arbc/media/audio_block.hpp> // AudioBlock, ChannelLayout, channel_count
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <span>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -89,6 +92,17 @@ struct LookaheadRingConfig {
   // terminates here and the pump's bounded round loop converges rather than
   // spinning it (Constraints 4,5, Decision D5).
   std::uint32_t max_depth{64};
+  // The capacity, in output blocks, of the lock-free prepared-block ring
+  // (audio.rt_safety, Decision D2). The ring is a fixed, pre-allocated array of
+  // per-slot seqlock-published `Slot`s indexed by `block_index mod capacity`, so
+  // the RT drain reads a slot without a lock and without ever reallocating
+  // (Constraint 3). It MUST exceed the lookahead depth in output blocks
+  // (`horizon / block_span` plus the declared-latency pre-roll) so no live,
+  // not-yet-drained block is overwritten by a block one wrap ahead; a chronic
+  // shortfall degrades to underrun exactly as an under-sized horizon does. Zero
+  // -> a generous default that covers every shipped horizon (device lookahead is
+  // 100-500ms; the default is thousands of blocks past that).
+  std::size_t ring_capacity{0};
 };
 
 // A per-contributor, per-output-block fill descriptor: the block the pump must
@@ -141,9 +155,12 @@ public:
   // Hand out prepared block `index`: copies the already-mixed samples + meta into
   // `out` and returns true if ready, else fills `out` with SILENCE, bumps the
   // underrun counter, and returns false. It NEVER calls `mix_composition` /
-  // `render_audio`, allocates, or blocks -- the RT-safety invariant the whole
-  // design buys (doc 12:31-34,155-164; Constraint 5).
-  bool drain(std::int64_t index, AudioBlock& out, AudioResult& meta);
+  // `render_audio`, allocates, takes a lock, or blocks -- the RT-safety invariant
+  // the whole design buys (doc 12:31-34,155-164; Constraint 5). Lock-free
+  // (Decision D2): it reads the target slot by index with acquire loads and a
+  // seqlock re-validation, so it runs concurrently with the producer's tick with
+  // no mutex. `ARBC_RT_NONBLOCKING` puts that under RealtimeSanitizer.
+  bool drain(std::int64_t index, AudioBlock& out, AudioResult& meta) ARBC_RT_NONBLOCKING;
 
   // Transport change (`seek`/`set_rate`/direction, doc 12:162-164): drop prepared
   // blocks no longer within the new `[playhead, playhead+horizon)` window; blocks
@@ -160,17 +177,27 @@ public:
   template <class BlockValue>
   void invalidate(KeyedStore<BlockKey, BlockValue>* blocks, TimeRange range);
 
-  // Behavioral counters (doc 16:54-62), wall-clock-free.
-  std::uint64_t blocks_mixed() const noexcept { return d_blocks_mixed; }
-  std::uint64_t underruns() const noexcept { return d_underruns; }
+  // Behavioral counters (doc 16:54-62), wall-clock-free. Atomic because the
+  // now-lock-free drain (Decision D2) increments `underruns` on the RT thread
+  // concurrently with a reader on another thread; the producer-only counters
+  // ride the same discipline for a uniform, TSan-clean read.
+  std::uint64_t blocks_mixed() const noexcept {
+    return d_blocks_mixed.load(std::memory_order_relaxed);
+  }
+  std::uint64_t underruns() const noexcept { return d_underruns.load(std::memory_order_relaxed); }
   // The transitive-residency gate invariant (Constraint 3, Decision D4): the count
   // of output blocks the fill ever mixed while a transitive contributor was still
   // absent -- structurally 0, since `prime` mixes a block only at full transitive
   // residency, so a threaded fill never mixes silence for a not-yet-rendered
   // descendant (doc 12:210-222 delta).
-  std::uint64_t silence_mixed() const noexcept { return d_silence_mixed; }
-  std::size_t prepared_count() const noexcept { return d_prepared.size(); }
-  bool is_prepared(std::int64_t index) const { return d_prepared.count(index) != 0; }
+  std::uint64_t silence_mixed() const noexcept {
+    return d_silence_mixed.load(std::memory_order_relaxed);
+  }
+  // The number of live prepared blocks in the ring, and whether a specific block
+  // index is prepared. Both read the producer-side slot state and so are called
+  // from the pump thread (or a quiesced test), never concurrently with the tick.
+  std::size_t prepared_count() const noexcept;
+  bool is_prepared(std::int64_t index) const;
 
   // The effective pre-roll honored at `playhead` (`audio.latency`, doc 12:200-212):
   // the maximum declared `latency()` among the anchor block's audible DIRECT (depth-1)
@@ -186,10 +213,30 @@ public:
   Time effective_preroll(Time playhead) const;
 
 private:
-  struct Prepared {
-    std::vector<float> samples; // interleaved, block_frames * channel_count(layout)
-    AudioResult meta{};
+  // A lock-free published slot in the prepared-output ring (Decision D2). The
+  // producer (the pump tick thread, serialized by `LookaheadPump::d_mutex`) mixes
+  // into `d_mix_scratch` then publishes it here under a seqlock generation; the RT
+  // drain reads it by index with acquire loads and a seqlock re-validation, taking
+  // NO lock. Every payload field is atomic (the `samples` buffer is read/written
+  // through `std::atomic_ref`), so the concurrent access is race-free by
+  // construction -- the TSan lanes see atomics, not a benign-but-flagged data race
+  // (Acceptance "Concurrency/TSan"). `samples` is pre-allocated at construction and
+  // never resized, so the drain's read of a stable pointer never reallocates and
+  // never allocates (Constraint 3). `index == k_empty_slot` marks an unoccupied /
+  // flushed slot; a reprime/seek retires the slot (bumping the generation) so a
+  // consumer read of a flushed slot returns silence + underrun.
+  struct Slot {
+    std::vector<float> samples;                    // interleaved, pre-sized; via atomic_ref
+    std::atomic<std::uint32_t> achieved_rate{0};   // AudioResult.achieved_rate
+    std::atomic<bool> exact{false};                // AudioResult.exact
+    std::atomic<std::int64_t> index{k_empty_slot}; // block index published here, or empty
+    std::atomic<std::uint64_t> seq{0};             // seqlock: even = stable, odd = writing
   };
+  static constexpr std::int64_t k_empty_slot = (std::numeric_limits<std::int64_t>::min)();
+  // The prepared-block ring capacity when `config.ring_capacity == 0`: generous
+  // enough to cover every shipped device lookahead depth (100-500ms of blocks) with
+  // orders of magnitude of headroom, so no live block is ever wrap-overwritten.
+  static constexpr std::size_t k_default_ring_capacity = 4096;
   // One audible/in-span contributor's child request shape for one output block --
   // the projection of `mix_layer`'s cull + child-window computation (the accepted
   // duplication, doc 17:41 Decision, exactly as `mix_layer` re-expresses nested).
@@ -222,6 +269,13 @@ private:
   std::optional<PrefetchWant> native_rerequest_want(const Contribution& c,
                                                     std::uint32_t achieved_rate) const;
   void mix_block(std::int64_t index);
+  // The ring slot backing block `index` (`index mod capacity`, sign-correct).
+  Slot& slot_at(std::int64_t index);
+  const Slot& slot_at(std::int64_t index) const;
+  // Publish `d_mix_scratch` + `meta` into `index`'s slot under a short seqlock
+  // write (producer side); retire a slot (mark it empty) under the same protocol.
+  void publish_slot(std::int64_t index, const AudioResult& meta);
+  void retire_slot(Slot& slot);
   std::vector<std::int64_t> horizon_blocks(Time playhead, Time horizon, int direction) const;
   // `horizon` lifted by the effective pre-roll (`audio.latency`, doc 12:200-212),
   // rounded UP to whole output-block spans so the warmed window grows by exactly
@@ -234,10 +288,17 @@ private:
   PullService& d_pull;
   LookaheadRingConfig d_config;
   std::int64_t d_block_span_flicks{0}; // block_frames * (flicks_per_second / rate)
-  std::unordered_map<std::int64_t, Prepared> d_prepared;
-  std::uint64_t d_blocks_mixed{0};
-  std::uint64_t d_underruns{0};
-  std::uint64_t d_silence_mixed{0};
+  // The lock-free prepared-block ring (Decision D2): a fixed, pre-allocated array
+  // of `d_capacity` seqlock slots, allocated once at construction and never
+  // resized, indexed by `block_index mod d_capacity`. `d_mix_scratch` is the
+  // producer-owned staging buffer `mix_block` mixes into before the short seqlock
+  // publish, so the RT drain never observes a half-mixed slot.
+  std::size_t d_capacity{0};
+  std::unique_ptr<Slot[]> d_slots;
+  std::vector<float> d_mix_scratch;
+  std::atomic<std::uint64_t> d_blocks_mixed{0};
+  std::atomic<std::uint64_t> d_underruns{0};
+  std::atomic<std::uint64_t> d_silence_mixed{0};
 
   // Recursive want-collection over one contributor subtree (Constraint 3, Decision
   // D4). Returns whether the mixer's `pull_audio` for `c` will fully hit (its
@@ -352,12 +413,14 @@ std::vector<PrefetchWant> LookaheadRing::reprime(KeyedStore<BlockKey, BlockValue
   const std::vector<std::int64_t> keep =
       horizon_blocks(playhead, lifted_horizon(playhead, horizon), direction);
   const std::unordered_set<std::int64_t> keepset(keep.begin(), keep.end());
-  for (auto it = d_prepared.begin(); it != d_prepared.end();) {
-    if (keepset.count(it->first) == 0) {
-      it = d_prepared.erase(it); // no longer ahead of the new playhead: flush
-    } else {
-      ++it; // still valid: retained, NOT re-mixed
+  for (std::size_t i = 0; i < d_capacity; ++i) {
+    Slot& slot = d_slots[i];
+    const std::int64_t idx = slot.index.load(std::memory_order_relaxed);
+    if (idx != k_empty_slot && keepset.count(idx) == 0) {
+      retire_slot(slot); // no longer ahead of the new playhead: flush (bumps the
+                         // slot generation so a concurrent drain of it underruns)
     }
+    // A slot whose block is still in the window is RETAINED, NOT re-mixed.
   }
   return prime(blocks, playhead, horizon, direction);
 }
@@ -365,14 +428,16 @@ std::vector<PrefetchWant> LookaheadRing::reprime(KeyedStore<BlockKey, BlockValue
 template <class BlockValue>
 void LookaheadRing::invalidate(KeyedStore<BlockKey, BlockValue>* blocks, TimeRange range) {
   // Drop prepared output blocks whose window intersects the damage range.
-  for (auto it = d_prepared.begin(); it != d_prepared.end();) {
-    const std::int64_t s = block_start(it->first).flicks;
+  for (std::size_t i = 0; i < d_capacity; ++i) {
+    Slot& slot = d_slots[i];
+    const std::int64_t idx = slot.index.load(std::memory_order_relaxed);
+    if (idx == k_empty_slot) {
+      continue;
+    }
+    const std::int64_t s = block_start(idx).flicks;
     const std::int64_t e = s + d_block_span_flicks;
-    const bool overlap = s < range.end.flicks && range.start.flicks < e;
-    if (overlap) {
-      it = d_prepared.erase(it);
-    } else {
-      ++it;
+    if (s < range.end.flicks && range.start.flicks < e) {
+      retire_slot(slot);
     }
   }
   // Drop cached per-content BlockKeys whose window intersects the damage range, so

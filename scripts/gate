@@ -41,4 +41,7 @@ python3 scripts/check_levels.py
 echo "gate: claims register"
 python3 scripts/check_claims.py
 
+echo "gate: rt-safety lint"
+python3 scripts/check_rt_safety.py
+
 echo "gate: OK"

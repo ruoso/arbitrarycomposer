@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arbc/base/rational_time.hpp>        // Rational
+#include <arbc/base/rt_safety.hpp>            // ARBC_RT_NONBLOCKING (RT callback annotations)
 #include <arbc/base/time.hpp>                 // Time
 #include <arbc/media/audio_block.hpp>         // ChannelLayout
 #include <arbc/media/streaming_resampler.hpp> // StreamingResampler
@@ -120,14 +121,18 @@ public:
   }
 
 private:
-  void fill_rt(float* out, std::uint32_t frames); // the device RT callback body
-  void drain_block();                             // pull one working block into d_scratch (RT)
-  void run_master();                              // the owner-thread loop
+  // The device RT callback body and its RT-thread callees. All are
+  // `ARBC_RT_NONBLOCKING` (audio.rt_safety): under RealtimeSanitizer their whole
+  // call graph must issue no lock / allocation / blocking syscall; `fill_rt` arms
+  // the `RtScope` guard for the debug-hardened Layer-B backstop.
+  void fill_rt(float* out, std::uint32_t frames) ARBC_RT_NONBLOCKING; // device RT callback
+  void drain_block() ARBC_RT_NONBLOCKING; // pull one working block into d_scratch (RT)
+  void run_master();                      // the owner-thread loop
   void master_step();
   // Remix `frames` interleaved working-LAYOUT frames (already at the device RATE --
   // the resampler runs first) to the device layout. Pure, allocation-free (memcpy
   // for an identity layout; average/duplicate for a mono<->stereo remap).
-  void convert_frames(const float* src, float* dst, std::uint32_t frames) const;
+  void convert_frames(const float* src, float* dst, std::uint32_t frames) const ARBC_RT_NONBLOCKING;
   // The first output-block index the device draws from: the block covering the
   // transport's current playhead, so the drain cursor starts aligned with the clock.
   std::int64_t start_block_index() const;

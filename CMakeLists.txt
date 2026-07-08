@@ -43,6 +43,19 @@ if(ARBC_COVERAGE)
   target_link_options(arbc_build_flags INTERFACE --coverage)
 endif()
 
+# RT-safety Layer B (audio.rt_safety, doc 16:70-73,103, Decision D1). The global
+# `operator new`/`operator delete` guard and the `RtScope` aborts ride the
+# debug-hardened per-push build: a plain Debug build with NO sanitizer and NO
+# coverage instrumentation. The sanitizer lanes (asan/tsan/rtsan) own the global
+# allocator themselves and RealtimeSanitizer is the Clang-side catch (Layer A);
+# the coverage lane is excluded so the build-failing abort branch never has to be
+# "covered" (it aborts the instant it runs); Release carries no guard. The define
+# rides arbc_build_flags, which every component and test links, so the base TU
+# that owns the override and every RT-chain TU see it uniformly.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARBC_SANITIZERS AND NOT ARBC_COVERAGE)
+  target_compile_definitions(arbc_build_flags INTERFACE ARBC_RT_HARDENED)
+endif()
+
 # Benchmarks (design doc 15/16 tier 9) are OFF by default so no wall-clock cost
 # enters the per-push gate: dev/asan/coverage builds neither fetch Google
 # Benchmark nor compile the bench targets. The `bench` preset (Release) turns

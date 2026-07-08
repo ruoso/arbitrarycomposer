@@ -763,13 +763,13 @@ void StreamingResampler::configure(std::uint32_t src_rate, std::uint32_t dst_rat
   reset();
 }
 
-void StreamingResampler::reset() noexcept {
+void StreamingResampler::reset() noexcept ARBC_RT_NONBLOCKING {
   d_hist_len = 0;
   d_hist_base = 0;
   d_out_index = 0;
 }
 
-bool StreamingResampler::can_produce() const noexcept {
+bool StreamingResampler::can_produce() const noexcept ARBC_RT_NONBLOCKING {
   if (d_dst_rate == 0) {
     return false;
   }
@@ -779,7 +779,7 @@ bool StreamingResampler::can_produce() const noexcept {
          support_newest(fp, static_cast<std::int64_t>(d_taps));
 }
 
-void StreamingResampler::produce(float* out_frame) noexcept {
+void StreamingResampler::produce(float* out_frame) noexcept ARBC_RT_NONBLOCKING {
   // Select the active bank without a stored pointer (copy-safe): the frozen
   // input-Nyquist table upsampling / matched, the generated widened bank decimating.
   const float* coeffs = d_dec_coeffs.empty() ? k_resampler_coeffs.data() : d_dec_coeffs.data();
@@ -799,7 +799,8 @@ void StreamingResampler::produce(float* out_frame) noexcept {
   ++d_out_index;
 }
 
-void StreamingResampler::push_input(const float* samples, std::uint32_t frames) {
+void StreamingResampler::push_input(const float* samples,
+                                    std::uint32_t frames) ARBC_RT_NONBLOCKING {
   if (frames == 0) {
     return;
   }

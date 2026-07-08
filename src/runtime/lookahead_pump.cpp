@@ -33,11 +33,14 @@ LookaheadPump::~LookaheadPump() {
   }
 }
 
-bool LookaheadPump::drain(std::int64_t index, AudioBlock& out, AudioResult& meta) {
-  std::lock_guard<std::mutex> lock(d_mutex);
-  // Serialized with the tick's ring mutation; `LookaheadRing::drain` itself never
-  // mixes / allocates / blocks (the RT-safety invariant). A lock-free double-buffer
-  // for a true RT device thread is `audio.device_monitor`'s concern.
+bool LookaheadPump::drain(std::int64_t index, AudioBlock& out,
+                          AudioResult& meta) ARBC_RT_NONBLOCKING {
+  // Lock-free (audio.rt_safety, Decision D2): `LookaheadRing::drain` reads the
+  // target slot through a per-slot seqlock, so the RT consumer takes NO mutex and
+  // runs concurrently with the pump tick's ring mutation. The `d_mutex` that used
+  // to guard this call was the one blocking op left on the device RT callback chain
+  // (the reserved double-buffer, device_monitor.hpp:34-36); it is gone now, not
+  // annotated around a still-blocking op (Constraint 1). It never mixes/allocates.
   return d_ring.drain(index, out, meta);
 }
 

@@ -4,8 +4,11 @@
 #include <arbc/base/time.hpp>
 #include <arbc/contract/content.hpp> // Content, AudioFacet::latency()
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 
@@ -18,6 +21,74 @@ LookaheadRing::LookaheadRing(const DocRoot& doc, PullService& pull, LookaheadRin
         Time::flicks_per_second / static_cast<std::int64_t>(d_config.sample_rate);
     d_block_span_flicks = static_cast<std::int64_t>(d_config.block_frames) * fpf;
   }
+  // Allocate the fixed lock-free prepared-block ring once (Decision D2,
+  // Constraint 3): each slot's sample buffer is pre-sized to one output block and
+  // never resized, so the RT drain neither allocates nor races a reallocation. The
+  // producer-owned `d_mix_scratch` is where `mix_block` mixes before the short
+  // seqlock publish.
+  d_capacity = d_config.ring_capacity != 0 ? d_config.ring_capacity : k_default_ring_capacity;
+  const std::size_t frame_floats =
+      static_cast<std::size_t>(d_config.block_frames) * channel_count(d_config.layout);
+  d_slots = std::make_unique<Slot[]>(d_capacity);
+  for (std::size_t i = 0; i < d_capacity; ++i) {
+    d_slots[i].samples.assign(frame_floats, 0.0F);
+  }
+  d_mix_scratch.assign(frame_floats, 0.0F);
+}
+
+LookaheadRing::Slot& LookaheadRing::slot_at(std::int64_t index) {
+  const std::int64_t cap = static_cast<std::int64_t>(d_capacity);
+  return d_slots[static_cast<std::size_t>(((index % cap) + cap) % cap)];
+}
+
+const LookaheadRing::Slot& LookaheadRing::slot_at(std::int64_t index) const {
+  const std::int64_t cap = static_cast<std::int64_t>(d_capacity);
+  return d_slots[static_cast<std::size_t>(((index % cap) + cap) % cap)];
+}
+
+void LookaheadRing::publish_slot(std::int64_t index, const AudioResult& meta) {
+  // Seqlock write (producer side): mark the slot writing (odd), publish the payload
+  // through atomic_ref so the concurrent RT read is race-free, then mark it stable
+  // (even) with a release so a reader that observes the even generation also
+  // observes the payload. The write critical section is a bounded copy of one
+  // pre-mixed block -- the RT reader only ever retries across it, never blocks.
+  Slot& slot = slot_at(index);
+  const std::uint64_t s = slot.seq.load(std::memory_order_relaxed);
+  slot.seq.store(s + 1, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  const std::size_t n = d_mix_scratch.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    std::atomic_ref<float>(slot.samples[i]).store(d_mix_scratch[i], std::memory_order_relaxed);
+  }
+  slot.achieved_rate.store(meta.achieved_rate, std::memory_order_relaxed);
+  slot.exact.store(meta.exact, std::memory_order_relaxed);
+  slot.index.store(index, std::memory_order_relaxed);
+  slot.seq.store(s + 2, std::memory_order_release);
+}
+
+void LookaheadRing::retire_slot(Slot& slot) {
+  // Seqlock write that empties a slot on reprime/damage: the generation bump makes
+  // a concurrent drain of this block re-validate and see the empty index, returning
+  // silence + underrun (composes with seek_drain_realign's cursor re-seat).
+  const std::uint64_t s = slot.seq.load(std::memory_order_relaxed);
+  slot.seq.store(s + 1, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  slot.index.store(k_empty_slot, std::memory_order_relaxed);
+  slot.seq.store(s + 2, std::memory_order_release);
+}
+
+std::size_t LookaheadRing::prepared_count() const noexcept {
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < d_capacity; ++i) {
+    if (d_slots[i].index.load(std::memory_order_relaxed) != k_empty_slot) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+bool LookaheadRing::is_prepared(std::int64_t index) const {
+  return slot_at(index).index.load(std::memory_order_relaxed) == index;
 }
 
 std::int64_t LookaheadRing::block_index_at(Time t) const {
@@ -228,10 +299,11 @@ LookaheadRing::native_rerequest_want(const Contribution& c, std::uint32_t achiev
 }
 
 void LookaheadRing::mix_block(std::int64_t index) {
-  const std::uint32_t ch = channel_count(d_config.layout);
-  Prepared prepared;
-  prepared.samples.assign(static_cast<std::size_t>(d_config.block_frames) * ch, 0.0F);
-  AudioBlock block{prepared.samples.data(), d_config.block_frames, d_config.layout,
+  // Mix into the producer-owned scratch (off the RT thread; allocation here is
+  // fine), then publish it into the slot with a short seqlock write so the RT drain
+  // never observes a half-mixed buffer (Decision D2).
+  std::fill(d_mix_scratch.begin(), d_mix_scratch.end(), 0.0F);
+  AudioBlock block{d_mix_scratch.data(), d_config.block_frames, d_config.layout,
                    d_config.sample_rate};
   const Time win_start = block_start(index);
   const std::int64_t fpf =
@@ -247,24 +319,44 @@ void LookaheadRing::mix_block(std::int64_t index) {
   };
   // The ring renders nothing itself beyond calling its sibling `mix_composition`
   // once per prepared output block (doc 12:11-21,150-208).
-  prepared.meta =
+  const AudioResult meta =
       mix_composition(d_doc, d_config.composition, d_config.resolve, d_pull, req, d_config.policy);
-  d_prepared[index] = std::move(prepared);
-  ++d_blocks_mixed;
+  publish_slot(index, meta);
+  d_blocks_mixed.fetch_add(1, std::memory_order_relaxed);
 }
 
-bool LookaheadRing::drain(std::int64_t index, AudioBlock& out, AudioResult& meta) {
+bool LookaheadRing::drain(std::int64_t index, AudioBlock& out,
+                          AudioResult& meta) ARBC_RT_NONBLOCKING {
   const std::size_t n = static_cast<std::size_t>(out.frames) * channel_count(out.layout);
-  const auto it = d_prepared.find(index);
-  if (it != d_prepared.end() && it->second.samples.size() == n) {
-    // Pure consume: copy the already-mixed block. No mix, no allocation, no block.
-    if (out.samples != nullptr) {
+  Slot& slot = slot_at(index);
+  // Lock-free seqlock read (Decision D2): acquire the generation, copy the payload
+  // through atomic_ref, then re-validate. A bounded retry absorbs the rare case of
+  // catching the producer mid-publish (in steady state the drained block was mixed
+  // many ticks ago, so the read is uncontended and never retries -- underruns stay
+  // 0). No lock, no allocation, no block: pure consume, RealtimeSanitizer-clean.
+  constexpr int k_attempts = 4;
+  for (int attempt = 0; attempt < k_attempts; ++attempt) {
+    const std::uint64_t s1 = slot.seq.load(std::memory_order_acquire);
+    if ((s1 & 1U) != 0U) {
+      continue; // a publish is in progress -> retry
+    }
+    const std::int64_t have = slot.index.load(std::memory_order_relaxed);
+    const std::uint32_t ar = slot.achieved_rate.load(std::memory_order_relaxed);
+    const bool ex = slot.exact.load(std::memory_order_relaxed);
+    if (have == index && out.samples != nullptr && slot.samples.size() == n) {
       for (std::size_t i = 0; i < n; ++i) {
-        out.samples[i] = it->second.samples[i];
+        out.samples[i] = std::atomic_ref<float>(slot.samples[i]).load(std::memory_order_relaxed);
       }
     }
-    meta = it->second.meta;
-    return true;
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (slot.seq.load(std::memory_order_relaxed) != s1) {
+      continue; // torn: the producer republished this slot during the read -> retry
+    }
+    if (have == index) {
+      meta = AudioResult{ar, ex};
+      return true; // consistent snapshot of a ready block
+    }
+    break; // stable read of a different / empty block -> underrun
   }
   // Underrun: silence + a counter, NEVER a synchronous mix (Constraint 5,
   // Decision "the drain path is pure-consume"). The correct response to chronic
@@ -275,7 +367,7 @@ bool LookaheadRing::drain(std::int64_t index, AudioBlock& out, AudioResult& meta
     }
   }
   meta = AudioResult{out.rate, true};
-  ++d_underruns;
+  d_underruns.fetch_add(1, std::memory_order_relaxed);
   return false;
 }
 

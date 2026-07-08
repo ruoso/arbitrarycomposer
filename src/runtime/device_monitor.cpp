@@ -1,3 +1,4 @@
+#include <arbc/base/rt_safety.hpp> // RtScope, ARBC_RT_NONBLOCKING
 #include <arbc/runtime/device_monitor.hpp>
 
 #include <cstring>
@@ -115,7 +116,8 @@ std::int64_t DeviceMonitor::start_block_index() const {
   return p >= 0 ? p / span : -((-p + span - 1) / span);
 }
 
-void DeviceMonitor::convert_frames(const float* src, float* dst, std::uint32_t frames) const {
+void DeviceMonitor::convert_frames(const float* src, float* dst,
+                                   std::uint32_t frames) const ARBC_RT_NONBLOCKING {
   if (d_config.working_layout == d_device.layout) {
     std::memcpy(dst, src, static_cast<std::size_t>(frames) * d_working_channels * sizeof(float));
     return;
@@ -140,7 +142,7 @@ void DeviceMonitor::convert_frames(const float* src, float* dst, std::uint32_t f
   }
 }
 
-void DeviceMonitor::drain_block() {
+void DeviceMonitor::drain_block() ARBC_RT_NONBLOCKING {
   AudioBlock block{d_scratch.data(), d_config.block_frames, d_config.working_layout,
                    d_config.working_rate};
   AudioResult meta{};
@@ -154,11 +156,18 @@ void DeviceMonitor::drain_block() {
   d_carry_pos = 0;
 }
 
-void DeviceMonitor::fill_rt(float* out, std::uint32_t frames) {
-  // RT-safe (Constraint 1): only `pump.drain` (never a mix), a pure layout
-  // conversion (and the pre-sized streaming resampler under SRC), and one atomic
-  // increment. No allocation -- `d_scratch` / `d_src_out` / the resampler are
-  // pre-sized; `out` is the caller's device buffer.
+void DeviceMonitor::fill_rt(float* out, std::uint32_t frames) ARBC_RT_NONBLOCKING {
+  // Arm the debug RT guard for the whole callback body (audio.rt_safety, Layer B,
+  // Decision D1): under the debug-hardened build any heap allocation on this thread
+  // now aborts build-failingly, and `RtScope::allocations()` counts them for the
+  // enforcement test. `ARBC_RT_NONBLOCKING` puts the same body under
+  // RealtimeSanitizer on the Clang rtsan lane (Layer A). The guard is a thread-local
+  // increment -- no allocation, no lock.
+  RtScope rt_guard;
+  // RT-safe (Constraint 1): only `pump.drain` (a LOCK-FREE seqlock read, never a
+  // mix), a pure layout conversion (and the pre-sized streaming resampler under
+  // SRC), and one atomic increment. No allocation -- `d_scratch` / `d_src_out` /
+  // the resampler are pre-sized; `out` is the caller's device buffer.
   //
   // Drain-cursor realign (audio.seek_drain_realign, D1/Constraint 3): on a rebase the
   // owner published the block index covering the reprimed playhead; re-seat the cursor

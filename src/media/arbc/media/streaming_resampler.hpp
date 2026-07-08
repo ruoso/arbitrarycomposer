@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/base/rt_safety.hpp> // ARBC_RT_NONBLOCKING (RT feed/produce annotations)
 #include <arbc/media/audio_block.hpp>
 
 #include <cstdint>
@@ -54,21 +55,22 @@ public:
   // Flush the phase cursor + filter-support history so the next output restarts a
   // fresh whole-stream reconstruction from the next pushed input frame (the
   // transport-change reprime, doc 12:200-206, D4). Keeps the configured sizing.
-  void reset() noexcept;
+  // RT-side (audio.rt_safety): allocation-free, on the device callback thread.
+  void reset() noexcept ARBC_RT_NONBLOCKING;
 
   // Append `frames` interleaved input frames (`channels * frames` floats). First
   // drops history frames no future output can reach (allocation-free compaction),
   // so a bounded window stays within the configured capacity. Precondition:
   // `frames <= block_frames`, with all producible output drained between pushes.
-  void push_input(const float* samples, std::uint32_t frames);
+  void push_input(const float* samples, std::uint32_t frames) ARBC_RT_NONBLOCKING;
 
   // Whether the next output frame's whole filter support is resident. False means
   // push more input before producing.
-  bool can_produce() const noexcept;
+  bool can_produce() const noexcept ARBC_RT_NONBLOCKING;
 
   // Produce one output frame (`channels` interleaved floats) into `out_frame` and
   // advance the output cursor. Precondition: `can_produce()`.
-  void produce(float* out_frame) noexcept;
+  void produce(float* out_frame) noexcept ARBC_RT_NONBLOCKING;
 
 private:
   std::uint32_t d_src_rate{0};

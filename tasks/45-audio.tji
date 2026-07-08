@@ -80,7 +80,8 @@ task audio "Audio" {
   task rt_safety "RT-safety enforcement" {
     effort 1d
     allocate team
+    complete 100
     depends !device_monitor
-    note "RealtimeSanitizer annotations on the callback chain + debug allocator/refcount hooks asserting nothing forbidden on RT threads; build-failing, not conventional. Docs 12/16."
+    note "RealtimeSanitizer annotations on the callback chain + debug allocator/refcount hooks asserting nothing forbidden on RT threads; build-failing, not conventional. Docs 12/16. Refinement: tasks/refinements/audio/rt_safety.md"
   }
 }

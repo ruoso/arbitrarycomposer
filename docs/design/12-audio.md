@@ -178,7 +178,12 @@ it pulls the mix. Two implementations matter:
   callback — the price is lookahead latency on transport changes
   (play/seek flushes and re-primes the ring), which is the standard,
   correct trade for a plugin host that cannot vouch for third-party
-  RT-safety.
+  RT-safety. The whole callback chain — the device fill, the drain that
+  hands a prepared block from the ring to the callback, and the edge
+  format/rate conversion — is itself lock-free, allocation-free, and
+  refcount-free: nothing on it blocks. This is not a convention but a
+  build-failing guarantee, enforced by RealtimeSanitizer annotations on the
+  chain plus a debug allocator/refcount/lock guard (doc 16).
 - **Export monitor** (offline): sample-exact rendering of the mix over a
   time range, driven by the offline renderer's frame loop; snapshot
   semantics per doc 02 keep an export consistent with concurrently-edited

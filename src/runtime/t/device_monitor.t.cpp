@@ -1,5 +1,6 @@
 #include <arbc/audio_engine/lookahead.hpp>
 #include <arbc/audio_engine/mix.hpp>
+#include <arbc/base/rt_safety.hpp> // RtScope (the RT-safety enforcement guard)
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/compositor/pull_service.hpp> // BlockCache, AudioBlockValue
@@ -1228,4 +1229,122 @@ TEST_CASE(
   REQUIRE(*a == *b);
   REQUIRE(bare.position() == ref.position());
   REQUIRE(bare.position() != Time::zero()); // it genuinely advanced (non-vacuous)
+}
+
+// enforces: 12-audio#rt-callback-chain-is-nonblocking
+TEST_CASE("the device RT callback chain is nonblocking under an armed RtScope") {
+  // Structural upgrade of device_monitor's callback-purity counter (audio.rt_safety,
+  // Decision D1/D2). `fill_rt` arms an `RtScope` for the whole callback body, so under
+  // the debug-hardened build a heap allocation on the chain aborts build-failingly and
+  // `RtScope::allocations()` counts them; the `[[clang::nonblocking]]` annotations put
+  // the same chain under RealtimeSanitizer on the rtsan lane. Here we drive the real
+  // callback across the shipped scenarios and assert zero allocation / lock / refcount
+  // on the drain sweep -- lock-free by construction now that the pump-drain mutex is
+  // gone (D2). `FakeDeviceSink::deliver` runs `fill_rt` on this thread, so the
+  // thread-local counters read back what the callback did.
+  auto run = [&](std::uint32_t working_rate, std::uint32_t device_rate, std::int64_t hb,
+                 bool do_seek, bool starve) {
+    const std::int64_t wfpf = Time::flicks_per_second / static_cast<std::int64_t>(working_rate);
+    const std::int64_t wspan = static_cast<std::int64_t>(k_block_frames) * wfpf;
+
+    SineLeaf a(440, 0.5F);
+    Scene scene;
+    scene.add(&a);
+    const DocStatePtr doc = scene.model.current();
+
+    BlockCache blocks{64u * 1024 * 1024};
+    CachingPull pull(&blocks, scene.id_of(), doc->revision());
+    LookaheadRingConfig ringcfg;
+    ringcfg.composition = scene.comp;
+    ringcfg.resolve = scene.resolver();
+    ringcfg.sample_rate = working_rate;
+    ringcfg.layout = ChannelLayout::Stereo;
+    ringcfg.block_frames = k_block_frames;
+    ringcfg.revision = doc->revision();
+    LookaheadRing ring(*doc, pull, ringcfg);
+
+    AudioWorkerPoolConfig poolcfg;
+    poolcfg.worker_count = 0;
+    AudioWorkerPool pool(poolcfg);
+
+    Transport transport{Time::zero()};
+    std::atomic<DeviceMonitor*> monptr{nullptr};
+    LookaheadPumpConfig pumpcfg;
+    pumpcfg.horizon = Time{(hb - 1) * wspan};
+    pumpcfg.resolve = scene.resolver();
+    pumpcfg.sample_rate = working_rate;
+    pumpcfg.layout = ChannelLayout::Stereo;
+    pumpcfg.block_frames = k_block_frames;
+    pumpcfg.tick_period = std::chrono::hours(1);
+    pumpcfg.tick_source = [] { return std::uint64_t{0}; };
+    pumpcfg.playhead_source = [&monptr] {
+      DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+      return m != nullptr ? m->playhead_snapshot() : Time::zero();
+    };
+    pumpcfg.direction_source = [&monptr] {
+      DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+      return m != nullptr ? m->direction_snapshot() : 1;
+    };
+    LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+    FakeDeviceSink sink{DeviceFormat{device_rate, ChannelLayout::Stereo}};
+    DeviceMonitorConfig moncfg;
+    moncfg.working_rate = working_rate;
+    moncfg.working_layout = ChannelLayout::Stereo;
+    moncfg.block_frames = k_block_frames;
+    moncfg.master_period = std::chrono::hours(1);
+    DeviceMonitor monitor(transport, pump, sink, moncfg);
+    monptr.store(&monitor, std::memory_order_release);
+
+    pump.flush();
+    pump.flush();
+
+    // Arm-and-measure: reset the thread-local RT counters, drive the real device
+    // callback, and read back that the chain performed no forbidden operation.
+    RtScope::reset_counts();
+    const std::vector<std::uint32_t> chunks = {17, 31, 5, 40, 22};
+    if (starve) {
+      // Deliver well past the tiny primed horizon: the drain's silence + underrun
+      // branch runs on the RT thread and must be allocation-free too.
+      for (int i = 0; i < 8; ++i) {
+        sink.deliver(k_block_frames);
+      }
+      REQUIRE(monitor.underruns() > 0);
+    } else {
+      for (const std::uint32_t n : chunks) {
+        sink.deliver(n);
+      }
+      REQUIRE(monitor.underruns() == 0);
+      if (do_seek) {
+        // The post-seek realign consume is on the same armed callback: re-seat the
+        // drain to a block boundary, reprime, and drive the realigned drain.
+        monitor.seek(Time{3 * wspan});
+        monitor.flush_master();
+        pump.flush();
+        for (const std::uint32_t n : chunks) {
+          sink.deliver(n);
+        }
+        REQUIRE(monitor.drain_realigns() > 0);
+        REQUIRE(monitor.underruns() == 0);
+      }
+    }
+    // Zero heap allocations, zero lock acquisitions, zero refcount operations across
+    // the whole RT callback chain -- the build-failing form of the purity check.
+    REQUIRE(RtScope::allocations() == 0);
+    REQUIRE(RtScope::locks() == 0);
+    REQUIRE(RtScope::refcounts() == 0);
+
+    pump.request_stop();
+  };
+
+  SECTION("matched-rate 1:1 drain, forward + post-seek realign") {
+    run(k_rate, k_rate, 48, /*do_seek=*/true, /*starve=*/false);
+  }
+  SECTION("device-edge upsample 48k->96k") {
+    run(k_rate, 96'000, 48, /*do_seek=*/false, /*starve=*/false);
+  }
+  SECTION("device-edge decimate 48k->24k") {
+    run(k_rate, 24'000, 48, /*do_seek=*/false, /*starve=*/false);
+  }
+  SECTION("starved underrun path") { run(k_rate, k_rate, 2, /*do_seek=*/false, /*starve=*/true); }
 }
