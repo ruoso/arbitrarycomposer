@@ -643,3 +643,152 @@ TEST_CASE("TSan: threaded recursive fill of nested + below-rate drains the inlin
     REQUIRE(bytes_equal(got, want));
   }
 }
+
+namespace {
+
+constexpr double k_view = 100.0;
+
+// The direct Spatial mix oracle for one output block (audio.spatial_nested_warm_context):
+// mix the root composition inline with the monitor's `Spatialization` context (so the
+// nested contributor renders Spatial), then apply the camera post-scale by `accum_atten`
+// exactly as `LookaheadRing::mix_block` does.
+std::vector<float> spatial_direct_mix(const DocRoot& doc, ObjectId root, const MixResolver& resolve,
+                                      std::int64_t index, const Spatialization& seed) {
+  CachingPull inline_pull(nullptr, {}, 0); // no cache -> nested renders Spatial inline
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+  const std::int64_t t0 = index * span;
+  std::vector<float> buf(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+  AudioBlock block{buf.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+  const AudioRequest req{TimeRange{Time{t0}, Time{t0 + span}},
+                         k_rate,
+                         ChannelLayout::Stereo,
+                         block,
+                         Exactness::BestEffort,
+                         StateHandle{},
+                         seed};
+  mix_composition(doc, root, resolve, inline_pull, req, MixPolicy::Spatial);
+  for (float& s : buf) {
+    s *= seed.accum_atten;
+  }
+  return buf;
+}
+
+} // namespace
+
+// enforces: 12-audio#spatial-warms-nested-with-pull-context
+TEST_CASE("TSan: threaded Spatial nested fill drains the inline Spatial oracle, settle-once") {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  // A Spatial monitor over a nested composition holding one off-center child tone -- the
+  // internal Spatial mix differs from Flat, so warming the nested contributor Flat would
+  // diverge from the inline Spatial oracle (the pre-fix bug this test guards).
+  const Spatialization seed{Affine::identity(), k_view, k_view, 1.0F, k_sub_audible_atten};
+  ToneContent child(770, 0.5F);
+
+  Model model;
+  std::unordered_map<ObjectId, Content*> binding;
+  std::unordered_map<const Content*, ObjectId> ids;
+  ObjectId c_inner{};
+  ObjectId c_root{};
+  ObjectId c_nest{};
+  {
+    auto tx = model.transact("spatial nested scene");
+    c_inner = tx.add_composition(0.0, 0.0);
+    const ObjectId c_child = tx.add_content(1);
+    tx.attach_layer(c_inner, tx.add_layer(c_child, Affine::translation(k_view / 4.0, 0.0)));
+    c_nest = tx.add_content(1);
+    c_root = tx.add_composition(0.0, 0.0);
+    tx.attach_layer(c_root, tx.add_layer(c_nest, Affine::translation(k_view / 2.0, 0.0)));
+    tx.commit();
+    binding[c_child] = &child;
+    ids[&child] = c_child;
+  }
+  const DocStatePtr doc = model.current();
+
+  auto resolver = [&binding](ObjectId id) -> Content* {
+    const auto it = binding.find(id);
+    return it != binding.end() ? it->second : nullptr;
+  };
+  auto id_of = [&ids](const Content* c) {
+    const auto it = ids.find(c);
+    return it != ids.end() ? it->second : ObjectId{};
+  };
+
+  BlockCache blocks{64u * 1024 * 1024};
+  CachingPull pull(&blocks, id_of, doc->revision());
+
+  CpuBackend backend;
+  NestedContent nested(c_inner);
+  nested.attach(pull, backend, resolver, *doc);
+  binding[c_nest] = &nested;
+  ids[&nested] = c_nest;
+
+  LookaheadRingConfig ringcfg;
+  ringcfg.composition = c_root;
+  ringcfg.resolve = resolver;
+  ringcfg.sample_rate = k_rate;
+  ringcfg.layout = ChannelLayout::Stereo;
+  ringcfg.block_frames = k_block_frames;
+  ringcfg.revision = doc->revision();
+  ringcfg.policy = MixPolicy::Spatial;
+  ringcfg.spatial = seed;
+  ringcfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
+    return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
+  };
+  LookaheadRing ring(*doc, pull, ringcfg);
+
+  AudioWorkerPoolConfig poolcfg;
+  poolcfg.worker_count = 8;
+  poolcfg.serialize_predicate = [&nested](const Content* c) { return c == &nested; };
+  AudioWorkerPool pool(poolcfg);
+
+  std::atomic<std::uint64_t> fake_tick{0};
+  LookaheadPumpConfig pumpcfg;
+  pumpcfg.horizon = Time{(k_blocks - 1) * span};
+  pumpcfg.resolve = resolver;
+  pumpcfg.sample_rate = k_rate;
+  pumpcfg.layout = ChannelLayout::Stereo;
+  pumpcfg.block_frames = k_block_frames;
+  pumpcfg.tick_period = std::chrono::hours(1);
+  pumpcfg.tick_source = [&fake_tick] { return fake_tick.fetch_add(1, std::memory_order_relaxed); };
+  pumpcfg.playhead_source = [] { return Time::zero(); };
+  LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+  std::atomic<bool> stop{false};
+  std::thread consumer([&] {
+    while (!stop.load(std::memory_order_acquire)) {
+      for (std::int64_t i = 0; i < k_blocks; ++i) {
+        std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+        AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+        AudioResult meta{};
+        (void)pump.drain(i, out, meta);
+      }
+      std::this_thread::yield();
+    }
+  });
+
+  for (int t = 0; t < 5; ++t) {
+    pump.flush();
+  }
+
+  stop.store(true, std::memory_order_release);
+  consumer.join();
+  pump.request_stop();
+
+  REQUIRE(pool.tasks_completed() == pool.tasks_submitted());
+  REQUIRE(pool.tasks_completed() > 0);
+  REQUIRE(ring.silence_mixed() == 0);
+
+  // The concurrently-filled Spatial ring drains byte-identical to the inline Spatial
+  // oracle: each nested contributor block was warmed under the per-edge context the
+  // mixer pulls it with, so the threaded fill never substituted a Flat-warmed block.
+  for (std::int64_t i = 0; i < k_blocks; ++i) {
+    std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+    AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+    AudioResult meta{};
+    REQUIRE(pump.drain(i, out, meta));
+    REQUIRE(bytes_equal(got, spatial_direct_mix(*doc, c_root, resolver, i, seed)));
+  }
+}

@@ -127,6 +127,15 @@ struct PrefetchWant {
   std::uint32_t rate{0};
   ChannelLayout layout{ChannelLayout::Stereo};
   std::uint32_t frames{0};
+  // The per-edge Spatial context the mixer's `mix_layer` builds for this contributor
+  // (audio.spatial_nested_warm_context, Decision D3): the composed listener, viewport
+  // extent, accumulated attenuation product, and sub-audible threshold. Trailing and
+  // defaulted so every existing 6-field aggregate init stays valid. The pump copies it
+  // STRAIGHT onto `AudioRequest.spatial` with no reconstruction, so the warmed block is
+  // rendered under the identical context the mixer pulls it with -- a spatial-context-
+  // consuming contributor (a nested composition) warms Spatial, not Flat. Absent (Flat,
+  // or `d_config.spatial == nullopt`) => the pump submits a byte-exact Flat request.
+  std::optional<Spatialization> spatial{};
 };
 
 class LookaheadRing {
@@ -261,6 +270,12 @@ private:
     std::uint32_t frames{0};
     Time window_start{};
     std::vector<Contribution> children{};
+    // The per-edge Spatial context reconstructed for THIS contributor
+    // (audio.spatial_nested_warm_context, Decision D2/D3): byte-identical to the
+    // `child_spatial` `mix_layer` derives for the same edge (`mix.cpp:72-73`). Set only
+    // when `d_config.spatial` is present; nullopt in Flat mode (a byte-exact no-op).
+    // Carried onto `make_want`/`native_rerequest_want`'s `PrefetchWant.spatial`.
+    std::optional<Spatialization> spatial{};
   };
 
   std::vector<Contribution> contributions_for(std::int64_t index) const;
@@ -277,11 +292,19 @@ private:
   // `spatial->sub_audible` is neither warmed nor descended -- the exact
   // `mix.cpp:64-66` sub-audible cull, so the warmed set equals the culled tree the
   // mixer walks (Constraint 1/3). Flat (`spatial` absent) ignores it: a byte-exact
-  // no-op (Constraint 2, Decision D2). Only the scalar attenuation product drives
-  // the cull -- pan and the composed listener do not change WHICH blocks warm, so
-  // no full `Spatialization` is threaded (Decision D1).
+  // no-op (Constraint 2, Decision D2).
+  //
+  // `parent_listener` is the composed listener transform of THIS composition's frame
+  // (audio.spatial_nested_warm_context, Decision D2): the scalar `accum_atten` drives
+  // the cull, but a warmed contributor's *content* (a nested composition's internal
+  // mix) also depends on the full context, so `descend` additionally composes the
+  // per-edge listener `compose(parent_listener, layer->transform)` and builds the
+  // per-edge `Spatialization` -- byte-identical to the `child_spatial` `mix_layer`
+  // derives (`mix.cpp:62-73`) -- onto each warmed `Contribution.spatial`, threading the
+  // composed listener into the nested descent. Ignored in Flat mode (seeded identity).
   void descend(ObjectId composition, std::uint32_t request_rate, Time window_start,
-               std::uint32_t depth, float accum_atten, std::vector<Contribution>& out) const;
+               std::uint32_t depth, float accum_atten, const Affine& parent_listener,
+               std::vector<Contribution>& out) const;
   BlockKey contribution_key(const Contribution& c) const;
   // The working-rate discovery `PrefetchWant` for a contributor (leaf or nested).
   PrefetchWant make_want(const Contribution& c) const;

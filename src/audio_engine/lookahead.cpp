@@ -180,12 +180,18 @@ LookaheadRing::contributions_for(std::int64_t index) const {
   // seeds), exactly as the mixer starts from `request.spatial->accum_atten`
   // (audio.spatial_fill_cull, Decision D1); Flat seeds a harmless 1.0F.
   const float seed_atten = d_config.spatial ? d_config.spatial->accum_atten : 1.0F;
-  descend(d_config.composition, d_config.sample_rate, block_start(index), 1, seed_atten, out);
+  // The root composition's frame is the monitor's listener (audio.spatial_nested_warm_context,
+  // Decision D2): the mixer starts `mix_layer` from `request.spatial->listener`, so the warming
+  // descent starts from the same seed. Flat seeds a harmless identity (the spatial branch is
+  // gated off, so it is never read).
+  const Affine seed_listener = d_config.spatial ? d_config.spatial->listener : Affine::identity();
+  descend(d_config.composition, d_config.sample_rate, block_start(index), 1, seed_atten,
+          seed_listener, out);
   return out;
 }
 
 void LookaheadRing::descend(ObjectId composition, std::uint32_t request_rate, Time window_start,
-                            std::uint32_t depth, float accum_atten,
+                            std::uint32_t depth, float accum_atten, const Affine& parent_listener,
                             std::vector<Contribution>& out) const {
   const CompositionRecord* comp = d_doc.find_composition(composition);
   if (comp == nullptr) {
@@ -233,12 +239,27 @@ void LookaheadRing::descend(ObjectId composition, std::uint32_t request_rate, Ti
     // to the nested descent exactly as `mix_layer` threads `sp.accum_atten * edge_atten`
     // to the child context (mix.cpp:72-73).
     float child_atten = accum_atten;
+    std::optional<Spatialization> child_spatial;
+    Affine child_listener = parent_listener;
     if (d_config.spatial.has_value()) {
       const float edge_atten = spatial_edge_atten(layer->transform);
       if (accum_atten * edge_atten < d_config.spatial->sub_audible) {
         return; // sub-audible: not warmed, not descended (recursion terminator, D3)
       }
       child_atten = accum_atten * edge_atten;
+      // Per-edge composed listener + full Spatialization, byte-identical to the
+      // `child_spatial` `mix_layer` derives for this edge (mix.cpp:62-73)
+      // (audio.spatial_nested_warm_context, Decision D2/D3, Constraint 1): the same
+      // `compose(parent_listener, transform)` (per-edge, never accumulated -- doc
+      // 11:187-188), the same viewport extent and sub-audible threshold (invariant down
+      // the descent, so read from `d_config.spatial`), and the same
+      // `accum_atten * edge_atten` product (the scalar already threaded for the cull).
+      // Attached to the Contribution so the pump warms this contributor under the exact
+      // context the mixer pulls it with, and threaded as the next level's listener.
+      child_listener = compose(parent_listener, layer->transform);
+      child_spatial =
+          Spatialization{child_listener, d_config.spatial->viewport_w, d_config.spatial->viewport_h,
+                         child_atten, d_config.spatial->sub_audible};
     }
     // Varispeed: the composed rational rate `request_rate * den/num`, recomputed per
     // edge, never accumulated (doc 11:187-188) -- identical to `mix_layer`:55-64.
@@ -258,15 +279,20 @@ void LookaheadRing::descend(ObjectId composition, std::uint32_t request_rate, Ti
     }
     Contribution c{layer->content,        child_rate,   child_layout,
                    d_config.block_frames, *child_start, {}};
+    c.spatial = child_spatial; // the per-edge pull context (nullopt in Flat mode)
     // Recurse into a nested-composition contributor (the structural edge the runtime
     // pump injects, Decision D2), bounded by the shared depth budget so a Droste
     // scene terminates on the doc-05 backstop rather than building an infinite tree
     // (Constraint 5). Descent stops one level before the mixer's `pull_audio`
-    // backstop would (`depth < max_depth`), matching the tree the mixer walks.
+    // backstop would (`depth < max_depth`), matching the tree the mixer walks. The
+    // composed listener flows down as the child level's `parent_listener`, so a nested
+    // composition's own layers compose against it exactly as `render_audio` ->
+    // `mix_child_layer` does with `child_req.spatial->listener` (Decision D2).
     if (d_config.nested_composition && depth < d_config.max_depth) {
       const std::optional<ObjectId> child_comp = d_config.nested_composition(layer->content);
       if (child_comp.has_value()) {
-        descend(*child_comp, child_rate, *child_start, depth + 1, child_atten, c.children);
+        descend(*child_comp, child_rate, *child_start, depth + 1, child_atten, child_listener,
+                c.children);
       }
     }
     out.push_back(std::move(c));
@@ -293,7 +319,8 @@ PrefetchWant LookaheadRing::make_want(const Contribution& c) const {
                                                      static_cast<std::int64_t>(c.frames) * fpf}},
                       c.rate,
                       c.layout,
-                      c.frames};
+                      c.frames,
+                      c.spatial}; // the per-edge pull context the pump threads onto AudioRequest
 }
 
 std::optional<PrefetchWant>
@@ -320,7 +347,8 @@ LookaheadRing::native_rerequest_want(const Contribution& c, std::uint32_t achiev
                                      static_cast<std::int64_t>(native_frames) * fpf_native}},
       achieved_rate,
       c.layout,
-      native_frames};
+      native_frames,
+      c.spatial}; // same context as the discovery pull (mix.cpp:176: leaves ignore it)
 }
 
 void LookaheadRing::mix_block(std::int64_t index) {

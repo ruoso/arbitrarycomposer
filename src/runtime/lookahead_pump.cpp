@@ -116,8 +116,14 @@ void LookaheadPump::fill_and_insert(const std::vector<PrefetchWant>& wants) {
     bufs[i].assign(static_cast<std::size_t>(w.frames) * channel_count(w.layout), 0.0F);
     targets[i] = AudioBlock{bufs[i].data(), w.frames, w.layout, w.rate};
     dones[i] = std::make_shared<AudioCompletion>();
-    const AudioRequest req{w.window,     w.rate, w.layout, targets[i], Exactness::BestEffort,
-                           StateHandle{}};
+    // Thread the per-edge Spatial context the ring reconstructed onto the request
+    // (audio.spatial_nested_warm_context, Decision D1/D3): a spatial-context-consuming
+    // contributor (a nested composition) is then rendered under the identical context
+    // the mixer's `mix_layer` pulls it with (`mix.cpp:113-122`), so the warmed block is
+    // Spatial, not Flat, and the threaded drain is byte-identical to the inline oracle.
+    // `w.spatial` is nullopt for Flat / leaf-only scenes => a byte-exact Flat request.
+    const AudioRequest req{w.window,      w.rate,   w.layout, targets[i], Exactness::BestEffort,
+                           StateHandle{}, w.spatial};
     d_pool.submit(AudioTask{content, req, dones[i]});
   }
 

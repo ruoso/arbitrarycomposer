@@ -138,6 +138,17 @@ target_link_libraries(arbc_audio_lookahead_recursive_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_audio_lookahead_recursive_t)
 
+# Spatial nested-composition lookahead golden (audio.spatial_nested_warm_context): a
+# Spatial monitor over a scene whose contributor is a nested composition holding an
+# off-center child tone, driven through the real LookaheadPump + AudioWorkerPool at
+# worker_count>0, drains byte-identical to the direct Spatial mix_composition oracle --
+# the warming descent reconstructed the per-edge Spatialization the mixer pulls with, so
+# the nested contributor warms Spatial (not Flat) with silence_mixed==0 and zero dispatch.
+add_executable(arbc_audio_lookahead_spatial_nested_t audio_lookahead_spatial_nested.t.cpp)
+target_link_libraries(arbc_audio_lookahead_spatial_nested_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_audio_lookahead_spatial_nested_t)
+
 # org.arbc.nested two-level caching behavioral counters: a static subtree is
 # served from the parent cache; only the spine re-renders (requests_issued).
 add_executable(arbc_nested_cache_t nested_cache.t.cpp)
