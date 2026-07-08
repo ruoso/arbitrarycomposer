@@ -2,6 +2,7 @@
 #include <arbc/base/expected.hpp>      // expected
 #include <arbc/base/rational_time.hpp> // Rational, TimeMap, TimeError
 #include <arbc/base/time.hpp>
+#include <arbc/contract/content.hpp> // Content, AudioFacet::latency()
 
 #include <cstddef>
 #include <cstdint>
@@ -55,6 +56,46 @@ std::vector<std::int64_t> LookaheadRing::horizon_blocks(Time playhead, Time hori
     out.push_back(k.block_index);
   }
   return out;
+}
+
+Time LookaheadRing::effective_preroll(Time playhead) const {
+  // v1 constant-latency pre-roll (audio.latency, doc 12:200-212, Constraint 4): read
+  // latency() from the anchor block's audible DIRECT (depth-1) contributors -- exactly
+  // the top-level entries `contributions_for` returns after `descend` applies
+  // mix_layer's audible/gain/facet/span culls -- and take the maximum, floored by the
+  // configured manual pre-roll. The value is treated as an output-(root-)time quantity;
+  // mapping a nested contributor's local latency back through its time map is the
+  // doc-12-deferred "latency in nested graphs' effect chains" and is NOT walked here.
+  Time pre = d_config.preroll;
+  const std::vector<Contribution> direct = contributions_for(block_index_at(playhead));
+  for (const Contribution& c : direct) {
+    Content* content = d_config.resolve ? d_config.resolve(c.content) : nullptr;
+    if (content == nullptr) {
+      continue;
+    }
+    const AudioFacet* af = content->audio();
+    if (af == nullptr) {
+      continue;
+    }
+    const Time lat = af->latency();
+    if (lat.flicks > pre.flicks) {
+      pre = lat;
+    }
+  }
+  return pre;
+}
+
+Time LookaheadRing::lifted_horizon(Time playhead, Time horizon) const {
+  const Time eff = effective_preroll(playhead);
+  if (d_block_span_flicks <= 0 || eff.flicks <= 0) {
+    return horizon; // no declared latency (the common path): the shipped window verbatim
+  }
+  // Round the pre-roll UP to whole output-block spans: the enumerated block count then
+  // grows by exactly `ceil(eff / block_span)` regardless of the base horizon's
+  // alignment (`horizon_blocks` enumerates `extended / block_span` buckets after the
+  // anchor, and `preroll_blocks * block_span` is an exact multiple).
+  const std::int64_t preroll_blocks = (eff.flicks + d_block_span_flicks - 1) / d_block_span_flicks;
+  return Time{horizon.flicks + preroll_blocks * d_block_span_flicks};
 }
 
 std::vector<LookaheadRing::Contribution>

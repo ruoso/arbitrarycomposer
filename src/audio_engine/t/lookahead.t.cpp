@@ -89,6 +89,54 @@ private:
   Facet d_facet;
 };
 
+// A tone leaf that additionally declares a constant processing `latency()` (a live
+// pipeline / lookahead limiter). Its `render_audio` is byte-identical to `SineLeaf`'s
+// (latency is a residency/scheduling quantity, not a signal transform, doc 12:200-212),
+// so a latent scene drains byte-identical to the same scene with `latency() == zero`.
+class LatentSineLeaf final : public Content {
+public:
+  LatentSineLeaf(std::uint32_t freq_hz, float amp, Time latency) : d_facet(freq_hz, amp, latency) {}
+  std::optional<Rect> bounds() const override { return std::nullopt; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<RenderResult> render(const RenderRequest&,
+                                     std::shared_ptr<RenderCompletion> done) override {
+    done->fail(RenderError::ContentFailed);
+    return std::nullopt;
+  }
+  AudioFacet* audio() override { return &d_facet; }
+
+private:
+  class Facet final : public AudioFacet {
+  public:
+    Facet(std::uint32_t freq_hz, float amp, Time latency)
+        : d_freq(freq_hz), d_amp(amp), d_latency(latency) {}
+    std::optional<TimeRange> audio_extent() const override { return std::nullopt; }
+    Stability audio_stability() const override { return Stability::Live; }
+    Time latency() const override { return d_latency; }
+    std::optional<AudioResult> render_audio(const AudioRequest& request,
+                                            std::shared_ptr<AudioCompletion>) override {
+      const std::uint32_t ch = channel_count(request.layout);
+      const std::int64_t fpf =
+          Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
+      for (std::uint32_t f = 0; f < request.target.frames; ++f) {
+        const float v = parab_sine(request.window.start.flicks + static_cast<std::int64_t>(f) * fpf,
+                                   d_freq, d_amp);
+        for (std::uint32_t c = 0; c < ch; ++c) {
+          request.target.samples[static_cast<std::size_t>(f) * ch + c] = v;
+        }
+      }
+      return AudioResult{request.sample_rate, true};
+    }
+
+  private:
+    std::uint32_t d_freq;
+    float d_amp;
+    Time d_latency;
+  };
+  Facet d_facet;
+};
+
 // A local 1D block-cache value mirroring `compositor::AudioBlockValue`, so the ring's
 // templated `prime`/`reprime`/`invalidate` instantiate here without naming the peer.
 struct LocalBlock {
@@ -647,4 +695,95 @@ TEST_CASE("the recursive descent honors the Flat-mode culls: an inaudible child 
   // single leaf want appears for block 0 -- the descent honors the mixer's cull.
   std::vector<PrefetchWant> w1 = ring.prime<LocalBlock>(&cache, Time::zero(), Time{0}, +1);
   REQUIRE(w1.size() == 1);
+}
+
+// enforces: 12-audio#latency-prerolls-declared-content
+TEST_CASE("a declared latency extends the fill lead, drain stays byte-identical to zero") {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+  const Time k_latency{2 * span}; // two output-block spans of declared latency
+
+  // Two structurally identical scenes: one zero-latency tone, one declaring latency=k.
+  // Their `render_audio` is byte-identical, so the drain must match block-for-block.
+  SineLeaf zero_a(300, 0.6F);
+  Scene zero;
+  zero.add(&zero_a);
+  const DocStatePtr zero_doc = zero.model.current();
+
+  LatentSineLeaf latent_a(300, 0.6F, k_latency);
+  Scene latent;
+  latent.add(&latent_a);
+  const DocStatePtr latent_doc = latent.model.current();
+
+  CachingPull zero_pull(nullptr, zero.id_of(), 0);
+  CachingPull latent_pull(nullptr, latent.id_of(), 0);
+  LookaheadRing zero_ring(*zero_doc, zero_pull, ring_config(zero));
+  LookaheadRing latent_ring(*latent_doc, latent_pull, ring_config(latent));
+
+  // effective_preroll: zero for the no-latency scene, exactly k for the latent one.
+  REQUIRE(zero_ring.effective_preroll(Time::zero()) == Time::zero());
+  REQUIRE(latent_ring.effective_preroll(Time::zero()) == k_latency);
+
+  // Prime both over the same base horizon (blocks 0..3). The latent ring lifts the
+  // horizon by ceil(k/block_span) == 2, so it warms exactly two MORE blocks (0..5).
+  zero_ring.prime<LocalBlock>(nullptr, Time::zero(), Time{3 * span}, +1);
+  latent_ring.prime<LocalBlock>(nullptr, Time::zero(), Time{3 * span}, +1);
+  REQUIRE(zero_ring.prepared_count() == 4);
+  REQUIRE(latent_ring.prepared_count() == 6); // 4 + ceil(k / block_span)
+  REQUIRE(latent_ring.is_prepared(5));
+  REQUIRE_FALSE(zero_ring.is_prepared(5));
+
+  // Byte-exact golden (no tolerance): every commonly-warmed block drains identically.
+  for (std::int64_t i = 0; i < 6; ++i) {
+    std::vector<float> got_latent(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+    AudioBlock out_latent{got_latent.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+    AudioResult meta_latent{};
+    REQUIRE(latent_ring.drain(i, out_latent, meta_latent));
+    // The oracle is the zero-latency drain per output window (no hand-sum).
+    CachingPull ref_pull(nullptr, latent.id_of(), 0);
+    const std::vector<float> want =
+        direct_mix(*latent_doc, latent.comp, latent.resolver(), ref_pull, i);
+    REQUIRE(bytes_equal(got_latent, want));
+    if (i < 4) {
+      std::vector<float> got_zero(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+      AudioBlock out_zero{got_zero.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+      AudioResult meta_zero{};
+      REQUIRE(zero_ring.drain(i, out_zero, meta_zero));
+      REQUIRE(bytes_equal(got_latent, got_zero)); // latent == zero-latency, byte-for-byte
+    }
+  }
+}
+
+// enforces: 12-audio#latency-prerolls-declared-content
+TEST_CASE("effective pre-roll maxes declared latency across direct contributors, floored") {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  // Two latent contributors: the effective pre-roll is the MAX of their declared
+  // latencies (global max over direct contributors, doc 12:200-212 / Decision D2).
+  LatentSineLeaf small(300, 0.6F, Time{span});
+  LatentSineLeaf big(700, 0.4F, Time{3 * span});
+  Scene scene;
+  scene.add(&small);
+  scene.add(&big);
+  const DocStatePtr doc = scene.model.current();
+
+  SECTION("max over contributors when the config floor is lower") {
+    LookaheadRingConfig cfg = ring_config(scene);
+    cfg.preroll = Time{span}; // below the max declared latency
+    CachingPull pull(nullptr, scene.id_of(), 0);
+    LookaheadRing ring(*doc, pull, cfg);
+    REQUIRE(ring.effective_preroll(Time::zero()) == Time{3 * span}); // the bigger latency wins
+    // The lifted window warms ceil(3*span / span) == 3 more blocks than the base.
+    ring.prime<LocalBlock>(nullptr, Time::zero(), Time{2 * span}, +1); // base blocks 0..2
+    REQUIRE(ring.prepared_count() == 6);                               // 3 + 3
+  }
+
+  SECTION("config.preroll floors the pre-roll when it exceeds every declared latency") {
+    LookaheadRingConfig cfg = ring_config(scene);
+    cfg.preroll = Time{5 * span}; // above the max declared latency
+    CachingPull pull(nullptr, scene.id_of(), 0);
+    LookaheadRing ring(*doc, pull, cfg);
+    REQUIRE(ring.effective_preroll(Time::zero()) == Time{5 * span}); // the floor wins
+  }
 }

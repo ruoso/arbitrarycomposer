@@ -96,6 +96,54 @@ private:
   Facet d_facet;
 };
 
+// A tone leaf declaring a constant processing latency() (a Live pipeline). Its
+// render_audio is byte-identical to SineLeaf's -- latency is a residency concern, not a
+// signal transform (doc 12:200-212) -- so a latent scene drains byte-identical to the
+// same tones with zero latency; the ring only warms MORE blocks ahead.
+class LatentSine final : public Content {
+public:
+  LatentSine(std::uint32_t freq_hz, float amp, Time latency) : d_facet(freq_hz, amp, latency) {}
+  std::optional<Rect> bounds() const override { return std::nullopt; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<RenderResult> render(const RenderRequest&,
+                                     std::shared_ptr<RenderCompletion> done) override {
+    done->fail(RenderError::ContentFailed);
+    return std::nullopt;
+  }
+  AudioFacet* audio() override { return &d_facet; }
+
+private:
+  class Facet final : public AudioFacet {
+  public:
+    Facet(std::uint32_t freq_hz, float amp, Time latency)
+        : d_freq(freq_hz), d_amp(amp), d_latency(latency) {}
+    std::optional<TimeRange> audio_extent() const override { return std::nullopt; }
+    Stability audio_stability() const override { return Stability::Live; }
+    Time latency() const override { return d_latency; }
+    std::optional<AudioResult> render_audio(const AudioRequest& request,
+                                            std::shared_ptr<AudioCompletion>) override {
+      const std::uint32_t ch = channel_count(request.layout);
+      const std::int64_t fpf =
+          Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
+      for (std::uint32_t f = 0; f < request.target.frames; ++f) {
+        const float v = parab_sine(request.window.start.flicks + static_cast<std::int64_t>(f) * fpf,
+                                   d_freq, d_amp);
+        for (std::uint32_t c = 0; c < ch; ++c) {
+          request.target.samples[static_cast<std::size_t>(f) * ch + c] = v;
+        }
+      }
+      return AudioResult{request.sample_rate, true};
+    }
+
+  private:
+    std::uint32_t d_freq;
+    float d_amp;
+    Time d_latency;
+  };
+  Facet d_facet;
+};
+
 std::int64_t block_index_of(const AudioRequest& request) {
   if (request.sample_rate == 0) {
     return 0;
@@ -283,6 +331,89 @@ TEST_CASE("TSan: concurrent worker fill + drain equals the inline goldens, settl
 
   // The concurrently-filled ring drains byte-identical to the single-threaded
   // inline goldens.
+  for (std::int64_t i = 0; i < k_blocks; ++i) {
+    std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+    AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+    AudioResult meta{};
+    REQUIRE(pump.drain(i, out, meta));
+    REQUIRE(bytes_equal(got, direct_mix(*doc, scene.comp, scene.resolver(), i)));
+  }
+}
+
+// enforces: 12-audio#latency-prerolls-declared-content
+TEST_CASE("TSan: a declared-latency scene drains the zero-latency inline goldens threaded") {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  // A latent contributor (latency = 3 blocks) mixed with a zero-latency tone. The ring
+  // extends its fill lead by the declared latency; the drained output blocks 0..k_blocks
+  // are unchanged, so the threaded drain equals the inline goldens (which ignore latency,
+  // rendering the same samples) -- and equals the zero-latency oracle.
+  LatentSine a(300, 0.6F, Time{3 * span});
+  SineLeaf b(700, 0.4F);
+  Scene scene;
+  scene.add(&a);
+  scene.add(&b);
+  const DocStatePtr doc = scene.model.current();
+
+  BlockCache blocks{64u * 1024 * 1024};
+  CachingPull pull(&blocks, scene.id_of(), doc->revision());
+
+  LookaheadRingConfig ringcfg;
+  ringcfg.composition = scene.comp;
+  ringcfg.resolve = scene.resolver();
+  ringcfg.sample_rate = k_rate;
+  ringcfg.layout = ChannelLayout::Stereo;
+  ringcfg.block_frames = k_block_frames;
+  ringcfg.revision = doc->revision();
+  LookaheadRing ring(*doc, pull, ringcfg);
+  // The ring lifts its fill lead by the declared latency: it warms blocks past the base
+  // horizon (the residency the latent contributor needs).
+  REQUIRE(ring.effective_preroll(Time::zero()) == Time{3 * span});
+
+  AudioWorkerPoolConfig poolcfg;
+  poolcfg.worker_count = 8;
+  AudioWorkerPool pool(poolcfg);
+
+  std::atomic<std::uint64_t> fake_tick{0};
+  LookaheadPumpConfig pumpcfg;
+  pumpcfg.horizon = Time{(k_blocks - 1) * span}; // base horizon; the ring lifts it
+  pumpcfg.resolve = scene.resolver();
+  pumpcfg.sample_rate = k_rate;
+  pumpcfg.layout = ChannelLayout::Stereo;
+  pumpcfg.block_frames = k_block_frames;
+  pumpcfg.tick_period = std::chrono::hours(1);
+  pumpcfg.tick_source = [&fake_tick] { return fake_tick.fetch_add(1, std::memory_order_relaxed); };
+  pumpcfg.playhead_source = [] { return Time::zero(); };
+  LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+  std::atomic<bool> stop{false};
+  std::thread consumer([&] {
+    while (!stop.load(std::memory_order_acquire)) {
+      for (std::int64_t i = 0; i < k_blocks; ++i) {
+        std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+        AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+        AudioResult meta{};
+        (void)pump.drain(i, out, meta);
+      }
+      std::this_thread::yield();
+    }
+  });
+
+  for (int t = 0; t < 4; ++t) {
+    pump.flush();
+  }
+
+  stop.store(true, std::memory_order_release);
+  consumer.join();
+  pump.request_stop();
+
+  REQUIRE(pool.tasks_completed() == pool.tasks_submitted());
+  REQUIRE(pool.tasks_completed() > 0);
+  REQUIRE(ring.silence_mixed() == 0);
+
+  // The latency-primed threaded ring drains byte-identical to the single-threaded inline
+  // goldens (the zero-latency oracle: latency does not change any sample).
   for (std::int64_t i = 0; i < k_blocks; ++i) {
     std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
     AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};

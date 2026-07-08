@@ -66,9 +66,12 @@ struct LookaheadRingConfig {
   std::uint64_t revision{0};
   // The per-layer contribution policy (only `Flat` implemented, doc 12:127-130).
   MixPolicy policy{MixPolicy::Flat};
-  // The declared-latency pre-roll offset seam (`audio.latency`, doc 12:196-199).
-  // This task honors `Time::zero()` only; the additive `-latency()` offset drops in
-  // here without a signature change.
+  // The declared-latency pre-roll FLOOR (`audio.latency`, doc 12:200-212). The ring
+  // extends its transitive fill lead by `max(preroll, max latency() over the anchor
+  // block's audible direct contributors)`, so an operator can force extra lead here
+  // without a code change. Default `Time::zero()` -> the effective pre-roll is driven
+  // purely by declared `latency()`, and a scene declaring none extends nothing (the
+  // shipped behavior byte-for-byte).
   Time preroll{Time::zero()};
   // Maps a contributor content id to the child composition it nests, if any
   // (nullopt for a leaf or non-nesting content). The ring is L4 and MUST NOT
@@ -169,6 +172,19 @@ public:
   std::size_t prepared_count() const noexcept { return d_prepared.size(); }
   bool is_prepared(std::int64_t index) const { return d_prepared.count(index) != 0; }
 
+  // The effective pre-roll honored at `playhead` (`audio.latency`, doc 12:200-212):
+  // the maximum declared `latency()` among the anchor block's audible DIRECT (depth-1)
+  // contributors, floored by `config.preroll`; `Time::zero()` when none declares
+  // latency. `prime`/`reprime` extend the transitive fill lead by this (rounded up to
+  // whole output-block spans), warming that many output blocks further ahead of the
+  // playhead -- observable as `prepared_count()` growing by exactly
+  // `ceil(effective_preroll / block_span)` over the zero-latency scene. Nested-graph
+  // effect-chain latency (mapping a nested contributor's local latency back through
+  // its time map) is the doc-12-deferred full-PDC case and is NOT walked here
+  // (Constraint 4). Wall-clock-free (doc 16): a pure function of the pinned document
+  // and config.
+  Time effective_preroll(Time playhead) const;
+
 private:
   struct Prepared {
     std::vector<float> samples; // interleaved, block_frames * channel_count(layout)
@@ -207,6 +223,12 @@ private:
                                                     std::uint32_t achieved_rate) const;
   void mix_block(std::int64_t index);
   std::vector<std::int64_t> horizon_blocks(Time playhead, Time horizon, int direction) const;
+  // `horizon` lifted by the effective pre-roll (`audio.latency`, doc 12:200-212),
+  // rounded UP to whole output-block spans so the warmed window grows by exactly
+  // `ceil(effective_preroll / block_span)` blocks regardless of horizon alignment.
+  // Shared by `prime` and `reprime` so the extended window flows through a transport
+  // change identically (Constraint 6).
+  Time lifted_horizon(Time playhead, Time horizon) const;
 
   const DocRoot& d_doc;
   PullService& d_pull;
@@ -284,7 +306,15 @@ std::vector<PrefetchWant> LookaheadRing::prime(KeyedStore<BlockKey, BlockValue>*
                                                Time playhead, Time horizon, int direction) {
   std::vector<PrefetchWant> wants;
   std::unordered_set<BlockKey> seen; // dedupe closure keys across the horizon's blocks
-  const std::vector<std::int64_t> indices = horizon_blocks(playhead, horizon, direction);
+  // Honor declared constant latency as a fill-lead extension (audio.latency, doc
+  // 12:200-212, Decision "fill-lead extension, not per-content key shift"): the ring
+  // enumerates the horizon lifted by the effective pre-roll, so ONLY MORE output
+  // blocks (further ahead of the playhead) are primed. Every primed block's window
+  // and BlockKey is unchanged, so the drain stays byte-identical to the zero-latency
+  // mix; a scene declaring no latency lifts by zero and primes the shipped set
+  // byte-for-byte (Constraints 1,5).
+  const std::vector<std::int64_t> indices =
+      horizon_blocks(playhead, lifted_horizon(playhead, horizon), direction);
   for (const std::int64_t bi : indices) {
     bool all_resident = true;
     if (blocks != nullptr) {
@@ -316,7 +346,11 @@ std::vector<PrefetchWant> LookaheadRing::prime(KeyedStore<BlockKey, BlockValue>*
 template <class BlockValue>
 std::vector<PrefetchWant> LookaheadRing::reprime(KeyedStore<BlockKey, BlockValue>* blocks,
                                                  Time playhead, Time horizon, int direction) {
-  const std::vector<std::int64_t> keep = horizon_blocks(playhead, horizon, direction);
+  // Keep the same lifted window `prime` will re-enumerate, so a transport change
+  // retains (never re-mixes) the pre-rolled blocks beyond the base horizon too
+  // (Constraint 6): the flush/re-prime invariant covers the extended window.
+  const std::vector<std::int64_t> keep =
+      horizon_blocks(playhead, lifted_horizon(playhead, horizon), direction);
   const std::unordered_set<std::int64_t> keepset(keep.begin(), keep.end());
   for (auto it = d_prepared.begin(); it != d_prepared.end();) {
     if (keepset.count(it->first) == 0) {

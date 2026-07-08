@@ -198,6 +198,19 @@ seed of DAW-style plugin delay compensation. v1 honors declared constant
 latency in the lookahead scheduler; full PDC (dynamic latency, latency in
 nested graphs' effect chains) is deferred with the effects stack.
 
+Concretely, v1 honors it as a **fill-lead extension**: because a pull model
+has no real pipeline delay to un-align (`render_audio(window)` returns
+exactly that window), a declared latency is a *residency* concern — a
+`Live`/stateful source needs more lead to have a block ready. The lookahead
+ring therefore extends its transitive fill horizon by the maximum declared
+`latency()` among the anchor block's audible direct contributors (floored by
+a configurable pre-roll), warming output blocks that much further ahead of
+the playhead. The output blocks, their keys, and their windows are
+**unchanged** — only more are primed — so the drain stays byte-identical to
+the zero-latency mix. Shifting *which* window a content is requested for
+(true per-content output-window re-alignment, which the mixer must
+compensate for) is part of full PDC and deferred with the effects stack.
+
 ## Recursion
 
 Nothing new to invent: a nested composition's audio facet mixes its

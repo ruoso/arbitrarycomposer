@@ -45,8 +45,9 @@ task audio "Audio" {
   task latency "Declared-latency pre-roll" {
     effort 1d
     allocate team
+    complete 100
     depends !lookahead
-    note "Constant latency() honored by the scheduler (pre-roll requests earlier); full PDC deferred. Doc 12."
+    note "Constant latency() honored by the scheduler (pre-roll requests earlier); full PDC deferred. Doc 12. Refinement: tasks/refinements/audio/latency.md"
   }
   task spatial_policy "Spatialization monitor policy" {
     effort 2d
