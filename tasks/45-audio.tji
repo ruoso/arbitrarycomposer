@@ -33,8 +33,21 @@ task audio "Audio" {
   task device_monitor "Device monitor + clock mastering" {
     effort 3d
     allocate team
+    complete 100
     depends !lookahead
-    note "Device sink interface with a reference implementation as a separate plugin artifact (device APIs stay out of libarbc per the doc 17 codec-line policy); the device clock masters the transport; video chases audio. Doc 12."
+    note "Device sink interface with a reference implementation as a separate plugin artifact (device APIs stay out of libarbc per the doc 17 codec-line policy); the device clock masters the transport; video chases audio. Doc 12. Refinement: tasks/refinements/audio/device_monitor.md"
+  }
+  task device_edge_resample "Device-edge sample-rate conversion" {
+    effort 1d
+    allocate team
+    depends !device_monitor
+    note "Device-edge sample-rate conversion when device_rate ≠ working_rate (currently rejected at construction), reusing the shipped windowed-sinc polyphase resampler. Source: audio.device_monitor implementation gap; see tasks/refinements/audio/device_monitor.md Status block. Doc 12."
+  }
+  task seek_drain_realign "Post-seek RT drain cursor realignment" {
+    effort 1d
+    allocate team
+    depends !device_monitor
+    note "Realign the RT drain cursor to the reprimed block window on seek/rate change so post-seek device output is byte-exact; the device_monitor task lands the clock rebase + pump reprime but the RT cursor is free-running. Source: audio.device_monitor implementation gap; see tasks/refinements/audio/device_monitor.md Status block. Doc 12."
   }
   task export_monitor "Export monitor" {
     effort 2d

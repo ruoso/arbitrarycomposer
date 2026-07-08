@@ -158,6 +158,20 @@ built and tested in the same repo, loaded like any third-party plugin.
 This also makes imageseq the permanent end-to-end test of the real plugin
 path, which the in-lib kinds no longer exercise at runtime.
 
+The same line holds for **device backends**: an OS audio API (PortAudio /
+CoreAudio / ALSA / a miniaudio-class single-header backend) is the audio
+analog of a codec — a system dependency that must never ride into an
+embedder's link line. So the interactive audio device sink splits the same
+way the codec kinds do: the **`DeviceSink` interface and the `DeviceMonitor`
+that masters the transport are `runtime` (L5) and dependency-free of any OS
+audio API** (device clocks are runtime policy, above), while the concrete
+reference backend that carries the OS audio dependency ships as a **separate
+out-of-lib plugin artifact** (`arbc-plugin-<device>` under `plugins/`,
+mirroring `arbc-plugin-imageseq`: a hand-rolled `MODULE`, its backend
+dependency private and never in `libarbc` / `arbc-testing`). `libarbc` stays
+codec- *and* device-free; the audio milestone's `audio.device_monitor` lands
+this split.
+
 ## Repo layout (supersedes the doc 10 sketch)
 
 One tree per component — no parallel `include/` hierarchy; publicness is

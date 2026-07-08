@@ -1,0 +1,167 @@
+#pragma once
+
+#include <arbc/base/rational_time.hpp>    // Rational
+#include <arbc/base/time.hpp>             // Time
+#include <arbc/media/audio_block.hpp>     // ChannelLayout
+#include <arbc/runtime/device_sink.hpp>   // DeviceSink, DeviceFormat
+#include <arbc/runtime/lookahead_pump.hpp> // LookaheadPump
+#include <arbc/runtime/transport.hpp>     // Transport
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <mutex>
+#include <optional>
+#include <thread>
+#include <vector>
+
+namespace arbc {
+
+// The interactive audio driver and the transport's audio-clock master for
+// `arbc::runtime` (L5, doc 12:155-178): the thin runtime adapter the lookahead
+// note reserved (`lookahead_pump.cpp:35-37`, "a lock-free double-buffer for a true
+// RT device thread is device_monitor's concern"). It binds a `Transport`, a
+// `LookaheadPump`, and a `DeviceSink`, and owns clock mastering:
+//
+//   * RT callback (pure consume + count). For each output block the device needs,
+//     it calls `LookaheadPump::drain` to copy an already-mixed block (or silence +
+//     an underrun on a starved block, never an inline mix), converts the working
+//     format to the device format at this edge (doc 12:100-104), and bumps one
+//     atomic delivered-frame counter -- its only mutation. No `render_audio` /
+//     `mix_composition` / `pull_audio`, no heap allocation on this thread
+//     (Constraint 1). Full lock-freedom of `drain` is the reserved RT double-buffer
+//     that `audio.rt_safety` annotates build-failingly; the mandatory lock-free
+//     surface THIS task lands is the mastered-playhead publish below (D3).
+//   * Mastering (single-owner). A single non-RT owner thread reads the delivered-
+//     frame delta and advances the `Transport` by `delivered_frames / device_rate`
+//     as an exact `Time` (doc 12:171-172): the device frame count IS the clock, no
+//     wall-clock read. The RT thread never touches the `Transport`, so its
+//     single-owner discipline (`transport.hpp:26-30`) is preserved -- host
+//     `seek`/`set_rate` are routed to the same owner thread (D2).
+//   * Video chases audio. The mastered playhead is published as a lock-free atomic
+//     `Time` snapshot (release); the pump's `playhead_source` and video viewports
+//     on the same transport sample it (acquire) to schedule against the audio clock
+//     -- "video chases audio, never the reverse" (doc 12:173-175, doc 01:103-106,
+//     D3). A `seek`/`set_rate` rebases the master and calls
+//     `pump.notify_transport_change` (flush + reprime).
+//   * One monitor per transport; free-run fallback. Attaching a second monitor to a
+//     transport is rejected (a `logic_error`); a transport with NO monitor free-runs
+//     on the injected system clock exactly as before (doc 12:176-178).
+//
+// Concurrency: the delivered-frame counter is the ONLY channel from the RT thread to
+// the owner thread; the published `Time` snapshot is the only channel from the owner
+// thread to the pump/viewport readers -- both atomic, no lock, "only an immutable
+// sampled `Time` crosses threads" (`transport.hpp:26-30`). This is the new
+// cross-thread surface the transport reserved (`transport.md:338-339`); it carries
+// this task's TSan obligation.
+struct DeviceMonitorConfig {
+  std::uint32_t working_rate{0};
+  ChannelLayout working_layout{ChannelLayout::Stereo};
+  std::uint32_t block_frames{0};
+  // Idle master-thread park interval; never appears in a test assertion (mirrors
+  // `LookaheadPumpConfig::tick_period`). The mastering step is driven by the
+  // delivered-frame counter, not by this timeout.
+  std::chrono::steady_clock::duration master_period{std::chrono::milliseconds(2)};
+};
+
+class DeviceMonitor {
+public:
+  // Binds `transport`, `pump`, and `sink` (references, not owned). Starts the owner
+  // (mastering) thread and opens the device stream. Throws `std::logic_error` if
+  // `transport` already has a device monitor, and `std::invalid_argument` on a
+  // degenerate config or a device rate != working rate (device-edge sample-rate
+  // conversion is out of scope; see the return summary).
+  DeviceMonitor(Transport& transport, LookaheadPump& pump, DeviceSink& sink,
+                DeviceMonitorConfig config);
+  ~DeviceMonitor();
+
+  DeviceMonitor(const DeviceMonitor&) = delete;
+  DeviceMonitor& operator=(const DeviceMonitor&) = delete;
+
+  // The lock-free mastered-playhead snapshot (acquire): wire the pump's
+  // `playhead_source` and any video viewport on this transport to it so they chase
+  // the audio clock (D3).
+  Time playhead_snapshot() const noexcept {
+    return d_published.load(std::memory_order_acquire);
+  }
+
+  // The playback direction (sign of the transport rate; 0-rate -> forward), sampled
+  // lock-free for the pump's `direction_source`.
+  int direction_snapshot() const noexcept {
+    return d_direction.load(std::memory_order_acquire);
+  }
+
+  // Host controls, routed to the single owner thread (which alone mutates the
+  // `Transport`): each rebases the master's sample origin and reprimes the pump
+  // (flush + reprime). Non-blocking; use `flush_master()` to await application.
+  void seek(Time t);
+  void set_rate(Rational rate);
+
+  // Poke and BLOCK until the owner thread completes one further mastering step
+  // (applies any pending seek/rate, advances the transport from the delivered-frame
+  // delta, republishes). Waits on a condition (the step counter), never a wall
+  // clock. Returns the new step count. The deterministic test barrier.
+  std::uint64_t flush_master();
+
+  // Behavioral counters (doc 16:54-62), wall-clock-free.
+  std::uint64_t delivered_frames() const noexcept {
+    return d_delivered.load(std::memory_order_acquire);
+  }
+  std::uint64_t underruns() const noexcept {
+    return d_underruns.load(std::memory_order_acquire);
+  }
+  std::uint64_t master_steps() const noexcept {
+    return d_master_steps.load(std::memory_order_acquire);
+  }
+
+private:
+  void fill_rt(float* out, std::uint32_t frames); // the device RT callback body
+  void run_master();                              // the owner-thread loop
+  void master_step();
+  // Convert `frames` interleaved working-format frames to the device layout. Pure,
+  // allocation-free (memcpy for an identity layout; average/duplicate for a
+  // mono<->stereo remap). Device rate == working rate is a construction precondition.
+  void convert_frames(const float* src, float* dst, std::uint32_t frames) const;
+  // The first output-block index the device draws from: the block covering the
+  // transport's current playhead, so the drain cursor starts aligned with the clock.
+  std::int64_t start_block_index() const;
+
+  Transport& d_transport;
+  LookaheadPump& d_pump;
+  DeviceSink& d_sink;
+  DeviceMonitorConfig d_config;
+  DeviceFormat d_device{};
+  std::int64_t d_flicks_per_frame{0};
+  std::uint32_t d_working_channels{0};
+  std::uint32_t d_device_channels{0};
+
+  // --- RT-callback-owned state (touched only on the device thread) ------------
+  std::vector<float> d_scratch;  // one working-format block, pre-allocated
+  std::int64_t d_drain_index{0}; // next output-block index to drain
+  std::uint32_t d_carry_frames{0};
+  std::uint32_t d_carry_pos{0};
+
+  // --- cross-thread published surface (D3) ------------------------------------
+  std::atomic<std::uint64_t> d_delivered{0};   // RT writes (release), owner reads
+  std::atomic<Time> d_published{Time::zero()}; // owner writes (release), readers acquire
+  std::atomic<int> d_direction{1};             // owner writes, readers acquire
+  std::atomic<std::uint64_t> d_underruns{0};   // RT writes
+
+  // --- owner-thread-owned state -----------------------------------------------
+  std::uint64_t d_last_delivered{0};
+
+  // owner-thread lifecycle (mirrors the pump / HousekeepingThread template)
+  mutable std::mutex d_master_mutex;
+  std::condition_variable d_master_cv;          // parks the owner (poke / stop / timeout)
+  std::condition_variable d_master_progress_cv; // wakes a blocked flush_master()
+  bool d_master_stop{false};
+  bool d_master_poke{false};
+  std::optional<Time> d_pending_seek;
+  std::optional<Rational> d_pending_rate;
+  std::atomic<std::uint64_t> d_master_steps{0};
+
+  std::thread d_master_thread; // started before the sink stream in the ctor body
+};
+
+} // namespace arbc

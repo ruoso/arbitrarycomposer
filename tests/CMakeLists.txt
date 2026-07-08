@@ -109,6 +109,17 @@ target_link_libraries(arbc_audio_lookahead_concurrency_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_audio_lookahead_concurrency_t)
 
+# Device monitor + clock-mastering concurrency stress (tier-6, tsan lane,
+# audio.device_monitor): a real fake device thread masters the transport through the
+# monitor's owner thread while the pump and a simulated viewport read the lock-free
+# playhead snapshot -- no data race on the published snapshot / delivered counter, the
+# transport is mutated on one thread only, each fill settles once, and a reprimed drain
+# equals the inline goldens (the transport's reserved audio-clock-master TSan coverage).
+add_executable(arbc_device_monitor_concurrency_t device_monitor_concurrency.t.cpp)
+target_link_libraries(arbc_device_monitor_concurrency_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_device_monitor_concurrency_t)
+
 # Recursive lookahead fill goldens + counters (audio.lookahead_recursive_prefetch):
 # a nested composition and a below-rate native contributor driven through the real
 # LookaheadPump + AudioWorkerPool at worker_count>0 drain byte-identical to the inline
@@ -299,3 +310,30 @@ target_compile_definitions(
           ARBC_IMAGESEQ_IMPL_FILE="$<TARGET_FILE:arbc-plugin-imageseq-impl>"
           ARBC_IMAGESEQ_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-imageseq>")
 catch_discover_tests(arbc_imageseq_containment_t)
+
+# --- arbc-plugin-miniaudio (audio.device_monitor reference backend) -----------
+# The out-of-lib reference DeviceSink backend's tests. Like imageseq, they live
+# here (not in plugins/) because check_claims.py / check_levels.py scan
+# src/tests/testing, not plugins/; the smoke test constructs the sink through the
+# plugin's impl archive, while the containment driver reaches the built artifacts
+# through the paths passed as compile definitions.
+
+# Build + hardware-gated smoke check: constructs the reference sink and opens/closes
+# a stream when a playback device is present (skipped in headless CI).
+add_executable(arbc_miniaudio_smoke_t miniaudio_smoke.t.cpp)
+target_link_libraries(arbc_miniaudio_smoke_t
+                      PRIVATE arbc-plugin-miniaudio-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_miniaudio_smoke_t)
+
+# The device-line containment proof: no backend symbol in libarbc / arbc-testing,
+# present in the plugin's impl archive and loadable module (byte scan of artifacts).
+add_executable(arbc_miniaudio_containment_t miniaudio_containment.t.cpp)
+target_link_libraries(arbc_miniaudio_containment_t
+                      PRIVATE Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(
+  arbc_miniaudio_containment_t
+  PRIVATE ARBC_LIBARBC_FILE="$<TARGET_FILE:arbc>"
+          ARBC_TESTING_FILE="$<TARGET_FILE:arbc-testing>"
+          ARBC_MINIAUDIO_IMPL_FILE="$<TARGET_FILE:arbc-plugin-miniaudio-impl>"
+          ARBC_MINIAUDIO_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-miniaudio>")
+catch_discover_tests(arbc_miniaudio_containment_t)

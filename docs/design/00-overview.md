@@ -149,7 +149,11 @@ Initially-open questions, now decided in their own docs:
   cache/backend-cpu → engines/serialize/kinds → runtime → umbrella), with
   CI-enforced dependency edges; built-in kinds are codec-free and
   dual-built as dlopen plugins in CI; imageseq ships as a separate plugin
-  artifact carrying the codec dependency. Decided in doc 17.
+  artifact carrying the codec dependency, and — by the same "codec line" —
+  the audio device backend stays off `libarbc`'s link line: the `DeviceSink`
+  interface and transport-mastering `DeviceMonitor` are dependency-free
+  `runtime` objects, while the concrete OS-audio backend ships as a separate
+  `arbc-plugin-<device>` artifact. Decided in doc 17.
 - **Memory model**: inside-out slab arenas (refcounts stored apart from
   immutable data, per the `poc-inside-out-objects` prototype) for document
   records and content state nodes, reimplemented inside arbc core and
