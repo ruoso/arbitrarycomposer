@@ -786,6 +786,202 @@ TEST_CASE("the recursive descent honors the Flat-mode culls: an inaudible child 
   REQUIRE(w1.size() == 1);
 }
 
+namespace {
+
+// An N-deep nesting CHAIN of DISTINCT compositions (audio.spatial_fill_cull): comp[k]
+// holds a tone leaf (identity, edge 1.0) plus -- for k < N-1 -- a nesting layer at HALF
+// scale (edge 0.5) whose injected child composition is comp[k+1]. Distinct content ids
+// per level give distinct BlockKeys, so the warmed-contributor count reflects the
+// descent DEPTH (a self-embedding Droste collapses every level to one key and so cannot
+// expose depth via the want-list). In Spatial mode the accumulated attenuation halves
+// each edge, so the sub-audible cull terminates the WARMING descent at a finite depth
+// (13 for 2^-12); in Flat mode the transform is ignored and the descent warms the whole
+// chain -- the exact Spatial-vs-Flat contrast the mix walk shows (audio_mix_goldens
+// "sub-audible cull terminates a Droste recursion", ported to the ring).
+struct SpatialChain {
+  Model model;
+  std::vector<std::unique_ptr<SineLeaf>> leaves;
+  std::vector<std::unique_ptr<SineLeaf>> nests;
+  std::unordered_map<ObjectId, Content*> binding;
+  std::unordered_map<const Content*, ObjectId> ids;
+  std::vector<ObjectId> comps;
+  std::unordered_map<ObjectId, ObjectId> nest_edge; // nest content id -> child composition
+
+  explicit SpatialChain(std::size_t depth) {
+    const Affine half = Affine::scaling(0.5, 0.5);
+    auto tx = model.transact("spatial chain");
+    comps.resize(depth);
+    for (std::size_t k = 0; k < depth; ++k) {
+      comps[k] = tx.add_composition(0.0, 0.0);
+    }
+    for (std::size_t k = 0; k < depth; ++k) {
+      leaves.push_back(std::make_unique<SineLeaf>(300, 0.5F));
+      const ObjectId leaf_id = tx.add_content(1);
+      tx.attach_layer(comps[k], tx.add_layer(leaf_id, Affine::identity()));
+      binding[leaf_id] = leaves.back().get();
+      ids[leaves.back().get()] = leaf_id;
+      if (k + 1 < depth) {
+        nests.push_back(std::make_unique<SineLeaf>(0, 0.0F)); // a nested-composition stub
+        const ObjectId nest_id = tx.add_content(1);
+        tx.attach_layer(comps[k], tx.add_layer(nest_id, half));
+        binding[nest_id] = nests.back().get();
+        ids[nests.back().get()] = nest_id;
+        nest_edge[nest_id] = comps[k + 1];
+      }
+    }
+    tx.commit();
+  }
+
+  MixResolver resolver() {
+    return [this](ObjectId id) -> Content* {
+      const auto it = binding.find(id);
+      return it != binding.end() ? it->second : nullptr;
+    };
+  }
+  std::function<ObjectId(const Content*)> id_of() {
+    return [this](const Content* c) {
+      const auto it = ids.find(c);
+      return it != ids.end() ? it->second : ObjectId{};
+    };
+  }
+  std::function<std::optional<ObjectId>(ObjectId)> nesting() {
+    return [this](ObjectId content) -> std::optional<ObjectId> {
+      const auto it = nest_edge.find(content);
+      return it != nest_edge.end() ? std::optional<ObjectId>(it->second) : std::nullopt;
+    };
+  }
+};
+
+// Warm the whole transitive closure of output block 0 to residency, filling each want as
+// the pump's worker path would, and return the total number of DISTINCT warmed
+// contributors (the sum of the want-list sizes over the bottom-up rounds). A finite
+// return proves the descent terminated.
+std::size_t warm_closure_count(SpatialChain& chain, bool spatial) {
+  const DocStatePtr doc = chain.model.current();
+  LocalCache cache{64u * 1024 * 1024};
+  CachingPull pull(&cache, chain.id_of(), 0);
+  LookaheadRingConfig cfg;
+  cfg.composition = chain.comps.front();
+  cfg.resolve = chain.resolver();
+  cfg.sample_rate = k_rate;
+  cfg.layout = ChannelLayout::Stereo;
+  cfg.block_frames = k_block_frames;
+  cfg.revision = 0;
+  cfg.nested_composition = chain.nesting();
+  if (spatial) {
+    cfg.policy = MixPolicy::Spatial;
+    // An identity listener (accum 1.0): the cull is driven purely by the per-edge
+    // half-scale transforms, so its depth is a clean function of the threshold.
+    cfg.spatial = Spatialization{Affine::identity(), 100.0, 100.0, 1.0F, k_sub_audible_atten};
+  }
+  LookaheadRing ring(*doc, pull, cfg);
+  std::size_t total = 0;
+  std::vector<PrefetchWant> wants;
+  do {
+    wants = ring.prime<LocalBlock>(&cache, Time::zero(), Time{0}, +1); // one output block
+    total += wants.size();
+    for (const PrefetchWant& w : wants) {
+      fill_want(cache, cfg.resolve, w);
+    }
+  } while (!wants.empty());
+  return total;
+}
+
+} // namespace
+
+// enforces: 12-audio#spatial-fill-cull-terminates-warming
+TEST_CASE("the Spatial warming descent culls a sub-audible Droste chain finite, below Flat") {
+  // A 20-deep half-scale nesting chain: deeper than the 2^-12 cull depth (13) but well
+  // inside max_depth (64), so Flat warms the WHOLE chain while Spatial terminates on the
+  // sub-audible cull. The warmed set the mixer would pull is the same predicate, so the
+  // ring's warmed closure equals the mix walk's culled tree (Constraint 1/3, D3).
+  constexpr std::size_t k_depth = 20;
+
+  SpatialChain flat_chain(k_depth);
+  SpatialChain spatial_chain(k_depth);
+  const std::size_t flat = warm_closure_count(flat_chain, /*spatial=*/false);
+  const std::size_t spatial = warm_closure_count(spatial_chain, /*spatial=*/true);
+
+  // Flat: no cull -> the whole 20-level chain warms (20 leaves + 19 nested contributors).
+  REQUIRE(flat == 2 * k_depth - 1);
+  // Spatial: half-scale edges cross 2^-12 at depth 13, so the descent bottoms out there
+  // (13 leaves at depths 1..13 + 12 nested contributors at depths 1..12; the depth-13
+  // edge, 2^-13, is culled). Finite, and strictly smaller than the Flat closure.
+  REQUIRE(spatial == 13 + 12);
+  REQUIRE(spatial < flat);
+}
+
+// enforces: 12-audio#spatial-fill-cull-terminates-warming
+TEST_CASE("the Spatial cull keeps the primed-ring drain byte-exact: cache == inline, "
+          "silence_mixed 0") {
+  // The determinism invariant (Constraint 3, D5): after the warming descent culls the
+  // Droste chain, the cache-warmed drain stays byte-identical to the inline drain and
+  // never mixes silence. The mix walk pulls only the root's DIRECT contributors (leaf[0]
+  // + the depth-1 nested stub, both above threshold and warmed either way), so the ring's
+  // now-culled warmed set still covers the mixer's pulls exactly -- the cull removed only
+  // deeper blocks the top mix never pulls. Mirrors the shape of the shipped Spatial ring
+  // golden (threaded == inline, silence_mixed == 0) for a Droste scene.
+  constexpr std::size_t k_depth = 20;
+
+  const Spatialization seed{Affine::identity(), 100.0, 100.0, 1.0F, k_sub_audible_atten};
+
+  // Inline fill (no cache): mix_block mixes block 0 Spatially, settling each pull inline.
+  SpatialChain ichain(k_depth);
+  const DocStatePtr idoc = ichain.model.current();
+  CachingPull inline_pull(nullptr, ichain.id_of(), 0);
+  LookaheadRingConfig icfg;
+  icfg.composition = ichain.comps.front();
+  icfg.resolve = ichain.resolver();
+  icfg.sample_rate = k_rate;
+  icfg.layout = ChannelLayout::Stereo;
+  icfg.block_frames = k_block_frames;
+  icfg.revision = 0;
+  icfg.nested_composition = ichain.nesting();
+  icfg.policy = MixPolicy::Spatial;
+  icfg.spatial = seed;
+  LookaheadRing iring(*idoc, inline_pull, icfg);
+  iring.prime<LocalBlock>(nullptr, Time::zero(), Time{0}, +1);
+  REQUIRE(iring.blocks_mixed() == 1);
+  REQUIRE(iring.silence_mixed() == 0);
+
+  // Threaded fill (cache-warmed): prime in rounds, filling each want, until the culled
+  // closure is resident and block 0 mixes at full transitive residency.
+  SpatialChain cchain(k_depth);
+  const DocStatePtr cdoc = cchain.model.current();
+  LocalCache cache{64u * 1024 * 1024};
+  CachingPull cache_pull(&cache, cchain.id_of(), 0);
+  LookaheadRingConfig ccfg;
+  ccfg.composition = cchain.comps.front();
+  ccfg.resolve = cchain.resolver();
+  ccfg.sample_rate = k_rate;
+  ccfg.layout = ChannelLayout::Stereo;
+  ccfg.block_frames = k_block_frames;
+  ccfg.revision = 0;
+  ccfg.nested_composition = cchain.nesting();
+  ccfg.policy = MixPolicy::Spatial;
+  ccfg.spatial = seed;
+  LookaheadRing cring(*cdoc, cache_pull, ccfg);
+  std::vector<PrefetchWant> wants;
+  do {
+    wants = cring.prime<LocalBlock>(&cache, Time::zero(), Time{0}, +1);
+    for (const PrefetchWant& w : wants) {
+      fill_want(cache, ccfg.resolve, w);
+    }
+  } while (!wants.empty());
+  REQUIRE(cring.blocks_mixed() == 1);
+  REQUIRE(cring.silence_mixed() == 0); // never mixed silence for an absent contributor
+
+  std::vector<float> got_inline(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+  std::vector<float> got_cache(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+  AudioBlock oi{got_inline.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+  AudioBlock oc{got_cache.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+  AudioResult mi{};
+  AudioResult mc{};
+  REQUIRE(iring.drain(0, oi, mi));
+  REQUIRE(cring.drain(0, oc, mc));
+  REQUIRE(bytes_equal(got_inline, got_cache));
+}
+
 // enforces: 12-audio#latency-prerolls-declared-content
 TEST_CASE("a declared latency extends the fill lead, drain stays byte-identical to zero") {
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);

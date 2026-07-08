@@ -175,13 +175,18 @@ LookaheadRing::contributions_for(std::int64_t index) const {
   // The root composition's layers are pulled at descent depth 1 (`mix_block` mixes
   // the root itself, then `mix_layer` pulls each layer at `d_depth 0 -> 1`), so the
   // transitive descent bottoms out on the same `pull_audio` depth backstop the
-  // mixer does (Constraint 5).
-  descend(d_config.composition, d_config.sample_rate, block_start(index), 1, out);
+  // mixer does (Constraint 5). The Spatial sub-audible cull is seeded from the
+  // context's own `accum_atten` (the camera's uniform scale-attenuation the monitor
+  // seeds), exactly as the mixer starts from `request.spatial->accum_atten`
+  // (audio.spatial_fill_cull, Decision D1); Flat seeds a harmless 1.0F.
+  const float seed_atten = d_config.spatial ? d_config.spatial->accum_atten : 1.0F;
+  descend(d_config.composition, d_config.sample_rate, block_start(index), 1, seed_atten, out);
   return out;
 }
 
 void LookaheadRing::descend(ObjectId composition, std::uint32_t request_rate, Time window_start,
-                            std::uint32_t depth, std::vector<Contribution>& out) const {
+                            std::uint32_t depth, float accum_atten,
+                            std::vector<Contribution>& out) const {
   const CompositionRecord* comp = d_doc.find_composition(composition);
   if (comp == nullptr) {
     return;
@@ -215,6 +220,26 @@ void LookaheadRing::descend(ObjectId composition, std::uint32_t request_rate, Ti
         layer->span.end.flicks <= win_start) {
       return;
     }
+    // Spatial sub-audible cull (audio.spatial_fill_cull, doc 12:200-206): the exact
+    // `mix.cpp:64-66` predicate ported into the warming walk (Constraint 1, Decision
+    // D3). Gated on `d_config.spatial.has_value()` -- byte-identical to `mix.cpp:57`'s
+    // `request.spatial.has_value()` gate -- so a Flat scene warms exactly what it warms
+    // today (Constraint 2, Decision D2). Only the scalar attenuation product drives the
+    // decision, so no full `Spatialization` / pan is composed here (Decision D1). A
+    // sub-audible layer is neither warmed nor descended, matching the tree the mixer
+    // pulls edge-for-edge, so the warmed set equals the culled tree (Constraint 3) and a
+    // shrinking Droste chain terminates at the cull depth, backstopped by `max_depth`
+    // (Constraint 5). `child_atten` is the accumulated product this edge gains, threaded
+    // to the nested descent exactly as `mix_layer` threads `sp.accum_atten * edge_atten`
+    // to the child context (mix.cpp:72-73).
+    float child_atten = accum_atten;
+    if (d_config.spatial.has_value()) {
+      const float edge_atten = spatial_edge_atten(layer->transform);
+      if (accum_atten * edge_atten < d_config.spatial->sub_audible) {
+        return; // sub-audible: not warmed, not descended (recursion terminator, D3)
+      }
+      child_atten = accum_atten * edge_atten;
+    }
     // Varispeed: the composed rational rate `request_rate * den/num`, recomputed per
     // edge, never accumulated (doc 11:187-188) -- identical to `mix_layer`:55-64.
     const std::int64_t num = layer->time_map.rate.num();
@@ -241,7 +266,7 @@ void LookaheadRing::descend(ObjectId composition, std::uint32_t request_rate, Ti
     if (d_config.nested_composition && depth < d_config.max_depth) {
       const std::optional<ObjectId> child_comp = d_config.nested_composition(layer->content);
       if (child_comp.has_value()) {
-        descend(*child_comp, child_rate, *child_start, depth + 1, c.children);
+        descend(*child_comp, child_rate, *child_start, depth + 1, child_atten, c.children);
       }
     }
     out.push_back(std::move(c));

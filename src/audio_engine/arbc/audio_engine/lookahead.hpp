@@ -269,8 +269,19 @@ private:
   // and, for a layer that itself nests a composition (via `nested_composition`),
   // descend into its children applying the composed rational rate + time map per
   // edge (never accumulated, doc 11 varispeed), bounded by `max_depth`.
+  //
+  // `accum_atten` is the running product of edge attenuations from the camera down
+  // to THIS composition (audio.spatial_fill_cull, Decision D1): when
+  // `d_config.spatial` is present, each layer's `spatial_edge_atten(transform)`
+  // gains it, and a layer whose `accum_atten * edge_atten` falls below
+  // `spatial->sub_audible` is neither warmed nor descended -- the exact
+  // `mix.cpp:64-66` sub-audible cull, so the warmed set equals the culled tree the
+  // mixer walks (Constraint 1/3). Flat (`spatial` absent) ignores it: a byte-exact
+  // no-op (Constraint 2, Decision D2). Only the scalar attenuation product drives
+  // the cull -- pan and the composed listener do not change WHICH blocks warm, so
+  // no full `Spatialization` is threaded (Decision D1).
   void descend(ObjectId composition, std::uint32_t request_rate, Time window_start,
-               std::uint32_t depth, std::vector<Contribution>& out) const;
+               std::uint32_t depth, float accum_atten, std::vector<Contribution>& out) const;
   BlockKey contribution_key(const Contribution& c) const;
   // The working-rate discovery `PrefetchWant` for a contributor (leaf or nested).
   PrefetchWant make_want(const Contribution& c) const;

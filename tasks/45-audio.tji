@@ -89,8 +89,15 @@ task audio "Audio" {
   task spatial_fill_cull "Spatial sub-audible cull inside LookaheadRing descent" {
     effort 1d
     allocate team
+    complete 100
     depends !spatial_policy
-    note "Apply the Spatial sub-audible attenuation cull inside LookaheadRing::descend/contributions_for so the warmed contributor closure terminates at the sub-audible depth instead of max_depth in Spatial Droste/infinite-zoom scenes (a warming-cost optimization; drain byte-exactness already holds via superset warming). Behavioral-counter: warmed-block count in a Spatial Droste scene drops to the cull depth. Source: audio.spatial_policy scope boundary; see tasks/refinements/audio/spatial_policy.md. Doc 12."
+    note "Apply the Spatial sub-audible attenuation cull inside LookaheadRing::descend/contributions_for so the warmed contributor closure terminates at the sub-audible depth instead of max_depth in Spatial Droste/infinite-zoom scenes (a warming-cost optimization; drain byte-exactness already holds via superset warming). Behavioral-counter: warmed-block count in a Spatial Droste scene drops to the cull depth. Source: audio.spatial_policy scope boundary; see tasks/refinements/audio/spatial_policy.md. Doc 12. Refinement: tasks/refinements/audio/spatial_fill_cull.md"
+  }
+  task spatial_nested_warm_context "Nested-Spatial pump warm context vs mixer pull context mismatch" {
+    effort 1d
+    allocate team
+    depends !spatial_fill_cull
+    note "The pump warms nested contributors Flat (no spatial child-context on AudioRequest, lookahead_pump.cpp:119) while the mixer pulls them with a spatial child-context under the same spatial-agnostic BlockKey; a threaded (cache) nested-Spatial drain may diverge from a true inline spatial render. Pre-existing (spatial_policy), unverified — surfaced during audio.spatial_fill_cull. Investigate whether divergence occurs and fix the BlockKey or context mismatch if confirmed. Source: tasks/refinements/audio/spatial_fill_cull.md. Doc 12."
   }
   task spatial_camera_follow "Live viewport camera binding for device-path spatialization" {
     effort 1d
