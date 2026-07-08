@@ -32,13 +32,14 @@ namespace arbc {
 // `kind-nested` carries its own `NestedResolver`.
 using MixResolver = std::function<Content*(ObjectId)>;
 
-// The per-layer contribution policy (doc 12:127-129): the mix policy is a
-// *monitor* choice, with **Flat** the default and the only policy this task
-// implements (contribution = `gain x mixed`). Spatial (pan / attenuation /
-// sub-audible cull) is the `audio.spatial_policy` leaf, inserted behind this seam
-// -- with the layer's composed transform already in hand -- without a signature
-// change. Passed by value, defaulting to `Flat`.
-enum class MixPolicy { Flat };
+// The per-layer contribution policy (doc 12:127-129,167-206): the mix policy is a
+// *monitor* choice, with **Flat** the default (contribution = `gain x mixed`). The
+// enum is the monitor-facing selector; the mechanism that actually carries the
+// composed transform into the mix is the optional `AudioRequest::spatial` context
+// (Decision D1) -- so on `Spatial` a monitor both names this enum AND seeds
+// `request.spatial`, and the per-layer branch keys off `request.spatial` (never this
+// enum, which the L3 nested walk cannot see). Passed by value, defaulting to `Flat`.
+enum class MixPolicy { Flat, Spatial };
 
 // Mix `composition`'s audible layers into `request.target`, bottom-to-top and
 // additively (doc 12:11-21,202-208). A pure function over the pinned `doc`: it

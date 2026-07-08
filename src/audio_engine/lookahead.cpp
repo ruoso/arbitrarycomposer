@@ -316,11 +316,24 @@ void LookaheadRing::mix_block(std::int64_t index) {
       block,
       Exactness::BestEffort, // audio renders ahead, not against a deadline (doc 12:33-34)
       StateHandle{},
+      d_config.spatial, // the static Spatial seed (nullopt => Flat, byte-identical)
   };
   // The ring renders nothing itself beyond calling its sibling `mix_composition`
-  // once per prepared output block (doc 12:11-21,150-208).
+  // once per prepared output block (doc 12:11-21,150-208). Spatial mixing is
+  // producer-side here (off the RT drain, doc 12:31-34; refinement Constraint 8).
   const AudioResult meta =
       mix_composition(d_doc, d_config.composition, d_config.resolve, d_pull, req, d_config.policy);
+  if (d_config.spatial.has_value()) {
+    // Post-scale the top mix by the camera's uniform scale-attenuation (doc 12:186-190,
+    // refinement point 5): each layer applied only its OWN edge attenuation, so the
+    // camera's own scale multiplies the whole root mix once, here.
+    const float cam_atten = d_config.spatial->accum_atten;
+    const std::size_t n =
+        static_cast<std::size_t>(d_config.block_frames) * channel_count(d_config.layout);
+    for (std::size_t i = 0; i < n; ++i) {
+      d_mix_scratch[i] *= cam_atten;
+    }
+  }
   publish_slot(index, meta);
   d_blocks_mixed.fetch_add(1, std::memory_order_relaxed);
 }

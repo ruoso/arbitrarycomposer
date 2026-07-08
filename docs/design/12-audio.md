@@ -164,6 +164,47 @@ monitor-implementation territory, extensible later; the design point is
 only that *the composed transform is available to the mix* behind a
 policy.
 
+### The v1 Spatial model (concrete)
+
+Spatial is a policy the *monitor* selects; the mechanism that carries the
+composed transform into the mix — including across the pull boundary into
+nested contributors — is a small optional field on the audio request, so a
+nested composition spatializes on the same footing as the root:
+
+- **Threading.** The audio request carries an optional spatialization
+  context: a **listener** transform (camera → this composition's local
+  frame), the **viewport extent** (for pan normalization), a running
+  **accumulated attenuation** scalar, and the **sub-audible threshold**.
+  Absent ⇒ Flat (a byte-identical no-op — an ambient host pays nothing).
+  Present ⇒ Spatial. Descending into a nested composition at embedding
+  transform `E` composes the child's listener `compose(listener, E)` and
+  multiplies the accumulated attenuation by that edge's attenuation — the
+  transform is composed per edge, never accumulated wrong (doc 04).
+- **Attenuation** is a per-edge multiplicative gain
+  `clamp(max_scale(layer.transform), 0, 1)` applied to each layer exactly
+  as `gain` is, so a contributor's *net* attenuation is the product down
+  its nesting chain — i.e. its full composed scale (for scales ≤ 1),
+  computed once with no double counting. The camera's own scale attenuates
+  the root mix uniformly (zoom out fades to ambience). Amplification
+  (scale > 1) is capped at unity: Spatial never makes a layer louder than
+  Flat.
+- **Pan** is a square-root constant-power law from the layer's composed
+  position in the viewport (`t = (p+1)/2`, `gL = √(1−t)`, `gR = √(t)`);
+  `√` is IEEE-754 correctly-rounded, so Spatial output is byte-exact and
+  goldenable (unlike a `sin`/`cos` law). A child is mono-collapsed before
+  placement, so pan is exact for the layers a composition directly holds
+  and collapses across nesting boundaries (a nested subtree is placed at
+  its embedding position); mono output panwise is attenuation only.
+  Non-collapsing per-leaf pan is an HRTF-adjacent extension, deferred with
+  the rest of real spatial rendering above.
+- **Sub-audible cull.** Before pulling a contributor, if its accumulated
+  attenuation × its edge attenuation is below the threshold, the layer
+  contributes nothing and is *not descended*. Because attenuation
+  accumulates multiplicatively down the tree, a Droste/infinite-zoom chain
+  crosses the threshold at a finite depth — terminating the recursion
+  earlier and more naturally than, but still backstopped by, the doc-05
+  depth budget.
+
 ## The engine: monitors, clocking, lookahead
 
 A **monitor** is the audio analog of a viewport: attached to a transport,

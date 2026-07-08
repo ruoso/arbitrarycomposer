@@ -46,6 +46,33 @@ void mix_layer(const LayerRecord& layer, const CompositionRecord& comp, const Mi
     return;
   }
 
+  // Spatial branch (doc 12:167-206). The mix policy is carried as the optional
+  // `request.spatial` context (Decision D1), NOT the `policy` enum -- so this branch
+  // is byte-identical to the L3 `NestedContent::mix_child_layer` twin, which cannot
+  // see the L4 `MixPolicy`. Absent => Flat (the existing path, byte-identical). When
+  // present: compose this layer's viewport transform, derive its per-edge attenuation
+  // and constant-power pan, and apply the SUB-AUDIBLE CULL before pulling -- a subtree
+  // whose accumulated * edge attenuation is below the threshold contributes nothing
+  // and is not descended, terminating a Droste chain at a finite depth (doc 12:200-206).
+  const bool spatial_mode = request.spatial.has_value();
+  std::optional<Spatialization> child_spatial;
+  float edge_atten = 1.0F;
+  SpatialPanGains pan;
+  if (spatial_mode) {
+    const Spatialization& sp = *request.spatial;
+    const Affine composed = compose(sp.listener, layer.transform);
+    edge_atten = spatial_edge_atten(layer.transform);
+    if (sp.accum_atten * edge_atten < sp.sub_audible) {
+      return; // sub-audible: not pulled, not descended (recursion terminator, D4)
+    }
+    pan = spatial_pan_gains(composed, sp.viewport_w);
+    // The child's context: its listener is `composed` (per-edge, doc 04), and the
+    // accumulated attenuation gains this edge -- so a nested contributor accumulates
+    // its own attenuation down the descent and its own sub-audible cull terminates.
+    child_spatial = Spatialization{composed, sp.viewport_w, sp.viewport_h,
+                                   sp.accum_atten * edge_atten, sp.sub_audible};
+  }
+
   // Varispeed (doc 12:107-118): request the child at the composed rational rate
   // `child_rate = request.sample_rate / rate` (rate = num/den), so a rate-1/2
   // layer requests at twice the rate and pitches the child down an octave. The
@@ -91,6 +118,7 @@ void mix_layer(const LayerRecord& layer, const CompositionRecord& comp, const Mi
       child_block,
       request.exactness, // carried verbatim (doc 12 Decision 5)
       request.snapshot,  // carried verbatim (doc 05:96-100)
+      child_spatial,     // the descended Spatial context (nullopt in Flat mode)
   };
 
   // Pull through the injected service, NEVER `af->render_audio` directly: the
@@ -145,6 +173,7 @@ void mix_layer(const LayerRecord& layer, const CompositionRecord& comp, const Mi
         native_block,
         request.exactness, // carried verbatim
         request.snapshot,  // carried verbatim
+        child_spatial,     // same context as the discovery pull (leaves ignore it)
     };
     auto native_done = std::make_shared<AudioCompletion>();
     pull.pull_audio(content, native_req, native_done);
@@ -161,27 +190,56 @@ void mix_layer(const LayerRecord& layer, const CompositionRecord& comp, const Mi
     }
   }
 
-  // Additive Flat-mode mix (doc 12:127-130): contribution = gain * child, summed
-  // into the target, remixed to the request layout. Placement is 1:1 -- `mix_src`
-  // carries exactly `frames` samples at `child_rate` (the honoring child's block,
-  // or the reconstructed block above). The `MixPolicy` seam keeps the Spatial
-  // policy's pan/attenuation/sub-audible-cull branch additive (`audio.spatial_policy`);
-  // only `Flat` is implemented here.
+  // The mix. `policy` is the monitor's expressed selector, forwarded through the
+  // engine; the actual branch keys off `request.spatial` (Decision D1) so the L3
+  // nested twin -- which never sees `MixPolicy` -- takes the identical branch.
   (void)policy;
   const float gain = static_cast<float>(layer.gain);
-  for (std::uint32_t f = 0; f < frames; ++f) {
-    for (std::uint32_t c = 0; c < out_ch; ++c) {
-      float s = 0.0F;
-      if (in_ch == out_ch) {
-        s = mix_src[static_cast<std::size_t>(f) * in_ch + c];
-      } else if (in_ch == 1) {
-        s = mix_src[f]; // mono child -> every request channel
+  if (spatial_mode) {
+    // Spatial mix (doc 12:167-206): mono-collapse the child to a point source, scale
+    // by this layer's per-edge attenuation (applied ONCE, so the product down the
+    // chain is the full composed scale -- D2), and place it by the square-root
+    // constant-power pan (D3). The grouping is `((gain * edge) * pan_gain[c]) * m`,
+    // byte-exact and matched by the golden oracle. Mono output panwise is attenuation
+    // only (no pan field, doc 12:197).
+    const float ge = gain * edge_atten;
+    for (std::uint32_t f = 0; f < frames; ++f) {
+      float m = 0.0F;
+      if (in_ch == 1) {
+        m = mix_src[f];
       } else {
-        // stereo child -> mono request: average the channels (baseline downmix).
-        s = 0.5F * (mix_src[static_cast<std::size_t>(f) * 2] +
-                    mix_src[static_cast<std::size_t>(f) * 2 + 1]);
+        // stereo (or wider) child -> mono point source before placement.
+        m = 0.5F * (mix_src[static_cast<std::size_t>(f) * in_ch] +
+                    mix_src[static_cast<std::size_t>(f) * in_ch + 1]);
       }
-      request.target.samples[static_cast<std::size_t>(f) * out_ch + c] += gain * s;
+      if (out_ch == 2) {
+        request.target.samples[static_cast<std::size_t>(f) * 2] += (ge * pan.gl) * m;
+        request.target.samples[static_cast<std::size_t>(f) * 2 + 1] += (ge * pan.gr) * m;
+      } else {
+        for (std::uint32_t c = 0; c < out_ch; ++c) {
+          request.target.samples[static_cast<std::size_t>(f) * out_ch + c] += ge * m;
+        }
+      }
+    }
+  } else {
+    // Additive Flat-mode mix (doc 12:127-130): contribution = gain * child, summed
+    // into the target, remixed to the request layout. Placement is 1:1 -- `mix_src`
+    // carries exactly `frames` samples at `child_rate` (the honoring child's block,
+    // or the reconstructed block above).
+    for (std::uint32_t f = 0; f < frames; ++f) {
+      for (std::uint32_t c = 0; c < out_ch; ++c) {
+        float s = 0.0F;
+        if (in_ch == out_ch) {
+          s = mix_src[static_cast<std::size_t>(f) * in_ch + c];
+        } else if (in_ch == 1) {
+          s = mix_src[f]; // mono child -> every request channel
+        } else {
+          // stereo child -> mono request: average the channels (baseline downmix).
+          s = 0.5F * (mix_src[static_cast<std::size_t>(f) * 2] +
+                      mix_src[static_cast<std::size_t>(f) * 2 + 1]);
+        }
+        request.target.samples[static_cast<std::size_t>(f) * out_ch + c] += gain * s;
+      }
     }
   }
 

@@ -4,6 +4,7 @@
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/rational_time.hpp> // Rational (PlaybackHint rate)
 #include <arbc/base/time.hpp>
+#include <arbc/base/transform.hpp>    // Affine (the spatialization listener, doc 12:167-206)
 #include <arbc/media/audio_block.hpp> // ChannelLayout/AudioBlock (audio facet vocabulary, doc 17:50)
 #include <arbc/model/records.hpp>     // StateHandle (L3->model edge, doc 17:53,68-72)
 #include <arbc/surface/surface.hpp>
@@ -11,6 +12,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath> // std::sqrt (the byte-exact constant-power pan law, doc 12:191-199)
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -225,6 +227,82 @@ struct AudioResult {
 // `RenderCompletion` -- inline or later off-thread, one code path.
 using AudioCompletion = Completion<AudioResult>;
 
+// The default sub-audible attenuation threshold (doc 12:200-206, Decision D4):
+// 2^-12 (~ -72 dBFS), below single-contributor audibility. A Spatial subtree whose
+// accumulated attenuation falls below this contributes nothing and is not descended,
+// so a scale-1/2 Droste chain terminates by depth 12 -- far inside the doc-05 depth
+// budget (max_depth = 64). Carried in the `Spatialization` context, so a monitor can
+// tune it without a code change; the depth budget remains the hard backstop.
+inline constexpr float k_sub_audible_atten = 1.0F / 4096.0F;
+
+// The optional Spatial mix context threaded on the audio request (doc 12:167-206,
+// Decision D1): the mechanism that carries the composed transform into the mix,
+// INCLUDING across the pull boundary into nested contributors, so a nested
+// composition spatializes on the same footing as the root. Absent on an
+// `AudioRequest` => Flat (a byte-identical no-op; an ambient host pays nothing);
+// present => Spatial. Trivially copyable (an `Affine` + scalars) so the request stays
+// a cheap by-value descriptor. It is the ONLY carrier the L3 nested walk reads --
+// never the L4 `MixPolicy` enum -- which is what lets an L3 nested contributor and
+// the L4 engine spatialize without either naming the other (doc 17:41).
+struct Spatialization {
+  // The listener transform: this composition's local frame -> viewport pixels
+  // (the audio twin of the visual `Viewport::camera`), composed per edge on descent
+  // -- `compose(listener, embedding)` for a nested child, never accumulated wrong
+  // (doc 04). A layer's composed viewport position is `compose(listener, transform)`.
+  Affine listener{};
+  // The viewport extent for pan normalization (doc 12:191-199); `viewport_h` is
+  // carried for symmetry with the visual viewport but the v1 pan is x-only.
+  double viewport_w{0.0};
+  double viewport_h{0.0};
+  // The running product of edge attenuations from the camera down to THIS frame
+  // (doc 12:183-190): threaded purely for the sub-audible cull decision -- the
+  // per-layer sample attenuation is each layer's own `edge` (applied once), so the
+  // product down the chain is the full composed scale with no double counting.
+  float accum_atten{1.0F};
+  // The sub-audible cull threshold (doc 12:200-206).
+  float sub_audible{k_sub_audible_atten};
+};
+
+// A layer's per-edge Spatial attenuation (doc 12:183-190, Decision D2):
+// `clamp(max_scale(transform), 0, 1)`, applied once per layer exactly as `gain` is,
+// so amplification is capped at unity (Spatial never exceeds Flat loudness) and the
+// product down a nesting chain equals the full composed scale (for scales <= 1).
+// A pure, byte-exact function of the layer transform's coefficients -- shared by the
+// L4 `mix_layer` and the L3 `NestedContent::mix_child_layer` walk sites so the two
+// duplicated walks spatialize byte-identically (doc 17:41 Decision).
+inline float spatial_edge_atten(const Affine& transform) {
+  const double s = transform.max_scale();
+  if (s <= 0.0) {
+    return 0.0F;
+  }
+  if (s >= 1.0) {
+    return 1.0F;
+  }
+  return static_cast<float>(s);
+}
+
+// The square-root constant-power pan gains (doc 12:191-199, Decision D3): a layer at
+// composed viewport x-position `p` (normalized to [-1, 1] about `viewport_w / 2`,
+// clamped) gets `t = (p + 1) / 2`, `gL = sqrt(1 - t)`, `gR = sqrt(t)`. `sqrt` is
+// IEEE-754 correctly-rounded and platform-stable, so the gains are byte-exact and
+// goldenable (unlike a `sin`/`cos` law). A degenerate viewport centers the source.
+struct SpatialPanGains {
+  float gl{1.0F};
+  float gr{1.0F};
+};
+inline SpatialPanGains spatial_pan_gains(const Affine& composed, double viewport_w) {
+  const double x = composed.apply(Vec2{0.0, 0.0}).x;
+  double p = viewport_w > 0.0 ? (2.0 * x / viewport_w - 1.0) : 0.0;
+  if (p < -1.0) {
+    p = -1.0;
+  }
+  if (p > 1.0) {
+    p = 1.0;
+  }
+  const double t = (p + 1.0) / 2.0;
+  return SpatialPanGains{static_cast<float>(std::sqrt(1.0 - t)), static_cast<float>(std::sqrt(t))};
+}
+
 // What the mix engine wants rendered (doc 12:49-56): the 1D-signal twin of
 // `RenderRequest` -- a time window at a working sample rate and channel layout,
 // over a pinned content-state snapshot, into a caller-owned block. It stays a
@@ -246,6 +324,12 @@ struct AudioRequest {
   AudioBlock& target;
   Exactness exactness{Exactness::BestEffort};
   StateHandle snapshot{};
+  // The optional Spatial mix context (doc 12:167-206, Decision D1). Trailing and
+  // defaulted so every existing 6-field aggregate init stays valid and the Flat path
+  // is byte-identical: absent => Flat, present => Spatial (the branch keys off this
+  // field, never the L4 `MixPolicy` enum, so an L3 nested contributor spatializes on
+  // the same footing as the root without seeing the engine's policy type).
+  std::optional<Spatialization> spatial{};
 };
 
 // The optional audio facet (doc 12:63-70): a content's 1D-signal contract, the

@@ -260,6 +260,68 @@ ObjectId add_layer(Document& doc, ObjectId comp, std::shared_ptr<Content> conten
 
 } // namespace
 
+// The Spatial oracle: `mix_composition` in Spatial mode once per window through a
+// fresh inline pull, each block post-scaled by the camera's uniform scale-attenuation
+// -- exactly what `ExportMonitor(Spatial)` does in `render_block_at`.
+std::vector<float> oracle_spatial_all(const DocRoot& doc, ObjectId comp, const MixResolver& resolve,
+                                      const TimeRange& range, std::uint32_t rate,
+                                      std::uint32_t block_frames, ChannelLayout layout,
+                                      const Spatialization& seed) {
+  InlineAudioPull pull;
+  const float cam_atten = spatial_edge_atten(seed.listener);
+  Spatialization sp = seed;
+  sp.accum_atten = cam_atten;
+  std::vector<float> out;
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(rate);
+  for (const TimeRange& window : block_windows_over(range, rate, block_frames)) {
+    const std::uint32_t frames =
+        static_cast<std::uint32_t>((window.end.flicks - window.start.flicks) / fpf);
+    std::vector<float> buf(static_cast<std::size_t>(frames) * channel_count(layout), 0.0F);
+    AudioBlock block{buf.data(), frames, layout, rate};
+    const AudioRequest req{window, rate, layout, block, Exactness::Exact, StateHandle{}, sp};
+    mix_composition(doc, comp, resolve, pull, req, MixPolicy::Spatial);
+    for (float& v : buf) {
+      v *= cam_atten;
+    }
+    out.insert(out.end(), buf.begin(), buf.end());
+  }
+  return out;
+}
+
+// enforces: 12-audio#spatial-pans-by-composed-position
+// enforces: 12-audio#spatial-attenuates-by-composed-scale
+TEST_CASE("the export monitor renders a Spatial scene byte-exact through render_range") {
+  Document document;
+  const ObjectId comp = document.add_composition(0.0, 0.0);
+  constexpr double k_view = 100.0;
+  // Two panned sources; a camera at half scale (uniform attenuation 0.5) is the
+  // listener, exercising both per-layer pan and the camera post-scale.
+  const ObjectId la = document.add_layer(
+      document.add_content(std::make_shared<SineLeaf>(300, 0.6F)), Affine::identity());
+  const ObjectId lb =
+      document.add_layer(document.add_content(std::make_shared<SineLeaf>(700, 0.4F)),
+                         Affine::translation(k_view, 0.0));
+  document.attach_layer(comp, la);
+  document.attach_layer(comp, lb);
+
+  const Spatialization seed{Affine::scaling(0.5, 0.5), k_view, k_view, 1.0F, k_sub_audible_atten};
+  ExportMonitor monitor(document, comp, AudioFormat{k_rate, ChannelLayout::Stereo},
+                        MixPolicy::Spatial, seed);
+
+  const TimeRange range = range_of(96);
+  const std::vector<float> got = export_all(monitor, range, 32);
+  const std::vector<float> want = oracle_spatial_all(
+      monitor.pinned_state(), comp, [&](ObjectId id) { return document.resolve(id); }, range,
+      k_rate, 32, ChannelLayout::Stereo, seed);
+  REQUIRE(bytes_equal(got, want));
+
+  // A Flat export of the same scene differs (Spatial actually spatializes) yet stays
+  // finite -- a sanity check that the Spatial path is not a silent no-op.
+  ExportMonitor flat(document, comp, AudioFormat{k_rate, ChannelLayout::Stereo});
+  const std::vector<float> flat_out = export_all(flat, range, 32);
+  REQUIRE_FALSE(bytes_equal(got, flat_out));
+}
+
 // enforces: 12-audio#export-monitor-mixes-exactly-over-range
 // enforces: 12-audio#mix-engine-mixes-layers-additively
 TEST_CASE("the export block loop is byte-identical to mix_composition per window") {

@@ -80,11 +80,17 @@ public:
   // is the root composition mixed; `format` is the working rate + layout the mix is
   // produced at, defaulting (`nullopt`) to the pinned composition's working
   // `AudioFormat` (`DocRoot::working_audio_format()`, doc 12:94-104); `policy` is the
-  // per-layer mix policy (`Flat`, the only policy shipped -- Spatial is
-  // `audio.spatial_policy`, inserted behind this seam without a signature change).
+  // per-layer mix policy (`Flat` by default, or `Spatial`, doc 12:167-206). `spatial`
+  // is the static Spatial seed the monitor threads into every block's request when
+  // `policy == Spatial` -- listener (camera -> composition-local -> viewport),
+  // viewport extent, and sub-audible threshold (its `accum_atten` is recomputed by
+  // the monitor to the camera's `clamp(max_scale(listener), 0, 1)`). Ignored under
+  // `Flat` (byte-identical to the pre-Spatial export path); required under `Spatial`
+  // (an unseeded `Spatial` export falls back to Flat, mixing no spatialization).
   explicit ExportMonitor(const Document& document, ObjectId composition,
                          std::optional<AudioFormat> format = std::nullopt,
-                         MixPolicy policy = MixPolicy::Flat);
+                         MixPolicy policy = MixPolicy::Flat,
+                         std::optional<Spatialization> spatial = std::nullopt);
 
   ExportMonitor(const ExportMonitor&) = delete;
   ExportMonitor& operator=(const ExportMonitor&) = delete;
@@ -154,6 +160,12 @@ private:
   DocStatePtr d_pinned;
   AudioFormat d_format;
   MixPolicy d_policy;
+  // The active Spatial seed (doc 12:167-206): set only when `d_policy == Spatial` and
+  // a seed was supplied, with `accum_atten` pre-computed to the camera's uniform
+  // scale-attenuation `clamp(max_scale(listener), 0, 1)`. `render_block_at` threads it
+  // onto the request and post-scales the mixed block by that same value. Nullopt =>
+  // the Flat path, byte-identical.
+  std::optional<Spatialization> d_spatial;
   // The mix engine's resolver over the pinned document's bindings (`mix.hpp:33`).
   MixResolver d_resolve;
   // The pull substrate the mix core pulls through (Decision "long-lived home"). The

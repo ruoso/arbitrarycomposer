@@ -79,7 +79,8 @@ std::vector<TimeRange> block_windows_over(const TimeRange& range, std::uint32_t 
 }
 
 ExportMonitor::ExportMonitor(const Document& document, ObjectId composition,
-                             std::optional<AudioFormat> format, MixPolicy policy)
+                             std::optional<AudioFormat> format, MixPolicy policy,
+                             std::optional<Spatialization> spatial)
     : d_document(document), d_composition(composition),
       // Pin ONCE for the whole export (Decision, doc 02:77-80): this snapshot
       // outlives every block and every later commit, so the export is
@@ -90,6 +91,15 @@ ExportMonitor::ExportMonitor(const Document& document, ObjectId composition,
       d_format(format.has_value() ? *format : d_pinned->working_audio_format()), d_policy(policy),
       d_backend(std::make_unique<NullBackend>()), d_cache(k_export_tile_cache_budget),
       d_blocks(k_export_block_cache_budget) {
+  // Activate the Spatial seed only under `Spatial` (doc 12:167-206, refinement point
+  // 5): the camera's uniform scale-attenuation seeds the accumulated attenuation the
+  // sub-audible cull compares against, and post-scales the root mix once. Under `Flat`
+  // (or an unseeded `Spatial`) nothing is threaded and the export stays byte-identical.
+  if (d_policy == MixPolicy::Spatial && spatial.has_value()) {
+    d_spatial = *spatial;
+    d_spatial->accum_atten = spatial_edge_atten(d_spatial->listener);
+  }
+
   // The mix engine's resolver over the pinned document's bindings (`mix.hpp:33`).
   d_resolve = [this](ObjectId id) -> Content* { return d_document.resolve(id); };
 
@@ -137,9 +147,20 @@ AudioResult ExportMonitor::render_block_at(const TimeRange& window, AudioBlock& 
   // rides the working rate/layout; the pinned revision is threaded as `*d_pinned` to
   // `mix_composition` directly (the same machinery video uses -- the request-level
   // `StateHandle` stays none, exactly as every existing mix caller).
-  const AudioRequest request{window, d_format.sample_rate, d_format.layout,
-                             target, Exactness::Exact,     StateHandle{}};
-  return mix_composition(*d_pinned, d_composition, d_resolve, *d_pull, request, d_policy);
+  const AudioRequest request{window,           d_format.sample_rate, d_format.layout, target,
+                             Exactness::Exact, StateHandle{},        d_spatial};
+  const AudioResult result =
+      mix_composition(*d_pinned, d_composition, d_resolve, *d_pull, request, d_policy);
+  if (d_spatial.has_value() && target.samples != nullptr) {
+    // Post-scale the top mix by the camera's uniform scale-attenuation (doc 12:186-190,
+    // refinement point 5): each layer applied only its own edge attenuation, so the
+    // camera's scale multiplies the whole root mix once, here.
+    const float cam_atten = d_spatial->accum_atten;
+    for (std::size_t i = 0; i < n; ++i) {
+      target.samples[i] *= cam_atten;
+    }
+  }
+  return result;
 }
 
 void ExportMonitor::render_range(const TimeRange& range, std::uint32_t block_frames,

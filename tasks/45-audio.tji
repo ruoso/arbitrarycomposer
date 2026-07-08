@@ -82,8 +82,21 @@ task audio "Audio" {
   task spatial_policy "Spatialization monitor policy" {
     effort 2d
     allocate team
+    complete 100
     depends !mix_engine
-    note "Flat (default) and Spatial (camera-as-listener pan/attenuation, sub-audible cull terminating recursion); gain<1 cycles converge in flat mode. Doc 12."
+    note "Flat (default) and Spatial (camera-as-listener pan/attenuation, sub-audible cull terminating recursion); gain<1 cycles converge in flat mode. Doc 12. Refinement: tasks/refinements/audio/spatial_policy.md"
+  }
+  task spatial_fill_cull "Spatial sub-audible cull inside LookaheadRing descent" {
+    effort 1d
+    allocate team
+    depends !spatial_policy
+    note "Apply the Spatial sub-audible attenuation cull inside LookaheadRing::descend/contributions_for so the warmed contributor closure terminates at the sub-audible depth instead of max_depth in Spatial Droste/infinite-zoom scenes (a warming-cost optimization; drain byte-exactness already holds via superset warming). Behavioral-counter: warmed-block count in a Spatial Droste scene drops to the cull depth. Source: audio.spatial_policy scope boundary; see tasks/refinements/audio/spatial_policy.md. Doc 12."
+  }
+  task spatial_camera_follow "Live viewport camera binding for device-path spatialization" {
+    effort 1d
+    allocate team
+    depends !spatial_policy, !device_monitor
+    note "Bind the interactive runtime's live visual viewport camera into the DeviceMonitor's Spatialization listener each tick and on camera/transport change, so audio spatialization tracks the user's zoom live (the interactive 'camera is the listener' coupling); audio.spatial_policy ships only the static seam. Source: audio.spatial_policy scope boundary; see tasks/refinements/audio/spatial_policy.md. Doc 12."
   }
   task rt_safety "RT-safety enforcement" {
     effort 1d

@@ -415,6 +415,29 @@ void NestedContent::mix_child_layer(const LayerRecord& layer, const CompositionR
     return;
   }
 
+  // Spatial branch (doc 12:167-206). The identical branch to the L4 `mix_layer` twin
+  // (`mix.cpp`), keyed off the L3 contract's `request.spatial` context (Decision D1)
+  // and NEVER the L4 `MixPolicy` enum -- so a nested subtree pulled by the mixer
+  // spatializes and accumulates its own contributors, and the SUB-AUDIBLE CULL
+  // terminates a Droste scene at its natural depth (doc 12:200-206). Absent => Flat
+  // (byte-identical). The walk stays duplicated between L3 and L4 exactly as the Flat
+  // and visual walks are (doc 17:41 Decision).
+  const bool spatial_mode = request.spatial.has_value();
+  std::optional<Spatialization> child_spatial;
+  float edge_atten = 1.0F;
+  SpatialPanGains pan;
+  if (spatial_mode) {
+    const Spatialization& sp = *request.spatial;
+    const Affine composed = compose(sp.listener, layer.transform);
+    edge_atten = spatial_edge_atten(layer.transform);
+    if (sp.accum_atten * edge_atten < sp.sub_audible) {
+      return; // sub-audible: not pulled, not descended (recursion terminator, D4)
+    }
+    pan = spatial_pan_gains(composed, sp.viewport_w);
+    child_spatial = Spatialization{composed, sp.viewport_w, sp.viewport_h,
+                                   sp.accum_atten * edge_atten, sp.sub_audible};
+  }
+
   // Varispeed (doc 12:107-118): request the child at the composed rational rate
   // `child_rate = request.sample_rate / rate` (rate = num/den), so a rate-1/2
   // layer requests at twice the rate and pitches the child down an octave. The
@@ -460,6 +483,7 @@ void NestedContent::mix_child_layer(const LayerRecord& layer, const CompositionR
       child_block,
       request.exactness, // carried verbatim (constraint 2)
       request.snapshot,  // carried verbatim (constraint 8)
+      child_spatial,     // the descended Spatial context (nullopt in Flat mode)
   };
 
   // Pull through the injected service, NEVER `af->render_audio` directly (doc 13
@@ -515,6 +539,7 @@ void NestedContent::mix_child_layer(const LayerRecord& layer, const CompositionR
         native_block,
         request.exactness, // carried verbatim (Constraint 9)
         request.snapshot,  // carried verbatim (Constraint 9)
+        child_spatial,     // same context as the discovery pull (leaves ignore it)
     };
     auto native_done = std::make_shared<AudioCompletion>();
     d_pull->pull_audio(content, native_req, native_done);
@@ -531,24 +556,52 @@ void NestedContent::mix_child_layer(const LayerRecord& layer, const CompositionR
     }
   }
 
-  // Additive Flat-mode mix (doc 12:129-130): contribution = gain * child, summed
-  // into the target, remixed to the request layout. Placement is 1:1 -- `mix_src`
-  // carries exactly `frames` samples at `child_rate` (the honoring child's block,
-  // or the reconstructed block above).
+  // The mix. Absent `request.spatial` => the Flat additive path (byte-identical);
+  // present => the Spatial pan/attenuation branch, identical to the L4 `mix_layer`
+  // twin (`mix.cpp`), so a nested subtree spatializes on the same footing as the root.
   const float gain = static_cast<float>(layer.gain);
-  for (std::uint32_t f = 0; f < frames; ++f) {
-    for (std::uint32_t c = 0; c < out_ch; ++c) {
-      float s = 0.0F;
-      if (in_ch == out_ch) {
-        s = mix_src[static_cast<std::size_t>(f) * in_ch + c];
-      } else if (in_ch == 1) {
-        s = mix_src[f]; // mono child -> every request channel
+  if (spatial_mode) {
+    // Spatial mix (doc 12:167-206): mono-collapse to a point source, attenuate once
+    // by this layer's per-edge composed scale (D2), place by the square-root
+    // constant-power pan (D3) with the grouping `((gain * edge) * pan[c]) * m`; mono
+    // output panwise is attenuation only.
+    const float ge = gain * edge_atten;
+    for (std::uint32_t f = 0; f < frames; ++f) {
+      float m = 0.0F;
+      if (in_ch == 1) {
+        m = mix_src[f];
       } else {
-        // stereo child -> mono request: average the channels (baseline downmix).
-        s = 0.5F * (mix_src[static_cast<std::size_t>(f) * 2] +
-                    mix_src[static_cast<std::size_t>(f) * 2 + 1]);
+        m = 0.5F * (mix_src[static_cast<std::size_t>(f) * in_ch] +
+                    mix_src[static_cast<std::size_t>(f) * in_ch + 1]);
       }
-      request.target.samples[static_cast<std::size_t>(f) * out_ch + c] += gain * s;
+      if (out_ch == 2) {
+        request.target.samples[static_cast<std::size_t>(f) * 2] += (ge * pan.gl) * m;
+        request.target.samples[static_cast<std::size_t>(f) * 2 + 1] += (ge * pan.gr) * m;
+      } else {
+        for (std::uint32_t c = 0; c < out_ch; ++c) {
+          request.target.samples[static_cast<std::size_t>(f) * out_ch + c] += ge * m;
+        }
+      }
+    }
+  } else {
+    // Additive Flat-mode mix (doc 12:129-130): contribution = gain * child, summed
+    // into the target, remixed to the request layout. Placement is 1:1 -- `mix_src`
+    // carries exactly `frames` samples at `child_rate` (the honoring child's block,
+    // or the reconstructed block above).
+    for (std::uint32_t f = 0; f < frames; ++f) {
+      for (std::uint32_t c = 0; c < out_ch; ++c) {
+        float s = 0.0F;
+        if (in_ch == out_ch) {
+          s = mix_src[static_cast<std::size_t>(f) * in_ch + c];
+        } else if (in_ch == 1) {
+          s = mix_src[f]; // mono child -> every request channel
+        } else {
+          // stereo child -> mono request: average the channels (baseline downmix).
+          s = 0.5F * (mix_src[static_cast<std::size_t>(f) * 2] +
+                      mix_src[static_cast<std::size_t>(f) * 2 + 1]);
+        }
+        request.target.samples[static_cast<std::size_t>(f) * out_ch + c] += gain * s;
+      }
     }
   }
 

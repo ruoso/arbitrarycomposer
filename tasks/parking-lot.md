@@ -109,3 +109,8 @@ Append one `###` block per item, newest at the bottom:
 - **Source**: closer for `audio.export_edge_resample` (see accompanying commit); Decision D5 and "Out of scope" section in the refinement.
 - **Question**: Should a follow-up task add container layout conversion (e.g. stereo working composition written to a mono container) at the export edge, wiring the device edge's `convert_frames` layout remix into the export path?
 - **Why parked**: No milestone currently consumes a container layout differing from the working layout — a WBS leaf would orphan immediately (`scripts/unblocked.py` ORPHANS). The scope, effort, and milestone placement are a human judgment call; the entry is the trigger pointer for when a real milestone consumer is scoped.
+
+### 2026-07-08 — HRTF, distance models beyond attenuation, and non-collapsing per-leaf pan
+- **Source**: closer for `audio.spatial_policy` (see accompanying commit); "Out of scope" section and doc 12:162-165.
+- **Question**: Should follow-up tasks be added for HRTF / 3D audio monitors, distance models beyond per-edge scale attenuation, and non-collapsing per-leaf pan (preserving nested internal stereo width rather than mono-collapsing at nesting boundaries)?
+- **Why parked**: Doc 12:162-165 explicitly defers these as "monitor-implementation territory, extensible later." They require multichannel accumulation, IR convolution infrastructure, and a non-collapsing pan model — scope beyond any current milestone. Human call once a milestone consumer is scoped for 3D/HRTF audio.

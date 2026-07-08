@@ -328,6 +328,95 @@ TEST_CASE("a primed ring drained in order is byte-identical to a direct per-wind
   REQUIRE(ring.blocks_mixed() == 4);
 }
 
+// The direct Spatial reference for one output block: mix_composition in Spatial mode
+// with the seed on the request, post-scaled by the camera's uniform scale-attenuation
+// -- exactly what `LookaheadRing::mix_block` does when `config.spatial` is set.
+std::vector<float> spatial_direct_mix(const DocRoot& doc, ObjectId comp, const MixResolver& resolve,
+                                      PullService& pull, std::int64_t index,
+                                      const Spatialization& seed) {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+  std::vector<float> buf(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+  AudioBlock block{buf.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+  const AudioRequest req{TimeRange{Time{index * span}, Time{index * span + span}},
+                         k_rate,
+                         ChannelLayout::Stereo,
+                         block,
+                         Exactness::BestEffort,
+                         StateHandle{},
+                         seed};
+  mix_composition(doc, comp, resolve, pull, req, MixPolicy::Spatial);
+  for (float& v : buf) {
+    v *= seed.accum_atten; // the camera post-scale
+  }
+  return buf;
+}
+
+// enforces: 12-audio#spatial-attenuates-by-composed-scale
+TEST_CASE("the ring threads a Spatial seed: threaded fill == inline Spatial mix, silence_mixed 0") {
+  SineLeaf a(300, 0.6F);
+  SineLeaf b(700, 0.4F);
+  Scene scene;
+  scene.add(&a);
+  scene.add(&b);
+  const DocStatePtr doc = scene.model.current();
+
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  // A camera at half scale (uniform attenuation 0.5) seeds the accumulated attenuation
+  // AND the post-scale (as a monitor would compute from `max_scale(listener)`).
+  const Affine listener = Affine::scaling(0.5, 0.5);
+  const Spatialization seed{listener, 100.0, 100.0, spatial_edge_atten(listener),
+                            k_sub_audible_atten};
+
+  // Inline fill (no cache): `mix_block` mixes each block Spatially and post-scales.
+  CachingPull inline_pull(nullptr, scene.id_of(), 0);
+  LookaheadRingConfig icfg = ring_config(scene);
+  icfg.policy = MixPolicy::Spatial;
+  icfg.spatial = seed;
+  LookaheadRing iring(*doc, inline_pull, icfg);
+  iring.prime<LocalBlock>(nullptr, Time::zero(), Time{3 * span}, +1);
+  REQUIRE(iring.blocks_mixed() == 4);
+  REQUIRE(iring.silence_mixed() == 0);
+
+  // Threaded fill (cache-warmed): prime in rounds, filling each want, until the whole
+  // closure is resident and the blocks mix at full transitive residency.
+  LocalCache cache{64u * 1024 * 1024};
+  CachingPull cache_pull(&cache, scene.id_of(), 0);
+  LookaheadRingConfig ccfg = ring_config(scene);
+  ccfg.policy = MixPolicy::Spatial;
+  ccfg.spatial = seed;
+  LookaheadRing cring(*doc, cache_pull, ccfg);
+  std::vector<PrefetchWant> wants;
+  do {
+    wants = cring.prime<LocalBlock>(&cache, Time::zero(), Time{3 * span}, +1);
+    for (const PrefetchWant& w : wants) {
+      fill_want(cache, ccfg.resolve, w);
+    }
+  } while (!wants.empty());
+  REQUIRE(cring.blocks_mixed() == 4);
+  REQUIRE(cring.silence_mixed() == 0); // never mixed silence for an absent descendant
+
+  // The threaded drain is byte-identical to the inline drain AND to the direct Spatial
+  // oracle (the warmed superset covers exactly what the culling mixer pulls).
+  CachingPull ref_pull(nullptr, scene.id_of(), 0);
+  for (std::int64_t i = 0; i < 4; ++i) {
+    std::vector<float> got_inline(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+    std::vector<float> got_threaded(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+    AudioBlock oi{got_inline.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+    AudioBlock ot{got_threaded.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+    AudioResult mi{};
+    AudioResult mt{};
+    REQUIRE(iring.drain(i, oi, mi));
+    REQUIRE(cring.drain(i, ot, mt));
+    REQUIRE(bytes_equal(got_inline, got_threaded));
+    const std::vector<float> want =
+        spatial_direct_mix(*doc, scene.comp, scene.resolver(), ref_pull, i, seed);
+    REQUIRE(bytes_equal(got_inline, want));
+  }
+}
+
 // enforces: 12-audio#lookahead-prepares-ahead-of-playhead
 TEST_CASE("draining a not-yet-prepared block yields silence and an underrun, never a mix") {
   SineLeaf a(300, 0.6F);

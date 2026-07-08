@@ -67,8 +67,19 @@ struct LookaheadRingConfig {
   // it must equal `PullConfig::contribution` for every leaf so the fill keys the
   // ring populates are the exact keys `PullServiceImpl::pull_audio` later probes.
   std::uint64_t revision{0};
-  // The per-layer contribution policy (only `Flat` implemented, doc 12:127-130).
+  // The per-layer contribution policy (doc 12:127-130,167-206). `Spatial` requires
+  // `spatial` (below) to be seeded so the device mix carries the composed transform.
   MixPolicy policy{MixPolicy::Flat};
+  // The static Spatial seed the device path threads into every `mix_block` request
+  // (doc 12:167-206, refinement point 4). Absent => Flat (the drain stays byte-exact,
+  // no post-scale). Present => the ring sets it on the `AudioRequest` it hands
+  // `mix_composition` and post-scales the mixed block by the camera's uniform
+  // scale-attenuation (`accum_atten`, the value the monitor seeds to
+  // `clamp(max_scale(listener), 0, 1)`). Because the warming descent does NOT apply
+  // the sub-audible cull (deferred to `audio.spatial_fill_cull`), the ring warms a
+  // SUPERSET of the culling mixer's pulls, so the threaded fill stays byte-identical
+  // to the inline fill and `silence_mixed()` stays 0 (Decision D5).
+  std::optional<Spatialization> spatial{};
   // The declared-latency pre-roll FLOOR (`audio.latency`, doc 12:200-212). The ring
   // extends its transitive fill lead by `max(preroll, max latency() over the anchor
   // block's audible direct contributors)`, so an operator can force extra lead here
