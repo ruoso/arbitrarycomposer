@@ -493,12 +493,16 @@ public:
 
   // Render `input`'s audio for `request`, settling `done` exactly as `pull`
   // settles a render (doc 12 Decision 5, doc 13:80). DEFAULTED, not pure: the
-  // audio pull deferred here by `operator_members` lands its stable signature
-  // now (so `arbc::audio-engine` can override it) while leaving every existing
+  // audio pull lands its stable signature now while leaving every existing
   // `PullService` implementer -- all of which predate audio -- byte-identical.
-  // The default settles `done` as `unexpected(RenderError::ResourceUnavailable)`
-  // exactly once: a service with no audio pull answers "no audio" safely and
-  // never hangs the caller.
+  // The one concrete override is `compositor`'s `PullServiceImpl::pull_audio`
+  // (doc 17:56): `pull_audio` shares `pull`'s cache-first / worker-dispatch /
+  // budget machinery, and the sole concrete `PullService` must answer both, so
+  // the mix engine (`arbc::audio-engine`, an L4 peer that cannot inherit the
+  // pure-virtual `pull`) calls this seam rather than subclassing it. The default
+  // settles `done` as `unexpected(RenderError::ResourceUnavailable)` exactly
+  // once: a service with no audio pull answers "no audio" safely and never hangs
+  // the caller.
   virtual void pull_audio(ContentRef input, const AudioRequest& request,
                           std::shared_ptr<AudioCompletion> done);
 

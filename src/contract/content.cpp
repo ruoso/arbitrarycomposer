@@ -16,10 +16,12 @@ std::optional<std::size_t> Content::identity(const RenderRequest& /*request*/) c
   return std::nullopt;
 }
 
-// Default audio pull (doc 12 Decision 5): a `PullService` that predates
-// `arbc::audio-engine` genuinely has no audio pull, so it settles `done` --
-// once, never leaving the caller hung -- as "no audio available". The real
-// override lands with the L4 mix engine.
+// Default audio pull (doc 12 Decision 5): a `PullService` that predates audio
+// genuinely has no audio pull, so it settles `done` -- once, never leaving the
+// caller hung -- as "no audio available". The real override is `compositor`'s
+// `PullServiceImpl::pull_audio` (doc 17:56), the sole concrete `PullService`;
+// the L4 mix engine (`arbc::audio-engine`) drives that concrete service through
+// this seam rather than subclassing it (an L4-peer edge doc 17:41 forbids).
 void PullService::pull_audio(ContentRef /*input*/, const AudioRequest& /*request*/,
                              std::shared_ptr<AudioCompletion> done) {
   done->fail(RenderError::ResourceUnavailable);

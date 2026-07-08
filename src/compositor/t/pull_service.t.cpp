@@ -13,6 +13,7 @@
 #include <arbc/compositor/scale_ladder.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 #include <arbc/contract/content.hpp>
+#include <arbc/media/audio_block.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/damage.hpp>
 #include <arbc/model/model.hpp>
@@ -601,4 +602,339 @@ TEST_CASE(
   CHECK(counters.requests_issued() == 1); // delta == 0
   CHECK(counters.composites() == 2);
   CHECK(leaf.renders() == 1); // no second render
+}
+
+namespace {
+
+using arbc::AudioBlock;
+using arbc::AudioBlockValue;
+using arbc::AudioCompletion;
+using arbc::AudioDispatch;
+using arbc::AudioFacet;
+using arbc::AudioRequest;
+using arbc::AudioResult;
+using arbc::BlockCache;
+using arbc::BlockKey;
+using arbc::ChannelLayout;
+using arbc::PriorityClass;
+
+// A one-block audio request over `buf` (caller-owned, stereo). `start` selects the
+// block index the `pull_audio` key derives.
+AudioRequest audio_request(AudioBlock& block, std::vector<float>& buf, std::uint32_t rate,
+                           std::uint32_t frames, StateHandle snapshot, arbc::Exactness exactness,
+                           arbc::Time start) {
+  buf.assign(static_cast<std::size_t>(frames) * arbc::channel_count(ChannelLayout::Stereo), 0.0F);
+  block = AudioBlock{buf.data(), frames, ChannelLayout::Stereo, rate};
+  const std::int64_t fpf = arbc::Time::flicks_per_second / static_cast<std::int64_t>(rate);
+  return AudioRequest{
+      arbc::TimeRange{start, arbc::Time{start.flicks + static_cast<std::int64_t>(frames) * fpf}},
+      rate,
+      ChannelLayout::Stereo,
+      block,
+      exactness,
+      snapshot,
+  };
+}
+
+// Records each dispatch's verbatim request fields and settles `done` once as an
+// exact block at the requested rate -- the audio twin of `DispatchRecorder`.
+struct AudioDispatchRecorder {
+  int calls{0};
+  Content* last_input{nullptr};
+  std::uint32_t last_rate{0};
+  arbc::Exactness last_exactness{arbc::Exactness::BestEffort};
+  StateHandle last_snapshot{};
+
+  void run(Content* content, const AudioRequest& request, std::shared_ptr<AudioCompletion> done) {
+    ++calls;
+    last_input = content;
+    last_rate = request.sample_rate;
+    last_exactness = request.exactness;
+    last_snapshot = request.snapshot;
+    done->complete(AudioResult{request.sample_rate, true});
+  }
+};
+
+AudioDispatch recording_audio_dispatch(const std::shared_ptr<AudioDispatchRecorder>& rec) {
+  return
+      [rec](Content* content, const AudioRequest& request, std::shared_ptr<AudioCompletion> done) {
+        rec->run(content, request, std::move(done));
+      };
+}
+
+// A leaf whose audio facet either settles INLINE (returns an AudioResult) or defers
+// (returns nullopt, leaving `done` live) -- to exercise both `direct_audio_dispatch`
+// folding paths.
+class InlineOrAsyncAudioLeaf final : public Content {
+public:
+  explicit InlineOrAsyncAudioLeaf(bool inline_settle) : d_facet(inline_settle) {}
+  std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
+  arbc::Stability stability() const override { return arbc::Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<RenderResult> render(const RenderRequest&,
+                                     std::shared_ptr<RenderCompletion> done) override {
+    done->fail(arbc::RenderError::ContentFailed);
+    return std::nullopt;
+  }
+  AudioFacet* audio() override { return &d_facet; }
+
+private:
+  class Facet final : public AudioFacet {
+  public:
+    explicit Facet(bool inline_settle) : d_inline(inline_settle) {}
+    std::optional<arbc::TimeRange> audio_extent() const override { return std::nullopt; }
+    arbc::Stability audio_stability() const override { return arbc::Stability::Static; }
+    std::optional<AudioResult> render_audio(const AudioRequest& request,
+                                            std::shared_ptr<AudioCompletion>) override {
+      if (d_inline) {
+        return AudioResult{request.sample_rate, true};
+      }
+      return std::nullopt; // defer: `done` stays live for a later off-thread settle
+    }
+
+  private:
+    bool d_inline;
+  };
+  Facet d_facet;
+};
+
+} // namespace
+
+TEST_CASE(
+    "direct_audio_dispatch folds an inline result, fails a facet-less content, defers a miss") {
+  std::vector<float> buf(16, 0.0F);
+  AudioBlock block{buf.data(), 8, ChannelLayout::Stereo, 48'000};
+  const AudioRequest req{arbc::TimeRange{arbc::Time::zero(), arbc::Time{100}},
+                         48'000,
+                         ChannelLayout::Stereo,
+                         block,
+                         arbc::Exactness::Exact,
+                         StateHandle{}};
+  const AudioDispatch dispatch = arbc::direct_audio_dispatch();
+
+  SECTION("an inline-settling facet completes the completion once") {
+    InlineOrAsyncAudioLeaf leaf(/*inline_settle=*/true);
+    auto done = std::make_shared<AudioCompletion>();
+    dispatch(&leaf, req, done);
+    REQUIRE(done->settled());
+    const auto settled = done->take();
+    REQUIRE(settled.has_value());
+    REQUIRE(settled->has_value());
+    CHECK((*settled)->achieved_rate == 48'000);
+  }
+
+  SECTION("a facet-less content fails ResourceUnavailable once") {
+    GraphContent visual; // no audio facet
+    auto done = std::make_shared<AudioCompletion>();
+    dispatch(&visual, req, done);
+    REQUIRE(done->settled());
+    const auto settled = done->take();
+    REQUIRE(settled.has_value());
+    CHECK_FALSE(settled->has_value());
+  }
+
+  SECTION("a deferring facet leaves the completion live for a later off-thread settle") {
+    InlineOrAsyncAudioLeaf leaf(/*inline_settle=*/false);
+    auto done = std::make_shared<AudioCompletion>();
+    dispatch(&leaf, req, done);
+    CHECK_FALSE(done->settled()); // the worker will settle it later
+  }
+}
+
+// enforces: 12-audio#pull-audio-is-cache-first-single-settle
+TEST_CASE("pull_audio serves a resident exact-fresh block cache-first with zero dispatch") {
+  MarkBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  BlockCache blocks(64u * 1024 * 1024);
+
+  GraphContent leaf; // a non-operator leaf -> revision == its own contribution
+  const arbc::ObjectId leaf_id{71};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+
+  CompositorCounters counters;
+  auto rec = std::make_shared<AudioDispatchRecorder>();
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  config.audio_dispatch = recording_audio_dispatch(rec);
+  config.blocks = &blocks;
+  PullServiceImpl service(cache, backend, recording_dispatch(std::make_shared<DispatchRecorder>()),
+                          config);
+
+  const std::uint32_t rate = 48'000;
+  const std::uint32_t frames = 8;
+  std::vector<float> buf;
+  AudioBlock block{};
+  const AudioRequest req = audio_request(block, buf, rate, frames, StateHandle{},
+                                         arbc::Exactness::Exact, arbc::Time::zero());
+
+  // Pre-populate the cache under the exact key `pull_audio` will compute.
+  AudioBlockValue value;
+  value.samples.assign(static_cast<std::size_t>(frames) * 2, 0.0F);
+  for (std::size_t i = 0; i < value.samples.size(); ++i) {
+    value.samples[i] = static_cast<float>(i) + 1.0F; // a distinctive resident block
+  }
+  value.frames = frames;
+  value.layout = ChannelLayout::Stereo;
+  value.rate = rate;
+  value.meta = AudioResult{rate, true};
+  const std::size_t value_bytes = value.samples.size() * sizeof(float);
+  const BlockKey key{leaf_id, k_rev, arbc::audio_block_index(req), rate};
+  blocks.insert(key, std::move(value), value_bytes, PriorityClass::Visible);
+
+  auto done = std::make_shared<AudioCompletion>();
+  service.pull_audio(&leaf, req, done);
+
+  REQUIRE(done->settled());
+  const auto settled = done->take();
+  REQUIRE(settled.has_value());
+  REQUIRE(settled->has_value());
+  CHECK((*settled)->achieved_rate == rate);
+  CHECK((*settled)->exact);
+  CHECK(counters.audio_dispatches() == 0); // ZERO dispatch: served from the cache
+  CHECK(rec->calls == 0);
+  for (std::uint32_t i = 0; i < frames * 2; ++i) {
+    CHECK(buf[i] == static_cast<float>(i) + 1.0F); // the resident samples were copied out
+  }
+}
+
+// enforces: 12-audio#pull-audio-is-cache-first-single-settle
+TEST_CASE("pull_audio dispatches a miss exactly once, carrying the request verbatim") {
+  MarkBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  BlockCache blocks(64u * 1024 * 1024);
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{72};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+
+  CompositorCounters counters;
+  auto rec = std::make_shared<AudioDispatchRecorder>();
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  config.audio_dispatch = recording_audio_dispatch(rec);
+  config.blocks = &blocks; // empty: the request misses
+  PullServiceImpl service(cache, backend, recording_dispatch(std::make_shared<DispatchRecorder>()),
+                          config);
+
+  const std::uint32_t rate = 44'100;
+  std::vector<float> buf;
+  AudioBlock block{};
+  const StateHandle snap{};
+  const AudioRequest req =
+      audio_request(block, buf, rate, 8, snap, arbc::Exactness::Exact, arbc::Time::zero());
+
+  auto done = std::make_shared<AudioCompletion>();
+  service.pull_audio(&leaf, req, done);
+
+  CHECK(counters.audio_dispatches() == 1); // exactly one dispatch on the miss
+  CHECK(rec->calls == 1);
+  CHECK(rec->last_input == &leaf);
+  CHECK(rec->last_rate == rate);                        // rate verbatim
+  CHECK(rec->last_exactness == arbc::Exactness::Exact); // exactness verbatim
+  CHECK(rec->last_snapshot == snap);                    // snapshot verbatim
+  REQUIRE(done->settled());                             // settled exactly once, by the dispatch
+  const auto settled = done->take();
+  REQUIRE(settled.has_value());
+  CHECK(settled->has_value());
+}
+
+// enforces: 12-audio#pull-audio-is-cache-first-single-settle
+TEST_CASE("pull_audio settles the placeholder once when the seam is absent or the input is null") {
+  MarkBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{73};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+  CompositorCounters counters;
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  // No audio_dispatch, no blocks: a service that predates audio.
+  PullServiceImpl service(cache, backend, recording_dispatch(std::make_shared<DispatchRecorder>()),
+                          config);
+
+  std::vector<float> buf;
+  AudioBlock block{};
+
+  SECTION("an unconfigured audio worker settles ResourceUnavailable exactly once") {
+    const AudioRequest req = audio_request(block, buf, 48'000, 8, StateHandle{},
+                                           arbc::Exactness::Exact, arbc::Time::zero());
+    auto done = std::make_shared<AudioCompletion>();
+    service.pull_audio(&leaf, req, done);
+    REQUIRE(done->settled());
+    const auto settled = done->take();
+    REQUIRE(settled.has_value());
+    CHECK_FALSE(settled->has_value()); // the placeholder failure
+    CHECK(counters.audio_dispatches() == 0);
+  }
+
+  SECTION("a null input fails once, dispatching nothing") {
+    const AudioRequest req = audio_request(block, buf, 48'000, 8, StateHandle{},
+                                           arbc::Exactness::Exact, arbc::Time::zero());
+    auto done = std::make_shared<AudioCompletion>();
+    service.pull_audio(nullptr, req, done);
+    REQUIRE(done->settled());
+    const auto settled = done->take();
+    REQUIRE(settled.has_value());
+    CHECK_FALSE(settled->has_value());
+    CHECK(counters.audio_dispatches() == 0);
+  }
+}
+
+// enforces: 12-audio#pull-audio-is-cache-first-single-settle
+TEST_CASE("pull_audio bounds a self-dispatching audio cycle by the shared recursion budget") {
+  MarkBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{74};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+  CompositorCounters counters;
+
+  // A dispatch that re-enters pull_audio on the same input: a gain>=1 self-embedding
+  // audio cycle. It terminates on GraphBudget.max_depth (doc 12:143, doc 05:66-70),
+  // the same backstop `pull` uses one dimension over.
+  PullServiceImpl* svc = nullptr;
+  AudioDispatch recursive = [&svc](Content* content, const AudioRequest& request,
+                                   std::shared_ptr<AudioCompletion> done) {
+    auto inner = std::make_shared<AudioCompletion>();
+    svc->pull_audio(content, request, inner);
+    const auto settled = inner->take();
+    if (settled.has_value() && settled->has_value()) {
+      done->complete(**settled);
+    } else {
+      done->fail(arbc::RenderError::ResourceUnavailable);
+    }
+  };
+
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  config.audio_dispatch = recursive;
+  config.budget.max_depth = 4;
+  PullServiceImpl service(cache, backend, recording_dispatch(std::make_shared<DispatchRecorder>()),
+                          config);
+  svc = &service;
+
+  std::vector<float> buf;
+  AudioBlock block{};
+  const AudioRequest req = audio_request(block, buf, 48'000, 8, StateHandle{},
+                                         arbc::Exactness::Exact, arbc::Time::zero());
+  auto done = std::make_shared<AudioCompletion>();
+  service.pull_audio(&leaf, req, done);
+
+  // The cycle terminated (no unbounded recursion): the top completion settled
+  // exactly once, as the placeholder, and dispatch fired exactly `max_depth` times.
+  REQUIRE(done->settled());
+  const auto settled = done->take();
+  REQUIRE(settled.has_value());
+  CHECK_FALSE(settled->has_value());
+  CHECK(counters.audio_dispatches() == 4);
 }

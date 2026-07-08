@@ -5,9 +5,11 @@
 #include <arbc/compositor/pull_service.hpp>
 #include <arbc/compositor/scale_ladder.hpp>
 #include <arbc/compositor/tile_planning.hpp> // k_tile_size, tiles_covering
+#include <arbc/media/audio_block.hpp>        // channel_count
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -29,6 +31,34 @@ RenderDispatch direct_dispatch() {
       };
 }
 
+AudioDispatch direct_audio_dispatch() {
+  // The audio twin of `direct_dispatch`: drive `render_audio` inline and fold a
+  // returned-inline result through `done`; a content with no audio facet fails
+  // once, a `nullopt` return leaves `done` live for a later off-thread settle.
+  return [](Content* content, const AudioRequest& request, std::shared_ptr<AudioCompletion> done) {
+    AudioFacet* facet = content != nullptr ? content->audio() : nullptr;
+    if (facet == nullptr) {
+      done->fail(RenderError::ResourceUnavailable);
+      return;
+    }
+    const std::optional<AudioResult> inline_result = facet->render_audio(request, done);
+    if (inline_result.has_value()) {
+      done->complete(*inline_result);
+    }
+  };
+}
+
+std::int64_t audio_block_index(const AudioRequest& request) {
+  if (request.sample_rate == 0) {
+    return 0;
+  }
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
+  if (fpf <= 0) {
+    return 0;
+  }
+  return request.window.start.flicks / fpf;
+}
+
 PullServiceImpl::PullServiceImpl(TileCache& cache, Backend& backend, RenderDispatch dispatch,
                                  PullConfig config)
     : d_cache(cache), d_backend(backend), d_dispatch(std::move(dispatch)),
@@ -45,6 +75,15 @@ namespace {
 // budget-exceeded / null descent produces no pixels, signalled as an
 // unavailable-resource failure the caller degrades to its placeholder display.
 void settle_placeholder(const std::shared_ptr<RenderCompletion>& done) {
+  if (done) {
+    done->fail(RenderError::ResourceUnavailable);
+  }
+}
+
+// The audio twin: a budget-exceeded / unavailable audio pull produces no samples,
+// signalled as an unavailable-resource failure the mix engine mixes as silence
+// for the layer this pass (doc 05:66-70, doc 12:31-34).
+void settle_placeholder_audio(const std::shared_ptr<AudioCompletion>& done) {
   if (done) {
     done->fail(RenderError::ResourceUnavailable);
   }
@@ -217,6 +256,87 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
     d_config.pending->tiles.push_back(
         PendingTile{key, request.region, id, stability, bytes, std::move(*owned), std::move(done)});
   }
+}
+
+void PullServiceImpl::pull_audio(ContentRef input, const AudioRequest& request,
+                                 std::shared_ptr<AudioCompletion> done) {
+  if (input == nullptr) {
+    if (done) {
+      done->fail(RenderError::ContentFailed);
+    }
+    return;
+  }
+
+  // Recursion-depth backstop (doc 05:66-70), shared `d_depth`/`budget` with `pull`
+  // so a gain>=1 self-embedding audio cycle terminates on the budget one dimension
+  // over (doc 12:143): a nested composition's `render_audio`, dispatched below,
+  // re-enters `pull_audio` under an incremented `d_depth`. The budget is inherited,
+  // never reset per pull (doc 05:96-100).
+  if (d_depth >= d_config.budget.max_depth) {
+    if (d_config.diagnostics != nullptr) {
+      d_config.diagnostics->entries.push_back(GraphDiagnostic{input, d_depth, {input}});
+    }
+    settle_placeholder_audio(done);
+    return;
+  }
+
+  // Cache-first probe on the 1D block key `(content id, revision, block index,
+  // rate)` (doc 12:169-185, `12-audio#block-cache-is-tile-cache-1d`). The audio
+  // revision space is the visual one (doc 12:208), so the revision folds exactly
+  // as `pull`'s: an operator input over its reachable graph via `aggregate_revision`,
+  // a leaf on its own contribution. A resident exact-fresh block (exact + at the
+  // request rate, matching the request's frame count and layout) serves
+  // synchronously with ZERO dispatch.
+  if (d_config.blocks != nullptr) {
+    const ObjectId id = d_config.id_of ? d_config.id_of(input) : ObjectId{};
+    const bool op = is_operator(input);
+    const std::uint64_t revision =
+        op ? aggregate_revision(
+                 input,
+                 [this](const Content* node) {
+                   return d_config.contribution ? d_config.contribution(node) : std::uint64_t{0};
+                 },
+                 d_config.budget)
+           : (d_config.contribution ? d_config.contribution(input) : std::uint64_t{0});
+    const BlockKey key{id, revision, audio_block_index(request), request.sample_rate};
+
+    if (std::optional<CacheHold<AudioBlockValue>> hit = d_config.blocks->lookup(key);
+        hit.has_value() && hit->get().meta.exact &&
+        hit->get().meta.achieved_rate == request.sample_rate &&
+        hit->get().frames == request.target.frames && hit->get().layout == request.target.layout) {
+      const AudioBlockValue& value = hit->get();
+      const std::size_t n = static_cast<std::size_t>(value.frames) * channel_count(value.layout);
+      if (request.target.samples != nullptr && value.samples.size() >= n) {
+        for (std::size_t i = 0; i < n; ++i) {
+          request.target.samples[i] = value.samples[i];
+        }
+      }
+      if (done) {
+        done->complete(value.meta);
+      }
+      return;
+    }
+  }
+
+  // Miss: dispatch exactly once onto the audio worker seam, carrying the request's
+  // snapshot / exactness / rate verbatim (doc 12:31-34). No block-cache *fill*
+  // here -- the prefetch-ring fill of prepared blocks is `audio.lookahead`'s (doc
+  // 12:183-190). An unconfigured audio worker has no audio pull, so it settles the
+  // placeholder, exactly as the base `PullService` stub does (`content.cpp:19-26`).
+  if (!d_config.audio_dispatch) {
+    settle_placeholder_audio(done);
+    return;
+  }
+  if (d_config.counters != nullptr) {
+    d_config.counters->note_audio_dispatch();
+  }
+
+  // The descent depth is in effect across the dispatch so a nested composition
+  // whose `render_audio` recursively pulls its child layers re-enters `pull_audio`
+  // at `d_depth + 1`.
+  ++d_depth;
+  d_config.audio_dispatch(input, request, std::move(done));
+  --d_depth;
 }
 
 } // namespace arbc

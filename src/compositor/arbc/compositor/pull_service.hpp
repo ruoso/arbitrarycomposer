@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <vector>
 
 // The concrete `PullService` implementation for `arbc::compositor` (L4, doc
 // 17:56) -- "the one genuinely new core API" (doc 13:85). The abstract seam is
@@ -50,6 +51,54 @@ using RenderDispatch =
 // swaps in a worker-backed dispatch opt-in.
 RenderDispatch direct_dispatch();
 
+// The audio worker-dispatch seam (doc 12:31-34,154-164): the audio twin of
+// `RenderDispatch`. A dispatch renders `content`'s audio for `request` and
+// settles `done` exactly as `AudioFacet::render_audio` does -- inline
+// (synchronously) or off-thread. Over `contract` types only, so the compositor
+// still names no `runtime` type; runtime binds it to the audio worker path when
+// the block pipeline lands (doc 17:57). Because audio "renders ahead" and
+// arbitrary `render_audio` plugin code must be dispatchable off the RT callback,
+// the mix engine pulls every layer through this seam and never calls
+// `render_audio` inline.
+using AudioDispatch =
+    std::function<void(Content*, const AudioRequest&, std::shared_ptr<AudioCompletion>)>;
+
+// The default single-threaded audio dispatch: call `content->audio()->render_audio`
+// inline and fold a returned-inline `AudioResult` through `done` (the audio twin
+// of `direct_dispatch`). A content with no audio facet fails `done` once
+// (`ResourceUnavailable`); a `nullopt` return leaves `done` live for a later
+// off-thread settle. Lets the mix engine drive real per-content audio through
+// `PullServiceImpl::pull_audio` synchronously in a test / single-threaded monitor.
+AudioDispatch direct_audio_dispatch();
+
+// The 1D audio block-cache value (doc 12:169-170, the block-cache-is-tile-cache-1d
+// twin of `TileValue`): an owned interleaved-float32 sample block plus its shape
+// and the `AudioResult` metadata a hit serves. Move-only via its `std::vector`
+// (the `KeyedStore` `Value` requirement); the eventual owning home is
+// `arbc::audio-engine`'s block pipeline (doc 12; `key_shapes.hpp:78-90`), but the
+// concrete `pull_audio` that reads it lives here -- and an L4 peer cannot be a
+// DEPENDS edge -- so the value + `KeyedStore<BlockKey, ...>` instantiation ride
+// with the concrete service for now.
+struct AudioBlockValue {
+  std::vector<float> samples;                  // interleaved float32, block-cache-owned
+  std::uint32_t frames{0};                     // number of sample frames
+  ChannelLayout layout{ChannelLayout::Stereo}; // interleaving of `samples`
+  std::uint32_t rate{0};                       // sample rate in Hz
+  AudioResult meta{};                          // achieved_rate / exact of the block
+};
+
+// The concrete 1D block cache `pull_audio` probes -- the tile cache with a 1D key
+// (doc 12:169-185, `12-audio#block-cache-is-tile-cache-1d`). Instantiated over the
+// shared `KeyedStore` machinery, exactly as `TileCache` is (`key_shapes.hpp:129`).
+using BlockCache = KeyedStore<BlockKey, AudioBlockValue>;
+
+// The 1D block index a request's window start maps to at its working rate: the
+// sample-frame index `floor(window.start / (flicks_per_second / rate))`. The
+// block key's temporal axis (doc 12:169-170); the fixed block *size* / prepared-
+// block ring is the `audio.lookahead` leaf's, so this task keys per window-start
+// sample directly. `rate == 0` yields index 0 (a degenerate request).
+std::int64_t audio_block_index(const AudioRequest& request);
+
 // The per-frame hooks a `PullServiceImpl` threads, all caller-owned and defaulted
 // null/identity so the engine mirrors the pure-seam posture of every compositor
 // sibling (`CompositorCounters*` / `RefinementQueue*` / `GraphDiagnostics*` are
@@ -79,6 +128,15 @@ struct PullConfig {
   // driver passes the document-global `state.revision()` for every node
   // (`operator_graph` Decision 3). Empty -> `0` (never stale; keys collapse).
   std::function<std::uint64_t(const Content*)> contribution{};
+  // The audio worker-dispatch seam `pull_audio` dispatches a block-cache miss onto
+  // (doc 12:31-34). Empty -> a miss has no audio worker, so `pull_audio` settles
+  // the placeholder (`ResourceUnavailable`), exactly as the base `PullService`
+  // stub does for a service that predates audio (`content.cpp:19-26`).
+  AudioDispatch audio_dispatch{};
+  // The 1D block cache `pull_audio` probes cache-first (doc 12:169-185). Null ->
+  // every `pull_audio` is a miss (no fill here -- the prefetch-ring fill is
+  // `audio.lookahead`'s, so nothing but the caller ever populates it this task).
+  BlockCache* blocks{nullptr};
 };
 
 // The concrete L4 pull engine (Decision 1). Injected as a `PullService*` to
@@ -111,6 +169,19 @@ public:
   // it per tile exactly as the driver plans per tile.
   void pull(ContentRef input, const RenderRequest& request,
             std::shared_ptr<RenderCompletion> done) override;
+
+  // Render `input`'s audio for `request`, cache-first (doc 12:169-185, the audio
+  // arm of `pull` and the concrete home the `content.cpp:19-26` stub named). Probe
+  // the 1D block cache on `(content id, revision, block index, rate)`: a resident
+  // exact-fresh block completes `done` synchronously with ZERO dispatch; a miss
+  // dispatches exactly one audio render onto `PullConfig::audio_dispatch` carrying
+  // the request's `snapshot`/`exactness`/`rate` verbatim and settles `done` from
+  // it (no block-cache *fill* here -- that is `audio.lookahead`'s). The shared
+  // recursion-depth budget backstop applies (a depth-exceeded pull settles the
+  // placeholder, doc 05:61-67). `done` settles EXACTLY ONCE on every path. A null
+  // input fails once; an unconfigured audio worker settles the placeholder.
+  void pull_audio(ContentRef input, const AudioRequest& request,
+                  std::shared_ptr<AudioCompletion> done) override;
 
   // The frame driver's dispatch-only seam (Decision 3). Invokes the injected
   // `RenderDispatch` to render `content` for `request`, settling `done` inline or

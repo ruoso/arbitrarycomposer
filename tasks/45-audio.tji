@@ -12,8 +12,9 @@ task audio "Audio" {
   task mix_engine "Pull-based mix engine" {
     effort 3d
     allocate team
+    complete 100
     depends !audio_types
-    note "Additive mixing through the layer graph: gain/audible placement, time maps applied as varispeed resampling (exact rational rates), facet-less content costs nothing. Doc 12."
+    note "Additive mixing through the layer graph: gain/audible placement, time maps applied as varispeed resampling (exact rational rates), facet-less content costs nothing. Doc 12. Refinement: tasks/refinements/audio/mix_engine.md"
   }
   task lookahead "Lookahead scheduler" {
     effort 4d

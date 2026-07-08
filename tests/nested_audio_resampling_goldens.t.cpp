@@ -228,19 +228,24 @@ MixResult render_nested(NestedContent& nested, const TimeRange& window, std::uin
 // `child_rate` with the media kernel, then apply the layer gain + layout remix.
 std::vector<float> reconstructed_oracle(BelowRateSource& src, Time child_start,
                                         std::uint32_t child_rate, ChannelLayout child_layout,
-                                        std::uint32_t frames, double gain, ChannelLayout out_layout) {
+                                        std::uint32_t frames, double gain,
+                                        ChannelLayout out_layout) {
   const std::uint32_t native_rate = src.native_rate();
   const std::uint32_t in_ch = channel_count(child_layout);
   const std::uint32_t out_ch = channel_count(out_layout);
   const std::int64_t fpf_native = Time::flicks_per_second / static_cast<std::int64_t>(native_rate);
-  const std::uint32_t native_frames = static_cast<std::uint32_t>(
-      static_cast<std::uint64_t>(frames) * native_rate / child_rate + 1);
+  const std::uint32_t native_frames =
+      static_cast<std::uint32_t>(static_cast<std::uint64_t>(frames) * native_rate / child_rate + 1);
   std::vector<float> native_buf(static_cast<std::size_t>(native_frames) * in_ch, 0.0F);
   AudioBlock native_block{native_buf.data(), native_frames, child_layout, native_rate};
   const AudioRequest nreq{
       TimeRange{child_start,
                 Time{child_start.flicks + static_cast<std::int64_t>(native_frames) * fpf_native}},
-      native_rate, child_layout, native_block, Exactness::Exact, StateHandle{}};
+      native_rate,
+      child_layout,
+      native_block,
+      Exactness::Exact,
+      StateHandle{}};
   auto done = std::make_shared<AudioCompletion>();
   src.audio()->render_audio(nreq, done);
 
@@ -279,9 +284,12 @@ std::vector<float> baseline_hold(BelowRateSource& src, Time child_start, std::ui
   const std::uint32_t ch = channel_count(child_layout);
   std::vector<float> buf(static_cast<std::size_t>(frames) * ch, 0.0F);
   AudioBlock block{buf.data(), frames, child_layout, child_rate};
-  const AudioRequest req{
-      frame_window_at(child_start, child_rate, frames), child_rate, child_layout, block,
-      Exactness::Exact, StateHandle{}};
+  const AudioRequest req{frame_window_at(child_start, child_rate, frames),
+                         child_rate,
+                         child_layout,
+                         block,
+                         Exactness::Exact,
+                         StateHandle{}};
   auto done = std::make_shared<AudioCompletion>();
   src.audio()->render_audio(req, done);
   const float g = static_cast<float>(gain);
@@ -317,9 +325,8 @@ TEST_CASE("nested reconstructs an integer-ratio (24000->48k) below-rate child, n
   nested.attach(pull, backend, map_resolver(binding), *doc);
 
   const MixResult got = render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
-  const std::vector<float> want =
-      reconstructed_oracle(src, Time::zero(), k_rate, ChannelLayout::Stereo, k_frames, 1.0,
-                           ChannelLayout::Stereo);
+  const std::vector<float> want = reconstructed_oracle(
+      src, Time::zero(), k_rate, ChannelLayout::Stereo, k_frames, 1.0, ChannelLayout::Stereo);
   REQUIRE(bytes_equal(got.samples, want));
 
   // Decisively not the baseline hold the discovery block would have produced.
@@ -358,9 +365,8 @@ TEST_CASE("nested reconstructs a non-integer-ratio (44100->48k) below-rate child
   nested.attach(pull, backend, map_resolver(binding), *doc);
 
   const MixResult got = render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
-  const std::vector<float> want =
-      reconstructed_oracle(src, Time::zero(), k_rate, ChannelLayout::Stereo, k_frames, 1.0,
-                           ChannelLayout::Stereo);
+  const std::vector<float> want = reconstructed_oracle(
+      src, Time::zero(), k_rate, ChannelLayout::Stereo, k_frames, 1.0, ChannelLayout::Stereo);
   REQUIRE(bytes_equal(got.samples, want));
   REQUIRE(pull.pulls() == 2);
   REQUIRE(got.meta.achieved_rate == 44'100);
@@ -400,9 +406,8 @@ TEST_CASE("nested composes varispeed then reconstructs a below-rate child (compo
 
   const MixResult got = render_nested(nested, window, k_rate, ChannelLayout::Stereo, k_frames);
   // child_rate = request rate * den/num = 48000 * 2 = 96000; child_start = 0.
-  const std::vector<float> want =
-      reconstructed_oracle(src, Time::zero(), 96'000, ChannelLayout::Stereo, k_frames, 1.0,
-                           ChannelLayout::Stereo);
+  const std::vector<float> want = reconstructed_oracle(
+      src, Time::zero(), 96'000, ChannelLayout::Stereo, k_frames, 1.0, ChannelLayout::Stereo);
   REQUIRE(bytes_equal(got.samples, want));
   REQUIRE(pull.pulls() == 2);
   // eff = achieved_rate * request_rate / child_rate = 32000 * 48000 / 96000 = 16000.
@@ -447,9 +452,8 @@ TEST_CASE("nested reconstructs a below-rate leaf through two levels of nesting")
   // Identity maps at both levels: the inner nested reconstructs at 48k, and the
   // outer 1:1-mixes that (rate-honoring) block -- so the outer result equals the
   // inner reconstruction.
-  const std::vector<float> want =
-      reconstructed_oracle(src, Time::zero(), k_rate, ChannelLayout::Stereo, k_frames, 1.0,
-                           ChannelLayout::Stereo);
+  const std::vector<float> want = reconstructed_oracle(
+      src, Time::zero(), k_rate, ChannelLayout::Stereo, k_frames, 1.0, ChannelLayout::Stereo);
   REQUIRE(bytes_equal(got.samples, want));
   REQUIRE(got.meta.achieved_rate == 24'000);
   REQUIRE(got.meta.exact == false);
@@ -488,8 +492,8 @@ TEST_CASE("a rate-honoring tone child stays byte-exact 1:1 and never triggers th
   std::vector<float> want(static_cast<std::size_t>(k_frames) * 2, 0.0F);
   {
     AudioBlock block{want.data(), k_frames, ChannelLayout::Stereo, k_rate};
-    const AudioRequest req{window, k_rate, ChannelLayout::Stereo, block, Exactness::Exact,
-                           StateHandle{}};
+    const AudioRequest req{window, k_rate,           ChannelLayout::Stereo,
+                           block,  Exactness::Exact, StateHandle{}};
     auto done = std::make_shared<AudioCompletion>();
     const std::optional<AudioResult> r = tone.audio()->render_audio(req, done);
     REQUIRE(r.has_value());

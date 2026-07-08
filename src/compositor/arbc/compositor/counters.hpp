@@ -63,12 +63,21 @@ public:
   // by whether the display source was fresh, so a still-refining interactive
   // frame reads it non-zero while an offline frame reads it zero.
   std::uint64_t degraded_composites() const noexcept { return d_degraded_composites; }
+  // Audio renders `PullService::pull_audio` dispatched onto the audio worker seam
+  // (doc 12:31-34): one bump per block-cache miss that dispatches, zero on a
+  // resident exact-fresh hit -- the audio twin of `requests_issued`. This is the
+  // behavioral witness of doc 12's "purely visual content costs the audio engine
+  // nothing" (`12-audio#mix-engine-facetless-costs-nothing`): the mix engine over
+  // an all-culled composition dispatches zero, over N audible in-span layers with
+  // an audio facet dispatches exactly N (`registry.tsv:70`).
+  std::uint64_t audio_dispatches() const noexcept { return d_audio_dispatches; }
 
   void note_request_issued() noexcept { ++d_requests_issued; }
   void note_composite() noexcept { ++d_composites; }
   void note_follow_up_frame() noexcept { ++d_follow_up_frames; }
   void note_operator_render() noexcept { ++d_operator_renders; }
   void note_degraded_composite() noexcept { ++d_degraded_composites; }
+  void note_audio_dispatch() noexcept { ++d_audio_dispatches; }
 
 private:
   std::uint64_t d_requests_issued{0};
@@ -76,6 +85,7 @@ private:
   std::uint64_t d_follow_up_frames{0};
   std::uint64_t d_operator_renders{0};
   std::uint64_t d_degraded_composites{0};
+  std::uint64_t d_audio_dispatches{0};
 };
 
 // The composed observability record a host debug panel / downstream
