@@ -104,3 +104,8 @@ Append one `###` block per item, newest at the bottom:
 - **Source**: closer for `audio.device_monitor` (see accompanying commit); flagged in implementer return summary and refinement Acceptance criteria ("Registers no successor").
 - **Question**: Should a v1-scope leaf be added for resilience to device-loss, hot-plug, and mid-stream device-format-change events (graceful reconnect, format renegotiation)?
 - **Why parked**: The refinement explicitly flags this as a human judgment call — the feature "needs the real backend to be meaningful and may be v2 hardening." No simulation path exists for device-loss in a headless environment; meaningful testing requires a real backend and real hardware events. Scope/release-generation decision for a human once the reference backend and the associated integration test infrastructure are mature enough to make the behavior testable.
+
+### 2026-07-08 — Container layout conversion at the export edge
+- **Source**: closer for `audio.export_edge_resample` (see accompanying commit); Decision D5 and "Out of scope" section in the refinement.
+- **Question**: Should a follow-up task add container layout conversion (e.g. stereo working composition written to a mono container) at the export edge, wiring the device edge's `convert_frames` layout remix into the export path?
+- **Why parked**: No milestone currently consumes a container layout differing from the working layout — a WBS leaf would orphan immediately (`scripts/unblocked.py` ORPHANS). The scope, effort, and milestone placement are a human judgment call; the entry is the trigger pointer for when a real milestone consumer is scoped.

@@ -1,15 +1,16 @@
 #pragma once
 
 #include <arbc/audio_engine/mix.hpp>        // MixPolicy, MixResolver, mix_composition
-#include <arbc/base/ids.hpp>                 // ObjectId
-#include <arbc/base/time.hpp>                // Time, TimeRange
+#include <arbc/base/ids.hpp>                // ObjectId
+#include <arbc/base/time.hpp>               // Time, TimeRange
 #include <arbc/compositor/counters.hpp>     // CompositorCounters, TileCache
 #include <arbc/compositor/pull_service.hpp> // PullServiceImpl, BlockCache, PullConfig
 #include <arbc/contract/content.hpp>        // AudioRequest, AudioResult
 #include <arbc/media/audio_block.hpp>       // AudioBlock, ChannelLayout
 #include <arbc/media/audio_format.hpp>      // AudioFormat, k_working_audio
-#include <arbc/runtime/document.hpp>        // Document, DocStatePtr, DocRoot
-#include <arbc/surface/backend.hpp>         // Backend (the null backend the audio path never composites through)
+#include <arbc/media/streaming_resampler.hpp> // StreamingResampler (export-edge working -> container SRC)
+#include <arbc/runtime/document.hpp>          // Document, DocStatePtr, DocRoot
+#include <arbc/surface/backend.hpp> // Backend (the null backend the audio path never composites through)
 
 #include <cstdint>
 #include <functional>
@@ -39,9 +40,11 @@
 // Output boundary (doc 12:190-191, doc 17:150-173): the driver hands back
 // sample-exact `AudioBlock`s through a host `BlockSink`; it writes no files, muxes
 // nothing, and links no codec -- muxing is the host's business. The mix is produced
-// at the composition working rate; converting to a different container output rate
-// is the same shared working -> edge resampler the device monitor uses, deferred to
-// `audio.export_edge_resample` (doc 12:190-191 delta).
+// at the composition working rate; `render_range_to` converts it to a different
+// container output rate at the export edge through the SAME shared working -> edge
+// `StreamingResampler` the device monitor uses (`audio.export_edge_resample`), not a
+// second path (doc 12:190-194); a matched output rate keeps the 1:1 `render_range`
+// pass unchanged (no resampler engaged).
 
 namespace arbc {
 
@@ -110,6 +113,27 @@ public:
   // range or a non-positive `block_frames` drives the sink zero times.
   void render_range(const TimeRange& range, std::uint32_t block_frames, const BlockSink& sink);
 
+  // Render `range` to a caller-requested container `output_rate` at the export edge
+  // (doc 12:190-194, `audio.export_edge_resample`). The mix stays honest at the
+  // working rate: `render_block_at` produces each working-rate block unchanged (D2),
+  // then the owned `StreamingResampler` converts working -> `output_rate` -- both
+  // directions come from the shipped seam (up-sampling through the frozen
+  // input-Nyquist table for `output_rate > working_rate`; the ratio-scaled widened
+  // lowpass cut at the output Nyquist for `output_rate < working_rate`), selected
+  // internally by `configure` from the rate ordering, no new DSP (D1). The container
+  // output is tiled into `block_frames`-sized windows at `output_rate` and handed to
+  // `sink` as `(window, block, result)` tuples, each block stamped `output_rate`. The
+  // conversion is configured ONCE at the start of the range and fed/drained
+  // continuously across block boundaries, so the concatenated output is byte-exact
+  // against a single whole-stream `resample_audio` of the whole-range working mix,
+  // with a finite tail drained to exactly the container-rate frame count covering the
+  // range (D3, Constraint 1/4). When `output_rate` equals the working rate the
+  // existing `render_range` runs verbatim with NO resampler engaged (D4, Constraint
+  // 2). A degenerate `output_rate` (zero, or a range shorter than one output sample)
+  // drives the sink zero times (faults-as-values, `block_windows_over` contract).
+  void render_range_to(const TimeRange& range, std::uint32_t output_rate,
+                       std::uint32_t block_frames, const BlockSink& sink);
+
   // The pinned version -- the single frozen `DocRoot` every block mixes against.
   const DocRoot& pinned_state() const noexcept { return *d_pinned; }
   // The one revision the whole export is consistent at (the pin held).
@@ -143,6 +167,12 @@ private:
   BlockCache d_blocks;
   CompositorCounters d_counters;
   std::unique_ptr<PullServiceImpl> d_pull;
+  // The shared working -> container-output-rate edge resampler (doc 12:106-121,190-194,
+  // D1). Owned but engaged ONLY by `render_range_to` on a rate mismatch: `configure`
+  // (which resets all state) runs once per converted range off the per-block path
+  // (Constraint 5); the matched-rate 1:1 pass never touches it (Constraint 2). Mirrors
+  // `DeviceMonitor::d_resampler` minus the RT flush atomic (offline, no callback).
+  StreamingResampler d_resampler;
 };
 
 } // namespace arbc

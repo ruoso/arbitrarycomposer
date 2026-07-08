@@ -5,6 +5,7 @@
 #include <arbc/contract/content.hpp>
 #include <arbc/media/audio_block.hpp>
 #include <arbc/media/audio_format.hpp>
+#include <arbc/media/audio_resampler.hpp> // resample_audio (whole-stream export-edge oracle)
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/export_monitor.hpp>
 
@@ -175,28 +176,24 @@ constexpr std::uint32_t k_rate = 48'000;
 constexpr std::int64_t k_fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
 
 // A range spanning `frames` sample frames at the working rate, from zero.
-TimeRange range_of(std::int64_t frames) {
-  return TimeRange{Time::zero(), Time{frames * k_fpf}};
-}
+TimeRange range_of(std::int64_t frames) { return TimeRange{Time::zero(), Time{frames * k_fpf}}; }
 
 // Concatenate every block `render_range` hands the sink, in order.
 std::vector<float> export_all(ExportMonitor& monitor, const TimeRange& range,
                               std::uint32_t block_frames) {
   std::vector<float> out;
-  monitor.render_range(range, block_frames,
-                       [&](TimeRange, const AudioBlock& block, AudioResult) {
-                         const std::size_t n =
-                             static_cast<std::size_t>(block.frames) * channel_count(block.layout);
-                         out.insert(out.end(), block.samples, block.samples + n);
-                       });
+  monitor.render_range(range, block_frames, [&](TimeRange, const AudioBlock& block, AudioResult) {
+    const std::size_t n = static_cast<std::size_t>(block.frames) * channel_count(block.layout);
+    out.insert(out.end(), block.samples, block.samples + n);
+  });
   return out;
 }
 
 // The independent oracle: `mix_composition` called once per window directly through
 // a fresh inline pull, concatenated -- the byte-exact reference for `render_range`.
 std::vector<float> oracle_all(const DocRoot& doc, ObjectId comp, const MixResolver& resolve,
-                              const TimeRange& range, std::uint32_t rate, std::uint32_t block_frames,
-                              ChannelLayout layout) {
+                              const TimeRange& range, std::uint32_t rate,
+                              std::uint32_t block_frames, ChannelLayout layout) {
   InlineAudioPull pull;
   std::vector<float> out;
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(rate);
@@ -214,6 +211,43 @@ std::vector<float> oracle_all(const DocRoot& doc, ObjectId comp, const MixResolv
 
 bool bytes_equal(const std::vector<float>& a, const std::vector<float>& b) {
   return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
+// Concatenate every container-rate block `render_range_to` hands the sink, in order.
+std::vector<float> export_all_to(ExportMonitor& monitor, const TimeRange& range,
+                                 std::uint32_t output_rate, std::uint32_t block_frames) {
+  std::vector<float> out;
+  monitor.render_range_to(
+      range, output_rate, block_frames, [&](TimeRange, const AudioBlock& block, AudioResult) {
+        const std::size_t n = static_cast<std::size_t>(block.frames) * channel_count(block.layout);
+        out.insert(out.end(), block.samples, block.samples + n);
+      });
+  return out;
+}
+
+// The whole-stream export-edge oracle (Constraint 1/4, D3): the whole-range working
+// mix -- one `render_block_at` over `range`, which for a Static composition is
+// byte-identical to the concatenated per-block mix `render_range_to` feeds -- resampled
+// ONCE to `output_rate` through the shipped `resample_audio`, producing exactly the
+// container-rate frame count covering the range (the same `span / out_fpf` total the
+// stage drains its finite tail to). The reference the streaming export edge must equal.
+std::vector<float> resample_oracle(ExportMonitor& monitor, const TimeRange& range,
+                                   std::uint32_t output_rate, ChannelLayout layout) {
+  const std::uint32_t working_rate = monitor.format().sample_rate;
+  const std::int64_t in_fpf = Time::flicks_per_second / static_cast<std::int64_t>(working_rate);
+  const std::int64_t out_fpf = Time::flicks_per_second / static_cast<std::int64_t>(output_rate);
+  const std::uint32_t ch = channel_count(layout);
+  const auto in_frames =
+      static_cast<std::uint32_t>((range.end.flicks - range.start.flicks) / in_fpf);
+  const auto out_frames =
+      static_cast<std::uint32_t>((range.end.flicks - range.start.flicks) / out_fpf);
+  std::vector<float> in(static_cast<std::size_t>(in_frames) * ch, 0.0F);
+  AudioBlock in_block{in.data(), in_frames, layout, working_rate};
+  (void)monitor.render_block_at(range, in_block);
+  std::vector<float> out(static_cast<std::size_t>(out_frames) * ch, 0.0F);
+  AudioBlock out_block{out.data(), out_frames, layout, output_rate};
+  resample_audio(in_block, out_block);
+  return out;
 }
 
 // Attach a fresh content-bound layer to `comp` and return its layer id.
@@ -240,9 +274,9 @@ TEST_CASE("the export block loop is byte-identical to mix_composition per window
 
   // Block-loop output equals the per-window oracle, byte-exact (no tolerance).
   const std::vector<float> got = export_all(monitor, range, 32);
-  const std::vector<float> want = oracle_all(monitor.pinned_state(), comp,
-                                             [&](ObjectId id) { return document.resolve(id); },
-                                             range, k_rate, 32, ChannelLayout::Stereo);
+  const std::vector<float> want = oracle_all(
+      monitor.pinned_state(), comp, [&](ObjectId id) { return document.resolve(id); }, range,
+      k_rate, 32, ChannelLayout::Stereo);
   REQUIRE(bytes_equal(got, want));
 
   // Block-boundary invariance: 96 is a whole multiple of 32 (3 blocks) but not of 40
@@ -275,7 +309,7 @@ TEST_CASE("a below-working-rate contributor folds achieved_rate/exact honestly")
   ExportMonitor monitor(document, comp, AudioFormat{k_rate, ChannelLayout::Stereo});
 
   monitor.render_range(range_of(64), 32, [&](TimeRange, const AudioBlock&, AudioResult r) {
-    CHECK_FALSE(r.exact);              // never silently upgraded
+    CHECK_FALSE(r.exact);             // never silently upgraded
     CHECK(r.achieved_rate == 24'000); // min-folded honestly
   });
 }
@@ -348,6 +382,80 @@ TEST_CASE("export faults surface as values, never an abort") {
     CHECK(r.achieved_rate == k_rate); // an honest silent block at the request rate
     CHECK(monitor.counters().audio_dispatches() == 0);
   }
+}
+
+// enforces: 12-audio#export-edge-resamples-working-to-container
+TEST_CASE("the export edge resamples the working mix to a container rate byte-exactly") {
+  Document document;
+  const ObjectId comp = document.add_composition(0.0, 0.0);
+  add_layer(document, comp, std::make_shared<SineLeaf>(300, 0.6F));
+  add_layer(document, comp, std::make_shared<SineLeaf>(700, 0.4F));
+  ExportMonitor monitor(document, comp, AudioFormat{k_rate, ChannelLayout::Stereo});
+
+  SECTION("decimation: 48 kHz working -> 44.1 kHz container (coprime 160:147)") {
+    const TimeRange range = range_of(480); // -> 441 output frames, exercises the phase accumulator
+    const std::vector<float> got = export_all_to(monitor, range, 44'100, 32);
+    const std::vector<float> want = resample_oracle(monitor, range, 44'100, ChannelLayout::Stereo);
+    REQUIRE(!got.empty());
+    REQUIRE(bytes_equal(got, want)); // no tolerance, correct finite tail
+  }
+
+  SECTION("up-sample: 48 kHz working -> 96 kHz container (1:2)") {
+    const TimeRange range = range_of(96); // -> 192 output frames
+    const std::vector<float> got = export_all_to(monitor, range, 96'000, 32);
+    const std::vector<float> want = resample_oracle(monitor, range, 96'000, ChannelLayout::Stereo);
+    REQUIRE(!got.empty());
+    REQUIRE(bytes_equal(got, want));
+  }
+
+  SECTION("block-boundary invariance: the container output is independent of block_frames") {
+    const TimeRange range = range_of(480);
+    const std::vector<float> a = export_all_to(monitor, range, 44'100, 16); // many small blocks
+    const std::vector<float> b = export_all_to(monitor, range, 44'100, 100);
+    const std::vector<float> c = export_all_to(monitor, range, 44'100, 33); // partial trailing
+    REQUIRE(!a.empty());
+    REQUIRE(bytes_equal(a, b)); // continuity across export block boundaries, no phase restart
+    REQUIRE(bytes_equal(a, c));
+  }
+}
+
+// enforces: 12-audio#export-edge-resamples-working-to-container
+TEST_CASE("a degenerate container output rate drives the export sink zero times") {
+  Document document;
+  const ObjectId comp = document.add_composition(0.0, 0.0);
+  add_layer(document, comp, std::make_shared<SineLeaf>(440, 0.5F));
+  ExportMonitor monitor(document, comp, AudioFormat{k_rate, ChannelLayout::Stereo});
+
+  int blocks = 0;
+  const auto count = [&](TimeRange, const AudioBlock&, AudioResult) { ++blocks; };
+  monitor.render_range_to(range_of(96), 0, 32, count);     // zero rate
+  monitor.render_range_to(range_of(96), 44'100, 0, count); // non-positive block
+  monitor.render_range_to(TimeRange{Time::zero(), Time::zero()}, 44'100, 32, count); // empty range
+  CHECK(blocks == 0);
+}
+
+// enforces: 12-audio#export-edge-resamples-working-to-container
+// The matched-rate no-regression / zero-engagement promise (the audio analog of "a
+// fade at envelope=1 issues zero operator renders"): output_rate == working_rate runs
+// the shipped 1:1 render_range verbatim -- byte-identical output AND the identical
+// per-block mix dispatch count, with no resampler engaged.
+TEST_CASE("a matched container rate keeps the 1:1 export path byte-identical and cost-free") {
+  Document document;
+  const ObjectId comp = document.add_composition(0.0, 0.0);
+  add_layer(document, comp, std::make_shared<SineLeaf>(300, 0.6F));
+  add_layer(document, comp, std::make_shared<SineLeaf>(700, 0.4F));
+
+  const TimeRange range = range_of(96);
+  ExportMonitor plain(document, comp, AudioFormat{k_rate, ChannelLayout::Stereo});
+  ExportMonitor matched(document, comp, AudioFormat{k_rate, ChannelLayout::Stereo});
+
+  const std::vector<float> want = export_all(plain, range, 32);             // shipped 1:1 golden
+  const std::vector<float> got = export_all_to(matched, range, k_rate, 32); // matched-rate edge
+  REQUIRE(bytes_equal(got, want));
+  // Zero extra work: the matched path issues exactly the 1:1 path's mix dispatches
+  // (two audible layers over three blocks), never a resampler-driven re-pull.
+  CHECK(matched.counters().audio_dispatches() == plain.counters().audio_dispatches());
+  CHECK(matched.counters().audio_dispatches() == 2u * 3u);
 }
 
 TEST_CASE("block_windows_over tiles a half-open range at the working rate exactly") {

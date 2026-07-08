@@ -68,8 +68,9 @@ task audio "Audio" {
   task export_edge_resample "Export-edge sample-rate conversion" {
     effort 1d
     allocate team
+    complete 100
     depends !export_monitor, !device_edge_decimation
-    note "Convert working-rate export blocks to a caller-requested container output rate at the export edge, reusing the shipped StreamingResampler (which already ships up-sampling and the ratio-scaled widened-lowpass decimation), so exports can target 44.1/96 kHz container rates byte-exactly and continuously across block boundaries; a matched output rate keeps the 1:1 pass unchanged. Source: audio.export_monitor scope boundary; see tasks/refinements/audio/export_monitor.md. Doc 12."
+    note "Convert working-rate export blocks to a caller-requested container output rate at the export edge, reusing the shipped StreamingResampler (which already ships up-sampling and the ratio-scaled widened-lowpass decimation), so exports can target 44.1/96 kHz container rates byte-exactly and continuously across block boundaries; a matched output rate keeps the 1:1 pass unchanged. Source: audio.export_monitor scope boundary; see tasks/refinements/audio/export_monitor.md. Doc 12. Refinement: tasks/refinements/audio/export_edge_resample.md"
   }
   task latency "Declared-latency pre-roll" {
     effort 1d

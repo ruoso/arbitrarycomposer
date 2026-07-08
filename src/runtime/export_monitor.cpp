@@ -1,12 +1,12 @@
-#include <arbc/base/expected.hpp>  // expected, unexpected
-#include <arbc/base/transform.hpp> // Affine
+#include <arbc/base/expected.hpp>           // expected, unexpected
+#include <arbc/base/transform.hpp>          // Affine
 #include <arbc/compositor/pull_service.hpp> // direct_dispatch, direct_audio_dispatch, PullConfig
 #include <arbc/contract/content.hpp>        // Content, AudioRequest, Exactness, StateHandle
 #include <arbc/model/records.hpp>           // LayerRecord (reverse-map walk)
 #include <arbc/runtime/export_monitor.hpp>
-#include <arbc/surface/backend.hpp>         // Backend, BackendCaps
-#include <arbc/surface/surface.hpp>         // Surface
-#include <arbc/surface/surface_error.hpp>   // SurfaceError
+#include <arbc/surface/backend.hpp>       // Backend, BackendCaps
+#include <arbc/surface/surface.hpp>       // Surface
+#include <arbc/surface/surface_error.hpp> // SurfaceError
 
 #include <algorithm>
 #include <cstddef>
@@ -72,8 +72,8 @@ std::vector<TimeRange> block_windows_over(const TimeRange& range, std::uint32_t 
   const std::int64_t b = static_cast<std::int64_t>(block_frames);
   for (std::int64_t f0 = 0; f0 < total_frames; f0 += b) {
     const std::int64_t f1 = std::min(f0 + b, total_frames); // partial trailing block at the tail
-    windows.push_back(TimeRange{Time{range.start.flicks + f0 * fpf},
-                                Time{range.start.flicks + f1 * fpf}});
+    windows.push_back(
+        TimeRange{Time{range.start.flicks + f0 * fpf}, Time{range.start.flicks + f1 * fpf}});
   }
   return windows;
 }
@@ -137,8 +137,8 @@ AudioResult ExportMonitor::render_block_at(const TimeRange& window, AudioBlock& 
   // rides the working rate/layout; the pinned revision is threaded as `*d_pinned` to
   // `mix_composition` directly (the same machinery video uses -- the request-level
   // `StateHandle` stays none, exactly as every existing mix caller).
-  const AudioRequest request{window,           d_format.sample_rate, d_format.layout, target,
-                             Exactness::Exact, StateHandle{}};
+  const AudioRequest request{window, d_format.sample_rate, d_format.layout,
+                             target, Exactness::Exact,     StateHandle{}};
   return mix_composition(*d_pinned, d_composition, d_resolve, *d_pull, request, d_policy);
 }
 
@@ -164,6 +164,86 @@ void ExportMonitor::render_range(const TimeRange& range, std::uint32_t block_fra
     AudioBlock block{buffer.data(), frames, d_format.layout, d_format.sample_rate};
     const AudioResult result = render_block_at(window, block);
     sink(window, block, result);
+  }
+}
+
+void ExportMonitor::render_range_to(const TimeRange& range, std::uint32_t output_rate,
+                                    std::uint32_t block_frames, const BlockSink& sink) {
+  const std::uint32_t working_rate = d_format.sample_rate;
+  // Matched rate: the untouched 1:1 pass (D4, Constraint 2). The shipped working-rate
+  // `render_range` runs verbatim -- no `StreamingResampler` configured, zero SRC work,
+  // working-rate blocks handed straight to the sink -- so every shipped export golden,
+  // claim, and counter is preserved byte-for-byte.
+  if (output_rate == working_rate) {
+    render_range(range, block_frames, sink);
+    return;
+  }
+
+  // The container-rate output windows tile `range` at `output_rate`; their frame total
+  // is the exact whole-stream output-frame count the tail drain must reach (D3,
+  // Constraint 4). A zero/degenerate `output_rate` or a sub-sample range yields an
+  // empty series -> drive the sink zero times (faults-as-values, `block_windows_over`).
+  const std::vector<TimeRange> out_windows = block_windows_over(range, output_rate, block_frames);
+  if (out_windows.empty()) {
+    return;
+  }
+  // The working-rate input windows the mix is pulled through (unchanged producer loop).
+  const std::vector<TimeRange> in_windows = block_windows_over(range, working_rate, block_frames);
+  const std::uint32_t channels = channel_count(d_format.layout);
+  // Safe: a non-empty output series implies both rates clock a representable step.
+  const std::int64_t in_fpf = Time::flicks_per_second / static_cast<std::int64_t>(working_rate);
+  const std::int64_t out_fpf = Time::flicks_per_second / static_cast<std::int64_t>(output_rate);
+
+  // Configure ONCE at the start of the range (Constraint 5): `configure` selects
+  // up-sample vs widened-lowpass decimation from the rate ordering, generates the
+  // decimation bank off the per-block path, sizes history, and resets all state (so no
+  // separate `reset` between ranges is needed). No media-side change (D1).
+  d_resampler.configure(working_rate, output_rate, channels, block_frames);
+
+  // The running fold of every mixed input block's result: `achieved_rate` folds as a
+  // min (capped at `output_rate` -- the edge cannot manufacture bandwidth the mix did
+  // not carry, and it cannot exceed the container rate it delivers at), `exact` as a
+  // conjunction. A below-working-rate contributor thus surfaces honestly on the
+  // resampled blocks, never silently upgraded.
+  AudioResult folded{output_rate, true};
+  std::vector<float> in_buf;
+  std::size_t next_in = 0;
+  // Feed the next working block (or a zero pad once the finite input is exhausted, so
+  // the trailing output frames whose filter support runs past the last input frame
+  // read zero taps exactly as the whole-stream oracle does -- the finite tail, D3).
+  const auto feed_next = [&]() {
+    if (next_in < in_windows.size()) {
+      const TimeRange& w = in_windows[next_in++];
+      const std::uint32_t frames =
+          static_cast<std::uint32_t>((w.end.flicks - w.start.flicks) / in_fpf);
+      in_buf.assign(static_cast<std::size_t>(frames) * channels, 0.0F);
+      AudioBlock block{in_buf.data(), frames, d_format.layout, working_rate};
+      const AudioResult r = render_block_at(w, block);
+      folded.achieved_rate = std::min(folded.achieved_rate, r.achieved_rate);
+      folded.exact = folded.exact && r.exact;
+      d_resampler.push_input(in_buf.data(), frames);
+    } else {
+      in_buf.assign(static_cast<std::size_t>(block_frames) * channels, 0.0F);
+      d_resampler.push_input(in_buf.data(), block_frames);
+    }
+  };
+
+  std::vector<float> out_buf;
+  for (const TimeRange& ow : out_windows) {
+    const std::uint32_t out_frames =
+        static_cast<std::uint32_t>((ow.end.flicks - ow.start.flicks) / out_fpf);
+    out_buf.assign(static_cast<std::size_t>(out_frames) * channels, 0.0F);
+    for (std::uint32_t f = 0; f < out_frames; ++f) {
+      // Feed working blocks (then zero pad) until the next output frame's whole filter
+      // support is resident -- the configure-once / feed / drain discipline that keeps
+      // streaming byte-identical to whole-stream (Constraint 1/5).
+      while (!d_resampler.can_produce()) {
+        feed_next();
+      }
+      d_resampler.produce(out_buf.data() + static_cast<std::size_t>(f) * channels);
+    }
+    AudioBlock block{out_buf.data(), out_frames, d_format.layout, output_rate};
+    sink(ow, block, folded);
   }
 }
 

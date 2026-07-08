@@ -5,6 +5,7 @@
 #include <arbc/kind_tone/tone_content.hpp>
 #include <arbc/media/audio_block.hpp>
 #include <arbc/media/audio_format.hpp>
+#include <arbc/media/audio_resampler.hpp> // resample_audio (whole-stream export-edge oracle)
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/export_monitor.hpp>
 
@@ -51,12 +52,42 @@ std::vector<float> render_tone(ToneContent& tone, std::uint32_t frames) {
 std::vector<float> export_all(ExportMonitor& monitor, const TimeRange& range,
                               std::uint32_t block_frames) {
   std::vector<float> out;
-  monitor.render_range(range, block_frames,
-                       [&](TimeRange, const AudioBlock& block, AudioResult) {
-                         const std::size_t n =
-                             static_cast<std::size_t>(block.frames) * channel_count(block.layout);
-                         out.insert(out.end(), block.samples, block.samples + n);
-                       });
+  monitor.render_range(range, block_frames, [&](TimeRange, const AudioBlock& block, AudioResult) {
+    const std::size_t n = static_cast<std::size_t>(block.frames) * channel_count(block.layout);
+    out.insert(out.end(), block.samples, block.samples + n);
+  });
+  return out;
+}
+
+std::vector<float> export_all_to(ExportMonitor& monitor, const TimeRange& range,
+                                 std::uint32_t output_rate, std::uint32_t block_frames) {
+  std::vector<float> out;
+  monitor.render_range_to(
+      range, output_rate, block_frames, [&](TimeRange, const AudioBlock& block, AudioResult) {
+        const std::size_t n = static_cast<std::size_t>(block.frames) * channel_count(block.layout);
+        out.insert(out.end(), block.samples, block.samples + n);
+      });
+  return out;
+}
+
+// The whole-stream export-edge oracle: the concatenated working-rate `render_range`
+// mix (block-boundary-invariant, so any working block size gives the same signal)
+// resampled ONCE to `output_rate` through the shipped `resample_audio`, producing
+// exactly the container-rate frame count covering the range. The byte-exact reference
+// the concatenated container-rate export must equal (Constraint 1/4, D3).
+std::vector<float> resample_oracle(ExportMonitor& monitor, const TimeRange& range,
+                                   std::uint32_t output_rate) {
+  const std::uint32_t working_rate = monitor.format().sample_rate;
+  const std::int64_t out_fpf = Time::flicks_per_second / static_cast<std::int64_t>(output_rate);
+  const std::vector<float> working = export_all(monitor, range, 64); // whole-range working mix
+  const auto in_frames = static_cast<std::uint32_t>(working.size() / 2);
+  const auto out_frames =
+      static_cast<std::uint32_t>((range.end.flicks - range.start.flicks) / out_fpf);
+  AudioBlock in_block{const_cast<float*>(working.data()), in_frames, ChannelLayout::Stereo,
+                      working_rate};
+  std::vector<float> out(static_cast<std::size_t>(out_frames) * 2, 0.0F);
+  AudioBlock out_block{out.data(), out_frames, ChannelLayout::Stereo, output_rate};
+  resample_audio(in_block, out_block);
   return out;
 }
 
@@ -105,4 +136,62 @@ TEST_CASE("an export of a multi-tone composition is byte-exact to summing the to
   // 40 + a 16-frame partial trailing block) concatenate byte-identically.
   const std::vector<float> got40 = export_all(monitor, range, 40);
   REQUIRE(bytes_equal(got40, got));
+}
+
+// enforces: 12-audio#export-edge-resamples-working-to-container
+TEST_CASE("an export to a differing container rate is byte-exact to a whole-stream resample") {
+  auto tone_a = std::make_shared<ToneContent>(440, 0.5F);
+  auto tone_b = std::make_shared<ToneContent>(660, 0.25F);
+
+  Document document;
+  const ObjectId comp = document.add_composition(0.0, 0.0);
+  add_tone(document, comp, tone_a);
+  const ObjectId lb = add_tone(document, comp, tone_b);
+  document.set_layer_gain(lb, 0.5);
+  ExportMonitor monitor(document, comp, AudioFormat{k_rate, ChannelLayout::Stereo});
+
+  SECTION("decimation container: 48 kHz working -> 44.1 kHz (coprime 160:147) -- flagship") {
+    const TimeRange range{Time::zero(), Time{480 * k_fpf}}; // -> 441 output frames
+    const std::vector<float> got = export_all_to(monitor, range, 44'100, 32);
+    const std::vector<float> want = resample_oracle(monitor, range, 44'100);
+    REQUIRE(!got.empty());
+    REQUIRE(bytes_equal(got, want)); // no tolerance, phase accumulator + widened history carry
+  }
+
+  SECTION("up-sample container: 48 kHz working -> 96 kHz (1:2)") {
+    const TimeRange range{Time::zero(), Time{96 * k_fpf}}; // -> 192 output frames
+    const std::vector<float> got = export_all_to(monitor, range, 96'000, 32);
+    const std::vector<float> want = resample_oracle(monitor, range, 96'000);
+    REQUIRE(!got.empty());
+    REQUIRE(bytes_equal(got, want));
+  }
+
+  SECTION("continuity: many export blocks concatenate to one whole-stream conversion") {
+    const TimeRange range{Time::zero(), Time{480 * k_fpf}};
+    const std::vector<float> many = export_all_to(monitor, range, 44'100, 8); // ~55 blocks
+    const std::vector<float> want = resample_oracle(monitor, range, 44'100);
+    REQUIRE(!many.empty());
+    REQUIRE(bytes_equal(many, want)); // no boundary click, correct finite tail (Constraint 1/4)
+    // Independent of the export block size (the SRC cursor + history carry across seams).
+    const std::vector<float> few = export_all_to(monitor, range, 44'100, 128);
+    REQUIRE(bytes_equal(many, few));
+  }
+}
+
+// enforces: 12-audio#export-edge-resamples-working-to-container
+TEST_CASE("a matched container rate reproduces the shipped 1:1 export byte-for-byte") {
+  auto tone_a = std::make_shared<ToneContent>(440, 0.5F);
+  auto tone_b = std::make_shared<ToneContent>(660, 0.25F);
+
+  Document document;
+  const ObjectId comp = document.add_composition(0.0, 0.0);
+  add_tone(document, comp, tone_a);
+  const ObjectId lb = add_tone(document, comp, tone_b);
+  document.set_layer_gain(lb, 0.5);
+  ExportMonitor monitor(document, comp, AudioFormat{k_rate, ChannelLayout::Stereo});
+
+  const TimeRange range{Time::zero(), Time{96 * k_fpf}};
+  const std::vector<float> one_to_one = export_all(monitor, range, 32);         // shipped 1:1 path
+  const std::vector<float> matched = export_all_to(monitor, range, k_rate, 32); // matched edge
+  REQUIRE(bytes_equal(matched, one_to_one));
 }
