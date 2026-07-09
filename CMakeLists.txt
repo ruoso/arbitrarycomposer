@@ -104,6 +104,32 @@ if(ARBC_BENCHMARKS)
   endif()
 endif()
 
+# nlohmann/json: the core's single JSON reader/writer dependency (design doc 08
+# serialization; decided in serialize.json_dep, recorded in doc 10 §Dependency
+# policy). Header-only, so it imposes NO transitive link/system requirement on an
+# embedder of libarbc (doc 10:33-34). Consumed find-first with a pinned
+# FetchContent fallback (mirrors the Catch2 declare above), never an in-tree
+# vendored copy -- the concrete reading of doc 08 §Dependency note's
+# "unproblematic vendoring." Its headers are marked SYSTEM so our -Werror
+# -Wpedantic flags do not fire on third-party code. The arbc_serialize component
+# (serialize.writer) will link it onto libarbc; for now the serialize.json_dep
+# smoke test is its only consumer.
+include(FetchContent)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+  FIND_PACKAGE_ARGS 3)
+FetchContent_MakeAvailable(nlohmann_json)
+if(TARGET nlohmann_json)
+  get_target_property(_arbc_json_incs nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+  if(_arbc_json_incs)
+    set_target_properties(
+      nlohmann_json PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_arbc_json_incs}")
+  endif()
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
 endif()

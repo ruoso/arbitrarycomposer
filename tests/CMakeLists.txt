@@ -11,6 +11,20 @@ catch_discover_tests(arbc_smoke_t)
 # plus the org.arbc.solid reference kind. Cross-component (pulls kind_solid), so
 # it lives here. arbc-testing precedes `arbc` on the link line so its unresolved
 # contract symbols resolve from the umbrella (static-archive link order).
+# serialize.json_dep build-integration smoke probe: links the chosen JSON
+# library (nlohmann/json) STANDALONE -- no arbc component, no src/serialize/ yet
+# (serialize.writer stands that up) -- and proves the two capabilities the whole
+# serialize format rests on: verbatim round-trip of an arbitrary/unknown-kind
+# tree and a non-throwing parse path an L4 API surfaces as arbc::expected, plus
+# the default object's sorted-key ordering. It is a build-integration probe
+# carrying diff coverage; it takes no `enforces:` claim (doc-08 determinism /
+# unknown-kind claims are owned by serialize.format_tests / serialize.kind_params).
+add_executable(arbc_serialize_json_dep_smoke_t serialize_json_dep_smoke.t.cpp)
+target_link_libraries(
+  arbc_serialize_json_dep_smoke_t
+  PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_json_dep_smoke_t)
+
 add_executable(arbc_contract_conformance_t contract_conformance.t.cpp)
 target_link_libraries(
   arbc_contract_conformance_t

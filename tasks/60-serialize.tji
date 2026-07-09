@@ -6,7 +6,8 @@ task serialize "Serialization" {
   task json_dep "JSON dependency decision" {
     effort 0.5d
     allocate team
-    note "Evaluate against doc 08 requirements (round-trip fidelity, no exceptions across boundaries, vendoring-free consumption); lean nlohmann. Doc 10."
+    complete 100
+    note "Evaluate against doc 08 requirements (round-trip fidelity, no exceptions across boundaries, vendoring-free consumption); lean nlohmann. Doc 10. Refinement: tasks/refinements/serialize/json_dep.md"
   }
   task writer "Canonical writer" {
     effort 2d

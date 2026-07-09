@@ -23,7 +23,7 @@ is individually justified:
 
 | Dependency | For | Status |
 | --- | --- | --- |
-| JSON library | doc 08 serialization | needed; evaluate `nlohmann/json` (ergonomics, ubiquity) vs `simdjson`+writer or `yyjson` (perf, C). Requirements in doc 08. Lean: start `nlohmann`, it's the format that's contractual, not the parser. |
+| JSON library | doc 08 serialization | **chosen: `nlohmann/json`** (`serialize.json_dep`). Meets doc 08's four requirements: its default `std::map`-backed object gives sorted keys (canonical output, doc 08 §Principle 5) for free; it round-trips arbitrary/unknown content verbatim (unknown-kind losslessness, §Principle 2); it offers a non-throwing `parse` overload the L4 API wraps as `arbc::expected` so no exception crosses the plugin boundary; and it consumes cleanly (below). `simdjson`+writer / `yyjson` (perf, C) stay parked for a future binary/perf profile, gated on evidence — "it's the format that's contractual, not the parser." Consumed find-first with a version-pinned `FetchContent` fallback (mirrors the Catch2 wiring, `CMakeLists.txt`), pinned in CI — never an in-tree vendored copy; this is the concrete reading of doc 08 §Dependency note's "unproblematic vendoring." |
 | Test framework | tests only, not shipped | Catch2 or GoogleTest; lean Catch2. |
 | Image codecs | **not core** — the raster kind needs decode, but codecs live in the `org.arbc.raster` plugin's own dependency set (stb / libpng / libjpeg-turbo), keeping the core embeddable without codec baggage. |
 | GPU APIs | **not core** — each GPU backend owns its API dependency. |
