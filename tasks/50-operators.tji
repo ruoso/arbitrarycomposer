@@ -21,8 +21,15 @@ task operators "Operators" {
   task crossfade "org.arbc.crossfade" {
     effort 1d
     allocate team
+    complete 100
     depends !fade
-    note "Two-input operator: extent union, per-input time handling — the temporal transition primitive; with spans this is cuts-and-dissolves. Doc 13."
+    note "Two-input operator: extent union, per-input time handling — the temporal transition primitive; with spans this is cuts-and-dissolves. Doc 13. Refinement: tasks/refinements/operators/crossfade.md"
+  }
+  task crossfade_runtime_binding "org.arbc.crossfade runtime injection wiring" {
+    effort 0.5d
+    allocate team
+    depends !crossfade, model.content_binding
+    note "Wire CrossfadeContent attach injection (PullService, Backend) onto live services at runtime instantiation, tear down on release. Source of debt: tasks/refinements/operators/crossfade.md. Doc 13."
   }
   task operator_conformance "Operator conformance additions" {
     effort 1d

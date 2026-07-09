@@ -20,6 +20,7 @@
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/contract/content.hpp>
+#include <arbc/kind_crossfade/crossfade_content.hpp>
 #include <arbc/kind_fade/fade_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/testing/contract_tests.hpp>
@@ -109,6 +110,23 @@ optest::OperatorPullFactory fade_pull_factory() {
   };
 }
 
+// A crossfade whose transition window [0, 10s) puts the helper's default 5s
+// pull-routing time at w == 0.5 -- an interior dissolve, so render() pulls BOTH
+// inputs (the endpoint paths pull only one). The pull-routing helper wraps the
+// operator over two poison-leaf inputs.
+CrossfadeParams crossfade_params() {
+  return CrossfadeParams{CrossfadeShape::Linear, Time{0}, Time{10 * k_fps}};
+}
+
+optest::OperatorPullFactory crossfade_pull_factory() {
+  return [](std::span<const ContentRef> inputs, PullService& pull,
+            Backend& backend) -> std::unique_ptr<Content> {
+    auto xf = std::make_unique<CrossfadeContent>(inputs[0], inputs[1], crossfade_params());
+    xf->attach(pull, backend);
+    return xf;
+  };
+}
+
 } // namespace
 
 // enforces: 03-layer-plugin-interface#operator-identity-faithful
@@ -140,6 +158,15 @@ TEST_CASE("operator conformance: org.arbc.fade pulls its input only via PullServ
   // (live PullServiceImpl + CompositorCounters) proofs. Fade exposes audio(), so
   // the audio (pull_audio / audio_dispatches) leg runs too.
   optest::check_operator_pulls_via_service(fade_pull_factory());
+}
+
+// enforces: 13-effects-as-operators#operator-pulls-only-via-pull-service
+TEST_CASE("operator conformance: org.arbc.crossfade pulls both inputs only via PullService") {
+  // The arity-2 reuse of the canonical helper (operator_conformance.hpp:16): two
+  // PoisonLeaf inputs, both the isolation (RecordingPull) and integration (live
+  // PullServiceImpl + CompositorCounters) proofs, over both facets. At w == 0.5
+  // the interior dissolve pulls each input; the audio mix pulls each too.
+  optest::check_operator_pulls_via_service(crossfade_pull_factory(), {.input_count = 2});
 }
 
 // enforces: 03-layer-plugin-interface#leaf-content-has-no-operator-graph

@@ -115,6 +115,12 @@ Append one `###` block per item, newest at the bottom:
 - **Question**: Should follow-up tasks be added for HRTF / 3D audio monitors, distance models beyond per-edge scale attenuation, and non-collapsing per-leaf pan (preserving nested internal stereo width rather than mono-collapsing at nesting boundaries)?
 - **Why parked**: Doc 12:162-165 explicitly defers these as "monitor-implementation territory, extensible later." They require multichannel accumulation, IR convolution infrastructure, and a non-collapsing pan model — scope beyond any current milestone. Human call once a milestone consumer is scoped for 3D/HRTF audio.
 
+### 2026-07-09 — Symmetric additive crossfade for semi-transparent layers
+
+- **Source**: closer for `operators.crossfade` (see accompanying commit); flagged in Decision 1 (Decisions section) and implementer return summary.
+- **Question**: Decision 1 uses source-over-at-opacity `w` for the visual dissolve. For opaque inputs this yields the textbook linear crossfade. For **semi-transparent** inputs the result is asymmetric: input 0's pre-existing alpha interacts with input 1's overlay in a way that a symmetric additive `in0·(1−w) + in1·w` in premultiplied space would not. Should a symmetric additive `Backend` op (`accumulate(dst, src, weight)`) be added and a new `org.arbc.crossfade_additive` kind or mode registered to handle semi-transparent layer dissolves correctly?
+- **Why parked**: Adding an additive backend op is a new L3/L4 seam every backend (CPU + future GPU) must implement — a doc-09 delta — for a v1 whose inputs are overwhelmingly opaque clip frames. The decision is explicitly deferred in Decision 1's "Rejected" rationale. Human call once a real semi-transparent dissolve use case surfaces and motivates the backend seam and doc amendment.
+
 ### 2026-07-08 — Live viewport-extent / window-resize follow for audio pan normalization
 - **Source**: closer for `audio.spatial_camera_follow` (see accompanying commit); "Out of scope" section in the refinement.
 - **Question**: Should audio pan normalization (`viewport_w/h` in `Spatialization`) follow live window-resize events, not just the initial static seed? The `camera_source` seam from `audio.spatial_camera_follow` makes this a trivial extension (inject a closure returning current extent alongside the camera); the question is whether v1 needs it.

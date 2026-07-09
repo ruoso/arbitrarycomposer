@@ -88,6 +88,38 @@ target_link_libraries(
   PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_operator_conformance_t)
 
+# org.arbc.crossfade contract conformance (pulls kind_crossfade + kind_solid +
+# arbc-testing). Crossfade is the reference TWO-input operator: contract_tests
+# with operator_graph on, plus the granular operator damage-covers /
+# identity-faithful families, over a crossfade fronted by an inline PullService +
+# CpuBackend. Since factory()->audio() != nullptr the umbrella also runs the
+# audio families (bounded-audio input doubles keep the Timed union extent
+# bounded). arbc-testing precedes `arbc` on the link line (static-archive order).
+add_executable(arbc_crossfade_conformance_t crossfade_conformance.t.cpp)
+target_link_libraries(
+  arbc_crossfade_conformance_t
+  PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_crossfade_conformance_t)
+
+# org.arbc.crossfade byte-exact goldens (visual source-over dissolve at w == 0.5
+# through the real CpuBackend composite; audio per-frame complementary-weight mix
+# over two tones) plus the endpoint pass-through cases (w == 0 == input 0, w == 1
+# == input 1). Cross-component (drives CpuBackend + kind_solid + kind_tone), so
+# like fade_goldens it lives here and links the umbrella `arbc`.
+add_executable(arbc_crossfade_goldens_t crossfade_goldens.t.cpp)
+target_link_libraries(arbc_crossfade_goldens_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_crossfade_goldens_t)
+
+# org.arbc.crossfade identity behavioral counter: a real crossfade driven through
+# the compositor's PullServiceImpl records operator_renders delta 0 at each
+# endpoint (w == 0 / w == 1 identity short-circuit) and delta 1 mid-transition.
+# Cross-component (compositor + kind_crossfade), so it links the umbrella `arbc`.
+add_executable(arbc_crossfade_identity_counter_t crossfade_identity_counter.t.cpp)
+target_link_libraries(arbc_crossfade_identity_counter_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_crossfade_identity_counter_t)
+
 # org.arbc.nested byte-exact goldens: nested's output vs the compositor's own
 # per-layer loop over the same layers (the rendering-is-recursion identity), plus
 # snapshot consistency, budget flow-through, and Droste-cycle termination.

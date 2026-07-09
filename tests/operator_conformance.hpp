@@ -144,17 +144,22 @@ using OperatorPullFactory = std::function<std::unique_ptr<Content>(
     std::span<const ContentRef> inputs, PullService& pull, Backend& backend)>;
 
 struct PullRoutingCase {
-  std::size_t input_count{1};                               // spy leaves to install
-  Time time{Time{5 * Time::flicks_per_second}};             // a generic mid-timeline request time
-  std::uint32_t sample_rate{48'000};                        // audio-facet request rate
-  std::uint32_t audio_frames{512};                          // audio-facet block length
+  std::size_t input_count{1};                   // spy leaves to install
+  Time time{Time{5 * Time::flicks_per_second}}; // a generic mid-timeline request time
+  std::uint32_t sample_rate{48'000};            // audio-facet request rate
+  std::uint32_t audio_frames{512};              // audio-facet block length
 };
 
 // The single rung-0 tile a 256x256 region at scale 1.0 covers (mirrors the
 // existing fade counter driver's request geometry; fixed, no ambient now()).
 inline RenderRequest visual_request(Surface& target, Time time) {
-  return RenderRequest{Rect::from_size(256.0, 256.0), 1.0,           time, StateHandle{},
-                       target,                        Exactness::BestEffort, Deadline::none()};
+  return RenderRequest{Rect::from_size(256.0, 256.0),
+                       1.0,
+                       time,
+                       StateHandle{},
+                       target,
+                       Exactness::BestEffort,
+                       Deadline::none()};
 }
 
 inline AudioRequest audio_request(AudioBlock& block, const PullRoutingCase& options) {
@@ -196,8 +201,8 @@ inline void check_operator_pulls_via_service(const OperatorPullFactory& make_ope
     op->render(visual_request(**target, options.time), done);
 
     for (const auto& spy : spies) {
-      CHECK(pull.pulls_for(spy.get()) >= 1U);   // the operator pulled every input,
-      CHECK(spy->render_calls() == 0U);         // and reached none of them directly.
+      CHECK(pull.pulls_for(spy.get()) >= 1U); // the operator pulled every input,
+      CHECK(spy->render_calls() == 0U);       // and reached none of them directly.
     }
 
     if (op->audio() != nullptr) {

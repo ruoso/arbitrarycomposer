@@ -15,6 +15,7 @@ add_subdirectory(kind_tone)
 add_subdirectory(kind_raster)
 add_subdirectory(kind_nested)
 add_subdirectory(kind_fade)
+add_subdirectory(kind_crossfade)
 add_subdirectory(runtime)
 
 arbc_finalize_library()
