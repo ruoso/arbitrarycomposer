@@ -13,9 +13,14 @@
 #include <nlohmann/json.hpp>
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace arbc {
 namespace {
@@ -121,8 +126,132 @@ json time_map_json(const TimeMap& m) {
   return o;
 }
 
+// The write face of doc 08 Principle 6 (serialize.sharing): the operator graph
+// rooted at the document's layer contents, emitted structurally. A single pre-pass
+// counts every `Content*`'s occurrences across the reachable graph (all layer roots
+// bottom-to-top, each depth-first over `inputs()` in declared order) and records its
+// `(kind, kind_version)`; content reached two or more times is *shared* and hoisted
+// once into a document-level `contents` table under a deterministic first-encounter
+// ordinal id, referenced by `{"$ref": id}` at every use site (Constraint 2). The
+// same traversal order that drives counting drives id assignment, so output is
+// byte-stable across runs and re-serializations (doc 08 Principle 5).
+class ContentGraph {
+public:
+  ContentGraph(const ContentBodyProvider& provider, const ContentMetaProvider& meta,
+               const CodecTable& codecs)
+      : d_provider(provider), d_meta(meta), d_codecs(codecs) {}
+
+  // Pre-pass over the document graph: count occurrences, record metadata, assign the
+  // shared-content ids. Must run before any layer or `contents` emission.
+  void build(const DocRoot& doc, ObjectId comp_id) {
+    doc.for_each_layer_in(comp_id, [&](ObjectId lid) {
+      const LayerRecord* lr = doc.find_layer(lid);
+      if (lr == nullptr) {
+        return;
+      }
+      const std::optional<ContentBody> body = d_provider(lr->content);
+      if (!body.has_value()) {
+        return;
+      }
+      visit(&body->content, body->kind, body->kind_version);
+    });
+    std::size_t next = 0;
+    for (const Content* c : d_order) {
+      if (d_counts[c] >= 2) {
+        d_ids.emplace(c, std::to_string(next++));
+        d_shared.push_back(c);
+      }
+    }
+  }
+
+  // Emit a use site: `{"$ref": id}` for a shared content, else its inline body.
+  json emit_use(const Content* c, Emitter& em) {
+    if (const auto it = d_ids.find(c); it != d_ids.end()) {
+      json ref = json::object();
+      ref["$ref"] = it->second;
+      return ref;
+    }
+    return emit_definition(c, em);
+  }
+
+  // The optional document-level `contents` table: each shared content's full inline
+  // body emitted ONCE (its own shared children referenced by `$ref`), keyed by id.
+  // Returns nullopt when nothing is shared, so the table is omitted (Constraint 6).
+  std::optional<json> emit_contents(Emitter& em) {
+    if (d_shared.empty()) {
+      return std::nullopt;
+    }
+    json contents = json::object();
+    for (const Content* c : d_shared) {
+      contents[d_ids.at(c)] = emit_definition(c, em);
+    }
+    return contents;
+  }
+
+private:
+  struct MetaEntry {
+    std::string kind;
+    std::string kind_version;
+  };
+
+  void visit(const Content* c, std::string_view kind, std::string_view kind_version) {
+    const auto [it, inserted] = d_counts.try_emplace(c, 0);
+    it->second += 1;
+    if (inserted) {
+      d_meta_of.emplace(c, MetaEntry{std::string(kind), std::string(kind_version)});
+      d_order.push_back(c);
+    }
+    if (it->second > 1) {
+      return; // already descended into this subtree; count the extra edge, don't recurse
+    }
+    for (const ContentRef child : c->inputs()) {
+      if (child == nullptr) {
+        continue;
+      }
+      const std::optional<ContentMeta> m = d_meta(*child);
+      if (m.has_value()) {
+        visit(child, m->kind, m->kind_version);
+      } else {
+        visit(child, std::string_view{}, std::string_view{}); // let content_body_to_json fault
+      }
+    }
+  }
+
+  // One node's full inline body: its `{kind, kind_version, params}` leaf plus, when
+  // `inputs()` is non-empty, an order-preserving `inputs` array whose slots are each
+  // a `$ref` (shared) or a nested inline body (recursion). Omitted when empty.
+  json emit_definition(const Content* c, Emitter& em) {
+    const MetaEntry& m = d_meta_of.at(c);
+    expected<json, SerializeError> leaf =
+        content_body_to_json(m.kind, m.kind_version, *c, d_codecs);
+    if (!leaf) {
+      em.fail(leaf.error());
+      return json::object();
+    }
+    json body = std::move(*leaf);
+    const std::span<const ContentRef> ins = c->inputs();
+    if (!ins.empty()) {
+      json arr = json::array();
+      for (const ContentRef child : ins) {
+        arr.push_back(child != nullptr ? emit_use(child, em) : json());
+      }
+      body["inputs"] = std::move(arr);
+    }
+    return body;
+  }
+
+  const ContentBodyProvider& d_provider;
+  const ContentMetaProvider& d_meta;
+  const CodecTable& d_codecs;
+  std::unordered_map<const Content*, int> d_counts;        // occurrences across the graph
+  std::unordered_map<const Content*, MetaEntry> d_meta_of; // (kind, kind_version) per node
+  std::unordered_map<const Content*, std::string> d_ids;   // shared content -> `$ref` id
+  std::vector<const Content*> d_order;                     // first-encounter traversal order
+  std::vector<const Content*> d_shared;                    // shared contents, in id order
+};
+
 json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em,
-                const ContentBodyProvider* provider, const CodecTable* codecs) {
+                const ContentBodyProvider* provider, ContentGraph* graph) {
   json o = json::object();
   // Spatial + core placement -- always present.
   const Affine& t = lr.transform;
@@ -145,22 +274,20 @@ json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em,
   if (!(lr.time_map == TimeMap{})) {
     o["time_map"] = time_map_json(lr.time_map);
   }
-  // Content body (serialize.kind_params): only through the provider overload. The
-  // provider resolves this layer's bound content; a hit emits `{kind, kind_version,
-  // params}` (or a placeholder's verbatim body) beside the placement keys, where the
-  // canonical key sort orders them. The no-provider path leaves the layer body-free,
-  // byte-identical to the pre-kind_params goldens (Constraint 6).
-  if (provider != nullptr && codecs != nullptr) {
+  // Content position (serialize.kind_params + serialize.sharing): only through the
+  // content-aware overload. The provider resolves this layer's bound content; the
+  // graph emits its operator subtree beside the placement keys -- either the inline
+  // `{kind, kind_version, params, inputs?}` body (its inputs walked from `inputs()`)
+  // or, when the root content is itself shared across the document, a `{"$ref": id}`
+  // into the `contents` table. The canonical key sort orders whichever keys land. The
+  // no-provider path leaves the layer body-free, byte-identical to the pre-kind_params
+  // goldens (Constraint 6).
+  if (provider != nullptr && graph != nullptr) {
     const std::optional<ContentBody> body = (*provider)(lr.content);
     if (body.has_value()) {
-      expected<json, SerializeError> cb =
-          content_body_to_json(body->kind, body->kind_version, body->content, *codecs);
-      if (cb) {
-        for (auto it = cb->begin(); it != cb->end(); ++it) {
-          o[it.key()] = it.value();
-        }
-      } else {
-        em.fail(cb.error());
+      const json emitted = graph->emit_use(&body->content, em);
+      for (auto it = emitted.begin(); it != emitted.end(); ++it) {
+        o[it.key()] = it.value();
       }
     }
   }
@@ -168,7 +295,7 @@ json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em,
 }
 
 json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRecord& comp,
-                      Emitter& em, const ContentBodyProvider* provider, const CodecTable* codecs) {
+                      Emitter& em, const ContentBodyProvider* provider, ContentGraph* graph) {
   json o = json::object();
   // canvas hint (doc 01): `[x, y, w, h]`, extents as integers.
   o["canvas"] =
@@ -185,7 +312,7 @@ json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRec
   doc.for_each_layer_in(comp_id, [&](ObjectId lid) {
     const LayerRecord* lr = doc.find_layer(lid);
     if (lr != nullptr) {
-      layers.push_back(layer_json(*lr, lid, em, provider, codecs));
+      layers.push_back(layer_json(*lr, lid, em, provider, graph));
     }
   });
   o["layers"] = std::move(layers);
@@ -193,10 +320,13 @@ json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRec
 }
 
 // The shared serialization core (Constraint 6): identical envelope + composition +
-// placement walk for both public overloads; `provider`/`codecs` are null on the
-// content-free path (byte-identical to today) and non-null on the content-aware one.
-expected<std::string, SerializeError>
-serialize_impl(const DocRoot& doc, const ContentBodyProvider* provider, const CodecTable* codecs) {
+// placement walk for both public overloads; `provider`/`meta`/`codecs` are null on
+// the content-free path (byte-identical to today) and non-null on the content-aware
+// one, where the operator graph + shared `contents` table are emitted.
+expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
+                                                     const ContentBodyProvider* provider,
+                                                     const ContentMetaProvider* meta,
+                                                     const CodecTable* codecs) {
   Emitter em;
   json root = json::object();
   json envelope = json::object();
@@ -206,7 +336,24 @@ serialize_impl(const DocRoot& doc, const ContentBodyProvider* provider, const Co
   ObjectId comp_id;
   const CompositionRecord* comp = nullptr;
   if (doc.find_first_composition(comp_id, comp)) {
-    root["composition"] = composition_json(doc, comp_id, *comp, em, provider, codecs);
+    // The content-aware path pre-passes the whole graph (occurrence counts + shared
+    // ids) BEFORE emitting layers, so a shared root/input emits `{"$ref": id}` and the
+    // definition lands once in `contents` (Constraint 2). The `std::optional` holds the
+    // graph only when all three content seams are supplied.
+    std::optional<ContentGraph> graph;
+    if (provider != nullptr && meta != nullptr && codecs != nullptr) {
+      graph.emplace(*provider, *meta, *codecs);
+      graph->build(doc, comp_id);
+    }
+    ContentGraph* graph_ptr = graph.has_value() ? &*graph : nullptr;
+    root["composition"] = composition_json(doc, comp_id, *comp, em, provider, graph_ptr);
+    if (graph_ptr != nullptr) {
+      // The shared-content table at document root, beside `composition` (omitted when
+      // nothing is shared -- the canonical key sort places `composition` < `contents`).
+      if (std::optional<json> contents = graph_ptr->emit_contents(em); contents.has_value()) {
+        root["contents"] = std::move(*contents);
+      }
+    }
   }
 
   if (!em.ok()) {
@@ -226,13 +373,14 @@ serialize_impl(const DocRoot& doc, const ContentBodyProvider* provider, const Co
 } // namespace
 
 expected<std::string, SerializeError> serialize_document(const DocRoot& doc) {
-  return serialize_impl(doc, /*provider=*/nullptr, /*codecs=*/nullptr);
+  return serialize_impl(doc, /*provider=*/nullptr, /*meta=*/nullptr, /*codecs=*/nullptr);
 }
 
 expected<std::string, SerializeError> serialize_document(const DocRoot& doc,
                                                          const ContentBodyProvider& provider,
+                                                         const ContentMetaProvider& meta,
                                                          const CodecTable& codecs) {
-  return serialize_impl(doc, &provider, &codecs);
+  return serialize_impl(doc, &provider, &meta, &codecs);
 }
 
 } // namespace arbc

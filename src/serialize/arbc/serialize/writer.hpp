@@ -47,8 +47,9 @@ struct SerializeError {
 // and each layer bottom-to-top with its core-owned spatial + temporal + audio
 // placement (`transform`, `opacity`, `visible`; the omit-when-default twins `gain`,
 // `audible`, `span`, `time_map`). The content body (`kind`/`kind_version`/`params`),
-// operator `inputs`, and the `contents`/`$ref` sharing table are later serialize
-// tasks (kind_params / sharing).
+// operator `inputs`, and the `contents`/`$ref` sharing table ride only the
+// content-aware overload below (this no-provider form stays content-free,
+// Constraint 6).
 //
 // Returns the byte buffer, or a `SerializeError` value when a placement scalar is
 // non-finite; no nlohmann exception crosses this boundary.
@@ -66,23 +67,50 @@ struct ContentBody {
   const Content& content;
 };
 
-// The seam through which the content-aware writer resolves a layer's bound content
+// The seam through which the content-aware writer resolves a LAYER's bound content
 // (by its `ContentRecord` ObjectId) to a `ContentBody`, or `nullopt` for a layer
 // with no content to emit. runtime.document_serialize supplies this from a pinned
 // snapshot (Decision 5); the writer stays agnostic to the runtime side-map.
 using ContentBodyProvider = std::function<std::optional<ContentBody>(ObjectId content_id)>;
 
-// Content-aware serialization: like `serialize_document(doc)` for the envelope,
-// composition, and core-owned placement, but every layer whose bound content the
-// provider resolves also emits a `{kind, kind_version, params}` content body via
-// `codecs` (an unknown-kind `PlaceholderContent` re-emits its stored body verbatim,
-// byte-equivalent under canonical formatting -- doc 08 Principles 2, 5). The
-// no-provider overload above stays byte-identical to today's goldens (Constraint 6).
+// A content's core-owned `(kind, kind_version)` metadata (serialize.sharing
+// Decision 3). Input children are reached via `Content::inputs()` as bare
+// `Content*`s -- the model gives them no `ObjectId` (records.hpp:60-92) -- so the
+// write recursion resolves each child's kind through this `const Content&`-keyed
+// lookup rather than the ObjectId-keyed `ContentBodyProvider`. The two string_views
+// must outlive the serialize call (L5 backs them with `Document`'s stable strings).
+struct ContentMeta {
+  std::string_view kind;
+  std::string_view kind_version;
+};
+
+// The `const Content&`-keyed metadata lookup (serialize.sharing Decision 3): resolve
+// any live content reached via the operator graph to its `(kind, kind_version)`, or
+// `nullopt` when the runtime side-map does not know it (a placeholder still
+// serializes from its stored body; a codec-backed content with no metadata is a
+// `NoCodec` value). runtime.document_serialize supplies this from `Document`'s
+// reverse map (Decision 5). Names no JSON type, so it rides the public header.
+using ContentMetaProvider = std::function<std::optional<ContentMeta>(const Content& content)>;
+
+// Content-aware serialization (serialize.kind_params + serialize.sharing): like
+// `serialize_document(doc)` for the envelope, composition, and core-owned placement,
+// but every layer whose bound content the `provider` resolves also emits the
+// operator graph rooted at that content -- each node a `{kind, kind_version, params,
+// inputs?}` body via `codecs` (an unknown-kind `PlaceholderContent` re-emits its
+// stored body verbatim), the `inputs` array walked from `Content::inputs()` and
+// omitted when empty (doc 08 Principle 6). Content reachable two or more times across
+// the whole document is hoisted ONCE into a document-level `contents` table under a
+// deterministic first-encounter ordinal id and referenced by `{"$ref": id}` at every
+// use site (Constraint 2); `meta` resolves each input child's `(kind, kind_version)`.
+// The no-provider overload above stays byte-identical to today's goldens
+// (Constraint 6).
 //
 // Returns the byte buffer, or a `SerializeError` (a non-finite scalar, or a codec
-// that failed / had no registered codec); no nlohmann exception crosses the API.
+// that failed / had no registered codec / no metadata for a graph node); no nlohmann
+// exception crosses the API.
 expected<std::string, SerializeError> serialize_document(const DocRoot& doc,
                                                          const ContentBodyProvider& provider,
+                                                         const ContentMetaProvider& meta,
                                                          const CodecTable& codecs);
 
 } // namespace arbc

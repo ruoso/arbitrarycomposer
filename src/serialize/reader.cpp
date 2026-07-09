@@ -14,7 +14,10 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -165,13 +168,16 @@ struct LayerData {
   bool audible{true};
   TimeRange span{TimeRange::all()};
   TimeMap time_map{};
-  // The layer's content body (`{kind, kind_version, params, inputs}`), captured
-  // verbatim when the layer carries a `kind`; `content` is the live Content the
-  // routing reconstructs from it (serialize.kind_params). A layer with no `kind`
-  // leaves both defaulted, so it binds `ObjectId{}` exactly as before.
+  // The layer's content position, captured verbatim when the layer carries content:
+  // either an inline body (`{kind, kind_version, params, inputs}`) or a shared-content
+  // reference (`{"$ref": id}`, serialize.sharing). `content_id`/`has_content_id` are
+  // the sunk root the read recursion resolves it to (the same ObjectId for two layers
+  // sharing one `$ref` -- intra-document dedup, Constraint 3). A layer with no content
+  // leaves them defaulted, so it binds `ObjectId{}` exactly as before.
   bool has_content{false};
   json content_body;
-  std::unique_ptr<Content> content;
+  bool has_content_id{false};
+  ObjectId content_id{};
 };
 
 struct CompData {
@@ -184,13 +190,20 @@ struct CompData {
   std::vector<LayerData> layers;
 };
 
-// The content body lives BESIDE placement in the layer object (doc 08:29-36): the
+// The content position lives BESIDE placement in the layer object (doc 08:29-36).
+// It is EITHER a `{"$ref": id}` into the document `contents` table (serialize.sharing:
+// a shared content whose body was hoisted to document root) OR an inline body: the
 // core-owned `kind`/`kind_version`, the kind-owned `params`, and the core-owned
-// `inputs` edges. Captured verbatim (all four keys when present) so an unknown kind
-// re-serializes byte-equivalent; placement keys stay the writer's separate concern.
+// `inputs` edges. Captured verbatim so an unknown kind re-serializes byte-equivalent;
+// placement keys stay the writer's separate concern.
 bool extract_content_body(const json& o, json& out) {
+  if (o.contains("$ref")) {
+    out = json::object();
+    out["$ref"] = o.at("$ref"); // a shared-content reference at the layer position
+    return true;
+  }
   if (!o.contains("kind")) {
-    return false; // a placement-only layer (the writer's v1 output) has no content body
+    return false; // a placement-only layer (the writer's v1 output) has no content
   }
   out = json::object();
   for (const char* key : {"kind", "kind_version", "params", "inputs"}) {
@@ -244,6 +257,101 @@ void parse_composition(const json& c, CompData& out) {
   }
 }
 
+// The read face of doc 08 Principle 6 (serialize.sharing): resolve a content
+// position -- an inline body or a `{"$ref": id}` into the document `contents` table
+// -- into a live, sunk `Content`, wiring each node's input edges bottom-up and
+// deduplicating shared references so one `contents` entry yields exactly ONE built
+// `Content` shared by every use site (Constraint 3). A `$ref` that is dangling (id
+// absent from `contents`) or closes an operator-input cycle is a
+// `UnresolvableReference` value with no model mutation (Decision 7); the whole
+// resolution runs BEFORE `load_baseline`, so any failure leaves the model empty.
+class RefResolver {
+public:
+  RefResolver(const json* contents, const CodecTable& codecs, const Registry& registry,
+              LoadContext& ctx, const ContentSink& sink)
+      : d_contents(contents), d_codecs(codecs), d_registry(registry), d_ctx(ctx), d_sink(sink) {}
+
+  // Resolve one content position (inline body OR `{"$ref": id}`) to a sunk node.
+  expected<SunkContent, ReaderError> resolve(const json& node) {
+    if (const auto rit = node.find("$ref"); rit != node.end()) {
+      // `$ref` ids are decimal-string handles the writer derives (Decision 2). A
+      // non-string, an absent id, or a re-entry into an in-progress id (a cycle) is
+      // an UnresolvableReference value -- never a throw, never a partial graph.
+      if (!rit->is_string()) {
+        return fail(ReaderError::Kind::UnresolvableReference, "/$ref");
+      }
+      const std::string id = rit->get<std::string>();
+      if (const auto cit = d_cache.find(id); cit != d_cache.end()) {
+        return cit->second; // intra-document dedup: one live Content per shared id
+      }
+      if (d_in_progress.count(id) != 0) {
+        return fail(ReaderError::Kind::UnresolvableReference, "/contents/" + id); // cycle
+      }
+      if (d_contents == nullptr) {
+        return fail(ReaderError::Kind::UnresolvableReference, "/contents/" + id); // no table
+      }
+      const auto bit = d_contents->find(id);
+      if (bit == d_contents->end()) {
+        return fail(ReaderError::Kind::UnresolvableReference, "/contents/" + id); // dangling
+      }
+      if (!bit->is_object()) {
+        return fail(ReaderError::Kind::MalformedField, "/contents/" + id);
+      }
+      d_in_progress.insert(id);
+      expected<SunkContent, ReaderError> built = build(*bit);
+      d_in_progress.erase(id);
+      if (!built) {
+        return built;
+      }
+      d_cache.emplace(id, *built);
+      return built;
+    }
+    return build(node);
+  }
+
+private:
+  // Build one inline body: resolve its input children FIRST (recursing, so shared
+  // children dedup and the graph is built bottom-up), route the `{kind, params}` node
+  // through the codec table with the built inputs in hand (Decision 4), and hand the
+  // node to the sink, which owns it and yields its live `Content*`.
+  expected<SunkContent, ReaderError> build(const json& body) {
+    std::vector<ContentRef> input_ptrs;
+    if (const auto iit = body.find("inputs"); iit != body.end()) {
+      if (!iit->is_array()) {
+        return fail(ReaderError::Kind::MalformedField, "/inputs");
+      }
+      for (const json& slot : *iit) {
+        if (!slot.is_object()) {
+          return fail(ReaderError::Kind::MalformedField, "/inputs"); // a slot is a body or $ref
+        }
+        expected<SunkContent, ReaderError> child = resolve(slot);
+        if (!child) {
+          return unexpected(child.error());
+        }
+        input_ptrs.push_back(child->live);
+      }
+    }
+    expected<std::unique_ptr<Content>, ReaderError> produced =
+        content_body_from_json(body, input_ptrs, d_codecs, d_registry, d_ctx);
+    if (!produced) {
+      return unexpected(produced.error());
+    }
+    return d_sink(std::move(*produced));
+  }
+
+  static unexpected<ReaderError> fail(ReaderError::Kind kind, std::string path) {
+    return unexpected(ReaderError{kind, std::move(path), ObjectId{}});
+  }
+
+  const json* d_contents;
+  const CodecTable& d_codecs;
+  const Registry& d_registry;
+  LoadContext& d_ctx;
+  const ContentSink& d_sink;
+  std::unordered_map<std::string, SunkContent> d_cache; // shared id -> one sunk node
+  std::unordered_set<std::string> d_in_progress;        // ids on the resolution stack
+};
+
 } // namespace
 
 expected<std::monostate, ReaderError> load_document(std::string_view input,
@@ -295,31 +403,46 @@ expected<std::monostate, ReaderError> load_document(std::string_view input,
     parse_composition(*cit, comp);
   }
 
-  // Reconstruct each layer's content body BEFORE touching the model (Decision 5),
-  // so a malformed body returns a `ReaderError` with the target `Model` still empty.
-  // Routing happens only when a `ContentSink` is installed to take ownership of the
-  // produced content; the content-free overload passes a null sink and an empty
-  // codec table, so a placement-only document is byte-identical to before. Dispatch
-  // is by kind id through `codecs` (known -> live Content; unknown -> placeholder),
-  // with `registry`/`ctx` threaded into the routing (no longer discarded).
+  // The optional document-level `contents` table (serialize.sharing): shared content
+  // hoisted to document root, keyed by `$ref` id (doc 08 Principle 6). A present-but-
+  // non-object `contents` is malformed; it lives beside `composition`.
+  const json* contents_table = nullptr;
+  if (const auto ctit = root.find("contents"); ctit != root.end()) {
+    if (!ctit->is_object()) {
+      return fail(ReaderError::Kind::MalformedField, "/contents");
+    }
+    contents_table = &*ctit;
+  }
+
+  // Reconstruct each layer's content graph BEFORE touching the model (Decision 5, 7),
+  // so a malformed body, a dangling `$ref`, or a `$ref` cycle returns a `ReaderError`
+  // with the target `Model` still empty. Routing happens only when a `ContentSink` is
+  // installed to take ownership of every produced node; the content-free overload
+  // passes a null sink and an empty codec table, so a placement-only document is
+  // byte-identical to before. The recursion routes by kind id through `codecs` (known
+  // -> live Content; unknown -> placeholder), resolves `$ref`/`inputs` against
+  // `contents_table` with intra-document dedup, and wires input edges bottom-up
+  // (registry/ctx threaded through).
   if (sink) {
+    RefResolver resolver(contents_table, codecs, registry, ctx, sink);
     for (LayerData& ld : comp.layers) {
       if (!ld.has_content) {
         continue;
       }
-      expected<std::unique_ptr<Content>, ReaderError> produced =
-          content_body_from_json(ld.content_body, codecs, registry, ctx);
+      expected<SunkContent, ReaderError> produced = resolver.resolve(ld.content_body);
       if (!produced) {
         return unexpected(produced.error()); // model unmutated: nothing installed yet
       }
-      ld.content = std::move(*produced);
+      ld.content_id = produced->id;
+      ld.has_content_id = true;
     }
   }
 
   // Install the reconstructed graph as the version-0 baseline with an empty
-  // journal (Decision 3). A layer with a reconstructed content hands it to the sink
-  // and binds the returned id; a placement-only layer binds the invalid `ObjectId{}`
-  // placeholder exactly as the content-free path does.
+  // journal (Decision 3). The nodes are already sunk (owned by the caller) in the
+  // resolution phase above; a layer root binds its sunk `content_id` (the same id for
+  // two layers sharing one content, Constraint 3), a placement-only layer binds the
+  // invalid `ObjectId{}` placeholder exactly as the content-free path does.
   const expected<std::monostate, PoolError> installed =
       into.load_baseline([&](Model::Transaction& txn) {
         if (!has_composition) {
@@ -332,8 +455,8 @@ expected<std::monostate, ReaderError> load_document(std::string_view input,
         if (comp.has_working_audio_format) {
           txn.set_working_audio_format(cid, comp.working_audio_format);
         }
-        for (LayerData& ld : comp.layers) {
-          const ObjectId content_id = ld.content ? sink(std::move(ld.content)) : ObjectId{};
+        for (const LayerData& ld : comp.layers) {
+          const ObjectId content_id = ld.has_content_id ? ld.content_id : ObjectId{};
           const ObjectId lid = txn.add_layer(content_id, ld.transform, ld.opacity);
           // Re-apply exactly the omit-on-default twins the writer would have
           // emitted; a field left at its default stays diff-clean (Constraint 2).

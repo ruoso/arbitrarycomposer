@@ -55,6 +55,7 @@ task milestones "Milestones" {
 
   task m7_effects "M7: Effects" {
     milestone
+    complete 100
     depends operators.fade, operators.crossfade, operators.operator_conformance, serialize.sharing
     note "Fade and crossfade over both facets with identity pass-through; operator graphs serialize. Doc 13 realized — cuts-and-dissolves editing works end to end."
   }

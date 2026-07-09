@@ -57,6 +57,18 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_serialize_kind_params_t)
 
+# serialize.sharing: the L4 structural read/write of the operator graph -- the
+# core-owned `inputs` array beside `params`, the document-level `contents` table with
+# `{"$ref": id}` for shared content, intra-document dedup, and the dangling/cyclic-ref
+# read-error discipline (doc 08 Principle 6). Like kind_params it names test kinds AND
+# nlohmann::json through the serialize-internal codec/placeholder headers, so it links
+# the umbrella `arbc` plus nlohmann explicitly (nlohmann is PRIVATE to arbc_serialize).
+add_executable(arbc_serialize_sharing_t serialize_sharing.t.cpp)
+target_link_libraries(
+  arbc_serialize_sharing_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_sharing_t)
+
 # serialize.writer concurrency stress (tier-6, tsan lane): a serialize worker reads
 # a held pin while the single writer thread commits N transactions -- the pinned
 # read races the mutator with no data race (serialize.writer Constraint 1).

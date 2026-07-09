@@ -6,12 +6,14 @@
 // The one kind-agnostic, JSON-shaped `Content` (Decision 4), so `arbc_serialize` is
 // its natural home. It stands in for a kind whose plugin the host lacks -- or a kind
 // that chose placeholder behavior over lossy parsing of newer `params` (doc 08
-// Principle 2 version skew) -- preserving the layer's content body
-// (`kind`/`kind_version`/`params`/`inputs`, and any unknown fields -- Principle 4)
-// verbatim so it re-serializes byte-equivalent under canonical formatting, and
-// renders input 0 as pass-through when it has a bound input (doc 08 Principle 6,
-// doc 13), else a bounded diagnostic fill. A missing plugin never destroys data and
-// never punches a hole.
+// Principle 2 version skew) -- preserving the layer's LEAF content body
+// (`kind`/`kind_version`/`params`, and any unknown fields -- Principle 4) verbatim so
+// it re-serializes byte-equivalent under canonical formatting. Its `inputs` are held
+// as live edges (`d_inputs`), NOT baked into the stored body: the operator graph is
+// graph-structural (serialize.sharing), re-derived on save from `inputs()` with
+// canonical `$ref` ids (doc 08 Principle 6, Decision 2). It renders input 0 as
+// pass-through when it has a bound input (doc 13), else a bounded diagnostic fill. A
+// missing plugin never destroys data and never punches a hole.
 
 #include <arbc/contract/content.hpp>
 
@@ -33,15 +35,18 @@ inline constexpr std::array<float, 4> k_placeholder_diagnostic{0.5F, 0.0F, 0.5F,
 
 class PlaceholderContent final : public Content {
 public:
-  // `body` is the layer's content body, stored verbatim (all keys). `kind_registered`
-  // records whether the kind's plugin is present in the `Registry` even though no
-  // serialize codec is registered (the read routing's registry witness). `inputs`
-  // are the live edges the pass-through render reads -- empty on the read path until
-  // serialize.sharing binds them (Decision 6); a unit test supplies a synthetic one.
+  // `body` is the layer's LEAF content body, stored verbatim (all keys EXCEPT
+  // `inputs`, which the read routing strips -- it is re-derived from `inputs()` on
+  // save, serialize.sharing). `kind_registered` records whether the kind's plugin is
+  // present in the `Registry` even though no serialize codec is registered (the read
+  // routing's registry witness). `inputs` are the live edges the pass-through render
+  // reads -- the read recursion binds them from the resolved `inputs` array
+  // (serialize.sharing); empty for a leaf placeholder.
   explicit PlaceholderContent(nlohmann::json body, bool kind_registered = false,
                               std::vector<ContentRef> inputs = {});
 
-  // The verbatim content body -- what re-serialization emits (canonical on dump).
+  // The verbatim LEAF content body (no `inputs` key) -- what re-serialization emits
+  // for this node, canonical on dump; the write recursion appends the `inputs` limb.
   const nlohmann::json& body() const noexcept { return d_body; }
   // Whether the read routing found the kind's plugin registered (a factory present)
   // despite the missing codec -- the `Registry`-consulted witness (Decision 2).
@@ -53,9 +58,9 @@ public:
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion> done) override;
 
-  // The preserved input edges (doc 08 Principle 6): the verbatim `inputs` are
-  // surfaced as live edges here so the compositor can serve input 0 under
-  // `identity()`. Empty until serialize.sharing resolves the `inputs` array.
+  // The preserved input edges (doc 08 Principle 6): the resolved `inputs` are surfaced
+  // as live edges here so the compositor can serve input 0 under `identity()`. Empty
+  // for a leaf placeholder.
   std::span<const ContentRef> inputs() const override;
 
   // Input-0 pass-through (doc 08 Principle 6, doc 13; Decision 4): return 0 when a

@@ -27,6 +27,7 @@
 
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -68,28 +69,38 @@ private:
   std::unordered_map<std::string, Codec> d_codecs;
 };
 
-// Read routing (serialize.kind_params): turn one layer's content body
-// `{kind, kind_version, params, inputs, ...}` into a live `Content`. A kind with a
-// registered codec runs `codec.deserialize(params, ctx)` (the codec owns `params`);
-// an unknown kind becomes a `PlaceholderContent` preserving the WHOLE body verbatim
-// (doc 08 Principles 2/4). `registry` supplies kind metadata "where useful"
-// (Decision 2): it witnesses whether the kind's plugin is present at all, which the
+// Read routing (serialize.kind_params, +inputs serialize.sharing): turn ONE node's
+// content body `{kind, kind_version, params, inputs?, ...}` into a live `Content`,
+// given its already-reconstructed input edges. The document-level read recursion
+// (reader.cpp) parses `body["inputs"]`/`$ref` first, builds each child, and passes
+// the resulting live `Content*`s here as `inputs`; this function only routes the
+// `{kind, params}` node itself. A kind with a registered codec runs
+// `codec.deserialize(params, inputs, ctx)` (the codec owns `params` and adopts
+// `inputs` at construction, Decision 4); an unknown kind becomes a
+// `PlaceholderContent` preserving `kind`/`kind_version`/`params` and any unknown
+// fields verbatim (doc 08 Principles 2/4) while binding `inputs` as its live
+// pass-through edges (Principle 6) -- the `inputs` array itself is NOT stored in the
+// opaque body (it is graph-structural, re-derived on save from `inputs()`, Decision
+// 2/7). `registry` witnesses whether the kind's plugin is present at all, which the
 // placeholder records. Errors are values (Constraint 5): a missing/empty `kind` is
 // `MissingRequiredField`, a mistyped `kind`/`params` is `MalformedField`, and a
 // codec's own parse failure propagates; no nlohmann exception escapes.
 expected<std::unique_ptr<Content>, ReaderError>
-content_body_from_json(const nlohmann::json& body, const CodecTable& codecs,
-                       const Registry& registry, LoadContext& ctx);
+content_body_from_json(const nlohmann::json& body, std::span<const ContentRef> inputs,
+                       const CodecTable& codecs, const Registry& registry, LoadContext& ctx);
 
-// Write routing (serialize.kind_params): emit one layer's content body. A
-// `PlaceholderContent` re-emits its stored body verbatim (byte-equivalent under the
-// writer's canonical dump -- Principles 2/5), ignoring `kind_id`/`kind_version`. Any
-// other content runs the registered `SerializeFn` for `kind_id`, wrapping the
-// returned `params` as `{kind, kind_version, params}`. A non-placeholder content
-// with no registered codec is `SerializeError::Kind::NoCodec`; a codec failure
-// propagates.
-expected<nlohmann::json, SerializeError>
-content_body_to_json(std::string_view kind_id, std::string_view kind_version,
-                     const Content& content, const CodecTable& codecs);
+// Write routing (serialize.kind_params): emit ONE node's LEAF content body -- the
+// `{kind, kind_version, params}` frame only, NEVER the `inputs` limb (the
+// document-level write recursion in writer.cpp appends `inputs`/`$ref` from a live
+// `Content::inputs()` walk, Decision 1/2). A `PlaceholderContent` re-emits its stored
+// (inputs-free) body verbatim (byte-equivalent under the writer's canonical dump --
+// Principles 2/5), ignoring `kind_id`/`kind_version`. Any other content runs the
+// registered `SerializeFn` for `kind_id`, wrapping the returned `params` as
+// `{kind, kind_version, params}`. A non-placeholder content with no registered codec
+// is `SerializeError::Kind::NoCodec`; a codec failure propagates.
+expected<nlohmann::json, SerializeError> content_body_to_json(std::string_view kind_id,
+                                                              std::string_view kind_version,
+                                                              const Content& content,
+                                                              const CodecTable& codecs);
 
 } // namespace arbc

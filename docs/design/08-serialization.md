@@ -108,7 +108,27 @@ These are core-owned placement, not `params`.
    content goes in an optional document-level `contents` table referenced
    by `{"$ref": id}`. Unknown-kind placeholders preserve their inputs and
    may render input 0 as pass-through — a missing fade plugin degrades to
-   an unfaded clip, not a hole.
+   an unfaded clip, not a hole. Concretely: the `inputs` array is
+   **order-significant** (slot *i* is input index *i*, the index
+   `identity()`/`map_input_damage` name) and **omitted when empty** (leaf
+   content), like the other omit-at-default core-owned fields. A `{"$ref":
+   id}` may stand in for the inline body in **any** `inputs` slot *or* a
+   layer's content position. A content is *shared* — and hoisted into
+   `contents` — when it is referenced **two or more times** across the
+   document's reachable graph; singly-referenced content stays inline.
+   `contents` ids are **core-owned, non-semantic handles**, not authoring
+   tokens: they are re-derived deterministically on every save from graph
+   structure (first-encounter order over the canonical layers-then-inputs
+   traversal), so output stays byte-stable and a hand-authored file's
+   arbitrary ids are normalized on re-serialization — canonicalization
+   (Principle 5), not data loss. On load, an id absent from `contents`, or
+   a `{"$ref": id}` that closes an operator-input cycle, is a
+   serialization error surfaced as a value (Principle 5), never a partial
+   load. v1 `$ref` graphs are **acyclic** (the v1 operators `org.arbc.fade`
+   / `org.arbc.crossfade` are; doc 13): operator *feedback* cycles
+   (doc 13) are a render-time concern bounded by the compositor's depth
+   budget, and composition cycles (Droste, doc 05) ride the nested kind's
+   `params` URI (Principle 3) — neither is a `contents`/`$ref` edge.
 
 ## Deliberately not in the format
 

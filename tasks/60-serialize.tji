@@ -33,8 +33,9 @@ task serialize "Serialization" {
   task sharing "inputs arrays + contents table" {
     effort 1d
     allocate team
+    complete 100
     depends !kind_params
-    note "Core-owned operator input edges beside params; document-level contents table with $ref for shared content. Docs 08/13."
+    note "Core-owned operator input edges beside params; document-level contents table with $ref for shared content. Docs 08/13. Refinement: tasks/refinements/serialize/sharing.md"
   }
   task format_tests "Determinism tests + loader fuzzing" {
     effort 2d

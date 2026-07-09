@@ -1,6 +1,5 @@
-#include <arbc/serialize/placeholder_content.hpp>
-
 #include <arbc/media/pixel_traits.hpp>
+#include <arbc/serialize/placeholder_content.hpp>
 #include <arbc/surface/typed_span.hpp>
 
 #include <cstddef>

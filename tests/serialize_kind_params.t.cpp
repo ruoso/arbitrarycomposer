@@ -25,9 +25,9 @@
 #include <arbc/serialize/writer.hpp>
 #include <arbc/surface/surface.hpp>
 
-#include <nlohmann/json.hpp>
-
 #include <catch2/catch_test_macros.hpp>
+
+#include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -42,6 +42,9 @@ using arbc::CodecTable;
 using arbc::Content;
 using arbc::ContentBody;
 using arbc::ContentBodyProvider;
+using arbc::ContentMeta;
+using arbc::ContentMetaProvider;
+using arbc::ContentRef;
 using arbc::ContentSink;
 using arbc::LoadContext;
 using arbc::Model;
@@ -51,6 +54,7 @@ using arbc::ReaderError;
 using arbc::Registry;
 using arbc::RenderRequest;
 using arbc::SerializeError;
+using arbc::SunkContent;
 using json = nlohmann::json;
 
 namespace {
@@ -86,17 +90,20 @@ private:
 // which also witnesses that the routing threads `ctx` into the codec. A missing or
 // mistyped `gain` is a MalformedField value (Constraint 5), never a throw.
 arbc::DeserializeFn gadget_deserialize() {
-  return [](const json& params, LoadContext& ctx) -> arbc::expected<std::unique_ptr<Content>, ReaderError> {
+  return [](const json& params, std::span<const ContentRef> /*inputs*/,
+            LoadContext& ctx) -> arbc::expected<std::unique_ptr<Content>, ReaderError> {
     const auto git = params.find("gain");
     if (git == params.end() || !git->is_number_integer()) {
-      return arbc::unexpected(ReaderError{ReaderError::Kind::MalformedField, "/params/gain", ObjectId{}});
+      return arbc::unexpected(
+          ReaderError{ReaderError::Kind::MalformedField, "/params/gain", ObjectId{}});
     }
     std::string source;
     if (const auto sit = params.find("source"); sit != params.end() && sit->is_string()) {
       source = sit->get<std::string>();
       ctx.resolve(source); // base-URI resolution: the ctx-consulted witness
     }
-    return std::unique_ptr<Content>(std::make_unique<GadgetContent>(git->get<std::int64_t>(), source));
+    return std::unique_ptr<Content>(
+        std::make_unique<GadgetContent>(git->get<std::int64_t>(), source));
   };
 }
 
@@ -138,24 +145,26 @@ std::string canonical_dump(const json& j) {
 // enforces: 08-serialization#unknown-kind-round-trips-verbatim
 TEST_CASE("an unknown kind round-trips verbatim and byte-equivalent under canonical form") {
   // A file using a plugin the host lacks must never destroy data (doc 08 Principle
-  // 2): its content body deserializes to a PlaceholderContent preserving kind /
-  // kind_version / params / inputs (and unknown fields, Principle 4) verbatim, and
-  // re-serializes to the CANONICAL form of the input byte-for-byte (Principle 5).
+  // 2): its LEAF content body deserializes to a PlaceholderContent preserving kind /
+  // kind_version / params (and unknown fields, Principle 4) verbatim, and re-serializes
+  // to the CANONICAL form of the input byte-for-byte (Principle 5). The `inputs` limb
+  // is graph-structural now (serialize.sharing) -- re-derived on save from `inputs()`
+  // with canonical `$ref` ids, NOT stored in the opaque body -- so its document-level
+  // round-trip is proved by serialize_sharing.t.cpp, not this per-node case.
   const CodecTable codecs; // empty: the kind is unknown
   Registry registry;
   LoadContext ctx("mem://doc.arbc");
 
   // Deliberately unsorted keys + an unknown extra field, to prove canonicalization
-  // sorts keys and preserves the whole body, not just the four named ones.
+  // sorts keys and preserves the whole leaf body, not just the three named ones.
   const json body = json::parse(R"json({
     "params": {"scale": 2.5, "nested": {"b": true, "a": [1, 2, 3]}},
     "kind": "com.example.gadget",
     "future_field": "kept",
-    "inputs": [{"$ref": 3}],
     "kind_version": "3.0"
   })json");
 
-  auto produced = arbc::content_body_from_json(body, codecs, registry, ctx);
+  auto produced = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
   REQUIRE(produced);
   std::unique_ptr<Content> content = std::move(*produced);
   auto* placeholder = dynamic_cast<PlaceholderContent*>(content.get());
@@ -178,7 +187,7 @@ TEST_CASE("a known kind round-trips its params through a registered codec, not t
   const json body = json::parse(
       R"json({"kind":"com.test.gadget","kind_version":"1.0","params":{"gain":5,"source":"a.png"}})json");
 
-  auto produced = arbc::content_body_from_json(body, codecs, registry, ctx);
+  auto produced = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
   REQUIRE(produced);
   std::unique_ptr<Content> content = std::move(*produced);
   // Dispatch by kind id selected the codec, not the placeholder.
@@ -258,14 +267,16 @@ TEST_CASE("load_document routes each layer's content body into the model through
 
   const CodecTable codecs = gadget_table();
   Registry registry;
-  REQUIRE(registry.add("com.plugin.present", dummy_factory(), arbc::KindMetadata{"Present", "2.0"}));
+  REQUIRE(
+      registry.add("com.plugin.present", dummy_factory(), arbc::KindMetadata{"Present", "2.0"}));
   LoadContext ctx("proj/scene.arbc");
 
   std::vector<std::unique_ptr<Content>> captured;
   std::uint64_t next_id = 100;
-  const ContentSink sink = [&](std::unique_ptr<Content> c) -> ObjectId {
+  const ContentSink sink = [&](std::unique_ptr<Content> c) -> SunkContent {
+    Content* live = c.get();
     captured.push_back(std::move(c));
-    return ObjectId{next_id++};
+    return SunkContent{ObjectId{next_id++}, live};
   };
 
   Model model;
@@ -319,8 +330,8 @@ TEST_CASE("serialize_document emits the content body through the provider, uncha
   const auto pin = model.current();
 
   GadgetContent known(7, "x.png");
-  const json ghost_body = json::parse(
-      R"json({"kind":"com.example.ghost","kind_version":"9.9","params":{"z":1}})json");
+  const json ghost_body =
+      json::parse(R"json({"kind":"com.example.ghost","kind_version":"9.9","params":{"z":1}})json");
   PlaceholderContent ghost(ghost_body);
 
   const CodecTable codecs = gadget_table();
@@ -333,8 +344,15 @@ TEST_CASE("serialize_document emits the content body through the provider, uncha
     }
     return std::nullopt;
   };
+  // Leaf contents: neither has inputs, so the meta provider is never consulted here.
+  const ContentMetaProvider meta = [&](const Content& c) -> std::optional<ContentMeta> {
+    if (&c == static_cast<const Content*>(&known)) {
+      return ContentMeta{"com.test.gadget", "1.0"};
+    }
+    return std::nullopt;
+  };
 
-  const auto out = arbc::serialize_document(*pin, provider, codecs);
+  const auto out = arbc::serialize_document(*pin, provider, meta, codecs);
   REQUIRE(out);
   const std::string& s = *out;
 
@@ -370,7 +388,7 @@ TEST_CASE("content-body codecs surface malformed params and missing codecs as di
 
   SECTION("a non-object params -> MalformedField (before any codec dispatch)") {
     const json body = json::parse(R"json({"kind":"com.test.gadget","params":7})json");
-    const auto r = arbc::content_body_from_json(body, codecs, registry, ctx);
+    const auto r = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
     REQUIRE_FALSE(r);
     CHECK(r.error().kind == ReaderError::Kind::MalformedField);
     CHECK(r.error().path == "/params");
@@ -379,7 +397,7 @@ TEST_CASE("content-body codecs surface malformed params and missing codecs as di
   SECTION("params the codec rejects -> the codec's MalformedField value") {
     const json body =
         json::parse(R"json({"kind":"com.test.gadget","params":{"gain":"not-an-int"}})json");
-    const auto r = arbc::content_body_from_json(body, codecs, registry, ctx);
+    const auto r = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
     REQUIRE_FALSE(r);
     CHECK(r.error().kind == ReaderError::Kind::MalformedField);
     CHECK(r.error().path == "/params/gain");
@@ -387,7 +405,7 @@ TEST_CASE("content-body codecs surface malformed params and missing codecs as di
 
   SECTION("a body missing kind -> MissingRequiredField") {
     const json body = json::parse(R"json({"params":{"gain":1}})json");
-    const auto r = arbc::content_body_from_json(body, codecs, registry, ctx);
+    const auto r = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
     REQUIRE_FALSE(r);
     CHECK(r.error().kind == ReaderError::Kind::MissingRequiredField);
     CHECK(r.error().path == "/kind");
