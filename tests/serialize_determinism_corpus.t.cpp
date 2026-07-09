@@ -357,7 +357,8 @@ constexpr const char* k_unknown_kind = R"json({
 
 // enforces: 08-serialization#canonical-output-is-byte-stable
 // enforces: 08-serialization#load-save-round-trips-canonically
-TEST_CASE("every canonical corpus document round-trips byte-exact and is re-serialization idempotent") {
+TEST_CASE(
+    "every canonical corpus document round-trips byte-exact and is re-serialization idempotent") {
   // serialize(load(x)) == x for each canonical x, and the fixed point holds a second
   // time (idempotence): re-loading the output and re-saving reproduces it unchanged.
   SECTION("content-bearing documents (built-in codecs)") {
@@ -396,7 +397,8 @@ TEST_CASE("an unknown kind's content body round-trips verbatim to a canonical fi
 
 // enforces: 08-serialization#hand-authored-ids-normalize-deterministically
 // enforces: 08-serialization#shared-content-dedups-via-ref
-TEST_CASE("a hand-authored file with arbitrary contents ids and unsorted keys normalizes to canonical") {
+TEST_CASE(
+    "a hand-authored file with arbitrary contents ids and unsorted keys normalizes to canonical") {
   // The case serialize.sharing deferred here (sharing.md:434-436): non-canonical
   // `contents` ids ("shared-99") + unsorted keys re-serialize to canonical byte-exact
   // output, ids collapsed to first-encounter ordinals ("0") over the layers-then-inputs

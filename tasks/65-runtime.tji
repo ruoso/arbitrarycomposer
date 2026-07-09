@@ -34,8 +34,21 @@ task runtime "Runtime" {
   task plugin_loading "dlopen plugin loading" {
     effort 2d
     allocate team
+    complete 100
     depends kinds.imageseq_plugin
-    note "extern C registration entry point, explicit host registration first, opt-in ARBC_PLUGIN_PATH scan; errors as values across the boundary. Docs 03/10."
+    note "extern C registration entry point, explicit host registration first, opt-in ARBC_PLUGIN_PATH scan; errors as values across the boundary. Docs 03/10. Refinement: tasks/refinements/runtime/plugin_loading.md"
+  }
+  task plugin_loading_win32 "Windows LoadLibrary backing for plugin loader" {
+    effort 1d
+    allocate team
+    depends !plugin_loading
+    note "Windows LoadLibrary/GetProcAddress/FreeLibrary backing for the runtime plugin loader behind the existing _WIN32 seam, plus ; ARBC_PLUGIN_PATH separator; mirrors POSIX dlfcn behavior. Source: tasks/refinements/runtime/plugin_loading.md Decision 4."
+  }
+  task plugin_default_search_paths "Platform-conventional default plugin directories" {
+    effort 1d
+    allocate team
+    depends !plugin_loading, packaging.release_01
+    note "Add platform-conventional default plugin directories (install-relative libdir + XDG/AppData data dirs) to the opt-in scan after ARBC_PLUGIN_PATH; ordering and dedup against explicitly-listed dirs. Source: tasks/refinements/runtime/plugin_loading.md Decision 5."
   }
   task document_serialize "Wire Document to serialize content seams" {
     effort 2d

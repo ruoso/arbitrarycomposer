@@ -561,6 +561,27 @@ target_compile_definitions(
           ARBC_IMAGESEQ_FIXTURE_DIR="${ARBC_IMAGESEQ_FIXTURE_DIR}")
 catch_discover_tests(arbc_imageseq_plugin_path_t)
 
+# An entry-point-less MODULE fixture for the production loader test: opens under
+# dlopen but exposes no arbc_plugin_register, exercising the loader's
+# MissingEntryPoint (explicit load) / SkippedNoEntry (scan) paths. Self-contained
+# (no arbc link) so it resolves under RTLD_NOW with zero external symbols.
+add_library(arbc-plugin-noentry MODULE fixtures/noentry_plugin.cpp)
+target_link_libraries(arbc-plugin-noentry PRIVATE arbc_build_flags)
+
+# The production host-side plugin loader end-to-end test: drives PluginHost over the
+# real arbc-plugin-imageseq MODULE across the extern "C" boundary (no impl link),
+# plus the opt-in ARBC_PLUGIN_PATH scan and the value-erroring failure modes.
+add_executable(arbc_plugin_loading_t plugin_loading.t.cpp)
+target_link_libraries(arbc_plugin_loading_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags ${CMAKE_DL_LIBS})
+target_compile_definitions(
+  arbc_plugin_loading_t
+  PRIVATE ARBC_IMAGESEQ_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-imageseq>"
+          ARBC_IMAGESEQ_PLUGIN_DIR="$<TARGET_FILE_DIR:arbc-plugin-imageseq>"
+          ARBC_IMAGESEQ_FIXTURE_DIR="${ARBC_IMAGESEQ_FIXTURE_DIR}"
+          ARBC_NOENTRY_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-noentry>")
+catch_discover_tests(arbc_plugin_loading_t)
+
 # The codec-line containment proof: no decode symbol in libarbc, present in the
 # plugin's impl archive and loadable module (byte scan of the built artifacts).
 add_executable(arbc_imageseq_containment_t imageseq_containment.t.cpp)

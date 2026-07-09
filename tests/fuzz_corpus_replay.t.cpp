@@ -11,9 +11,9 @@
 // headers (via the shared fuzz target), so it links the umbrella `arbc` and lives
 // under top-level tests/ outside the levelized graph (Constraint 5).
 
-#include "fuzz/fuzz_target.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "fuzz/fuzz_target.hpp"
 
 #include <cstdint>
 #include <filesystem>
