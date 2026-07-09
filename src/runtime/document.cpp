@@ -4,8 +4,15 @@
 
 namespace arbc {
 
-ObjectId Document::add_content(std::shared_ptr<Content> content) {
-  const ObjectId id = d_model.allocate_id();
+ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t kind) {
+  // Mint a versioned ContentRecord (kind id + inert StateHandle) as a top-level
+  // DocState entry, published as one new version -- exactly like every other
+  // Document mutator. The id->Content vtable binding then rides the runtime
+  // side-map keyed by that record's id (doc 17:66-72 keeps the model free of the
+  // Content vtable). resolve(id) serves it; find_content(id) carries no pointer.
+  auto txn = d_model.transact();
+  const ObjectId id = txn.add_content(kind);
+  txn.commit();
   d_contents.emplace(id, std::move(content));
   return id;
 }

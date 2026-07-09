@@ -17,4 +17,4 @@ arbc_component_test(COMPONENT runtime
                             t/interactive.t.cpp t/transport.t.cpp t/playback_hints.t.cpp
                             t/offline_sequence.t.cpp t/audio_worker_pool.t.cpp
                             t/lookahead_pump.t.cpp t/device_monitor.t.cpp
-                            t/export_monitor.t.cpp)
+                            t/export_monitor.t.cpp t/content_binding.t.cpp)

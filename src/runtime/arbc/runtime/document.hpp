@@ -9,6 +9,7 @@
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/model.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <unordered_map>
 
@@ -21,7 +22,13 @@ class Document {
 public:
   Document() = default;
 
-  ObjectId add_content(std::shared_ptr<Content> content);
+  // Mint a versioned content object: commits a `Transaction::add_content(kind)`,
+  // publishing a `ContentRecord` (opaque `kind` id + inert `StateHandle`) into a
+  // pinnable `DocState` (revision +1), and binds the returned record id to
+  // `content` in the runtime side-map. `kind` is an opaque caller-supplied token
+  // (the reverse-DNS<->numeric bridge is `runtime.document_serialize`'s); it
+  // defaults to 0. `resolve(id)` serves the vtable binding, unchanged.
+  ObjectId add_content(std::shared_ptr<Content> content, std::uint64_t kind = 0);
   ObjectId add_layer(ObjectId content, const Affine& transform, double opacity = 1.0);
   void set_layer_transform(ObjectId layer, const Affine& transform);
 
@@ -68,8 +75,10 @@ public:
 
 private:
   Model d_model;
-  // Writer-thread-owned for now; migrates into versioned content records
-  // when the Editable facet and the slab arenas land (docs 14/15).
+  // The permanent, levelization-mandated home of the id->Content vtable binding
+  // (doc 17:66-72): the versioned `ContentRecord` in `DocState` holds only the
+  // opaque `{kind, StateHandle}`, so the model stays free of the `Content` vtable.
+  // Writer-thread-owned; keyed by the record's `ObjectId`; `resolve()` reads it.
   std::unordered_map<ObjectId, std::shared_ptr<Content>> d_contents;
 };
 

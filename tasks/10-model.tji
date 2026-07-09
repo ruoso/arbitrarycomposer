@@ -57,7 +57,8 @@ task model "Versioned model" {
   task content_binding "Content records in DocState" {
     effort 1d
     allocate team
+    complete 100
     depends !persistent_state
-    note "Migrate the runtime Document's side-map binding into versioned content records (kind id + state handle), closing the walking-skeleton TODO. Docs 14/17."
+    note "Migrate the runtime Document's side-map binding into versioned content records (kind id + state handle), closing the walking-skeleton TODO. Docs 14/17. Refinement: tasks/refinements/model/content_binding.md"
   }
 }

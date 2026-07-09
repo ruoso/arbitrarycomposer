@@ -25,9 +25,9 @@
 #include <arbc/serialize/writer.hpp>
 #include <arbc/surface/surface.hpp>
 
-#include <nlohmann/json.hpp>
-
 #include <catch2/catch_test_macros.hpp>
+
+#include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -137,8 +137,8 @@ arbc::DeserializeFn op_deserialize() {
     if (const auto it = params.find("amount"); it != params.end() && it->is_number_integer()) {
       amount = it->get<std::int64_t>();
     }
-    return std::unique_ptr<Content>(std::make_unique<OpContent>(
-        amount, std::vector<ContentRef>(inputs.begin(), inputs.end())));
+    return std::unique_ptr<Content>(
+        std::make_unique<OpContent>(amount, std::vector<ContentRef>(inputs.begin(), inputs.end())));
   };
 }
 
