@@ -9,7 +9,14 @@ task operators "Operators" {
   task fade "org.arbc.fade" {
     effort 2d
     allocate team
-    note "Single-input operator, both facets (alpha + gain envelope), Timed-over-Static stability aggregation, identity() pass-through outside the envelope window. Doc 13."
+    complete 100
+    note "Single-input operator, both facets (alpha + gain envelope), Timed-over-Static stability aggregation, identity() pass-through outside the envelope window. Doc 13. Refinement: tasks/refinements/operators/fade.md"
+  }
+  task fade_runtime_binding "org.arbc.fade runtime injection wiring" {
+    effort 0.5d
+    allocate team
+    depends !fade, model.content_binding
+    note "Wire FadeContent attach injection (PullService, Backend) onto live services at runtime instantiation, tear down on release. Source of debt: tasks/refinements/operators/fade.md. Doc 13."
   }
   task crossfade "org.arbc.crossfade" {
     effort 1d

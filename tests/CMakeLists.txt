@@ -45,6 +45,37 @@ target_link_libraries(
   PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_nested_conformance_t)
 
+# org.arbc.fade contract conformance (pulls kind_fade + kind_solid + kind_tone +
+# arbc-testing). Fade is the reference single-input operator: contract_tests with
+# operator_graph on, plus the granular operator damage-covers / identity-faithful
+# families, over a fade fronted by an inline PullService + CpuBackend. Since
+# factory()->audio() != nullptr the umbrella also runs the audio families.
+# arbc-testing precedes `arbc` on the link line (static-archive link order).
+add_executable(arbc_fade_conformance_t fade_conformance.t.cpp)
+target_link_libraries(
+  arbc_fade_conformance_t
+  PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_fade_conformance_t)
+
+# org.arbc.fade byte-exact goldens (visual premultiplied-RGBA attenuation at a
+# partial envelope through the real CpuBackend composite; audio per-frame gain
+# ramp over a tone) plus the both-facets fully-closed / fully-open behavioral
+# cases. Cross-component (drives CpuBackend + kind_solid + kind_tone), so like
+# nested_goldens it lives here and links the umbrella `arbc`.
+add_executable(arbc_fade_goldens_t fade_goldens.t.cpp)
+target_link_libraries(arbc_fade_goldens_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_fade_goldens_t)
+
+# org.arbc.fade identity behavioral counter: a real fade driven through the
+# compositor's PullServiceImpl records operator_renders delta 0 when its envelope
+# is exactly 1 at the request time (identity short-circuit) and delta 1 otherwise.
+# Cross-component (compositor + kind_fade), so it links the umbrella `arbc`.
+add_executable(arbc_fade_identity_counter_t fade_identity_counter.t.cpp)
+target_link_libraries(arbc_fade_identity_counter_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_fade_identity_counter_t)
+
 # org.arbc.nested byte-exact goldens: nested's output vs the compositor's own
 # per-layer loop over the same layers (the rendering-is-recursion identity), plus
 # snapshot consistency, budget flow-through, and Droste-cycle termination.
