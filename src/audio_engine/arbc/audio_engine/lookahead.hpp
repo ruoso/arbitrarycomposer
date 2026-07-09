@@ -219,6 +219,24 @@ public:
   std::size_t prepared_count() const noexcept;
   bool is_prepared(std::int64_t index) const;
 
+  // The current static Spatial seed (`nullopt` in Flat mode). Read once by the
+  // device monitor at construction to carry the extent / sub-audible threshold of a
+  // live camera re-seed (audio.spatial_camera_follow, Decision D2). A plain value
+  // read — safe concurrently with a `prime` that only reads the same field, and only
+  // ever WRITTEN by `set_spatial` on the producer (pump) thread.
+  const std::optional<Spatialization>& spatial() const noexcept { return d_config.spatial; }
+
+  // Re-seed the static Spatial listener at a reprime boundary
+  // (audio.spatial_camera_follow, Decision D5). The pump calls this on its own thread
+  // (serialized with `prime`/`reprime`/`drain` by the pump's `d_mutex`) just before a
+  // `reprime`, so the next fill warms under the new listener. Unlike a seek — which
+  // retains in-window blocks — the listener is part of every prepared block's content
+  // (its spatial-context digest, doc 12:249-256), so this retires the ENTIRE prepared
+  // ring: every live slot is invalidated and the following reprime re-mixes it under
+  // the new listener. A concurrent RT drain of a retired slot underruns via the same
+  // seqlock generation bump `reprime` uses (Constraint 7). No allocation, no new lock.
+  void set_spatial(std::optional<Spatialization> spatial);
+
   // The effective pre-roll honored at `playhead` (`audio.latency`, doc 12:200-212):
   // the maximum declared `latency()` among the anchor block's audible DIRECT (depth-1)
   // contributors, floored by `config.preroll`; `Time::zero()` when none declares

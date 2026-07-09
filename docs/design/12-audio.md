@@ -272,6 +272,24 @@ key and the read-side pull key remain byte-identical (the residency
 invariant of the Recursion section) and the `cache`→`contract` levelization
 edge (doc 17) is never crossed.
 
+**Camera follow.** Under the Spatial policy the interactive device monitor
+binds the *live* viewport camera into the mix's listener — the interactive
+realization of "the camera is the listener." On each mastering step the
+monitor samples the viewport's camera transform; when it differs from the
+last-applied one it re-seeds the `Spatialization` listener (and its uniform
+scale-attenuation) and flushes + reprimes the lookahead ring — the same
+invalidation a seek triggers, because the listener is part of the block key
+(the spatial-context digest above), so blocks warmed under the old camera
+are stale under the new one. The playhead does not move on a pure camera
+change, so the drain cursor is *not* re-seated (unlike a seek/rate rebase);
+only the ring's block contents re-render under the new listener. A still
+camera issues no re-seed and no reprime — a static scene costs nothing — so
+audio tracks the user's zoom live without ever re-rendering an unmoving one.
+The camera is sampled and the listener re-seeded entirely on the non-RT
+owner thread; the RT callback never touches the listener. A transport
+without a device monitor (offline/export) takes its listener from a static
+seed, not this follow (an export renders one decided camera path).
+
 **Damage.** Audio damage is a time range in local time ("samples after t
 changed"); it invalidates cached blocks and — if within the lookahead
 window — forces a re-mix of prepared blocks. The same revision/damage

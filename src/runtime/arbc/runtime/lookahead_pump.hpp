@@ -3,6 +3,7 @@
 #include <arbc/audio_engine/lookahead.hpp>    // LookaheadRing, PrefetchWant
 #include <arbc/base/time.hpp>                 // Time, TimeRange
 #include <arbc/compositor/pull_service.hpp>   // BlockCache, AudioBlockValue
+#include <arbc/contract/content.hpp>          // Spatialization (live camera re-seed)
 #include <arbc/media/audio_block.hpp>         // AudioBlock, ChannelLayout
 #include <arbc/runtime/audio_worker_pool.hpp> // AudioWorkerPool
 
@@ -82,6 +83,18 @@ public:
   // ring's `reprime` from the freshly-sampled playhead (flush + re-enumerate).
   void notify_transport_change() noexcept;
 
+  // Stage a new Spatial listener seed (audio.spatial_camera_follow, Decision D5): the
+  // NEXT tick applies it to the ring (via `LookaheadRing::set_spatial`) before it
+  // reprimes, so the fill re-warms under the new listener. The device monitor calls
+  // this on its owner thread just before `notify_transport_change()` on a camera
+  // change; the value crosses the owner->pump edge under `d_mutex`, exactly as
+  // `notify_damage` stages a damage range — no new lock, no torn seed. Non-blocking.
+  void set_spatial(std::optional<Spatialization> spatial);
+
+  // The ring's current static Spatial seed (`nullopt` in Flat mode); read once by the
+  // device monitor at construction to base a live camera re-seed's carried fields.
+  const std::optional<Spatialization>& spatial() const noexcept { return d_ring.spatial(); }
+
   // Queue a local-time damage range: the next tick calls the ring's `invalidate`.
   void notify_damage(TimeRange range);
 
@@ -115,6 +128,11 @@ private:
   bool d_stop{false};
   bool d_poke{false};
   bool d_transport_changed{false};
+  // Staged Spatial listener re-seed (audio.spatial_camera_follow, Decision D5),
+  // applied to the ring at the next tick before it reprimes. Guarded by `d_mutex`
+  // (the owner->pump hand-off), consumed once per tick.
+  bool d_spatial_pending{false};
+  std::optional<Spatialization> d_pending_spatial;
   std::vector<TimeRange> d_pending_damage;
   std::atomic<std::uint64_t> d_ticks{0};
 

@@ -3,7 +3,7 @@
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
-#include <arbc/cache/key_shapes.hpp>       // BlockKey, std::hash<BlockKey>
+#include <arbc/cache/key_shapes.hpp>        // BlockKey, std::hash<BlockKey>
 #include <arbc/compositor/pull_service.hpp> // BlockCache, AudioBlockValue
 #include <arbc/contract/content.hpp>        // Spatialization, spatial_context_digest
 #include <arbc/kind_nested/nested_content.hpp>
@@ -139,9 +139,9 @@ constexpr double k_view = 100.0;
 // has no cache, so each nested embedding renders FRESH under its own composed listener --
 // the correct per-embedding reference. Byte-identical to the ring's worker_count==0 drain
 // by construction; the threaded drain must match it too once each context keys its own slot.
-std::vector<float> spatial_direct_mix(const DocRoot& doc, ObjectId root,
-                                      const MixResolver& resolve, PullService& pull,
-                                      std::int64_t index, const Spatialization& seed) {
+std::vector<float> spatial_direct_mix(const DocRoot& doc, ObjectId root, const MixResolver& resolve,
+                                      PullService& pull, std::int64_t index,
+                                      const Spatialization& seed) {
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
   const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
   const std::int64_t t0 = index * span;
@@ -282,7 +282,8 @@ TEST_CASE("two embeddings of one nested composition drain per-context, not one s
   REQUIRE(digest_a != digest_b);
   const ObjectId nest_id{1}; // placeholder id for the key-shape witness only
   REQUIRE(BlockKey{nest_id, 0, 0, k_rate, digest_a} != BlockKey{nest_id, 0, 0, k_rate, digest_b});
-  REQUIRE(BlockKey{nest_id, 0, 0, k_rate, 0} == BlockKey{nest_id, 0, 0, k_rate, 0}); // pre-fix collision
+  REQUIRE(BlockKey{nest_id, 0, 0, k_rate, 0} ==
+          BlockKey{nest_id, 0, 0, k_rate, 0}); // pre-fix collision
 
   for (const std::size_t worker_count : {std::size_t{0}, std::size_t{4}}) {
     TwoEmbeddingScene scene;
@@ -474,7 +475,8 @@ TEST_CASE("spatial_context_digest reduces the whole Spatialization; BlockKey fol
   REQUIRE(spatial_context_digest(base) == spatial_context_digest(base));
   // Zero exactly when Flat; present is nonzero (the zero-when-Flat invariant, Constraint 1).
   REQUIRE(spatial_context_digest(std::optional<Spatialization>{}) == 0);
-  REQUIRE(spatial_context_digest(std::optional<Spatialization>{base}) == spatial_context_digest(base));
+  REQUIRE(spatial_context_digest(std::optional<Spatialization>{base}) ==
+          spatial_context_digest(base));
   REQUIRE(spatial_context_digest(base) != 0);
 
   // A one-field perturbation in EACH of the five fields changes the digest (Constraint 3):
@@ -511,6 +513,6 @@ TEST_CASE("spatial_context_digest reduces the whole Spatialization; BlockKey fol
   const BlockKey kd{ObjectId{7}, 3, 42, k_rate, spatial_context_digest(base)};
   REQUIRE(k0 == k0_same);
   REQUIRE(hash(k0) == hash(k0_same));
-  REQUIRE(k0 != kd);            // a digest-only difference makes the keys distinct
+  REQUIRE(k0 != kd);             // a digest-only difference makes the keys distinct
   REQUIRE(hash(k0) != hash(kd)); // ...and lands them in different buckets
 }

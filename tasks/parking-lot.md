@@ -114,3 +114,8 @@ Append one `###` block per item, newest at the bottom:
 - **Source**: closer for `audio.spatial_policy` (see accompanying commit); "Out of scope" section and doc 12:162-165.
 - **Question**: Should follow-up tasks be added for HRTF / 3D audio monitors, distance models beyond per-edge scale attenuation, and non-collapsing per-leaf pan (preserving nested internal stereo width rather than mono-collapsing at nesting boundaries)?
 - **Why parked**: Doc 12:162-165 explicitly defers these as "monitor-implementation territory, extensible later." They require multichannel accumulation, IR convolution infrastructure, and a non-collapsing pan model — scope beyond any current milestone. Human call once a milestone consumer is scoped for 3D/HRTF audio.
+
+### 2026-07-08 — Live viewport-extent / window-resize follow for audio pan normalization
+- **Source**: closer for `audio.spatial_camera_follow` (see accompanying commit); "Out of scope" section in the refinement.
+- **Question**: Should audio pan normalization (`viewport_w/h` in `Spatialization`) follow live window-resize events, not just the initial static seed? The `camera_source` seam from `audio.spatial_camera_follow` makes this a trivial extension (inject a closure returning current extent alongside the camera); the question is whether v1 needs it.
+- **Why parked**: Window resize is a rare event and the pan normalization behavior under a fixed window is already correct and goldened. Whether re-normalizing on resize matters to the product is a judgment call; no current milestone or user story requires it. Human call once an interactive host exists and user-facing pan behavior under resize can be evaluated.

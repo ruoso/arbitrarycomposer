@@ -77,6 +77,24 @@ void LookaheadRing::retire_slot(Slot& slot) {
   slot.seq.store(s + 2, std::memory_order_release);
 }
 
+void LookaheadRing::set_spatial(std::optional<Spatialization> spatial) {
+  // Stage the new listener seed the next `prime`/`reprime` reads. Called on the pump
+  // thread under the pump's `d_mutex`, serialized with every ring read, so no worker
+  // observes a torn seed (audio.spatial_camera_follow, Decision D5).
+  d_config.spatial = std::move(spatial);
+  // A listener change invalidates the whole prepared ring (every slot carries the old
+  // listener's content), unlike a seek's window-shift retention: retire all live slots
+  // so the following reprime re-mixes them under the new listener. The generation bump
+  // makes a concurrent RT drain of a retired slot underrun (the same discipline as
+  // `reprime`/`invalidate`).
+  for (std::size_t i = 0; i < d_capacity; ++i) {
+    Slot& slot = d_slots[i];
+    if (slot.index.load(std::memory_order_relaxed) != k_empty_slot) {
+      retire_slot(slot);
+    }
+  }
+}
+
 std::size_t LookaheadRing::prepared_count() const noexcept {
   std::size_t count = 0;
   for (std::size_t i = 0; i < d_capacity; ++i) {

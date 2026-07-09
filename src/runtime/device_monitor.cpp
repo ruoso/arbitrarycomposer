@@ -77,6 +77,13 @@ DeviceMonitor::DeviceMonitor(Transport& transport, LookaheadPump& pump, DeviceSi
     }
   }
 
+  // Capture the ring's static Spatial seed once (audio.spatial_camera_follow, D2): a
+  // live camera re-seed carries its viewport extent + sub-audible threshold, swapping
+  // only the listener. `nullopt` (Flat) => camera-follow is inert. A plain value read,
+  // race-free with the pump tick's read-only `prime` (no writer until the first
+  // re-seed, which this owner thread alone issues).
+  d_spatial_base = d_pump.spatial();
+
   d_master_thread = std::thread(&DeviceMonitor::run_master, this);
   // Open the device stream LAST: everything the RT callback reads is initialized.
   d_sink.start([this](float* out, std::uint32_t frames) { fill_rt(out, frames); });
@@ -282,8 +289,39 @@ void DeviceMonitor::master_step() {
   // Publish the mastered playhead (release): the pump and viewports chase this.
   d_published.store(d_transport.position(), std::memory_order_release);
 
-  // A transport change flushes + reprimes; a plain advance only nudges the pump to
-  // prime further ahead of the freshly-published playhead.
+  // Live camera follow (audio.spatial_camera_follow, doc 12 "Camera follow",
+  // D1/D2/D4): sample the interactive viewport camera on THIS non-RT owner thread and,
+  // on a change, stage a listener re-seed. Only when the ring seed is Spatial
+  // (`d_spatial_base` present) and a `camera_source` is wired; a Flat scene or an
+  // absent source never follows, so every existing device-path drain is byte-exact.
+  bool camera_reseed = false;
+  if (d_config.camera_source && d_spatial_base.has_value()) {
+    const Affine cam = d_config.camera_source();
+    // Exact `Affine`-coefficient compare (D4): a still camera is a no-op — no re-seed,
+    // no reprime — so a static scene never re-renders; the byte-exact digest keys on
+    // exact `Affine` bits, so an epsilon compare would be wrong.
+    if (!d_last_camera.has_value() || *d_last_camera != cam) {
+      d_last_camera = cam;
+      // Swap only the listener + its uniform scale-attenuation; the viewport extent and
+      // sub-audible threshold stay from the static seed (D2). `spatial_edge_atten(cam)`
+      // is exactly `clamp(max_scale(cam), 0, 1)` — the camera's root attenuation the
+      // static monitor seed already computes (lookahead.hpp:78), so the live drain is
+      // byte-identical to a static-seed run under this camera.
+      Spatialization ctx = *d_spatial_base;
+      ctx.listener = cam;
+      ctx.accum_atten = spatial_edge_atten(cam);
+      // Stage the seed BEFORE `notify_transport_change` (D5): the pump applies it to
+      // the ring before it reprimes, so the fill re-warms under the new listener.
+      d_pump.set_spatial(ctx);
+      d_listener_reseeds.fetch_add(1, std::memory_order_release);
+      camera_reseed = true;
+    }
+  }
+
+  // A seek/rate rebase re-seats the drain cursor AND reprimes; a pure camera change
+  // reprimes WITHOUT re-seating the cursor (the playhead is unmoved, D3), so a camera
+  // reprime is distinguishable from a seek reprime (`drain_realigns()` does not
+  // advance); a plain advance only nudges the pump to prime further ahead.
   if (rebased) {
     // Re-seat the RT drain cursor to the block covering the freshly-published
     // playhead so the device drain tracks the reprimed ring window from the first
@@ -301,6 +339,8 @@ void DeviceMonitor::master_step() {
       // realign above but a distinct concern (block cursor vs. filter memory).
       d_resampler_flush.store(true, std::memory_order_release);
     }
+  }
+  if (rebased || camera_reseed) {
     d_pump.notify_transport_change();
   } else {
     d_pump.poke();

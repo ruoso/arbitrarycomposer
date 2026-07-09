@@ -110,8 +110,9 @@ task audio "Audio" {
   task spatial_camera_follow "Live viewport camera binding for device-path spatialization" {
     effort 1d
     allocate team
+    complete 100
     depends !spatial_policy, !device_monitor
-    note "Bind the interactive runtime's live visual viewport camera into the DeviceMonitor's Spatialization listener each tick and on camera/transport change, so audio spatialization tracks the user's zoom live (the interactive 'camera is the listener' coupling); audio.spatial_policy ships only the static seam. Source: audio.spatial_policy scope boundary; see tasks/refinements/audio/spatial_policy.md. Doc 12."
+    note "Bind the interactive runtime's live visual viewport camera into the DeviceMonitor's Spatialization listener each tick and on camera/transport change, so audio spatialization tracks the user's zoom live (the interactive 'camera is the listener' coupling); audio.spatial_policy ships only the static seam. Source: audio.spatial_policy scope boundary; see tasks/refinements/audio/spatial_policy.md. Doc 12. Refinement: tasks/refinements/audio/spatial_camera_follow.md"
   }
   task rt_safety "RT-safety enforcement" {
     effort 1d

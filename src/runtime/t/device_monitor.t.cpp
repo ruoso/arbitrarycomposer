@@ -16,6 +16,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -26,6 +27,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -513,6 +515,130 @@ drive_seek_realign(const DocStatePtr& doc, ObjectId comp, const MixResolver& res
   res.underruns_delta = monitor.underruns() - underruns_before;
   pump.request_stop();
   return res;
+}
+
+// A Spatial device pipeline for camera-follow (audio.spatial_camera_follow): seeds the
+// ring Spatial with `base`, optionally wires a live `camera_source` reading a mutable
+// cell the phase script drives, and starts the transport at `start_block`. Matched rate
+// (device == working) so the drain is a byte-exact 1:1 copy of the Spatial mix. Each
+// phase optionally moves the camera (only meaningful with a live source), and -- for a
+// live monitor -- masters one step so the owner samples the camera and (on a change)
+// re-seeds + reprimes, then re-warms the ring before delivering its device-frame
+// chunks. Returns per-phase device output and the terminal wall-clock-free counters.
+// Mirrors `drive_device` / `drive_seek_realign`.
+struct SpatialPhase {
+  std::optional<Affine> camera;      // move the live camera before this phase (or leave)
+  std::vector<std::uint32_t> chunks; // device-frame counts to deliver this phase
+};
+struct SpatialDriveResult {
+  std::vector<std::vector<float>> phases; // per-phase concatenated device output
+  std::uint64_t listener_reseeds{0};
+  std::uint64_t drain_realigns{0};
+  std::uint64_t underruns{0};
+};
+SpatialDriveResult drive_spatial(const DocStatePtr& doc, ObjectId comp, const MixResolver& resolve,
+                                 const std::function<ObjectId(const Content*)>& id_of,
+                                 std::uint32_t working_rate, std::uint32_t block_frames,
+                                 std::size_t worker_count, std::int64_t horizon_blocks,
+                                 const Spatialization& base, bool use_camera,
+                                 std::int64_t start_block,
+                                 const std::vector<SpatialPhase>& phases) {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(working_rate);
+  const std::int64_t span = static_cast<std::int64_t>(block_frames) * fpf;
+
+  BlockCache blocks{64u * 1024 * 1024};
+  CachingPull pull(&blocks, id_of, doc->revision());
+
+  LookaheadRingConfig ringcfg;
+  ringcfg.composition = comp;
+  ringcfg.resolve = resolve;
+  ringcfg.sample_rate = working_rate;
+  ringcfg.layout = ChannelLayout::Stereo;
+  ringcfg.block_frames = block_frames;
+  ringcfg.revision = doc->revision();
+  ringcfg.policy = MixPolicy::Spatial;
+  ringcfg.spatial = base;
+  LookaheadRing ring(*doc, pull, ringcfg);
+
+  AudioWorkerPoolConfig poolcfg;
+  poolcfg.worker_count = worker_count;
+  AudioWorkerPool pool(poolcfg);
+
+  Transport transport{Time{start_block * span}};
+  std::atomic<DeviceMonitor*> monptr{nullptr};
+
+  LookaheadPumpConfig pumpcfg;
+  pumpcfg.horizon = Time{(horizon_blocks - 1) * span};
+  pumpcfg.resolve = resolve;
+  pumpcfg.sample_rate = working_rate;
+  pumpcfg.layout = ChannelLayout::Stereo;
+  pumpcfg.block_frames = block_frames;
+  pumpcfg.tick_period = std::chrono::hours(1);
+  pumpcfg.tick_source = [] { return std::uint64_t{0}; };
+  pumpcfg.playhead_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->playhead_snapshot() : Time::zero();
+  };
+  pumpcfg.direction_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->direction_snapshot() : 1;
+  };
+  LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+  FakeDeviceSink sink{DeviceFormat{working_rate, ChannelLayout::Stereo}};
+  DeviceMonitorConfig moncfg;
+  moncfg.working_rate = working_rate;
+  moncfg.working_layout = ChannelLayout::Stereo;
+  moncfg.block_frames = block_frames;
+  moncfg.master_period = std::chrono::hours(1);
+  // The camera cell the live source reads: only ever written by the test thread while
+  // the owner thread is parked (between `flush_master()` returns), so the plain access
+  // is race-free (the concurrent-mutation stress uses an atomic index instead).
+  Affine cam_cell = base.listener;
+  if (use_camera) {
+    moncfg.camera_source = [&cam_cell] { return cam_cell; };
+  }
+  DeviceMonitor monitor(transport, pump, sink, moncfg);
+  monptr.store(&monitor, std::memory_order_release);
+
+  pump.flush();
+  pump.flush();
+
+  SpatialDriveResult res;
+  for (const SpatialPhase& phase : phases) {
+    if (phase.camera.has_value()) {
+      cam_cell = *phase.camera;
+    }
+    if (use_camera) {
+      monitor.flush_master(); // owner samples the camera + (on a change) re-seeds
+      pump.flush();
+      pump.flush(); // re-warm the ring under the (possibly new) listener before draining
+    }
+    std::vector<float> out;
+    for (const std::uint32_t n : phase.chunks) {
+      const std::vector<float> got = sink.deliver(n);
+      out.insert(out.end(), got.begin(), got.end());
+    }
+    res.phases.push_back(std::move(out));
+  }
+  res.listener_reseeds = monitor.listener_reseeds();
+  res.drain_realigns = monitor.drain_realigns();
+  res.underruns = monitor.underruns();
+  pump.request_stop();
+  return res;
+}
+
+// A chain of `count` block-sized device deliveries (one output block each).
+std::vector<std::uint32_t> block_chunks(std::size_t count, std::uint32_t block_frames) {
+  return std::vector<std::uint32_t>(count, block_frames);
+}
+
+// The monitor's Spatial seed for a camera `cam`: listener + its uniform
+// scale-attenuation (`spatial_edge_atten`), the fixed viewport extent, and the default
+// sub-audible threshold -- exactly what `master_step` stages on a live re-seed, so a
+// static seed built this way is the byte-exact oracle for the live-bound run.
+Spatialization seed_for(const Affine& cam) {
+  return Spatialization{cam, 100.0, 100.0, spatial_edge_atten(cam), k_sub_audible_atten};
 }
 
 } // namespace
@@ -1347,4 +1473,244 @@ TEST_CASE("the device RT callback chain is nonblocking under an armed RtScope") 
     run(k_rate, 24'000, 48, /*do_seek=*/false, /*starve=*/false);
   }
   SECTION("starved underrun path") { run(k_rate, k_rate, 2, /*do_seek=*/false, /*starve=*/true); }
+}
+
+// The live camera drives the same Spatial mix a static seed goldens: the device drain
+// under a live-bound camera `C` is byte-identical to a static-seed run with
+// `spatial.listener = C` (audio.spatial_camera_follow, Constraint 6, D1/D2), and the
+// initial re-seed never re-seats the drain cursor (D3).
+// enforces: 12-audio#camera-follow-tracks-viewport-live
+TEST_CASE("camera follow: a live-bound camera drains byte-identical to a static seed") {
+  for (const std::size_t worker_count : {std::size_t{0}, std::size_t{4}}) {
+    SineLeaf a(300, 0.6F);
+    SineLeaf b(700, 0.4F);
+    Scene scene;
+    scene.add(&a);
+    scene.add(&b);
+    const DocStatePtr doc = scene.model.current();
+    const MixResolver resolve = scene.resolver();
+    const auto id_of = scene.id_of();
+
+    // A camera distinct from identity (half scale => 0.5 uniform attenuation).
+    const Affine cam = Affine::scaling(0.5, 0.5);
+
+    // Live: the ring is seeded Spatial with an IDENTITY listener; the live camera
+    // re-seeds it to `cam` on the first mastering step.
+    const SpatialDriveResult live =
+        drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, worker_count,
+                      /*horizon_blocks=*/8, seed_for(Affine::identity()), /*use_camera=*/true,
+                      /*start_block=*/0, {{cam, block_chunks(4, k_block_frames)}});
+    REQUIRE(live.listener_reseeds == 1); // the one initial seed from the camera
+    REQUIRE(live.drain_realigns == 0);   // a camera re-seed never re-seats the drain cursor
+    REQUIRE(live.underruns == 0);
+
+    // Static oracle: the ring is seeded Spatial with the SAME camera as its static
+    // listener and NO camera_source. The live-bound drain must equal it byte-for-byte.
+    const SpatialDriveResult stat =
+        drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, worker_count,
+                      /*horizon_blocks=*/8, seed_for(cam), /*use_camera=*/false,
+                      /*start_block=*/0, {{std::nullopt, block_chunks(4, k_block_frames)}});
+    REQUIRE(stat.listener_reseeds == 0);
+    REQUIRE(bytes_equal(live.phases.at(0), stat.phases.at(0)));
+
+    // Witness the camera actually bit the mix: the Spatial-bound drain is NOT the Flat
+    // working mix over the same blocks (matched rate => the drain is the mix verbatim).
+    const std::vector<float> flat =
+        working_stream(*doc, scene.comp, resolve, k_rate, k_block_frames, /*blocks=*/4);
+    REQUIRE_FALSE(bytes_equal(live.phases.at(0), flat));
+  }
+}
+
+// A mid-run camera change re-seeds the listener and drops the stale ring: the
+// post-change drain is byte-identical to a static run under the NEW camera (and differs
+// from one under the old), and the reprime is a camera reprime, not a seek realign
+// (audio.spatial_camera_follow, D3/D5).
+// enforces: 12-audio#camera-follow-tracks-viewport-live
+TEST_CASE("camera follow: a mid-run camera change re-seeds and drops the stale ring") {
+  for (const std::size_t worker_count : {std::size_t{0}, std::size_t{4}}) {
+    SineLeaf a(300, 0.6F);
+    SineLeaf b(700, 0.4F);
+    Scene scene;
+    scene.add(&a);
+    scene.add(&b);
+    const DocStatePtr doc = scene.model.current();
+    const MixResolver resolve = scene.resolver();
+    const auto id_of = scene.id_of();
+
+    const Affine c0 = Affine::scaling(0.5, 0.5);
+    const Affine c1 = Affine::scaling(0.25, 0.25);
+
+    // Live: camera C0 for the first 2 blocks, then C1 for the next 3.
+    const SpatialDriveResult live = drive_spatial(
+        doc, scene.comp, resolve, id_of, k_rate, k_block_frames, worker_count,
+        /*horizon_blocks=*/8, seed_for(Affine::identity()), /*use_camera=*/true,
+        /*start_block=*/0,
+        {{c0, block_chunks(2, k_block_frames)}, {c1, block_chunks(3, k_block_frames)}});
+    REQUIRE(live.listener_reseeds == 2); // initial C0 + the change to C1
+    REQUIRE(live.drain_realigns == 0);   // camera reprime, never a seek realign
+    REQUIRE(live.underruns == 0);
+
+    // Post-change output (blocks [2,5) under C1) equals a static-C1 run resuming at
+    // block 2, and differs from a static-C0 run there (the stale C0 ring was dropped).
+    const SpatialDriveResult stat_c1 =
+        drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, worker_count,
+                      /*horizon_blocks=*/8, seed_for(c1), /*use_camera=*/false, /*start_block=*/2,
+                      {{std::nullopt, block_chunks(3, k_block_frames)}});
+    const SpatialDriveResult stat_c0 =
+        drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, worker_count,
+                      /*horizon_blocks=*/8, seed_for(c0), /*use_camera=*/false, /*start_block=*/2,
+                      {{std::nullopt, block_chunks(3, k_block_frames)}});
+    REQUIRE(bytes_equal(live.phases.at(1), stat_c1.phases.at(0)));
+    REQUIRE_FALSE(bytes_equal(live.phases.at(1), stat_c0.phases.at(0)));
+
+    // Pre-change output (blocks [0,2) under C0) equals a static-C0 run from block 0.
+    const SpatialDriveResult stat_c0_pre =
+        drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, worker_count,
+                      /*horizon_blocks=*/8, seed_for(c0), /*use_camera=*/false, /*start_block=*/0,
+                      {{std::nullopt, block_chunks(2, k_block_frames)}});
+    REQUIRE(bytes_equal(live.phases.at(0), stat_c0_pre.phases.at(0)));
+  }
+}
+
+// A still camera costs nothing: no re-seed and no reprime after the initial seed, proven
+// by the behavioral counter, never a wall clock (audio.spatial_camera_follow, D4,
+// Constraint 4). A change adds exactly one re-seed; an absent source never re-seeds.
+// enforces: 12-audio#camera-follow-still-camera-costs-nothing
+TEST_CASE("camera follow counters: still camera re-seeds once, a change once more, none never") {
+  SineLeaf a(300, 0.6F);
+  Scene scene;
+  scene.add(&a);
+  const DocStatePtr doc = scene.model.current();
+  const MixResolver resolve = scene.resolver();
+  const auto id_of = scene.id_of();
+
+  const Affine cam = Affine::scaling(0.5, 0.5);
+
+  // Still camera over 5 mastering steps: one initial re-seed, none after, no realign.
+  std::vector<SpatialPhase> still;
+  still.push_back({cam, block_chunks(1, k_block_frames)});
+  for (int i = 0; i < 4; ++i) {
+    still.push_back({std::nullopt, block_chunks(1, k_block_frames)});
+  }
+  const SpatialDriveResult r_still =
+      drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, /*workers=*/0,
+                    /*horizon_blocks=*/8, seed_for(Affine::identity()), /*use_camera=*/true,
+                    /*start_block=*/0, still);
+  REQUIRE(r_still.listener_reseeds == 1); // only the initial seed
+  REQUIRE(r_still.drain_realigns == 0);   // no per-tick reprime for an unmoving camera
+  REQUIRE(r_still.underruns == 0);
+
+  // One change mid-run: exactly one additional re-seed, still no drain realign.
+  const SpatialDriveResult r_change =
+      drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, /*workers=*/0,
+                    /*horizon_blocks=*/8, seed_for(Affine::identity()), /*use_camera=*/true,
+                    /*start_block=*/0,
+                    {{cam, block_chunks(1, k_block_frames)},
+                     {std::nullopt, block_chunks(1, k_block_frames)},
+                     {Affine::scaling(0.25, 0.25), block_chunks(1, k_block_frames)},
+                     {std::nullopt, block_chunks(1, k_block_frames)}});
+  REQUIRE(r_change.listener_reseeds == 2); // initial + one change
+  REQUIRE(r_change.drain_realigns == 0);
+
+  // No camera_source: never re-seeds, even with a Spatial static seed.
+  const SpatialDriveResult r_none =
+      drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, /*workers=*/0,
+                    /*horizon_blocks=*/8, seed_for(cam), /*use_camera=*/false,
+                    /*start_block=*/0, {{std::nullopt, block_chunks(3, k_block_frames)}});
+  REQUIRE(r_none.listener_reseeds == 0);
+}
+
+// Concurrency (audio.spatial_camera_follow, Constraint 5/7): cycling the camera through
+// many distinct listeners on the owner thread while the pump fills and a background
+// drain runs races nothing on the staged `LookaheadRingConfig::spatial` (TSan) and the
+// RT drain issues no listener work (RealtimeSanitizer). The barrier is `flush_master()`,
+// never a wall clock; the cross-thread camera channel is an atomic index over an
+// immutable camera table.
+TEST_CASE("camera follow stress: cycling cameras concurrent with drain is race-free") {
+  SineLeaf a(300, 0.6F);
+  SineLeaf b(700, 0.4F);
+  Scene scene;
+  scene.add(&a);
+  scene.add(&b);
+  const DocStatePtr doc = scene.model.current();
+  const MixResolver resolve = scene.resolver();
+  const auto id_of = scene.id_of();
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  BlockCache blocks{64u * 1024 * 1024};
+  CachingPull pull(&blocks, id_of, doc->revision());
+
+  LookaheadRingConfig ringcfg;
+  ringcfg.composition = scene.comp;
+  ringcfg.resolve = resolve;
+  ringcfg.sample_rate = k_rate;
+  ringcfg.layout = ChannelLayout::Stereo;
+  ringcfg.block_frames = k_block_frames;
+  ringcfg.revision = doc->revision();
+  ringcfg.policy = MixPolicy::Spatial;
+  ringcfg.spatial = seed_for(Affine::identity());
+  LookaheadRing ring(*doc, pull, ringcfg);
+
+  AudioWorkerPoolConfig poolcfg;
+  poolcfg.worker_count = 4;
+  AudioWorkerPool pool(poolcfg);
+
+  Transport transport{Time::zero()};
+  std::atomic<DeviceMonitor*> monptr{nullptr};
+
+  LookaheadPumpConfig pumpcfg;
+  pumpcfg.horizon = Time{15 * span};
+  pumpcfg.resolve = resolve;
+  pumpcfg.sample_rate = k_rate;
+  pumpcfg.layout = ChannelLayout::Stereo;
+  pumpcfg.block_frames = k_block_frames;
+  pumpcfg.tick_period = std::chrono::hours(1);
+  pumpcfg.tick_source = [] { return std::uint64_t{0}; };
+  pumpcfg.playhead_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->playhead_snapshot() : Time::zero();
+  };
+  pumpcfg.direction_source = [&monptr] {
+    DeviceMonitor* m = monptr.load(std::memory_order_acquire);
+    return m != nullptr ? m->direction_snapshot() : 1;
+  };
+  LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+  // The only cross-thread camera channel: an atomic index over an immutable table.
+  const std::array<Affine, 4> cams{Affine::identity(), Affine::scaling(0.5, 0.5),
+                                   Affine::scaling(0.25, 0.25), Affine::translation(10.0, 0.0)};
+  std::atomic<int> idx{0};
+
+  FakeDeviceSink sink{DeviceFormat{k_rate, ChannelLayout::Stereo}};
+  DeviceMonitorConfig moncfg;
+  moncfg.working_rate = k_rate;
+  moncfg.working_layout = ChannelLayout::Stereo;
+  moncfg.block_frames = k_block_frames;
+  moncfg.master_period = std::chrono::hours(1);
+  moncfg.camera_source = [&cams, &idx] { return cams[idx.load(std::memory_order_acquire)]; };
+  DeviceMonitor monitor(transport, pump, sink, moncfg);
+  monptr.store(&monitor, std::memory_order_release);
+
+  pump.flush();
+  pump.flush();
+
+  // A background drain thread runs the RT consume concurrently with the camera re-seeds.
+  std::atomic<bool> stop{false};
+  std::thread drainer([&sink, &stop] {
+    while (!stop.load(std::memory_order_acquire)) {
+      (void)sink.deliver(k_block_frames);
+    }
+  });
+
+  for (int i = 1; i <= 64; ++i) {
+    idx.store(i % static_cast<int>(cams.size()), std::memory_order_release);
+    monitor.flush_master(); // owner samples the new camera + re-seeds; pump reprimes
+    pump.flush();
+  }
+
+  stop.store(true, std::memory_order_release);
+  drainer.join();
+  REQUIRE(monitor.listener_reseeds() >= 1); // at least the initial seed took effect
+  pump.request_stop();
 }

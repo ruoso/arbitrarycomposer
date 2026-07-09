@@ -3,6 +3,7 @@
 #include <arbc/base/rational_time.hpp>        // Rational
 #include <arbc/base/rt_safety.hpp>            // ARBC_RT_NONBLOCKING (RT callback annotations)
 #include <arbc/base/time.hpp>                 // Time
+#include <arbc/base/transform.hpp>            // Affine (live viewport camera sample)
 #include <arbc/media/audio_block.hpp>         // ChannelLayout
 #include <arbc/media/streaming_resampler.hpp> // StreamingResampler
 #include <arbc/runtime/device_sink.hpp>       // DeviceSink, DeviceFormat
@@ -13,6 +14,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -65,6 +67,16 @@ struct DeviceMonitorConfig {
   // `LookaheadPumpConfig::tick_period`). The mastering step is driven by the
   // delivered-frame counter, not by this timeout.
   std::chrono::steady_clock::duration master_period{std::chrono::milliseconds(2)};
+  // Live viewport-camera source for Spatial camera-follow (audio.spatial_camera_follow,
+  // doc 12 "Camera follow", Decision D1). When set AND the ring's static seed is
+  // Spatial, the owner thread samples this each mastering step and, on a change,
+  // re-seeds the mix listener + flushes/reprimes the ring (never re-seating the drain
+  // cursor — the playhead is unmoved). Returning an L0 `Affine` — not a `Viewport&` —
+  // mirrors the pump's `playhead_source`/`direction_source` injected-source idiom and
+  // keeps `DeviceMonitor` free of any dependency on the L4 compositor `Viewport`; the
+  // host closure (itself L5) closes over the live viewport. Empty => the static seed
+  // stands (no follow), so every existing device-path drain is byte-unchanged.
+  std::function<Affine()> camera_source{};
 };
 
 class DeviceMonitor {
@@ -118,6 +130,12 @@ public:
   // reprimed block window (audio.seek_drain_realign). Wall-clock-free.
   std::uint64_t drain_realigns() const noexcept {
     return d_drain_realigns.load(std::memory_order_acquire);
+  }
+  // Count of live-camera listener re-seeds (audio.spatial_camera_follow): the initial
+  // seed plus one per subsequent camera change; 0 for a Flat seed or an absent
+  // `camera_source`. A still camera never advances it (Constraint 4). Wall-clock-free.
+  std::uint64_t listener_reseeds() const noexcept {
+    return d_listener_reseeds.load(std::memory_order_acquire);
   }
 
 private:
@@ -181,6 +199,16 @@ private:
 
   // --- owner-thread-owned state -----------------------------------------------
   std::uint64_t d_last_delivered{0};
+  // Live-camera follow state (audio.spatial_camera_follow, D1/D2), owner-thread only.
+  // `d_spatial_base` is the ring's static Spatial seed captured ONCE at construction
+  // (nullopt in Flat mode => the follow is inert): a camera re-seed carries its
+  // `viewport_w/h` and `sub_audible`, swapping only `listener` and the derived
+  // `accum_atten`. `d_last_camera` is the last-applied camera; an exact
+  // `Affine`-coefficient compare against it gates the re-seed so a still camera costs
+  // nothing (D4).
+  std::optional<Spatialization> d_spatial_base;
+  std::optional<Affine> d_last_camera;
+  std::atomic<std::uint64_t> d_listener_reseeds{0};
 
   // owner-thread lifecycle (mirrors the pump / HousekeepingThread template)
   mutable std::mutex d_master_mutex;

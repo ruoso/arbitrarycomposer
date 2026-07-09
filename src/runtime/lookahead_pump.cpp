@@ -53,6 +53,16 @@ void LookaheadPump::notify_transport_change() noexcept {
   d_wake_cv.notify_one();
 }
 
+void LookaheadPump::set_spatial(std::optional<Spatialization> spatial) {
+  {
+    std::lock_guard<std::mutex> lock(d_mutex);
+    d_pending_spatial = std::move(spatial);
+    d_spatial_pending = true;
+    d_poke = true;
+  }
+  d_wake_cv.notify_one();
+}
+
 void LookaheadPump::notify_damage(TimeRange range) {
   {
     std::lock_guard<std::mutex> lock(d_mutex);
@@ -167,6 +177,17 @@ void LookaheadPump::tick_once() {
     direction = d_config.direction_source ? d_config.direction_source() : 1;
     transport_changed = d_transport_changed;
     d_transport_changed = false;
+    // Apply a staged live-camera listener re-seed before this tick's reprime
+    // (audio.spatial_camera_follow, Decision D5). Done under `d_mutex`, which
+    // serializes with the ring's `prime`/`reprime`/`drain`, so the seed swap and the
+    // ring-slot flush it triggers never race a fill. The master thread stages this
+    // before it calls `notify_transport_change`, so `transport_changed` is set on the
+    // same tick and the reprime below re-warms under the new listener.
+    if (d_spatial_pending) {
+      d_ring.set_spatial(std::move(d_pending_spatial));
+      d_pending_spatial.reset();
+      d_spatial_pending = false;
+    }
     damage.swap(d_pending_damage);
   }
 
