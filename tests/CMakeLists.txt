@@ -34,6 +34,17 @@ target_link_libraries(arbc_serialize_writer_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_serialize_writer_golden_t)
 
+# serialize.reader byte-exact load->save round-trip + version-0 baseline + unknown-
+# format-major rejection: loads the writer's golden string and re-serializes it
+# byte-for-byte (the reader is the exact inverse of the writer for core placement),
+# proves a load installs a version-0 baseline whose undo is a no-op, and rejects an
+# unknown format major with no document mutation. Cross-component (model + writer +
+# journal), so it links the umbrella `arbc`.
+add_executable(arbc_serialize_reader_roundtrip_t serialize_reader_roundtrip.t.cpp)
+target_link_libraries(arbc_serialize_reader_roundtrip_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_reader_roundtrip_t)
+
 # serialize.writer concurrency stress (tier-6, tsan lane): a serialize worker reads
 # a held pin while the single writer thread commits N transactions -- the pinned
 # read races the mutator with no data race (serialize.writer Constraint 1).

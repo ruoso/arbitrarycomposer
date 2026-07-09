@@ -19,8 +19,9 @@ task serialize "Serialization" {
   task reader "Reader + LoadContext" {
     effort 2d
     allocate team
+    complete 100
     depends !writer
-    note "Load to a fresh document at version 0; LoadContext supplies base-URI resolution and async asset loading; external .arbc references dedup by resolved identity. Doc 08."
+    note "Load to a fresh document at version 0; LoadContext supplies base-URI resolution and async asset loading; external .arbc references dedup by resolved identity. Doc 08. Refinement: tasks/refinements/serialize/reader.md"
   }
   task kind_params "Kind param hooks + unknown-kind round-trip" {
     effort 2d

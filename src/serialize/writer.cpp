@@ -1,5 +1,3 @@
-#include <arbc/serialize/writer.hpp>
-
 #include <arbc/base/rational_time.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
@@ -9,6 +7,7 @@
 #include <arbc/media/pixel_format.hpp> // to_string(PixelFormat)
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
+#include <arbc/serialize/writer.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -146,9 +145,9 @@ json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRec
                       Emitter& em) {
   json o = json::object();
   // canvas hint (doc 01): `[x, y, w, h]`, extents as integers.
-  o["canvas"] = json::array({std::int64_t{0}, std::int64_t{0},
-                             em.integer_extent(comp.canvas_w, comp_id),
-                             em.integer_extent(comp.canvas_h, comp_id)});
+  o["canvas"] =
+      json::array({std::int64_t{0}, std::int64_t{0}, em.integer_extent(comp.canvas_w, comp_id),
+                   em.integer_extent(comp.canvas_h, comp_id)});
   if (!(comp.working_space == k_working_rgba32f)) {
     o["working_space"] = working_space_json(comp.working_space);
   }

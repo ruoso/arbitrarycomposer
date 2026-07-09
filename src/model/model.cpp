@@ -545,6 +545,33 @@ std::size_t Model::live_slots() const noexcept { return d_arena.total_slots_live
 
 Model::Transaction Model::transact(std::string name) { return Transaction(*this, std::move(name)); }
 
+expected<std::monostate, PoolError>
+Model::load_baseline(const std::function<void(Transaction&)>& build) {
+  // Reuse the transaction machinery to reconstruct the graph (add_composition /
+  // add_layer / attach_layer / set_*), then publish its root as the version-0
+  // baseline WITHOUT journaling it (serialize.reader Decision 3): a load is a
+  // fresh document at version 0, not an undoable edit (doc 14:263-264, 40-43).
+  Transaction txn(*this, "load");
+  build(txn);
+  if (!txn.d_status) {
+    return txn.d_status; // a reconstruction step exhausted the arena: publish nothing
+  }
+  txn.d_open = false; // consume the transaction: its teardown drops nothing extra
+
+  // Publish: revision stays 0 and the CommitSink is deliberately untouched (no
+  // journal entry), so the loaded graph is the baseline -- undo has nothing to
+  // move to (doc 14:40-43). Exactly one atomic store, mirroring commit()/navigate().
+  d_current.store(std::make_shared<const DocRoot>(d_bundle, std::move(txn.d_root), 0));
+
+  // Flush the reconstruction's damage once (whole-document), mirroring commit, so
+  // any subscribed output invalidates against the freshly-loaded content; a fresh
+  // load with no sink installed simply discards it.
+  if (d_damage_sink != nullptr) {
+    d_damage_sink->flush(txn.d_damage);
+  }
+  return std::monostate{};
+}
+
 // ---- Transaction ------------------------------------------------------------
 
 Model::Transaction::Transaction(Model& model, std::string name)

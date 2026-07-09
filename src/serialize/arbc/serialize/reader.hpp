@@ -1,0 +1,59 @@
+#pragma once
+
+#include <arbc/base/expected.hpp>
+#include <arbc/base/ids.hpp>
+#include <arbc/contract/registry.hpp>
+#include <arbc/model/model.hpp>
+#include <arbc/serialize/load_context.hpp>
+
+#include <string>
+#include <string_view>
+#include <variant>
+
+namespace arbc {
+
+// The reader's error value (doc 08 Principle 5; doc 10 errors-as-values,
+// 10:15-17), the read-side twin of `SerializeError`. Every failure -- malformed
+// JSON, an unknown format major, a missing or mistyped required field, an
+// unresolvable reference -- surfaces here as a value; no nlohmann exception ever
+// crosses this boundary, on well-formed or hostile input alike (the precondition
+// serialize.format_tests' loader fuzzing relies on).
+struct ReaderError {
+  enum class Kind {
+    MalformedJson,         // the input was not parseable JSON
+    UnknownFormatMajor,    // arbc.format is a major this reader does not know
+    MissingRequiredField,  // a structurally required key was absent
+    MalformedField,        // a present key had the wrong JSON type / shape
+    UnresolvableReference, // a reference did not resolve (serialize.sharing / kinds.nested)
+  };
+  Kind kind{Kind::MalformedJson};
+  std::string path;  // the JSON pointer to the offending node, for diagnostics
+  ObjectId object{}; // the offending object, when known
+
+  friend bool operator==(const ReaderError&, const ReaderError&) = default;
+};
+
+// Load one canonical `.arbc` JSON document into a fresh model as its version-0
+// baseline -- the exact inverse of `serialize_document` for the envelope
+// (`{"arbc":{"format":1}}`), the `composition` object
+// (`working_space`/`canvas`/`working_audio_format`), and the bottom-to-top
+// `layers` array with their core-owned placement, supplying each field's
+// still/identity default where the writer omitted the key (doc 08:21-55). Parses
+// with the non-throwing nlohmann overload, validates the `arbc.format` major
+// (rejecting unknown majors with NO document mutation, Principle 4), and installs
+// the reconstructed graph via `Model::load_baseline` at `revision 0` with an
+// empty journal (doc 14:263-264).
+//
+// `registry` and `ctx` are the seams the content half of the read path
+// (serialize.kind_params / .sharing) threads through -- the registry factory for
+// `kind`/`params` -> Content, and the `LoadContext` for base-URI resolution +
+// async asset loading + resolved-identity dedup. The canonical writer emits no
+// content body, `inputs`, or `$ref` table today, so this v1 reader reconstructs
+// only core placement and does not yet consult them (serialize.reader Decision 5).
+//
+// Returns success, or a `ReaderError` value; on any error the target `Model` is
+// left unmutated (still `revision() == 0`, empty).
+expected<std::monostate, ReaderError> load_document(std::string_view json, const Registry& registry,
+                                                    LoadContext& ctx, Model& into);
+
+} // namespace arbc

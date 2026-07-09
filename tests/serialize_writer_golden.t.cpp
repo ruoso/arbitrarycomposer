@@ -22,7 +22,7 @@ namespace {
 // The layer ids the golden document is built from.
 struct BuiltDoc {
   arbc::ObjectId composition;
-  arbc::ObjectId still_layer; // bottom: default still -- omit-when-default twins
+  arbc::ObjectId still_layer;  // bottom: default still -- omit-when-default twins
   arbc::ObjectId placed_layer; // top: every core-owned placement key non-default
 };
 
@@ -107,7 +107,8 @@ const char* const k_golden = R"json({
 )json";
 
 // enforces: 08-serialization#canonical-output-is-byte-stable
-TEST_CASE("serialize_document emits the byte-exact canonical golden and is re-serialization-stable") {
+TEST_CASE(
+    "serialize_document emits the byte-exact canonical golden and is re-serialization-stable") {
   arbc::Model model;
   build_golden(model);
   const auto pin = model.current();

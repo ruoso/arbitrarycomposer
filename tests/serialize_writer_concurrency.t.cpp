@@ -23,7 +23,8 @@ arbc::ObjectId build_scene(arbc::Model& model, arbc::ObjectId& out_layer) {
   auto txn = model.transact("scene");
   const arbc::ObjectId comp = txn.add_composition(640.0, 480.0);
   const arbc::ObjectId content = txn.add_content(1);
-  const arbc::ObjectId layer = txn.add_layer(content, arbc::Affine{1.5, 0.0, 0.0, 1.5, 4.0, 8.0}, 0.75);
+  const arbc::ObjectId layer =
+      txn.add_layer(content, arbc::Affine{1.5, 0.0, 0.0, 1.5, 4.0, 8.0}, 0.75);
   txn.attach_layer(comp, layer);
   REQUIRE(txn.commit());
   out_layer = layer;

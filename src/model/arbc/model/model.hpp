@@ -400,6 +400,23 @@ public:
 
   Transaction transact(std::string name = {});
 
+  // Install a caller-reconstructed graph as the document's version-0 baseline
+  // with an EMPTY journal -- the serialization load seam (doc 08; doc 14:263-264,
+  // "load constructs a fresh document at version 0"). `build` populates a fresh
+  // transaction with the reconstructed composition + layers (add_composition /
+  // add_layer / attach_layer / set_*); `load_baseline` then publishes the built
+  // root at `revision 0` WITHOUT notifying the `CommitSink`, so no journal entry
+  // is recorded and an undo immediately after load is a no-op that never reverts
+  // the freshly-loaded document to empty (doc 14:40-43 -- a clean baseline
+  // install, not a journal truncation; serialize.reader Decision 3, following the
+  // writer's precedent of adding find_first_composition / set_visible from a
+  // serialize task). The `DamageSink`, if installed, is flushed once so a
+  // subscribed output repaints the loaded document. Precondition: a freshly
+  // constructed `Model` (revision 0, empty). Returns the sticky writer-path
+  // status; an allocation failure leaves the current (empty) version in place,
+  // nothing observed. WRITER-THREAD ONLY.
+  expected<std::monostate, PoolError> load_baseline(const std::function<void(Transaction&)>& build);
+
 private:
   friend class Transaction;
 
