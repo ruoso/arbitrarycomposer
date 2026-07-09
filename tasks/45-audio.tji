@@ -103,8 +103,9 @@ task audio "Audio" {
   task spatial_blockkey_disambiguation "Disambiguate spatial-agnostic BlockKey for multi-context Spatial scenes" {
     effort 2d
     allocate team
+    complete 100
     depends !spatial_nested_warm_context
-    note "Add a spatial-context digest to BlockKey so two distinct spatial contexts over the same (content, revision, block_index, rate) do not collide on one cache slot. Reproduce: a Spatial scene embedding one nested composition twice at different spatial positions but the same time map, or two monitors of differing policy/listener sharing one BlockCache. Fix: add spatial digest to BlockKey (key_shapes.hpp:83-90), thread through contribution_key (lookahead.cpp:276-286) and pull_service.cpp:301, update hash (key_shapes.hpp:163-171). Design-doc delta: amend doc 12:249-254 key definition to add spatial digest. Golden: two-embedding Spatial scene drains threaded==inline byte-identically. Source: tasks/refinements/audio/spatial_nested_warm_context.md. Doc 12."
+    note "Add a spatial-context digest to BlockKey so two distinct spatial contexts over the same (content, revision, block_index, rate) do not collide on one cache slot. Reproduce: a Spatial scene embedding one nested composition twice at different spatial positions but the same time map, or two monitors of differing policy/listener sharing one BlockCache. Fix: add spatial digest to BlockKey (key_shapes.hpp:83-90), thread through contribution_key (lookahead.cpp:276-286) and pull_service.cpp:301, update hash (key_shapes.hpp:163-171). Design-doc delta: amend doc 12:249-254 key definition to add spatial digest. Golden: two-embedding Spatial scene drains threaded==inline byte-identically. Source: tasks/refinements/audio/spatial_nested_warm_context.md. Doc 12. Refinement: tasks/refinements/audio/spatial_blockkey_disambiguation.md"
   }
   task spatial_camera_follow "Live viewport camera binding for device-path spatialization" {
     effort 1d

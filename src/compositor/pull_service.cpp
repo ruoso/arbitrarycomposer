@@ -298,7 +298,14 @@ void PullServiceImpl::pull_audio(ContentRef input, const AudioRequest& request,
                  },
                  d_config.budget)
            : (d_config.contribution ? d_config.contribution(input) : std::uint64_t{0});
-    const BlockKey key{id, revision, audio_block_index(request), request.sample_rate};
+    // Fold the request's Spatial-context digest (doc 12:249-254,
+    // spatial_blockkey_disambiguation D1/D4): this read-side pull key must equal the
+    // write-side warm key `contribution_key` built from the same per-edge
+    // `Spatialization`, so residency holds; two distinct contexts over the same
+    // `(content, revision, block index, rate)` probe distinct slots. Flat digests to 0,
+    // leaving the key byte-identical to the pre-task one (Constraint 1).
+    const BlockKey key{id, revision, audio_block_index(request), request.sample_rate,
+                       spatial_context_digest(request.spatial)};
 
     if (std::optional<CacheHold<AudioBlockValue>> hit = d_config.blocks->lookup(key);
         hit.has_value() && hit->get().meta.exact &&

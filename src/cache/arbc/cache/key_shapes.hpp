@@ -75,16 +75,29 @@ struct TileKey {
   friend bool operator==(const TileKey&, const TileKey&) = default;
 };
 
-// The 1D audio block cache key (doc 12:169-170):
-// `(content, revision, block index, rate)` -- "the block cache is the tile
-// cache with 1D keys". `rate` is the audio working `sample_rate`
+// The 1D audio block cache key (doc 12:249-254):
+// `(content, revision, block index, rate, spatial-context digest)` -- "the block
+// cache is the tile cache with 1D keys". `rate` is the audio working `sample_rate`
 // (`std::uint32_t`). Channel layout is deliberately **not** a key field (doc
 // 12: it is per-composition working format, not a key discriminator).
+//
+// `spatial_digest` is an **opaque** 64-bit scalar disambiguating a block whose
+// `render_audio` output depends on the spatial context under which it renders (a
+// nested composition mixed under two distinct listeners -- doc 12:249-254,
+// spatial_blockkey_disambiguation). It is `0` exactly when the request is Flat, so a
+// Flat/leaf-host scene keys byte-identically to the pre-digest key. Like `revision`
+// and the tile-key rung/coords, the cache never interprets it: the L4 mix/lookahead
+// engine (which holds the `Spatialization`) reduces it via
+// `contract::spatial_context_digest` and hands it down -- the `cache`->`contract`
+// levelization edge (doc 17:40-44) is never crossed, exactly as `TileMeta` mirrors
+// rather than reuses contract's fields. Trailing and defaulted (`{0}`) so every
+// existing `BlockKey{...}` aggregate initializer stays valid.
 struct BlockKey {
   ObjectId content;
   std::uint64_t revision{0};
   std::int64_t block_index{0};
   std::uint32_t rate{0};
+  std::uint64_t spatial_digest{0};
 
   friend bool operator==(const BlockKey&, const BlockKey&) = default;
 };
@@ -166,6 +179,10 @@ template <> struct std::hash<arbc::BlockKey> {
     h = arbc::detail::key_hash_combine(h, std::hash<std::uint64_t>{}(key.revision));
     h = arbc::detail::key_hash_combine(h, std::hash<std::int64_t>{}(key.block_index));
     h = arbc::detail::key_hash_combine(h, std::hash<std::uint32_t>{}(key.rate));
+    // The opaque spatial-context digest (doc 12:249-254). Folded uniformly (Flat's
+    // `0` included) so that equal keys hash equal and a digest-only difference
+    // disperses to a different bucket; the raw hash value is not itself goldened.
+    h = arbc::detail::key_hash_combine(h, std::hash<std::uint64_t>{}(key.spatial_digest));
     return h;
   }
 };

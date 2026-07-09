@@ -11,6 +11,7 @@
 #include <arbc/surface/surface_ref.hpp> // SurfaceRef (content-provided surface, doc 09)
 
 #include <atomic>
+#include <bit> // std::bit_cast (the byte-exact spatial-context digest, doc 12:249-254)
 #include <chrono>
 #include <cmath> // std::sqrt (the byte-exact constant-power pan law, doc 12:191-199)
 #include <cstddef>
@@ -301,6 +302,55 @@ inline SpatialPanGains spatial_pan_gains(const Affine& composed, double viewport
   }
   const double t = (p + 1.0) / 2.0;
   return SpatialPanGains{static_cast<float>(std::sqrt(1.0 - t)), static_cast<float>(std::sqrt(t))};
+}
+
+// Reduce a Spatialization to a stable 64-bit block-cache-key digest
+// (doc 12:249-254, spatial_blockkey_disambiguation Decisions D1-D3). A nested
+// composition's `render_audio` output *depends on* the spatial context (the
+// listener drives pan/edge-attenuation of its children; `accum_atten`/`sub_audible`
+// drive the sub-audible cull, which *changes content*), so two distinct contexts
+// over the same `(content, revision, block index, rate)` must key to distinct cache
+// slots. The digest folds the EXACT bit patterns of every field of the whole struct
+// -- the six `Affine` listener coefficients, both viewport extents, and the two
+// float scalars -- an over-key (D2): two distinct contexts never share a slot, at
+// the accepted cost that two contexts which happen to render identically get two
+// slots (doc 12:252 "caching matters less"). It is byte-exact and platform-stable
+// (`std::bit_cast`, no float tolerance, no formatting) so goldens are stable
+// (doc 16, Constraint 5), and it is a pure function -- the cache stays spatially
+// agnostic, carrying the result as an opaque scalar (doc 17 levelization, D1). A
+// 64-bit digest matches the project's key-hash discipline; a ~2^-64 collision
+// degrades to exactly the pre-fix single-slot case, never a crash (D3).
+inline std::uint64_t spatial_context_digest(const Spatialization& sp) {
+  // The project's Boost-style 64-bit mixer (mirroring `cache::detail::key_hash_combine`
+  // -- replicated here because `contract` may not depend on the same-level `cache`,
+  // doc 17:40-44), run over `std::bit_cast` field bit patterns for good dispersion.
+  auto mix = [](std::uint64_t seed, std::uint64_t value) noexcept -> std::uint64_t {
+    return seed ^ (value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
+  };
+  std::uint64_t h =
+      0x100000001b3ULL; // nonzero seed: an all-zero-field context still digests nonzero
+  h = mix(h, std::bit_cast<std::uint64_t>(sp.listener.a));
+  h = mix(h, std::bit_cast<std::uint64_t>(sp.listener.b));
+  h = mix(h, std::bit_cast<std::uint64_t>(sp.listener.c));
+  h = mix(h, std::bit_cast<std::uint64_t>(sp.listener.d));
+  h = mix(h, std::bit_cast<std::uint64_t>(sp.listener.tx));
+  h = mix(h, std::bit_cast<std::uint64_t>(sp.listener.ty));
+  h = mix(h, std::bit_cast<std::uint64_t>(sp.viewport_w));
+  h = mix(h, std::bit_cast<std::uint64_t>(sp.viewport_h));
+  h = mix(h, static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(sp.accum_atten)));
+  h = mix(h, static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(sp.sub_audible)));
+  // Guarantee the "zero exactly when Flat" invariant is exact: a present context that
+  // happens to mix to zero (a ~2^-64 event) is nudged to a fixed nonzero sentinel so it
+  // never aliases the Flat digest (0). Deterministic, so goldens stay stable.
+  return h != 0 ? h : 0x9e3779b97f4a7c15ULL;
+}
+
+// The zero-when-Flat carrier: the digest of the optional Spatial context a `BlockKey`
+// is built under -- `0` exactly when absent (Flat), so a Flat/leaf-host scene keys
+// byte-identically to the pre-digest key (Constraint 1). The single shared call every
+// L4 `BlockKey`-build site folds in (spatial_blockkey_disambiguation D4).
+inline std::uint64_t spatial_context_digest(const std::optional<Spatialization>& sp) {
+  return sp.has_value() ? spatial_context_digest(*sp) : std::uint64_t{0};
 }
 
 // What the mix engine wants rendered (doc 12:49-56): the 1D-signal twin of

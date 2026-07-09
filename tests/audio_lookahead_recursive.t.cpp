@@ -136,8 +136,11 @@ public:
   void pull_audio(ContentRef input, const AudioRequest& request,
                   std::shared_ptr<AudioCompletion> done) override {
     if (d_blocks != nullptr) {
+      // Mirror the real PullServiceImpl::pull_audio read key (pull_service.cpp:301): fold the
+      // request's Spatial-context digest so this read key equals the write-side warm key
+      // `contribution_key` builds under the same per-edge context (Flat digests to 0, a no-op).
       const BlockKey key{d_id_of ? d_id_of(input) : ObjectId{}, d_revision, block_index_of(request),
-                         request.sample_rate};
+                         request.sample_rate, spatial_context_digest(request.spatial)};
       if (std::optional<CacheHold<AudioBlockValue>> hit = d_blocks->lookup(key);
           hit.has_value() && hit->get().meta.exact &&
           hit->get().meta.achieved_rate == request.sample_rate &&

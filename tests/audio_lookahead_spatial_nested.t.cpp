@@ -73,8 +73,11 @@ public:
   void pull_audio(ContentRef input, const AudioRequest& request,
                   std::shared_ptr<AudioCompletion> done) override {
     if (d_blocks != nullptr) {
+      // Mirror the real PullServiceImpl::pull_audio read key (pull_service.cpp:301): fold the
+      // request's Spatial-context digest so this read key equals the write-side warm key
+      // `contribution_key` builds under the same per-edge context (Flat digests to 0, a no-op).
       const BlockKey key{d_id_of ? d_id_of(input) : ObjectId{}, d_revision, block_index_of(request),
-                         request.sample_rate};
+                         request.sample_rate, spatial_context_digest(request.spatial)};
       if (std::optional<CacheHold<AudioBlockValue>> hit = d_blocks->lookup(key);
           hit.has_value() && hit->get().meta.exact &&
           hit->get().meta.achieved_rate == request.sample_rate &&
@@ -134,9 +137,9 @@ constexpr double k_view = 100.0;
 // `accum_atten` exactly as `LookaheadRing::mix_block` does. Byte-identical to the ring's
 // worker_count==0 drain by construction; the threaded (worker_count>0) drain must match
 // it too once the warm context equals the pull context (the fix under test).
-std::vector<float> spatial_direct_mix(const DocRoot& doc, ObjectId root,
-                                      const MixResolver& resolve, PullService& pull,
-                                      std::int64_t index, const Spatialization& seed) {
+std::vector<float> spatial_direct_mix(const DocRoot& doc, ObjectId root, const MixResolver& resolve,
+                                      PullService& pull, std::int64_t index,
+                                      const Spatialization& seed) {
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
   const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
   const std::int64_t t0 = index * span;

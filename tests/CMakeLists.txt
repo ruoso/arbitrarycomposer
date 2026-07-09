@@ -149,6 +149,19 @@ target_link_libraries(arbc_audio_lookahead_spatial_nested_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_audio_lookahead_spatial_nested_t)
 
+# Spatial block-cache-key disambiguation (audio.spatial_blockkey_disambiguation): a Spatial
+# monitor embedding ONE nested composition TWICE at different positions but the same time map
+# lands two distinct listener contexts on the same (content, revision, block index, rate);
+# the trailing spatial-context digest keys them to distinct cache slots, so the shared-cache
+# drain is byte-identical to a fresh per-embedding mix_composition oracle for worker_count
+# 0 and 4 (pre-digest one embedding's block was served for both). Pins the two-monitor
+# variant and the spatial_context_digest / BlockKey field-fold unit checks.
+add_executable(arbc_audio_blockkey_spatial_disambiguation_t
+               audio_blockkey_spatial_disambiguation.t.cpp)
+target_link_libraries(arbc_audio_blockkey_spatial_disambiguation_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_audio_blockkey_spatial_disambiguation_t)
+
 # org.arbc.nested two-level caching behavioral counters: a static subtree is
 # served from the parent cache; only the spine re-renders (requests_issued).
 add_executable(arbc_nested_cache_t nested_cache.t.cpp)

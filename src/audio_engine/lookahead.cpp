@@ -118,7 +118,11 @@ std::vector<std::int64_t> LookaheadRing::horizon_blocks(Time playhead, Time hori
   // Enumerate the upcoming output blocks with the shared temporal prefetch ring in
   // the sign of the playback direction (Constraint 4): one bucket == one output
   // block, the horizon bounds it to `horizon / block_span` blocks.
-  const BlockKey anchor{ObjectId{}, 0, base, d_config.sample_rate};
+  // The root/anchor slot folds the monitor's own listener digest (D4): two monitors
+  // of differing listener sharing one BlockCache must not collide on the root output
+  // slot. Flat digests to 0, so this anchor is byte-identical to the pre-task one.
+  const BlockKey anchor{ObjectId{}, 0, base, d_config.sample_rate,
+                        spatial_context_digest(d_config.spatial)};
   const Time step{d_block_span_flicks};
   const std::vector<BlockKey> ring =
       cache::temporal_prefetch_ring(anchor, direction, step, horizon);
@@ -308,7 +312,12 @@ BlockKey LookaheadRing::contribution_key(const Contribution& c) const {
   // the mix pass probes.
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(c.rate);
   const std::int64_t block_index = fpf != 0 ? c.window_start.flicks / fpf : 0;
-  return BlockKey{c.content, d_config.revision, block_index, c.rate};
+  // Fold the per-edge Spatial context digest (D1/D4): this write-side warm key must
+  // equal the read-side pull key `pull_service.cpp:301` builds from `request.spatial`
+  // for the same edge, preserved because `spatial_nested_warm_context` made the two
+  // `Spatialization` structs bit-identical (Constraint 2). Flat digests to 0.
+  return BlockKey{c.content, d_config.revision, block_index, c.rate,
+                  spatial_context_digest(c.spatial)};
 }
 
 PrefetchWant LookaheadRing::make_want(const Contribution& c) const {
@@ -339,7 +348,11 @@ LookaheadRing::native_rerequest_want(const Contribution& c, std::uint32_t achiev
   const std::uint32_t native_frames =
       static_cast<std::uint32_t>(static_cast<std::uint64_t>(c.frames) * achieved_rate / c.rate + 1);
   const std::int64_t block_index = fpf_native != 0 ? c.window_start.flicks / fpf_native : 0;
-  const BlockKey key{c.content, d_config.revision, block_index, achieved_rate};
+  // Same per-edge context as the discovery pull (D4): the below-rate native re-request
+  // is a distinct `BlockKey` (native `rate`) but the SAME spatial context, so a
+  // below-rate Spatial contributor does not collide on its native slot either.
+  const BlockKey key{c.content, d_config.revision, block_index, achieved_rate,
+                     spatial_context_digest(c.spatial)};
   return PrefetchWant{
       key,
       c.content,

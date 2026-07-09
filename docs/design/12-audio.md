@@ -247,11 +247,30 @@ pre-change working carry is dropped — so post-seek/-rate device output is
 byte-exact from the first delivered frame.
 
 **Prefetch and caching.** The block cache is the tile cache with 1D keys —
-`(content id, revision, block index, rate)` — with the temporal prefetch
-ring (doc 11) as its primary fill driver; playback hints serve decoders
-identically for audio and video (often the same decoder). Caching matters
-less than for pixels (audio is cheap to re-render) except for
-decode-behind-seek, which the hints and lookahead already cover.
+`(content id, revision, block index, rate, spatial-context digest)` — with
+the temporal prefetch ring (doc 11) as its primary fill driver; playback
+hints serve decoders identically for audio and video (often the same
+decoder). The **spatial-context digest** is a 64-bit digest of the
+`Spatialization` under which the block is rendered (the listener transform,
+viewport extent, accumulated attenuation, and sub-audible threshold of the
+v1 Spatial model above), and is **zero exactly when the request is Flat**
+(no spatial context) — so a Flat or ambient-host scene keys byte-identically
+to a pre-digest key. It disambiguates a block whose `render_audio` output
+*depends on* the spatial context: a nested composition mixed under two
+distinct listeners — two embeddings at different positions but the same time
+map, or two monitors of differing listener/policy sharing one cache — would
+otherwise collide on one slot, and one context's rendered block would be
+served for the other, diverging from a fresh render. A leaf's samples are
+spatially invariant (the parent applies pan/attenuation), so its digest is a
+pure *over-key* — two byte-identical blocks under two contexts — which is
+harmless because caching matters less than for pixels (audio is cheap to
+re-render) except for decode-behind-seek, which the hints and lookahead
+already cover. The digest is computed by the mix/lookahead engine (which
+holds the `Spatialization`); the cache stays spatially agnostic, carrying
+the digest as an opaque scalar key field, so the block-cache write-side warm
+key and the read-side pull key remain byte-identical (the residency
+invariant of the Recursion section) and the `cache`→`contract` levelization
+edge (doc 17) is never crossed.
 
 **Damage.** Audio damage is a time range in local time ("samples after t
 changed"); it invalidates cached blocks and — if within the lookahead

@@ -163,8 +163,11 @@ public:
   void pull_audio(ContentRef input, const AudioRequest& request,
                   std::shared_ptr<AudioCompletion> done) override {
     if (d_blocks != nullptr) {
+      // Mirror the real PullServiceImpl::pull_audio read key (pull_service.cpp:301): fold the
+      // request's Spatial-context digest so this read key equals the write-side warm key
+      // `contribution_key` builds under the same per-edge context (Flat digests to 0, a no-op).
       const BlockKey key{d_id_of ? d_id_of(input) : ObjectId{}, d_revision, block_index_of(request),
-                         request.sample_rate};
+                         request.sample_rate, spatial_context_digest(request.spatial)};
       if (std::optional<CacheHold<AudioBlockValue>> hit = d_blocks->lookup(key);
           hit.has_value() && hit->get().meta.exact &&
           hit->get().meta.achieved_rate == request.sample_rate &&
@@ -784,6 +787,126 @@ TEST_CASE("TSan: threaded Spatial nested fill drains the inline Spatial oracle, 
   // The concurrently-filled Spatial ring drains byte-identical to the inline Spatial
   // oracle: each nested contributor block was warmed under the per-edge context the
   // mixer pulls it with, so the threaded fill never substituted a Flat-warmed block.
+  for (std::int64_t i = 0; i < k_blocks; ++i) {
+    std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+    AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+    AudioResult meta{};
+    REQUIRE(pump.drain(i, out, meta));
+    REQUIRE(bytes_equal(got, spatial_direct_mix(*doc, c_root, resolver, i, seed)));
+  }
+}
+
+// enforces: 12-audio#block-key-disambiguates-spatial-context
+TEST_CASE("TSan: two spatial embeddings over one shared cache settle once and drain per-context") {
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(k_rate);
+  const std::int64_t span = static_cast<std::int64_t>(k_block_frames) * fpf;
+
+  // ONE nested composition embedded TWICE at different positions but the same time map: two
+  // distinct listener contexts over the same (content, revision, block index, rate). The
+  // spatial-context digest keys them to distinct slots; this exercises the concurrent
+  // fill+drain of BOTH slots over one shared BlockCache (no data race, settle-once).
+  const Spatialization seed{Affine::identity(), k_view, k_view, 1.0F, k_sub_audible_atten};
+  ToneContent child(770, 0.5F);
+
+  Model model;
+  std::unordered_map<ObjectId, Content*> binding;
+  std::unordered_map<const Content*, ObjectId> ids;
+  ObjectId c_inner{};
+  ObjectId c_root{};
+  ObjectId c_nest{};
+  {
+    auto tx = model.transact("spatial two-embedding scene");
+    c_inner = tx.add_composition(0.0, 0.0);
+    const ObjectId c_child = tx.add_content(1);
+    tx.attach_layer(c_inner, tx.add_layer(c_child, Affine::translation(k_view / 4.0, 0.0)));
+    c_nest = tx.add_content(1);
+    c_root = tx.add_composition(0.0, 0.0);
+    // The same nested content, two positions, one time map.
+    tx.attach_layer(c_root, tx.add_layer(c_nest, Affine::translation(k_view / 4.0, 0.0)));
+    tx.attach_layer(c_root, tx.add_layer(c_nest, Affine::translation(k_view / 2.0, 0.0)));
+    tx.commit();
+    binding[c_child] = &child;
+    ids[&child] = c_child;
+  }
+  const DocStatePtr doc = model.current();
+
+  auto resolver = [&binding](ObjectId id) -> Content* {
+    const auto it = binding.find(id);
+    return it != binding.end() ? it->second : nullptr;
+  };
+  auto id_of = [&ids](const Content* c) {
+    const auto it = ids.find(c);
+    return it != ids.end() ? it->second : ObjectId{};
+  };
+
+  BlockCache blocks{64u * 1024 * 1024};
+  CachingPull pull(&blocks, id_of, doc->revision());
+
+  CpuBackend backend;
+  NestedContent nested(c_inner);
+  nested.attach(pull, backend, resolver, *doc);
+  binding[c_nest] = &nested;
+  ids[&nested] = c_nest;
+
+  LookaheadRingConfig ringcfg;
+  ringcfg.composition = c_root;
+  ringcfg.resolve = resolver;
+  ringcfg.sample_rate = k_rate;
+  ringcfg.layout = ChannelLayout::Stereo;
+  ringcfg.block_frames = k_block_frames;
+  ringcfg.revision = doc->revision();
+  ringcfg.policy = MixPolicy::Spatial;
+  ringcfg.spatial = seed;
+  ringcfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
+    return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
+  };
+  LookaheadRing ring(*doc, pull, ringcfg);
+
+  AudioWorkerPoolConfig poolcfg;
+  poolcfg.worker_count = 8;
+  poolcfg.serialize_predicate = [&nested](const Content* c) { return c == &nested; };
+  AudioWorkerPool pool(poolcfg);
+
+  std::atomic<std::uint64_t> fake_tick{0};
+  LookaheadPumpConfig pumpcfg;
+  pumpcfg.horizon = Time{(k_blocks - 1) * span};
+  pumpcfg.resolve = resolver;
+  pumpcfg.sample_rate = k_rate;
+  pumpcfg.layout = ChannelLayout::Stereo;
+  pumpcfg.block_frames = k_block_frames;
+  pumpcfg.tick_period = std::chrono::hours(1);
+  pumpcfg.tick_source = [&fake_tick] { return fake_tick.fetch_add(1, std::memory_order_relaxed); };
+  pumpcfg.playhead_source = [] { return Time::zero(); };
+  LookaheadPump pump(ring, blocks, pool, pumpcfg);
+
+  std::atomic<bool> stop{false};
+  std::thread consumer([&] {
+    while (!stop.load(std::memory_order_acquire)) {
+      for (std::int64_t i = 0; i < k_blocks; ++i) {
+        std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
+        AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
+        AudioResult meta{};
+        (void)pump.drain(i, out, meta);
+      }
+      std::this_thread::yield();
+    }
+  });
+
+  for (int t = 0; t < 5; ++t) {
+    pump.flush();
+  }
+
+  stop.store(true, std::memory_order_release);
+  consumer.join();
+  pump.request_stop();
+
+  REQUIRE(pool.tasks_completed() == pool.tasks_submitted());
+  REQUIRE(pool.tasks_completed() > 0);
+  REQUIRE(ring.silence_mixed() == 0);
+
+  // Each AudioCompletion settled once and the two digest-distinct slots filled with no data
+  // race; the concurrently-filled ring drains byte-identical to the fresh per-embedding
+  // oracle (both embeddings rendered under their own context, not one shared block).
   for (std::int64_t i = 0; i < k_blocks; ++i) {
     std::vector<float> got(static_cast<std::size_t>(k_block_frames) * 2, 0.0F);
     AudioBlock out{got.data(), k_block_frames, ChannelLayout::Stereo, k_rate};
