@@ -57,6 +57,16 @@
       }
     },
     {
+      "name": "fuzz",
+      "displayName": "Debug + libFuzzer loader harness (Clang only)",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/fuzz",
+      "cacheVariables": {
+        "ARBC_FUZZER": "ON",
+        "ARBC_SANITIZERS": "address,undefined,fuzzer-no-link"
+      }
+    },
+    {
       "name": "win-dev",
       "displayName": "Debug + tests (Ninja, for MSVC dev prompts)",
       "inherits": "dev",
@@ -80,6 +90,7 @@
     { "name": "tsan", "configurePreset": "tsan" },
     { "name": "rtsan", "configurePreset": "rtsan" },
     { "name": "coverage", "configurePreset": "coverage" },
+    { "name": "fuzz", "configurePreset": "fuzz" },
     { "name": "win-dev", "configurePreset": "win-dev" },
     { "name": "bench", "configurePreset": "bench" }
   ],
@@ -90,6 +101,7 @@
     { "name": "tsan", "configurePreset": "tsan", "output": { "outputOnFailure": true } },
     { "name": "rtsan", "configurePreset": "rtsan", "output": { "outputOnFailure": true } },
     { "name": "coverage", "configurePreset": "coverage", "output": { "outputOnFailure": true } },
+    { "name": "fuzz", "configurePreset": "fuzz", "output": { "outputOnFailure": true } },
     { "name": "win-dev", "configurePreset": "win-dev", "output": { "outputOnFailure": true } },
     { "name": "bench", "configurePreset": "bench", "output": { "outputOnFailure": true } }
   ]

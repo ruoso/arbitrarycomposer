@@ -1,0 +1,5 @@
+{
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [

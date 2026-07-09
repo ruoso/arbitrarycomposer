@@ -163,9 +163,8 @@ BuiltGraph build_graph(Document& doc, KindBridge& bridge) {
                       bridge.intern(SolidContent::kind_id, "1"));
 
   const FadeParams fp{FadeShape::Linear, FadeWindow{Time{0}, Time{k_one_second}}, std::nullopt};
-  const ObjectId fade =
-      doc.add_content(std::make_shared<FadeContent>(doc.resolve(shared), fp),
-                      bridge.intern(FadeContent::kind_id, "1"));
+  const ObjectId fade = doc.add_content(std::make_shared<FadeContent>(doc.resolve(shared), fp),
+                                        bridge.intern(FadeContent::kind_id, "1"));
 
   const CrossfadeParams cp{CrossfadeShape::Linear, Time{0}, Time{k_one_second}};
   const ObjectId crossfade = doc.add_content(

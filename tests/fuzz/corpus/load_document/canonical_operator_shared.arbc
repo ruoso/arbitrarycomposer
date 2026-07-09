@@ -1,0 +1,91 @@
+{
+  "arbc": {
+    "format": 1
+  },
+  "composition": {
+    "canvas": [
+      0,
+      0,
+      1920,
+      1080
+    ],
+    "layers": [
+      {
+        "inputs": [
+          {
+            "$ref": "0"
+          }
+        ],
+        "kind": "org.arbc.fade",
+        "kind_version": "1",
+        "opacity": 1.0,
+        "params": {
+          "in": {
+            "end": 705600000,
+            "start": 0
+          },
+          "shape": "linear"
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      },
+      {
+        "inputs": [
+          {
+            "$ref": "0"
+          },
+          {
+            "kind": "org.arbc.solid",
+            "kind_version": "1",
+            "params": {
+              "color": [
+                0.0,
+                0.0,
+                1.0,
+                1.0
+              ]
+            }
+          }
+        ],
+        "kind": "org.arbc.crossfade",
+        "kind_version": "1",
+        "opacity": 1.0,
+        "params": {
+          "duration": 705600000,
+          "shape": "linear",
+          "start": 0
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      }
+    ]
+  },
+  "contents": {
+    "0": {
+      "kind": "org.arbc.solid",
+      "kind_version": "1",
+      "params": {
+        "color": [
+          1.0,
+          0.5,
+          0.25,
+          1.0
+        ]
+      }
+    }
+  }
+}

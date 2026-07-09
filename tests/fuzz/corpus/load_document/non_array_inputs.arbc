@@ -1,0 +1,14 @@
+{
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      {
+        "kind": "org.arbc.fade",
+        "kind_version": "1",
+        "params": { "shape": "linear", "in": { "start": 0, "end": 705600000 } },
+        "inputs": 7
+      }
+    ]
+  }
+}

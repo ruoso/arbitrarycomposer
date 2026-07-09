@@ -63,6 +63,13 @@ endif()
 # CTest in the normal build. CI tracked-history wiring is quality.benchmark_history.
 option(ARBC_BENCHMARKS "Fetch Google Benchmark and build the benchmark targets" OFF)
 
+# libFuzzer loader harness (serialize.format_tests, doc 16:79). OFF by default so the
+# per-push gcc lanes never touch the clang-only -fsanitize=fuzzer targets: the portable
+# corpus-replay regression (tests/fuzz_corpus_replay.t.cpp) rides the ordinary dev/asan
+# ctest lanes and needs neither this option nor clang. The `fuzz` preset turns this on
+# (Clang only, checked in tests/CMakeLists.txt) for the nightly coverage-guided run.
+option(ARBC_FUZZER "Build the -fsanitize=fuzzer libFuzzer targets (Clang only)" OFF)
+
 include(CTest)
 if(BUILD_TESTING)
   # Test dependencies come before src/ so component unit tests can use them.

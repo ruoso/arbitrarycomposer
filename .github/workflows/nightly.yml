@@ -1,6 +1,6 @@
 # Nightly long-form checks (design doc 16).
-# TODO as the codebase grows: fuzzing (long-form), Valgrind, benchmark runs
-# with tracked history, and the full claims-register audit.
+# TODO as the codebase grows: Valgrind, benchmark runs with tracked history, and
+# the full claims-register audit.
 name: Nightly
 
 on:
@@ -57,3 +57,45 @@ jobs:
             echo "== $t [.nightly] =="
             ./build/tsan/tests/arbc_${t}_t "[.nightly]"
           done
+
+  # Coverage-guided libFuzzer over the .arbc JSON loader (doc 16:79 "long" run,
+  # serialize.format_tests Decision D1). The per-push brief run is the portable
+  # corpus-replay ctest (ci.yml, gcc + ASan); this clang-only lane grows the corpus
+  # and hunts for crashes / determinism breaks the checked-in seeds do not yet cover.
+  # -fsanitize=fuzzer is clang-only, so the job self-skips cleanly when clang is
+  # absent -- the ASan corpus-replay lane remains the enforced safety net (Constraint 4).
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check clang availability
+        id: clang
+        run: |
+          if command -v clang++ >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "clang++ not found -- skipping the coverage-guided fuzz lane (the ASan corpus-replay lane still enforces loader safety per-push)."
+          fi
+      - name: configure
+        if: steps.clang.outputs.available == 'true'
+        run: CXX=clang++ cmake --preset fuzz
+      - name: build
+        if: steps.clang.outputs.available == 'true'
+        run: cmake --build --preset fuzz --parallel 4
+      - name: fuzz load_document (time-bounded)
+        if: steps.clang.outputs.available == 'true'
+        run: |
+          ./build/fuzz/tests/arbc_fuzz_load_document \
+            tests/fuzz/corpus/load_document \
+            -max_total_time=300 -print_final_stats=1
+      - name: upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            timeout-*
+            oom-*
+          if-no-files-found: ignore

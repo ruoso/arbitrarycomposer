@@ -83,8 +83,7 @@ deserialize_crossfade(const json& params, std::span<const ContentRef> inputs,
   p.shape = CrossfadeShape::Linear;
   p.start = Time{sit->get<std::int64_t>()};
   p.duration = Time{dit->get<std::int64_t>()};
-  return std::unique_ptr<Content>(
-      std::make_unique<CrossfadeContent>(inputs[0], inputs[1], p));
+  return std::unique_ptr<Content>(std::make_unique<CrossfadeContent>(inputs[0], inputs[1], p));
 }
 
 } // namespace

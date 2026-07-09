@@ -1,0 +1,55 @@
+{
+  "arbc": {
+    "format": 1
+  },
+  "composition": {
+    "canvas": [
+      0,
+      0,
+      1920,
+      1080
+    ],
+    "layers": [
+      {
+        "kind": "org.arbc.solid",
+        "kind_version": "1",
+        "opacity": 1.0,
+        "params": {
+          "color": [
+            1.0,
+            0.5,
+            0.25,
+            1.0
+          ]
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      },
+      {
+        "kind": "org.arbc.tone",
+        "kind_version": "1",
+        "opacity": 1.0,
+        "params": {
+          "amplitude": 0.5,
+          "frequency_hz": 440
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      }
+    ]
+  }
+}

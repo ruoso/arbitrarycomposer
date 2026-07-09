@@ -1,0 +1,40 @@
+{
+  "composition": {
+    "layers": [
+      {
+        "visible": true,
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "opacity": 1.0,
+        "params": { "shape": "linear", "in": { "start": 0, "end": 705600000 } },
+        "kind": "org.arbc.fade",
+        "kind_version": "1",
+        "inputs": [ { "$ref": "shared-99" } ]
+      },
+      {
+        "kind": "org.arbc.crossfade",
+        "kind_version": "1",
+        "visible": true,
+        "opacity": 1.0,
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "params": { "start": 0, "duration": 705600000, "shape": "linear" },
+        "inputs": [
+          { "$ref": "shared-99" },
+          {
+            "params": { "color": [0.0, 0.0, 1.0, 1.0] },
+            "kind_version": "1",
+            "kind": "org.arbc.solid"
+          }
+        ]
+      }
+    ],
+    "canvas": [0, 0, 1920, 1080]
+  },
+  "arbc": { "format": 1 },
+  "contents": {
+    "shared-99": {
+      "params": { "color": [1.0, 0.5, 0.25, 1.0] },
+      "kind": "org.arbc.solid",
+      "kind_version": "1"
+    }
+  }
+}

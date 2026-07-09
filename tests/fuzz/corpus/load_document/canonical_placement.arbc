@@ -1,0 +1,53 @@
+{
+  "arbc": {
+    "format": 1
+  },
+  "composition": {
+    "canvas": [
+      0,
+      0,
+      1920,
+      1080
+    ],
+    "layers": [
+      {
+        "opacity": 1.0,
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      },
+      {
+        "audible": false,
+        "gain": 2.0,
+        "opacity": 0.5,
+        "span": [
+          0,
+          705600000
+        ],
+        "time_map": {
+          "in": 100,
+          "offset": 5,
+          "rate": [
+            1,
+            2
+          ]
+        },
+        "transform": [
+          2.0,
+          0.0,
+          0.0,
+          2.0,
+          10.5,
+          20.0
+        ],
+        "visible": false
+      }
+    ]
+  }
+}

@@ -55,11 +55,10 @@ TEST_CASE("a captured operator-graph snapshot serializes off-thread while the wr
   const ObjectId other =
       doc.add_content(std::make_shared<SolidContent>(Rgba{0.0F, 0.0F, 1.0F, 1.0F}),
                       bridge.intern(SolidContent::kind_id, "1"));
-  const FadeParams fp{FadeShape::Linear,
-                      FadeWindow{Time{0}, Time{Time::flicks_per_second}}, std::nullopt};
-  const ObjectId fade =
-      doc.add_content(std::make_shared<FadeContent>(doc.resolve(shared), fp),
-                      bridge.intern(FadeContent::kind_id, "1"));
+  const FadeParams fp{FadeShape::Linear, FadeWindow{Time{0}, Time{Time::flicks_per_second}},
+                      std::nullopt};
+  const ObjectId fade = doc.add_content(std::make_shared<FadeContent>(doc.resolve(shared), fp),
+                                        bridge.intern(FadeContent::kind_id, "1"));
   const CrossfadeParams cp{CrossfadeShape::Linear, Time{0}, Time{Time::flicks_per_second}};
   const ObjectId crossfade = doc.add_content(
       std::make_shared<CrossfadeContent>(doc.resolve(shared), doc.resolve(other), cp),
@@ -95,9 +94,8 @@ TEST_CASE("a captured operator-graph snapshot serializes off-thread while the wr
 
   // The main thread is the single writer: append fresh content + layer each round.
   for (int i = 0; i < k_iterations; ++i) {
-    const ObjectId c =
-        doc.add_content(std::make_shared<SolidContent>(Rgba{0.0F, 0.0F, 0.0F, 1.0F}),
-                        bridge.intern(SolidContent::kind_id, "1"));
+    const ObjectId c = doc.add_content(std::make_shared<SolidContent>(Rgba{0.0F, 0.0F, 0.0F, 1.0F}),
+                                       bridge.intern(SolidContent::kind_id, "1"));
     doc.attach_layer(comp, doc.add_layer(c, Affine::identity(), 1.0));
   }
 

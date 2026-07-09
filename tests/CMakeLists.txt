@@ -69,6 +69,47 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_serialize_sharing_t)
 
+# serialize.format_tests determinism / load->save round-trip CORPUS test: over an
+# inline corpus of representative canonical documents, asserts serialize(load(x)) == x
+# byte-exact + re-serialization idempotence, unknown-kind/field verbatim preservation,
+# and the hand-authored-id normalization case serialize.sharing deferred here. Drives
+# the runtime content-aware load/save (builtin_codecs) + the content-free serialize
+# API through public headers only, so it links the umbrella `arbc` (no nlohmann).
+add_executable(arbc_serialize_determinism_corpus_t serialize_determinism_corpus.t.cpp)
+target_link_libraries(arbc_serialize_determinism_corpus_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_determinism_corpus_t)
+
+# serialize.format_tests loader fuzz corpus-replay: the portable per-push "brief" run
+# of the libFuzzer harness (doc 16:79, Decision D1). Drives the shared
+# arbc_fuzz_load_document (tests/fuzz/fuzz_target.hpp) over every checked-in seed under
+# tests/fuzz/corpus/load_document/ (path via ARBC_FUZZ_CORPUS_DIR), asserting the loader
+# never throws and re-serializes deterministically. Rides the existing dev/asan ctest
+# lanes -- the enforced no-fault safety net that needs neither clang nor ARBC_FUZZER.
+set(ARBC_FUZZ_CORPUS_DIR "${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/load_document")
+add_executable(arbc_fuzz_corpus_replay_t fuzz_corpus_replay.t.cpp)
+target_link_libraries(arbc_fuzz_corpus_replay_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_fuzz_corpus_replay_t
+                           PRIVATE ARBC_FUZZ_CORPUS_DIR="${ARBC_FUZZ_CORPUS_DIR}")
+catch_discover_tests(arbc_fuzz_corpus_replay_t)
+
+# serialize.format_tests coverage-guided libFuzzer entry (the nightly "long" run,
+# Decision D1): the -fsanitize=fuzzer LLVMFuzzerTestOneInput forwarding to the SAME
+# shared fuzz target. GCC has no libFuzzer, so this is gated behind the ARBC_FUZZER
+# option (the `fuzz` preset) AND a Clang check -- the per-push gcc/msvc lanes never
+# build it. libFuzzer supplies its own main(), so no Catch2 / catch_discover_tests; the
+# nightly job runs the binary directly, time-bounded, over the checked-in corpus.
+if(ARBC_FUZZER)
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    message(FATAL_ERROR "ARBC_FUZZER requires Clang (-fsanitize=fuzzer is clang-only)")
+  endif()
+  add_executable(arbc_fuzz_load_document fuzz/fuzz_load_document.cpp)
+  target_link_libraries(arbc_fuzz_load_document PRIVATE arbc arbc_build_flags)
+  target_compile_options(arbc_fuzz_load_document PRIVATE -fsanitize=fuzzer)
+  target_link_options(arbc_fuzz_load_document PRIVATE -fsanitize=fuzzer)
+endif()
+
 # serialize.writer concurrency stress (tier-6, tsan lane): a serialize worker reads
 # a held pin while the single writer thread commits N transactions -- the pinned
 # read races the mutator with no data race (serialize.writer Constraint 1).

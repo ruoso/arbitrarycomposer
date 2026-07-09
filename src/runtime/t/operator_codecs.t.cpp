@@ -133,9 +133,9 @@ TEST_CASE("a crossfade round-trips its params and adopts from=0/to=1 through the
       src.add_content(std::make_shared<SolidContent>(Rgba{0.0F, 1.0F, 0.0F, 1.0F}),
                       save_bridge.intern(SolidContent::kind_id, k_version));
   const CrossfadeParams cp{CrossfadeShape::Linear, Time{50}, Time{300}};
-  const ObjectId crossfade = src.add_content(
-      std::make_shared<CrossfadeContent>(src.resolve(from), src.resolve(to), cp),
-      save_bridge.intern(CrossfadeContent::kind_id, k_version));
+  const ObjectId crossfade =
+      src.add_content(std::make_shared<CrossfadeContent>(src.resolve(from), src.resolve(to), cp),
+                      save_bridge.intern(CrossfadeContent::kind_id, k_version));
   src.attach_layer(comp, src.add_layer(crossfade, Affine::identity(), 1.0));
 
   const arbc::expected<std::string, arbc::SerializeError> saved =
@@ -221,13 +221,12 @@ TEST_CASE("the writer resolves codec-backed input-child kinds so re-save is stab
   const ObjectId from =
       src.add_content(std::make_shared<SolidContent>(Rgba{1.0F, 0.0F, 0.0F, 1.0F}),
                       save_bridge.intern(SolidContent::kind_id, k_version));
-  const ObjectId to =
-      src.add_content(std::make_shared<SolidContent>(Rgba{0.0F, 1.0F, 0.0F, 1.0F}),
-                      save_bridge.intern(SolidContent::kind_id, k_version));
+  const ObjectId to = src.add_content(std::make_shared<SolidContent>(Rgba{0.0F, 1.0F, 0.0F, 1.0F}),
+                                      save_bridge.intern(SolidContent::kind_id, k_version));
   const CrossfadeParams cp{CrossfadeShape::Linear, Time{0}, Time{100}};
-  const ObjectId crossfade = src.add_content(
-      std::make_shared<CrossfadeContent>(src.resolve(from), src.resolve(to), cp),
-      save_bridge.intern(CrossfadeContent::kind_id, k_version));
+  const ObjectId crossfade =
+      src.add_content(std::make_shared<CrossfadeContent>(src.resolve(from), src.resolve(to), cp),
+                      save_bridge.intern(CrossfadeContent::kind_id, k_version));
   src.attach_layer(comp, src.add_layer(crossfade, Affine::identity(), 1.0));
 
   const arbc::expected<std::string, arbc::SerializeError> saved =
@@ -251,7 +250,8 @@ TEST_CASE("a placeholder input child re-emits its stored body verbatim") {
   // A fade whose single input is a foreign kind no codec knows: the input child loads
   // as a PlaceholderContent (meta -> nullopt on save), and its stored body re-emits
   // verbatim -- a missing plugin never destroys data even inside an operator graph.
-  constexpr const char* k_fade_over_ghost = R"json({"arbc":{"format":1},"composition":{"canvas":[0,0,64,64],"layers":[{"transform":[1,0,0,1,0,0],"opacity":1.0,"visible":true,"kind":"org.arbc.fade","kind_version":"1","params":{"shape":"linear"},"inputs":[{"kind":"com.example.ghost","kind_version":"9","params":{"hue":3}}]}]}})json";
+  constexpr const char* k_fade_over_ghost =
+      R"json({"arbc":{"format":1},"composition":{"canvas":[0,0,64,64],"layers":[{"transform":[1,0,0,1,0,0],"opacity":1.0,"visible":true,"kind":"org.arbc.fade","kind_version":"1","params":{"shape":"linear"},"inputs":[{"kind":"com.example.ghost","kind_version":"9","params":{"hue":3}}]}]}})json";
 
   KindBridge bridge;
   Document doc;
@@ -267,7 +267,8 @@ TEST_CASE("a placeholder input child re-emits its stored body verbatim") {
   KindBridge bridge2;
   Document doc2;
   REQUIRE(arbc::load_document(*saved, doc2, bridge2, registry).has_value());
-  const arbc::expected<std::string, arbc::SerializeError> resaved = arbc::save_document(doc2, bridge2);
+  const arbc::expected<std::string, arbc::SerializeError> resaved =
+      arbc::save_document(doc2, bridge2);
   REQUIRE(resaved.has_value());
   CHECK(*resaved == *saved);
 }

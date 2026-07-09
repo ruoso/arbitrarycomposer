@@ -40,7 +40,8 @@ task serialize "Serialization" {
   task format_tests "Determinism tests + loader fuzzing" {
     effort 2d
     allocate team
+    complete 100
     depends !kind_params
-    note "Load->save canonical round-trips, unknown-kind preservation claims; libFuzzer harness over the loader with a checked-in corpus. Docs 08/16."
+    note "Load->save canonical round-trips, unknown-kind preservation claims; libFuzzer harness over the loader with a checked-in corpus. Docs 08/16. Refinement: tasks/refinements/serialize/format_tests.md"
   }
 }
