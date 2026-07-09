@@ -24,6 +24,7 @@ ContentFactory ok_factory() {
 
 } // namespace
 
+// enforces: 03-layer-plugin-interface#registry-resolves-kind-id-to-factory-and-metadata
 TEST_CASE("Registry maps reverse-DNS ids to factories and metadata") {
   Registry registry;
   REQUIRE(registry.size() == 0);

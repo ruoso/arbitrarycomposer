@@ -193,6 +193,19 @@ capability flags). The registry is what a future serialization format
 references, so kind identifiers are part of the persistent contract from day
 one even though serialization itself is deferred.
 
+In v1 the metadata a kind advertises is its human name and version; the
+capability flags named above are deferred to their first consumer — they
+arrive with Stage 2's semver-gated capability negotiation, and the
+`KindMetadata` descriptor grows the field then rather than carrying an unused
+one now. Kind identifiers are validated only for non-emptiness and
+per-registry uniqueness: they are opaque persistent tokens, not structurally
+parsed, so reverse-DNS is a collision-avoidance convention rather than an
+enforced grammar and a serializer can round-trip an unknown or future-namespace
+id losslessly (doc 08). A `Registry` is populated during single-threaded
+startup or plugin load and is read-only for the remainder of a session;
+concurrent host-side discovery and loading is `runtime`'s concern (doc 17),
+not the registry seam's.
+
 ## Reference implementations (shipped with core)
 
 | Kind id | Purpose |

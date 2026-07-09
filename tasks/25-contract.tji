@@ -39,7 +39,8 @@ task contract "Layer contract" {
   task registry "Kind registry" {
     effort 1d
     allocate team
-    note "Reverse-DNS kind ids -> factories + metadata; the persistent identifier contract serialization references. Doc 03."
+    complete 100
+    note "Reverse-DNS kind ids -> factories + metadata; the persistent identifier contract serialization references. Doc 03. Refinement: tasks/refinements/contract/registry.md"
   }
   task conformance_suite "Contract conformance suite (arbc-testing)" {
     effort 4d
