@@ -27,6 +27,11 @@ public:
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion> done) override;
 
+  // The premultiplied working-space fill color (doc 07). Exposed read-only so the
+  // runtime built-in codec (`runtime.document_serialize`) can serialize the kind's
+  // `params`; the field is immutable after construction.
+  Rgba color() const noexcept { return d_color; }
+
   static constexpr const char* kind_id = "org.arbc.solid";
 
 private:

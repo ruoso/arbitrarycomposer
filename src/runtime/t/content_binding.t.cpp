@@ -35,7 +35,8 @@ public:
   std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
   Stability stability() const override { return Stability::Static; }
   std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
-  std::optional<RenderResult> render(const RenderRequest&, std::shared_ptr<RenderCompletion>) override {
+  std::optional<RenderResult> render(const RenderRequest&,
+                                     std::shared_ptr<RenderCompletion>) override {
     return RenderResult{};
   }
 };

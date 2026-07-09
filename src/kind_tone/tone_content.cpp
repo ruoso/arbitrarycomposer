@@ -40,6 +40,10 @@ std::optional<RenderResult> ToneContent::render(const RenderRequest& request,
 
 AudioFacet* ToneContent::audio() { return &d_facet; }
 
+std::uint32_t ToneContent::frequency_hz() const noexcept { return d_facet.frequency_hz(); }
+
+float ToneContent::amplitude() const noexcept { return d_facet.amplitude(); }
+
 ToneContent::ToneFacet::ToneFacet(std::uint32_t frequency_hz, float amplitude)
     : d_frequency_hz(frequency_hz), d_amplitude(amplitude) {}
 

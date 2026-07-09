@@ -34,6 +34,12 @@ public:
   // Audio surface -- the non-null facet that makes tone participate in the mix.
   AudioFacet* audio() override;
 
+  // The synthesis params (doc 12), exposed read-only so the runtime built-in codec
+  // (`runtime.document_serialize`) can serialize the kind's `params`; both are
+  // immutable after construction.
+  std::uint32_t frequency_hz() const noexcept;
+  float amplitude() const noexcept;
+
   static constexpr const char* kind_id = "org.arbc.tone";
 
 private:
@@ -49,6 +55,9 @@ private:
     Stability audio_stability() const override;
     std::optional<AudioResult> render_audio(const AudioRequest& request,
                                             std::shared_ptr<AudioCompletion> done) override;
+
+    std::uint32_t frequency_hz() const noexcept { return d_frequency_hz; }
+    float amplitude() const noexcept { return d_amplitude; }
 
   private:
     std::uint32_t d_frequency_hz;

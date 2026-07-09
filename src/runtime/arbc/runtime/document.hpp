@@ -74,6 +74,13 @@ public:
   Content* resolve(ObjectId content) const;
 
 private:
+  // The runtime load façade (`runtime.document_serialize`) installs a reconstructed
+  // graph into `d_model` through the serialize reader, which needs the mutable
+  // `Model`. Granted through an attorney-client accessor (defined in
+  // `document_serialize.cpp`) rather than a public method, so `Document`'s public
+  // shape and member set stay unchanged (refinement Constraint 4).
+  friend struct DocumentSerializeAccess;
+
   Model d_model;
   // The permanent, levelization-mandated home of the id->Content vtable binding
   // (doc 17:66-72): the versioned `ContentRecord` in `DocState` holds only the

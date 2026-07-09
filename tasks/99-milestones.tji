@@ -62,7 +62,7 @@ task milestones "Milestones" {
 
   task m8_persistence "M8: Documents as files" {
     milestone
-    depends serialize.format_tests, runtime.plugin_loading, model.workspace_backing, runtime.document_serialize
+    depends serialize.format_tests, runtime.plugin_loading, model.workspace_backing, runtime.document_serialize, runtime.operator_codecs
     note "Canonical .arbc round-trips with unknown-kind preservation; external nested projects load; plugins load by path. Doc 08 realized."
   }
 
