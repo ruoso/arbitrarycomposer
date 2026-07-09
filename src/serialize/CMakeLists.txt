@@ -1,6 +1,6 @@
 arbc_add_component(
   NAME serialize
-  SOURCES writer.cpp reader.cpp load_context.cpp
+  SOURCES writer.cpp reader.cpp load_context.cpp codec.cpp placeholder_content.cpp
   PUBLIC_HEADERS arbc/serialize/writer.hpp arbc/serialize/reader.hpp
                  arbc/serialize/load_context.hpp
   DEPENDS contract model)

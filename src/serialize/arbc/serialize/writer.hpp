@@ -4,17 +4,27 @@
 #include <arbc/base/ids.hpp>
 #include <arbc/model/model.hpp>
 
+#include <functional>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace arbc {
 
+class Content;    // contract (L2); named only as a reference in the provider seam.
+class CodecTable; // serialize-internal (codec.hpp); it names nlohmann::json, so it
+                  // is only forward-declared here and stays off the public header.
+
 // The canonical writer's error value (doc 08 Principle 5; doc 10 errors-as-values,
-// 10:15-17). A malformed pinned document -- currently a non-finite placement
-// scalar (NaN / +/-Inf) that cannot round-trip through JSON -- surfaces here as a
-// value rather than as a thrown nlohmann exception or a silent `null`.
+// 10:15-17). A malformed pinned document -- a non-finite placement scalar (NaN /
+// +/-Inf) that cannot round-trip through JSON, or a content-body codec that fails
+// or is absent (serialize.kind_params) -- surfaces here as a value rather than as
+// a thrown nlohmann exception or a silent `null`.
 struct SerializeError {
   enum class Kind {
     NonFiniteValue, // a transform/opacity/gain/canvas scalar was NaN or +/-Inf
+    NoCodec,        // a non-placeholder content had no registered content-body codec
+    CodecFailed,    // a registered codec could not serialize the content's params
   };
   Kind kind{Kind::NonFiniteValue};
   ObjectId object{}; // the offending object (layer / composition), when known
@@ -43,5 +53,36 @@ struct SerializeError {
 // Returns the byte buffer, or a `SerializeError` value when a placement scalar is
 // non-finite; no nlohmann exception crosses this boundary.
 expected<std::string, SerializeError> serialize_document(const DocRoot& doc);
+
+// One layer's content body, resolved by the provider for the writer to emit
+// (serialize.kind_params). `kind`/`kind_version` are the reverse-DNS id + producer
+// version the core emits; `content` is the live content run through the codec for
+// its `params`. A `PlaceholderContent` re-emits its own stored body verbatim, so
+// its `kind`/`kind_version` here are advisory (the stored body wins). Names no JSON
+// type, so it rides the public header.
+struct ContentBody {
+  std::string_view kind;
+  std::string_view kind_version;
+  const Content& content;
+};
+
+// The seam through which the content-aware writer resolves a layer's bound content
+// (by its `ContentRecord` ObjectId) to a `ContentBody`, or `nullopt` for a layer
+// with no content to emit. runtime.document_serialize supplies this from a pinned
+// snapshot (Decision 5); the writer stays agnostic to the runtime side-map.
+using ContentBodyProvider = std::function<std::optional<ContentBody>(ObjectId content_id)>;
+
+// Content-aware serialization: like `serialize_document(doc)` for the envelope,
+// composition, and core-owned placement, but every layer whose bound content the
+// provider resolves also emits a `{kind, kind_version, params}` content body via
+// `codecs` (an unknown-kind `PlaceholderContent` re-emits its stored body verbatim,
+// byte-equivalent under canonical formatting -- doc 08 Principles 2, 5). The
+// no-provider overload above stays byte-identical to today's goldens (Constraint 6).
+//
+// Returns the byte buffer, or a `SerializeError` (a non-finite scalar, or a codec
+// that failed / had no registered codec); no nlohmann exception crosses the API.
+expected<std::string, SerializeError> serialize_document(const DocRoot& doc,
+                                                         const ContentBodyProvider& provider,
+                                                         const CodecTable& codecs);
 
 } // namespace arbc

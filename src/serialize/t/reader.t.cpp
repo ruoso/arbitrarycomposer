@@ -24,8 +24,8 @@ TEST_CASE("LoadContext resolves relative references and dedups by resolved ident
   SECTION("the same relative reference resolves to one shared identity") {
     const arbc::ResolvedRef a = ctx.resolve("assets/logo.png");
     const arbc::ResolvedRef b = ctx.resolve("assets/logo.png");
-    CHECK(a == b);                                   // one identity ...
-    CHECK(ctx.resolved_count() == 1);                // ... one cache entry
+    CHECK(a == b);                                        // one identity ...
+    CHECK(ctx.resolved_count() == 1);                     // ... one cache entry
     CHECK(ctx.resolved_uri(a) == "proj/assets/logo.png"); // joined onto the base dir
 
     // A distinct reference resolves to a distinct identity + a new cache entry.
@@ -59,7 +59,8 @@ public:
   int d_requests{0};
 };
 
-TEST_CASE("LoadContext.load_asset forwards to the installed AssetSource, else reports unavailable") {
+TEST_CASE(
+    "LoadContext.load_asset forwards to the installed AssetSource, else reports unavailable") {
   arbc::LoadContext ctx("proj/scene.arbc");
   const arbc::ResolvedRef ref = ctx.resolve("assets/logo.png");
 

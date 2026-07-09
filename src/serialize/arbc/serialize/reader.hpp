@@ -2,15 +2,21 @@
 
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
+#include <arbc/contract/content.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/serialize/load_context.hpp>
 
+#include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <variant>
 
 namespace arbc {
+
+class CodecTable; // serialize-internal (codec.hpp): names nlohmann::json, so it is
+                  // only forward-declared here and stays off the public header.
 
 // The reader's error value (doc 08 Principle 5; doc 10 errors-as-values,
 // 10:15-17), the read-side twin of `SerializeError`. Every failure -- malformed
@@ -55,5 +61,29 @@ struct ReaderError {
 // left unmutated (still `revision() == 0`, empty).
 expected<std::monostate, ReaderError> load_document(std::string_view json, const Registry& registry,
                                                     LoadContext& ctx, Model& into);
+
+// The seam through which the content-aware read path hands each layer's
+// reconstructed `Content` to the caller (serialize.kind_params): the caller takes
+// ownership and returns the `ObjectId` to bind into that layer's `LayerRecord`.
+// runtime.document_serialize implements this against `Document`'s content map --
+// loaded bodies populate `d_contents`, and the returned id is the `ContentRecord`'s
+// (Decision 5). Names no JSON type, so it rides the public header.
+using ContentSink = std::function<ObjectId(std::unique_ptr<Content>)>;
+
+// Content-aware load (serialize.kind_params): as `load_document` above for the
+// envelope, composition, and core-owned placement, plus each layer's content body.
+// For every layer carrying a `kind`, the body is routed through `codecs` (known kind
+// -> the codec's live `Content`; unknown kind -> a `PlaceholderContent` preserving
+// the body verbatim), handed to `sink`, and the returned `ObjectId` is bound into
+// the layer -- replacing the invalid `ObjectId{}` the content-free overload binds.
+// `ctx` threads base-URI resolution + async asset loading into each codec; `registry`
+// supplies the kind-plugin-present witness (Decision 2). A layer with no content body
+// binds `ObjectId{}` as before.
+//
+// Routing runs entirely BEFORE the model is touched, so a malformed content body
+// returns a `ReaderError` with the target `Model` left unmutated (revision 0, empty).
+expected<std::monostate, ReaderError> load_document(std::string_view json, const Registry& registry,
+                                                    const CodecTable& codecs, LoadContext& ctx,
+                                                    const ContentSink& sink, Model& into);
 
 } // namespace arbc

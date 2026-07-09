@@ -45,6 +45,18 @@ target_link_libraries(arbc_serialize_reader_roundtrip_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_serialize_reader_roundtrip_t)
 
+# serialize.kind_params: the content-body codec seam, the unknown-kind
+# PlaceholderContent verbatim round-trip, the placeholder input-0 pass-through
+# render, and the L4 read/write routing (ContentSink + content-body provider). Names
+# a test kind double AND nlohmann::json through the serialize-internal codec /
+# placeholder headers, so it links the umbrella `arbc` plus nlohmann explicitly
+# (nlohmann is PRIVATE to arbc_serialize and does not propagate to `arbc`).
+add_executable(arbc_serialize_kind_params_t serialize_kind_params.t.cpp)
+target_link_libraries(
+  arbc_serialize_kind_params_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_kind_params_t)
+
 # serialize.writer concurrency stress (tier-6, tsan lane): a serialize worker reads
 # a held pin while the single writer thread commits N transactions -- the pinned
 # read races the mutator with no data race (serialize.writer Constraint 1).

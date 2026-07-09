@@ -37,6 +37,12 @@ task runtime "Runtime" {
     depends kinds.imageseq_plugin
     note "extern C registration entry point, explicit host registration first, opt-in ARBC_PLUGIN_PATH scan; errors as values across the boundary. Docs 03/10."
   }
+  task document_serialize "Wire Document to serialize content seams" {
+    effort 2d
+    allocate team
+    depends !threading, serialize.kind_params, model.content_binding
+    note "Implement the reader's ContentSink (loaded bodies populate d_contents), supply the writer's content-body provider from a pinned snapshot (incl. ContentRecord.kind uint64/reverse-DNS bridge and pinned-content-state serialization), register built-in kind codecs (solid/tone), and add an end-to-end full-document load/save byte-exact golden. Docs 08/17. Source: tasks/refinements/serialize/kind_params.md Decision 5."
+  }
   task housekeeping "Housekeeping" {
     effort 1d
     allocate team

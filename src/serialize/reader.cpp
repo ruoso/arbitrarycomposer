@@ -1,7 +1,3 @@
-#include <arbc/serialize/reader.hpp>
-
-#include <arbc/serialize/deserialize.hpp> // the content-body seam this task lands (Decision 5)
-
 #include <arbc/base/rational_time.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
@@ -10,10 +6,14 @@
 #include <arbc/media/color_space.hpp>
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/media/surface_format.hpp>
+#include <arbc/serialize/codec.hpp>       // the content-body routing this task lands
+#include <arbc/serialize/deserialize.hpp> // the content-body read hook (serialize.reader)
+#include <arbc/serialize/reader.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -165,6 +165,13 @@ struct LayerData {
   bool audible{true};
   TimeRange span{TimeRange::all()};
   TimeMap time_map{};
+  // The layer's content body (`{kind, kind_version, params, inputs}`), captured
+  // verbatim when the layer carries a `kind`; `content` is the live Content the
+  // routing reconstructs from it (serialize.kind_params). A layer with no `kind`
+  // leaves both defaulted, so it binds `ObjectId{}` exactly as before.
+  bool has_content{false};
+  json content_body;
+  std::unique_ptr<Content> content;
 };
 
 struct CompData {
@@ -177,6 +184,24 @@ struct CompData {
   std::vector<LayerData> layers;
 };
 
+// The content body lives BESIDE placement in the layer object (doc 08:29-36): the
+// core-owned `kind`/`kind_version`, the kind-owned `params`, and the core-owned
+// `inputs` edges. Captured verbatim (all four keys when present) so an unknown kind
+// re-serializes byte-equivalent; placement keys stay the writer's separate concern.
+bool extract_content_body(const json& o, json& out) {
+  if (!o.contains("kind")) {
+    return false; // a placement-only layer (the writer's v1 output) has no content body
+  }
+  out = json::object();
+  for (const char* key : {"kind", "kind_version", "params", "inputs"}) {
+    const auto it = o.find(key);
+    if (it != o.end()) {
+      out[key] = *it;
+    }
+  }
+  return true;
+}
+
 LayerData parse_layer(const json& o) {
   LayerData ld;
   ld.transform = parse_transform(o);
@@ -186,6 +211,7 @@ LayerData parse_layer(const json& o) {
   ld.audible = bool_or(o, "audible", true);
   ld.span = parse_span(o);
   ld.time_map = parse_time_map(o);
+  ld.has_content = extract_content_body(o, ld.content_body);
   return ld;
 }
 
@@ -220,15 +246,10 @@ void parse_composition(const json& c, CompData& out) {
 
 } // namespace
 
-expected<std::monostate, ReaderError> load_document(std::string_view input, const Registry& registry,
-                                                    LoadContext& ctx, Model& into) {
-  // `registry` and `ctx` are the seams the content half of the read path
-  // (serialize.kind_params / .sharing) threads through; the writer emits no
-  // content body, `inputs`, or `$ref` table today, so this v1 reader consults
-  // neither (Decision 5). Naming them keeps the seam signature stable.
-  (void)registry;
-  (void)ctx;
-
+expected<std::monostate, ReaderError> load_document(std::string_view input,
+                                                    const Registry& registry,
+                                                    const CodecTable& codecs, LoadContext& ctx,
+                                                    const ContentSink& sink, Model& into) {
   // Non-throwing parse (serialize.json_dep discipline): a syntax error yields a
   // discarded value, never a thrown exception (Constraint 3).
   const json root = json::parse(input.begin(), input.end(), /*cb=*/nullptr,
@@ -274,10 +295,31 @@ expected<std::monostate, ReaderError> load_document(std::string_view input, cons
     parse_composition(*cit, comp);
   }
 
+  // Reconstruct each layer's content body BEFORE touching the model (Decision 5),
+  // so a malformed body returns a `ReaderError` with the target `Model` still empty.
+  // Routing happens only when a `ContentSink` is installed to take ownership of the
+  // produced content; the content-free overload passes a null sink and an empty
+  // codec table, so a placement-only document is byte-identical to before. Dispatch
+  // is by kind id through `codecs` (known -> live Content; unknown -> placeholder),
+  // with `registry`/`ctx` threaded into the routing (no longer discarded).
+  if (sink) {
+    for (LayerData& ld : comp.layers) {
+      if (!ld.has_content) {
+        continue;
+      }
+      expected<std::unique_ptr<Content>, ReaderError> produced =
+          content_body_from_json(ld.content_body, codecs, registry, ctx);
+      if (!produced) {
+        return unexpected(produced.error()); // model unmutated: nothing installed yet
+      }
+      ld.content = std::move(*produced);
+    }
+  }
+
   // Install the reconstructed graph as the version-0 baseline with an empty
-  // journal (Decision 3). Layers reference no content yet -- content bodies are
-  // serialize.kind_params -- so each binds the invalid `ObjectId{}` placeholder;
-  // the writer emits no content edge, so the round-trip is unaffected.
+  // journal (Decision 3). A layer with a reconstructed content hands it to the sink
+  // and binds the returned id; a placement-only layer binds the invalid `ObjectId{}`
+  // placeholder exactly as the content-free path does.
   const expected<std::monostate, PoolError> installed =
       into.load_baseline([&](Model::Transaction& txn) {
         if (!has_composition) {
@@ -290,8 +332,9 @@ expected<std::monostate, ReaderError> load_document(std::string_view input, cons
         if (comp.has_working_audio_format) {
           txn.set_working_audio_format(cid, comp.working_audio_format);
         }
-        for (const LayerData& ld : comp.layers) {
-          const ObjectId lid = txn.add_layer(ObjectId{}, ld.transform, ld.opacity);
+        for (LayerData& ld : comp.layers) {
+          const ObjectId content_id = ld.content ? sink(std::move(ld.content)) : ObjectId{};
+          const ObjectId lid = txn.add_layer(content_id, ld.transform, ld.opacity);
           // Re-apply exactly the omit-on-default twins the writer would have
           // emitted; a field left at its default stays diff-clean (Constraint 2).
           if (ld.gain != 1.0) {
@@ -319,6 +362,16 @@ expected<std::monostate, ReaderError> load_document(std::string_view input, cons
     return fail(ReaderError::Kind::MalformedField, "/composition");
   }
   return std::monostate{};
+}
+
+// The content-free entry point: reconstruct only the envelope, composition, and
+// core-owned placement (its historical scope). An empty codec table and a null
+// content sink make the content-aware path above a no-op -- every layer binds
+// `ObjectId{}` -- so a placement-only document loads byte-identically to before.
+expected<std::monostate, ReaderError>
+load_document(std::string_view input, const Registry& registry, LoadContext& ctx, Model& into) {
+  const CodecTable no_codecs;
+  return load_document(input, registry, no_codecs, ctx, ContentSink{}, into);
 }
 
 } // namespace arbc

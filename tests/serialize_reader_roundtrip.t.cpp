@@ -177,7 +177,8 @@ TEST_CASE("load_document rejects an unknown format major with no document mutati
   arbc::Registry registry;
   arbc::LoadContext ctx("mem://future.arbc");
 
-  const char* const future = R"json({"arbc":{"format":999},"composition":{"canvas":[0,0,8,8]}})json";
+  const char* const future =
+      R"json({"arbc":{"format":999},"composition":{"canvas":[0,0,8,8]}})json";
   const auto r = arbc::load_document(future, registry, ctx, model);
   REQUIRE_FALSE(r);
   CHECK(r.error().kind == arbc::ReaderError::Kind::UnknownFormatMajor);

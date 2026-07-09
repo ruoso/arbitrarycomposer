@@ -57,11 +57,19 @@ These are core-owned placement, not `params`.
 ## Principles
 
 1. **The core owns placement; kinds own `params`.** The core
-   reads/writes everything except `params`, which is handed verbatim to the
-   kind's factory (and produced by its serialize hook). The `Content`
-   interface (doc 03) grows two members:
-   `serialize() -> json` and a registry-side
-   `deserialize(json, LoadContext&) -> Content*`. `LoadContext` supplies
+   reads/writes everything except `params`, which is handed verbatim to a
+   kind's codec. Because the JSON type stays private to `arbc::serialize`
+   (doc 17 levelization: the `Content` interface lives in `contract`, which
+   must not name the JSON library), the two hooks are **serialize-owned
+   codecs keyed by kind id**, not JSON-typed methods on the `Content`
+   interface: a *serialize* codec that turns a live `Content` into its
+   `params` JSON, and a `deserialize(json, LoadContext&) -> Content*` codec
+   that turns a `params` object back into a `Content`. Concrete per-kind
+   codecs are registered from a layer that can see both the kind's concrete
+   type and the JSON library — `runtime` (L5) for built-in kinds, the
+   plugin's own translation unit for out-of-tree kinds — so the codec table
+   is a serialize-owned seam the routing consults; a kind with no registered
+   codec round-trips as a placeholder (Principle 2). `LoadContext` supplies
    base-URI resolution and async asset loading so kinds don't invent their
    own.
 2. **Unknown kinds round-trip losslessly.** A file using a plugin the host

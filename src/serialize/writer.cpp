@@ -7,6 +7,7 @@
 #include <arbc/media/pixel_format.hpp> // to_string(PixelFormat)
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
+#include <arbc/serialize/codec.hpp> // the content-body write routing this task lands
 #include <arbc/serialize/writer.hpp>
 
 #include <nlohmann/json.hpp>
@@ -51,13 +52,18 @@ public:
   bool ok() const { return d_ok; }
   const SerializeError& error() const { return d_err; }
 
-private:
-  void fault(ObjectId owner) {
+  // Latch an arbitrary serialization error (a content-body codec failure): the
+  // first fault wins and the walk finishes harmlessly, exactly as a non-finite
+  // scalar does, so the public entry returns the error before any bytes escape.
+  void fail(const SerializeError& err) {
     if (d_ok) {
       d_ok = false;
-      d_err = SerializeError{SerializeError::Kind::NonFiniteValue, owner};
+      d_err = err;
     }
   }
+
+private:
+  void fault(ObjectId owner) { fail(SerializeError{SerializeError::Kind::NonFiniteValue, owner}); }
 
   bool d_ok{true};
   SerializeError d_err{};
@@ -115,7 +121,8 @@ json time_map_json(const TimeMap& m) {
   return o;
 }
 
-json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em) {
+json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em,
+                const ContentBodyProvider* provider, const CodecTable* codecs) {
   json o = json::object();
   // Spatial + core placement -- always present.
   const Affine& t = lr.transform;
@@ -138,11 +145,30 @@ json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em) {
   if (!(lr.time_map == TimeMap{})) {
     o["time_map"] = time_map_json(lr.time_map);
   }
+  // Content body (serialize.kind_params): only through the provider overload. The
+  // provider resolves this layer's bound content; a hit emits `{kind, kind_version,
+  // params}` (or a placeholder's verbatim body) beside the placement keys, where the
+  // canonical key sort orders them. The no-provider path leaves the layer body-free,
+  // byte-identical to the pre-kind_params goldens (Constraint 6).
+  if (provider != nullptr && codecs != nullptr) {
+    const std::optional<ContentBody> body = (*provider)(lr.content);
+    if (body.has_value()) {
+      expected<json, SerializeError> cb =
+          content_body_to_json(body->kind, body->kind_version, body->content, *codecs);
+      if (cb) {
+        for (auto it = cb->begin(); it != cb->end(); ++it) {
+          o[it.key()] = it.value();
+        }
+      } else {
+        em.fail(cb.error());
+      }
+    }
+  }
   return o;
 }
 
 json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRecord& comp,
-                      Emitter& em) {
+                      Emitter& em, const ContentBodyProvider* provider, const CodecTable* codecs) {
   json o = json::object();
   // canvas hint (doc 01): `[x, y, w, h]`, extents as integers.
   o["canvas"] =
@@ -159,16 +185,18 @@ json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRec
   doc.for_each_layer_in(comp_id, [&](ObjectId lid) {
     const LayerRecord* lr = doc.find_layer(lid);
     if (lr != nullptr) {
-      layers.push_back(layer_json(*lr, lid, em));
+      layers.push_back(layer_json(*lr, lid, em, provider, codecs));
     }
   });
   o["layers"] = std::move(layers);
   return o;
 }
 
-} // namespace
-
-expected<std::string, SerializeError> serialize_document(const DocRoot& doc) {
+// The shared serialization core (Constraint 6): identical envelope + composition +
+// placement walk for both public overloads; `provider`/`codecs` are null on the
+// content-free path (byte-identical to today) and non-null on the content-aware one.
+expected<std::string, SerializeError>
+serialize_impl(const DocRoot& doc, const ContentBodyProvider* provider, const CodecTable* codecs) {
   Emitter em;
   json root = json::object();
   json envelope = json::object();
@@ -178,7 +206,7 @@ expected<std::string, SerializeError> serialize_document(const DocRoot& doc) {
   ObjectId comp_id;
   const CompositionRecord* comp = nullptr;
   if (doc.find_first_composition(comp_id, comp)) {
-    root["composition"] = composition_json(doc, comp_id, *comp, em);
+    root["composition"] = composition_json(doc, comp_id, *comp, em, provider, codecs);
   }
 
   if (!em.ok()) {
@@ -193,6 +221,18 @@ expected<std::string, SerializeError> serialize_document(const DocRoot& doc) {
   std::string out = root.dump(2, ' ', false, json::error_handler_t::replace);
   out.push_back('\n');
   return out;
+}
+
+} // namespace
+
+expected<std::string, SerializeError> serialize_document(const DocRoot& doc) {
+  return serialize_impl(doc, /*provider=*/nullptr, /*codecs=*/nullptr);
+}
+
+expected<std::string, SerializeError> serialize_document(const DocRoot& doc,
+                                                         const ContentBodyProvider& provider,
+                                                         const CodecTable& codecs) {
+  return serialize_impl(doc, &provider, &codecs);
 }
 
 } // namespace arbc

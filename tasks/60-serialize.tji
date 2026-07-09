@@ -26,8 +26,9 @@ task serialize "Serialization" {
   task kind_params "Kind param hooks + unknown-kind round-trip" {
     effort 2d
     allocate team
+    complete 100
     depends !reader
-    note "serialize()/deserialize() on kinds; placeholder content preserving kind/params/inputs verbatim, rendering pass-through of input 0; byte-equivalent re-serialization. Docs 08/13."
+    note "serialize()/deserialize() on kinds; placeholder content preserving kind/params/inputs verbatim, rendering pass-through of input 0; byte-equivalent re-serialization. Docs 08/13. Refinement: tasks/refinements/serialize/kind_params.md"
   }
   task sharing "inputs arrays + contents table" {
     effort 1d
