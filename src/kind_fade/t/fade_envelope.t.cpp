@@ -56,8 +56,7 @@ FadeParams sym_params() {
 }
 
 std::optional<std::size_t> identity_at(FadeContent& fade, DummySurface& surf, Time t) {
-  const RenderRequest r{Rect::from_size(1.0, 1.0), 1.0, t,
-                        StateHandle{},             surf, Exactness::Exact,
+  const RenderRequest r{Rect::from_size(1.0, 1.0), 1.0, t, StateHandle{}, surf, Exactness::Exact,
                         Deadline::none()};
   return fade.identity(r);
 }

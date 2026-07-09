@@ -76,6 +76,18 @@ target_link_libraries(arbc_fade_identity_counter_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_fade_identity_counter_t)
 
+# Canonical operator conformance driver (pulls kind_fade + kind_solid +
+# arbc-testing). The operator-agnostic collection point: over each reference
+# operator factory it runs identity honesty + damage-mapping honesty (the shipped
+# arbc-testing families) plus the net-new pull-routing property (its L4 helper
+# operator_conformance.hpp, which needs the live PullServiceImpl + counters).
+# arbc-testing precedes `arbc` on the link line (static-archive link order).
+add_executable(arbc_operator_conformance_t operator_conformance.t.cpp)
+target_link_libraries(
+  arbc_operator_conformance_t
+  PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_operator_conformance_t)
+
 # org.arbc.nested byte-exact goldens: nested's output vs the compositor's own
 # per-layer loop over the same layers (the rendering-is-recursion identity), plus
 # snapshot consistency, budget flow-through, and Droste-cycle termination.

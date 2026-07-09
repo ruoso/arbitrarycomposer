@@ -25,9 +25,9 @@
 //     cmake --build --preset dev --target arbc_fade_goldens_t
 //     ./build/dev/tests/arbc_fade_goldens_t "[.regen]"
 
+#include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/time.hpp>
-#include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/kind_fade/fade_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
@@ -131,7 +131,11 @@ std::vector<std::byte> render_fade_audio_bytes(FadeContent& fade) {
   AudioBlock block{samples.data(), k_frames, ChannelLayout::Stereo, k_rate};
   const AudioRequest req{
       TimeRange{Time::zero(), Time{static_cast<std::int64_t>(k_frames) * flicks_per_frame()}},
-      k_rate, ChannelLayout::Stereo, block, Exactness::Exact, StateHandle{}};
+      k_rate,
+      ChannelLayout::Stereo,
+      block,
+      Exactness::Exact,
+      StateHandle{}};
   auto done = std::make_shared<AudioCompletion>();
   const std::optional<AudioResult> r = af->render_audio(req, done);
   REQUIRE(r.has_value());
@@ -202,17 +206,17 @@ TEST_CASE("org.arbc.fade fully-closed envelope yields transparent and silent out
 
   // Visual: a fade-in window in the future, rendered before it opens -> E = 0.
   SolidContent solid{Rgba{0.5F, 0.25F, 0.125F, 1.0F}, Rect{0.0, 0.0, 2.0, 2.0}};
-  FadeContent vfade{&solid, FadeParams{FadeShape::Linear, FadeWindow{Time{1000}, Time{2000}},
-                                       std::nullopt}};
+  FadeContent vfade{
+      &solid, FadeParams{FadeShape::Linear, FadeWindow{Time{1000}, Time{2000}}, std::nullopt}};
   vfade.attach(pull, backend);
   const std::vector<std::byte> pixels = render_fade_bytes(vfade, backend, 2, 2, Time{0});
   CHECK(std::all_of(pixels.begin(), pixels.end(), [](std::byte b) { return b == std::byte{0}; }));
 
   // Audio: the same closed envelope over a tone -> all-zero samples.
   ToneContent tone{440, 0.5F};
-  FadeContent afade{&tone, FadeParams{FadeShape::Linear, FadeWindow{Time{1'000'000'000},
-                                                                    Time{2'000'000'000}},
-                                      std::nullopt}};
+  FadeContent afade{&tone,
+                    FadeParams{FadeShape::Linear,
+                               FadeWindow{Time{1'000'000'000}, Time{2'000'000'000}}, std::nullopt}};
   afade.attach(pull, backend);
   const std::vector<std::byte> silence = render_fade_audio_bytes(afade);
   CHECK(std::all_of(silence.begin(), silence.end(), [](std::byte b) { return b == std::byte{0}; }));
@@ -232,10 +236,9 @@ TEST_CASE("org.arbc.fade fully-open envelope is a byte-identical no-op") {
 
   const auto direct = backend.make_surface(2, 2, k_working_rgba32f);
   REQUIRE(direct.has_value());
-  const RenderRequest req{Rect::from_size(2.0, 2.0), 1.0,
-                          Time{0},                   StateHandle{},
-                          **direct,                  Exactness::Exact,
-                          Deadline::none()};
+  const RenderRequest req{
+      Rect::from_size(2.0, 2.0), 1.0, Time{0}, StateHandle{}, **direct, Exactness::Exact,
+      Deadline::none()};
   auto done = std::make_shared<RenderCompletion>();
   REQUIRE(solid.render(req, done).has_value());
   const std::span<const std::byte> direct_bytes = (**direct).cpu_bytes();
@@ -251,7 +254,11 @@ TEST_CASE("org.arbc.fade fully-open envelope is a byte-identical no-op") {
   AudioBlock tblock{tsamples.data(), k_frames, ChannelLayout::Stereo, k_rate};
   const AudioRequest treq{
       TimeRange{Time::zero(), Time{static_cast<std::int64_t>(k_frames) * flicks_per_frame()}},
-      k_rate, ChannelLayout::Stereo, tblock, Exactness::Exact, StateHandle{}};
+      k_rate,
+      ChannelLayout::Stereo,
+      tblock,
+      Exactness::Exact,
+      StateHandle{}};
   auto tdone = std::make_shared<AudioCompletion>();
   REQUIRE(tone.audio()->render_audio(treq, tdone).has_value());
   std::vector<std::byte> tbytes(tsamples.size() * sizeof(float));

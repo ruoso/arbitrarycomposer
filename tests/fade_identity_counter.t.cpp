@@ -33,8 +33,13 @@ namespace {
 
 // The single rung-0 tile a 256x256 region at scale 1.0 covers.
 RenderRequest one_tile_request(Surface& target, Time time) {
-  return RenderRequest{Rect::from_size(256.0, 256.0), 1.0,           time, StateHandle{},
-                       target,                        Exactness::BestEffort, Deadline::none()};
+  return RenderRequest{Rect::from_size(256.0, 256.0),
+                       1.0,
+                       time,
+                       StateHandle{},
+                       target,
+                       Exactness::BestEffort,
+                       Deadline::none()};
 }
 
 std::function<ObjectId(const Content*)>
@@ -49,7 +54,8 @@ id_map(const std::unordered_map<const Content*, ObjectId>& ids) {
 std::uint64_t operator_renders_for(FadeContent& fade, SolidContent& solid, Time time) {
   CpuBackend backend;
   TileCache cache(64u * 1024 * 1024);
-  const std::unordered_map<const Content*, ObjectId> ids{{&solid, ObjectId{1}}, {&fade, ObjectId{2}}};
+  const std::unordered_map<const Content*, ObjectId> ids{{&solid, ObjectId{1}},
+                                                         {&fade, ObjectId{2}}};
 
   CompositorCounters counters;
   PullConfig config;
@@ -84,7 +90,7 @@ TEST_CASE("org.arbc.fade issues exactly one operator render mid-fade") {
   SolidContent solid{Rgba{0.5F, 0.25F, 0.125F, 1.0F}, Rect{0.0, 0.0, 256.0, 256.0}};
   // Fade-in over [0, 1000): at t = 500 the envelope is 0.5, not identity, so the
   // operator is inline-rendered exactly once.
-  FadeContent partial_fade{&solid, FadeParams{FadeShape::Linear, FadeWindow{Time{0}, Time{1000}},
-                                              std::nullopt}};
+  FadeContent partial_fade{
+      &solid, FadeParams{FadeShape::Linear, FadeWindow{Time{0}, Time{1000}}, std::nullopt}};
   CHECK(operator_renders_for(partial_fade, solid, Time{500}) == 1U);
 }

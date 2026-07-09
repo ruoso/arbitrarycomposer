@@ -27,7 +27,8 @@ task operators "Operators" {
   task operator_conformance "Operator conformance additions" {
     effort 1d
     allocate team
+    complete 100
     depends !fade
-    note "Suite entries for operators: identity honesty, damage-mapping honesty, input pulls only via PullService. Docs 13/16."
+    note "Suite entries for operators: identity honesty, damage-mapping honesty, input pulls only via PullService. Docs 13/16. Refinement: tasks/refinements/operators/operator_conformance.md"
   }
 }

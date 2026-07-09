@@ -1,6 +1,5 @@
-#include <arbc/kind_fade/fade_content.hpp>
-
 #include <arbc/base/transform.hpp>
+#include <arbc/kind_fade/fade_content.hpp>
 #include <arbc/media/audio_block.hpp>
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/surface.hpp>
@@ -97,8 +96,8 @@ std::optional<RenderResult> FadeContent::render(const RenderRequest& request,
   // compositor renders it anyway. The sub-request carries snapshot, exactness,
   // and deadline VERBATIM (constraint 2, doc 05:96-100); only the target is ours.
   if (e == 1.0) {
-    const RenderRequest sub{request.region,   request.scale,     request.time,    request.snapshot,
-                            target,           request.exactness, request.deadline};
+    const RenderRequest sub{request.region, request.scale,     request.time,    request.snapshot,
+                            target,         request.exactness, request.deadline};
     auto done = std::make_shared<RenderCompletion>();
     d_pull->pull(d_input, sub, done);
     if (!done->settled()) {
@@ -133,8 +132,8 @@ std::optional<RenderResult> FadeContent::render(const RenderRequest& request,
   Surface& temp = **temp_result;
   backend.clear(temp, 0.0F, 0.0F, 0.0F, 0.0F);
 
-  const RenderRequest sub{request.region,   request.scale,     request.time,    request.snapshot,
-                          temp,             request.exactness, request.deadline};
+  const RenderRequest sub{request.region, request.scale,     request.time,    request.snapshot,
+                          temp,           request.exactness, request.deadline};
   auto done = std::make_shared<RenderCompletion>();
   d_pull->pull(d_input, sub, done);
   if (!done->settled()) {
@@ -236,8 +235,7 @@ FadeContent::FadeAudioFacet::render_audio(const AudioRequest& request,
   // Per-frame gain: evaluate the envelope at each frame's absolute time so a
   // window straddling the ramp produces a smooth per-frame ramp with no zipper
   // (Decision 5). Ordered, deterministic -- no unordered accumulation.
-  const std::int64_t fpf =
-      Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
+  const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
   for (std::uint32_t f = 0; f < request.target.frames; ++f) {
     const Time t_frame{request.window.start.flicks + static_cast<std::int64_t>(f) * fpf};
     const float gain = static_cast<float>(self.envelope(t_frame));
