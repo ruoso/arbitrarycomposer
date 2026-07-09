@@ -73,6 +73,14 @@ public:
   // condition is a well-defined interval.
   double position(Time t) const;
 
+  // The immutable construction params, exposed for serialization: the crossfade
+  // codec (runtime.operator_codecs) reads `{ shape, start, duration }` back off the
+  // live operator to emit its `params` JSON. Reconstructing these from sampled
+  // `position()` values is lossy/non-invertible, so the raw struct is exposed
+  // directly -- the additive const accessor move solid/tone made for
+  // color()/frequency_hz(). Adds no dependency and changes no behavior.
+  const CrossfadeParams& params() const { return d_params; }
+
   static constexpr const char* kind_id = "org.arbc.crossfade";
 
 private:

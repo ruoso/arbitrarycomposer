@@ -99,6 +99,31 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_document_serialize_concurrency_t)
 
+# runtime.operator_codecs end-to-end byte-exact golden: builds a Document with an
+# operator graph (org.arbc.fade over a shared input + org.arbc.crossfade over that
+# shared input plus a second), asserts the canonical `.arbc` bytes byte-for-byte
+# through the runtime save facade -- exercising the `inputs` array, the `contents`
+# table + `$ref` dedup, and the input-child reverse map -- that a pinned snapshot
+# ignores later edits, and that a reload->resave is byte-identical. Holds a CodecTable
+# (builtin_codecs()) so it names nlohmann::json through the serialize-internal codec
+# header -- links the umbrella `arbc` plus nlohmann explicitly (PRIVATE to arbc_runtime).
+add_executable(arbc_operator_codecs_golden_t operator_codecs_golden.t.cpp)
+target_link_libraries(
+  arbc_operator_codecs_golden_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_operator_codecs_golden_t)
+
+# runtime.operator_codecs concurrency stress (tier-6, tsan lane): a background thread
+# re-emits a pinned operator-graph ContentSnapshot -- incl. the input-child reverse-map
+# capture -- while the single writer thread churns add_content/attach mutations. The
+# captured save emits off-thread with no data race (Constraint 10). Holds a CodecTable,
+# so it links nlohmann explicitly.
+add_executable(arbc_operator_codecs_concurrency_t operator_codecs_concurrency.t.cpp)
+target_link_libraries(
+  arbc_operator_codecs_concurrency_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_operator_codecs_concurrency_t)
+
 add_executable(arbc_contract_conformance_t contract_conformance.t.cpp)
 target_link_libraries(
   arbc_contract_conformance_t

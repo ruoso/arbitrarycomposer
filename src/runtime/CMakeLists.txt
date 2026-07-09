@@ -1,6 +1,7 @@
 arbc_add_component(
   NAME runtime
-  SOURCES document.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp offline.cpp
+  SOURCES document.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp
+          codec_fade.cpp codec_crossfade.cpp offline.cpp
           offline_sequence.cpp housekeeping.cpp housekeeping_thread.cpp
           worker_pool.cpp interactive.cpp transport.cpp playback_hints.cpp
           audio_worker_pool.cpp lookahead_pump.cpp device_monitor.cpp export_monitor.cpp
@@ -12,7 +13,8 @@ arbc_add_component(
                  arbc/runtime/playback_hints.hpp arbc/runtime/audio_worker_pool.hpp
                  arbc/runtime/lookahead_pump.hpp arbc/runtime/device_sink.hpp
                  arbc/runtime/device_monitor.hpp arbc/runtime/export_monitor.hpp
-  DEPENDS base model contract compositor pool cache audio_engine serialize kind_solid kind_tone)
+  DEPENDS base model contract compositor pool cache audio_engine serialize kind_solid kind_tone
+          kind_fade kind_crossfade)
 
 # nlohmann/json is header-only; linking it PRIVATE keeps it off libarbc's public
 # interface, so the built-in-codec TUs (codec_solid.cpp, codec_tone.cpp) and the
@@ -27,4 +29,4 @@ arbc_component_test(COMPONENT runtime
                             t/offline_sequence.t.cpp t/audio_worker_pool.t.cpp
                             t/lookahead_pump.t.cpp t/device_monitor.t.cpp
                             t/export_monitor.t.cpp t/content_binding.t.cpp
-                            t/document_serialize.t.cpp)
+                            t/document_serialize.t.cpp t/operator_codecs.t.cpp)

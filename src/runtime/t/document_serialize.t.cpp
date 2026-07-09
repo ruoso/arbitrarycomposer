@@ -83,7 +83,8 @@ TEST_CASE("built-in solid/tone contents round-trip through their codecs into a D
   Document src;
   build_scene(src, save_bridge);
 
-  const arbc::expected<std::string, arbc::SerializeError> saved = arbc::save_document(src, save_bridge);
+  const arbc::expected<std::string, arbc::SerializeError> saved =
+      arbc::save_document(src, save_bridge);
   REQUIRE(saved.has_value());
 
   // Reload into a fresh document through a fresh bridge (the round-trip is bijective
@@ -178,7 +179,8 @@ TEST_CASE("an unknown-kind document survives a Document load->save verbatim") {
 
   // The foreign body is preserved through a PlaceholderContent (reserved-unknown kind
   // id) and re-emitted verbatim canonical -- a missing plugin never destroys data.
-  const arbc::expected<std::string, arbc::SerializeError> resaved = arbc::save_document(doc, bridge);
+  const arbc::expected<std::string, arbc::SerializeError> resaved =
+      arbc::save_document(doc, bridge);
   REQUIRE(resaved.has_value());
   CHECK(*resaved == std::string(k_foreign));
 }

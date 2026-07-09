@@ -53,8 +53,7 @@ public:
   // The reverse the save path reads: resolves a token to its `{kind_id,
   // kind_version}`. Returns false (leaving the views empty) for `k_unknown_kind` or
   // any token never interned.
-  bool lookup(std::uint64_t token, std::string_view& kind_id,
-              std::string_view& kind_version) const;
+  bool lookup(std::uint64_t token, std::string_view& kind_id, std::string_view& kind_version) const;
 
 private:
   struct Entry {

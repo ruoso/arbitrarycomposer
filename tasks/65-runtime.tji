@@ -47,6 +47,7 @@ task runtime "Runtime" {
   task operator_codecs "Register built-in operator-graph codecs" {
     effort 2d
     allocate team
+    complete 100
     depends !document_serialize, serialize.sharing, operators.fade, operators.crossfade, kinds.nested
     note "Register org.arbc.fade/crossfade/nested codecs against the extended DeserializeFn (build input ContentRefs), give the runtime ContentSink input-child ownership (nodes without an ObjectId) and the live Content-ptr-to-kind reverse map behind the const Content-ref-keyed ContentMetaProvider, and add an end-to-end operator-graph load-save byte-exact golden. Docs 08/17. Source: tasks/refinements/runtime/document_serialize.md Decision 7. Refinement: tasks/refinements/runtime/operator_codecs.md"
   }

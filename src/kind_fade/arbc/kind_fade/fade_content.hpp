@@ -71,6 +71,14 @@ public:
   // (Decision 2). Exposed for the goldens and the boundary unit test.
   double envelope(Time t) const;
 
+  // The immutable construction params, exposed for serialization: the fade codec
+  // (runtime.operator_codecs) reads `{ shape, in, out }` back off the live operator
+  // to emit its `params` JSON. Reconstructing these from sampled `envelope()` values
+  // is lossy/non-invertible, so the raw struct is exposed directly -- the additive
+  // const accessor move solid/tone made for color()/frequency_hz(). Adds no
+  // dependency and changes no behavior.
+  const FadeParams& params() const { return d_params; }
+
   static constexpr const char* kind_id = "org.arbc.fade";
 
 private:

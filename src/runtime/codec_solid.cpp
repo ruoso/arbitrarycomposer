@@ -51,9 +51,9 @@ deserialize_solid(const json& params, std::span<const ContentRef> /*inputs*/,
       return read_fail(ReaderError::Kind::MalformedField, "/params/color");
     }
   }
-  const Rgba color{static_cast<float>(arr[0].get<double>()), static_cast<float>(arr[1].get<double>()),
-                   static_cast<float>(arr[2].get<double>()),
-                   static_cast<float>(arr[3].get<double>())};
+  const Rgba color{
+      static_cast<float>(arr[0].get<double>()), static_cast<float>(arr[1].get<double>()),
+      static_cast<float>(arr[2].get<double>()), static_cast<float>(arr[3].get<double>())};
   return std::unique_ptr<Content>(std::make_unique<SolidContent>(color));
 }
 

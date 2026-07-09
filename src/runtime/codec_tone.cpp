@@ -40,8 +40,7 @@ expected<json, SerializeError> serialize_tone(const Content& content) {
 // `frequency_hz`, or a missing/mistyped `amplitude`, is a MalformedField value -- no
 // exception, no partial construction. The leaf kind ignores `inputs`/`ctx`.
 expected<std::unique_ptr<Content>, ReaderError>
-deserialize_tone(const json& params, std::span<const ContentRef> /*inputs*/,
-                 LoadContext& /*ctx*/) {
+deserialize_tone(const json& params, std::span<const ContentRef> /*inputs*/, LoadContext& /*ctx*/) {
   const auto fit = params.find("frequency_hz");
   if (fit == params.end() || !fit->is_number_integer()) {
     return read_fail(ReaderError::Kind::MalformedField, "/params/frequency_hz");
