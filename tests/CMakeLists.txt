@@ -25,6 +25,23 @@ target_link_libraries(
   PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_serialize_json_dep_smoke_t)
 
+# serialize.writer byte-exact canonical golden + pinned-version fidelity: builds a
+# small document through the model transaction API, pins it, and asserts the
+# canonical `.arbc` bytes byte-for-byte, then that a held pin ignores later edits.
+# Cross-component (drives the model), so it links the umbrella `arbc`.
+add_executable(arbc_serialize_writer_golden_t serialize_writer_golden.t.cpp)
+target_link_libraries(arbc_serialize_writer_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_writer_golden_t)
+
+# serialize.writer concurrency stress (tier-6, tsan lane): a serialize worker reads
+# a held pin while the single writer thread commits N transactions -- the pinned
+# read races the mutator with no data race (serialize.writer Constraint 1).
+add_executable(arbc_serialize_writer_concurrency_t serialize_writer_concurrency.t.cpp)
+target_link_libraries(arbc_serialize_writer_concurrency_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_writer_concurrency_t)
+
 add_executable(arbc_contract_conformance_t contract_conformance.t.cpp)
 target_link_libraries(
   arbc_contract_conformance_t

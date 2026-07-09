@@ -12,8 +12,9 @@ task serialize "Serialization" {
   task writer "Canonical writer" {
     effort 2d
     allocate team
+    complete 100
     depends !json_dep
-    note "Sorted keys, fixed number formatting — documents diff cleanly; serialize a pinned version (autosave never pauses editing). Docs 08/14."
+    note "Sorted keys, fixed number formatting — documents diff cleanly; serialize a pinned version (autosave never pauses editing). Docs 08/14. Refinement: tasks/refinements/serialize/writer.md"
   }
   task reader "Reader + LoadContext" {
     effort 2d

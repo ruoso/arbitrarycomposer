@@ -31,7 +31,7 @@ std::optional<Rect> union_bounds(const std::optional<Rect>& a, const std::option
     return a;
   }
   return Rect{std::min(a->x0, b->x0), std::min(a->y0, b->y0), std::max(a->x1, b->x1),
-             std::max(a->y1, b->y1)};
+              std::max(a->y1, b->y1)};
 }
 
 // Bounding union of two optional time ranges (constraint 3), same absorbing /
@@ -48,7 +48,7 @@ std::optional<TimeRange> union_ranges(const std::optional<TimeRange>& a,
     return a;
   }
   return TimeRange{Time{std::min(a->start.flicks, b->start.flicks)},
-                  Time{std::max(a->end.flicks, b->end.flicks)}};
+                   Time{std::max(a->end.flicks, b->end.flicks)}};
 }
 
 } // namespace
@@ -174,8 +174,8 @@ std::optional<RenderResult> CrossfadeContent::render(const RenderRequest& reques
   // time.
   if (w == 0.0 || w == 1.0) {
     const std::size_t idx = (w == 0.0) ? 0U : 1U;
-    const std::optional<RenderResult> in_result = pull_through(*d_pull, backend, d_inputs[idx],
-                                                               request);
+    const std::optional<RenderResult> in_result =
+        pull_through(*d_pull, backend, d_inputs[idx], request);
     if (!in_result.has_value()) {
       return RenderResult{request.scale, true, request.time};
     }

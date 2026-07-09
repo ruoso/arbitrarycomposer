@@ -51,6 +51,14 @@ public:
   const CompositionRecord* find_composition(ObjectId id) const;
   bool contains(ObjectId id) const;
 
+  // The document's single composition (doc 14 models exactly one; where several
+  // exist the lowest-id one wins, matching working_space()/working_audio_format()).
+  // On success writes the chosen id and record pointer to the out-params and
+  // returns true; returns false and leaves them untouched when the document has no
+  // composition. The serializer's composition-discovery seam (serialize.writer):
+  // a refcount-free peek traversal.
+  bool find_first_composition(ObjectId& out_id, const CompositionRecord*& out_rec) const;
+
   // The working space the compositor blends this document in (doc 07 rule 2):
   // the configured `SurfaceFormat` of the document's single composition, or the
   // doc 07 default (`k_working_rgba32f`) when the document has no composition yet
@@ -273,6 +281,12 @@ public:
     // flag (doc 12:89-92). Auto-damages the whole layer, all time, once at commit.
     // No-op if the layer is absent or not a layer.
     void set_audible(ObjectId layer, bool audible);
+
+    // Set or clear an existing layer's visibility (the `k_layer_visible` flag bit,
+    // path-copies its record + its map path), the visual twin of `set_audible`
+    // (doc 01:137, "transform, opacity, order"). Auto-damages the whole layer, all
+    // time, once at commit. No-op if the layer is absent or not a layer.
+    void set_visible(ObjectId layer, bool visible);
 
     // Replace an existing layer's temporal span (path-copies its record + its
     // map path), the parent-time interval `[in, out)` the layer exists over

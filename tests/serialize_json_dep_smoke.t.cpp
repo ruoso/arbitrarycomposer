@@ -18,6 +18,7 @@
 // free.
 
 #include <catch2/catch_test_macros.hpp>
+
 #include <nlohmann/json.hpp>
 
 #include <string>
@@ -50,7 +51,7 @@ TEST_CASE("nlohmann/json round-trips an unknown-kind tree verbatim") {
 }
 
 TEST_CASE("nlohmann/json parses malformed input without throwing") {
-  const std::string malformed = R"({"kind": "x", "params": {)";  // truncated
+  const std::string malformed = R"({"kind": "x", "params": {)"; // truncated
 
   // The non-throwing overload: no callback, allow_exceptions == false. On a
   // parse error it returns a discarded value instead of throwing -- the shape an

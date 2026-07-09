@@ -131,8 +131,8 @@ std::vector<std::byte> render_crossfade_audio_bytes(CrossfadeContent& xf, Time w
   std::vector<float> samples(static_cast<std::size_t>(k_frames) * 2U, 0.0F);
   AudioBlock block{samples.data(), k_frames, ChannelLayout::Stereo, k_rate};
   const AudioRequest req{
-      TimeRange{window_start,
-                Time{window_start.flicks + static_cast<std::int64_t>(k_frames) * flicks_per_frame()}},
+      TimeRange{window_start, Time{window_start.flicks +
+                                   static_cast<std::int64_t>(k_frames) * flicks_per_frame()}},
       k_rate,
       ChannelLayout::Stereo,
       block,

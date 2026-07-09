@@ -68,7 +68,8 @@ private:
     std::optional<AudioResult> render_audio(const AudioRequest& request,
                                             std::shared_ptr<AudioCompletion>) override {
       const std::uint32_t ch = channel_count(request.layout);
-      const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
+      const std::int64_t fpf =
+          Time::flicks_per_second / static_cast<std::int64_t>(request.sample_rate);
       for (std::uint32_t f = 0; f < request.target.frames; ++f) {
         const std::int64_t t = request.window.start.flicks + static_cast<std::int64_t>(f) * fpf;
         const float v = (t >= 0 && t < k_audio_end) ? d_value : 0.0F; // silent past the extent

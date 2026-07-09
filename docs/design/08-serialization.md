@@ -45,6 +45,15 @@ and never a substitute for it.
 }
 ```
 
+The example shows the common fields; the core also serializes a layer's
+temporal and audio placement — `span` (its parent-time extent, as an
+integer-flick `[start, end]` pair; doc 11), `time_map` (the parent→content-local
+time affine; doc 11), `gain` (the additive-mix audio scalar twinning `opacity`;
+doc 12), and `audible` (the audio twin of `visible`; doc 12) — each **omitted
+when at its still/identity default** (always-present span, identity time map,
+unit gain, audible set), exactly as `working_space` is omitted when default.
+These are core-owned placement, not `params`.
+
 ## Principles
 
 1. **The core owns placement; kinds own `params`.** The core
@@ -75,6 +84,16 @@ and never a substitute for it.
 5. **Determinism.** Serialization output is canonical (sorted keys, fixed
    number formatting) so documents diff cleanly under version control —
    these files are source artifacts, and VCS-friendliness is a feature.
+   Concretely: object keys are emitted in ascending UTF-8 byte order (the
+   JSON object's natural `std::map` ordering); numbers use the JSON
+   library's platform-independent shortest round-trip decimal serialization
+   (locale-independent and deterministic across platforms — never
+   `printf`/locale formatting), with integer-valued core scalars (time in
+   flicks, canvas extents) carried as JSON integers and fractional
+   placement scalars (transform, opacity, gain) as JSON reals; non-finite
+   values (NaN, ±Inf) cannot round-trip through JSON and are a
+   serialization error surfaced as a value at the API (doc 10's
+   errors-as-values), never silently emitted as `null`.
 6. **Operator graphs serialize structurally** (doc 13). Input edges are
    core-owned, so they live in an `inputs` array beside `kind`/`params`
    (mirroring `Content::inputs()`), nested inline for chains; shared

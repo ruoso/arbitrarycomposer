@@ -452,6 +452,31 @@ AudioFormat DocRoot::working_audio_format() const {
   return chosen != nullptr ? chosen->working_audio_format : k_working_audio;
 }
 
+bool DocRoot::find_first_composition(ObjectId& out_id, const CompositionRecord*& out_rec) const {
+  // Mirror the single-composition resolution of working_space()/working_audio_format()
+  // (lowest-id wins): a refcount-free peek over the pinned root's leaves.
+  if (!d_root) {
+    return false;
+  }
+  std::vector<std::pair<std::uint64_t, SlotRef<ObjectRecord>>> leaves;
+  collect_leaves(d_stores, d_root.slot(), leaves);
+  const CompositionRecord* chosen = nullptr;
+  std::uint64_t chosen_id = 0;
+  for (const auto& [key, edge] : leaves) {
+    const ObjectRecord* r = d_stores.records->peek(edge);
+    if (r->kind == RecordKind::Composition && (chosen == nullptr || key < chosen_id)) {
+      chosen = &r->as.composition;
+      chosen_id = key;
+    }
+  }
+  if (chosen == nullptr) {
+    return false;
+  }
+  out_id = ObjectId{chosen_id};
+  out_rec = chosen;
+  return true;
+}
+
 void DocRoot::for_each_layer(const std::function<void(const LayerRecord&)>& fn) const {
   if (!d_root) {
     return;
@@ -869,6 +894,42 @@ void Model::Transaction::set_audible(ObjectId layer, bool audible) {
     nr.as.layer.flags |= k_layer_audible;
   } else {
     nr.as.layer.flags &= ~k_layer_audible;
+  }
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, layer.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(layer);
+  add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
+}
+
+void Model::Transaction::set_visible(ObjectId layer, bool visible) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, layer.value, old_edge)) {
+    return; // absent: no-op (matches the walking-skeleton contract)
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Layer) {
+    return;
+  }
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return;
+  }
+  ObjectRecord& nr = **rec;
+  nr = *old; // trivial copy of the immutable old record, then override placement
+  if (visible) {
+    nr.as.layer.flags |= k_layer_visible;
+  } else {
+    nr.as.layer.flags &= ~k_layer_visible;
   }
 
   expected<Ref<HamtNode>, PoolError> next =
