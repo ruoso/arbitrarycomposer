@@ -31,6 +31,32 @@ namespace {
 
 constexpr const char* k_kind_id = "org.arbc.imageseq";
 
+// The platform `ARBC_PLUGIN_PATH` directory-list separator (`;` on Windows, `:` on
+// POSIX) -- the test-side mirror of the loader's `k_path_separator`.
+#if defined(_WIN32)
+constexpr char k_path_list_separator = ';';
+#else
+constexpr char k_path_list_separator = ':';
+#endif
+
+// Portable ARBC_PLUGIN_PATH mutation: `_putenv_s` on Windows, `setenv`/`unsetenv` on
+// POSIX, so this suite compiles and runs on the msvc-debug lane. `_putenv_s(name, "")`
+// removes the variable, matching `unsetenv` semantics.
+void set_plugin_path(const char* value) {
+#if defined(_WIN32)
+  ::_putenv_s("ARBC_PLUGIN_PATH", value);
+#else
+  ::setenv("ARBC_PLUGIN_PATH", value, 1);
+#endif
+}
+void unset_plugin_path() {
+#if defined(_WIN32)
+  ::_putenv_s("ARBC_PLUGIN_PATH", "");
+#else
+  ::unsetenv("ARBC_PLUGIN_PATH");
+#endif
+}
+
 // RAII save/restore of ARBC_PLUGIN_PATH so a scan test does not leak the value into
 // sibling test cases in the same binary.
 class ScopedPluginPath {
@@ -44,9 +70,9 @@ public:
   }
   ~ScopedPluginPath() {
     if (d_had) {
-      ::setenv("ARBC_PLUGIN_PATH", d_prior.c_str(), 1);
+      set_plugin_path(d_prior.c_str());
     } else {
-      ::unsetenv("ARBC_PLUGIN_PATH");
+      unset_plugin_path();
     }
   }
 
@@ -134,7 +160,7 @@ TEST_CASE("scan_plugin_path is opt-in and loads org.arbc.imageseq when ARBC_PLUG
   ScopedPluginPath guard;
 
   SECTION("unset: zero loads, zero registry growth, zero filesystem access") {
-    ::unsetenv("ARBC_PLUGIN_PATH");
+    unset_plugin_path();
     PluginHost host;
     PluginScanReport report;
     REQUIRE_NOTHROW(report = host.scan_plugin_path());
@@ -145,7 +171,7 @@ TEST_CASE("scan_plugin_path is opt-in and loads org.arbc.imageseq when ARBC_PLUG
   }
 
   SECTION("set: the scan loads the plugin and the kind becomes resolvable") {
-    ::setenv("ARBC_PLUGIN_PATH", ARBC_IMAGESEQ_PLUGIN_DIR, 1);
+    set_plugin_path(ARBC_IMAGESEQ_PLUGIN_DIR);
     PluginHost host;
     PluginScanReport report;
     REQUIRE_NOTHROW(report = host.scan_plugin_path());
@@ -165,6 +191,29 @@ TEST_CASE("scan_plugin_path is opt-in and loads org.arbc.imageseq when ARBC_PLUG
   }
 }
 
+// enforces: 03-layer-plugin-interface#plugin-path-scan-is-opt-in
+TEST_CASE("scan_plugin_path splits ARBC_PLUGIN_PATH on the platform separator") {
+  ScopedPluginPath guard;
+
+  // A multi-directory value: a bogus leading entry, then the real plugin directory,
+  // joined by the platform separator (';' on Windows, ':' on POSIX). The split must
+  // recover the real directory for the kind to load -- the identical outcome on both
+  // platforms proves the shared split honors k_path_separator (Constraint 5). The
+  // bogus entry also exercises the missing-directory silent skip within a scan.
+  const std::string multi =
+      std::string("/no/such/plugin/dir/zzz") + k_path_list_separator + ARBC_IMAGESEQ_PLUGIN_DIR;
+  set_plugin_path(multi.c_str());
+
+  PluginHost host;
+  PluginScanReport report;
+  REQUIRE_NOTHROW(report = host.scan_plugin_path());
+  REQUIRE(report.loaded >= 1);
+
+  const ContentFactory* factory = host.registry().factory(k_kind_id);
+  REQUIRE(factory != nullptr);
+  require_constructs_and_renders(*factory);
+}
+
 // enforces: 03-layer-plugin-interface#explicit-host-registration-precedes-scan
 TEST_CASE("explicit host registration precedes and beats the scan") {
   ScopedPluginPath guard;
@@ -178,7 +227,7 @@ TEST_CASE("explicit host registration precedes and beats the scan") {
 
   // Then scan the directory that also holds it: the collision is a per-entry
   // DuplicateId value; the earlier registration is left intact (explicit wins).
-  ::setenv("ARBC_PLUGIN_PATH", ARBC_IMAGESEQ_PLUGIN_DIR, 1);
+  set_plugin_path(ARBC_IMAGESEQ_PLUGIN_DIR);
   PluginScanReport report;
   REQUIRE_NOTHROW(report = host.scan_plugin_path());
 

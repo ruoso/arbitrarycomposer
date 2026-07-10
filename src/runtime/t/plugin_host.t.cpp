@@ -28,6 +28,24 @@ ContentFactory stub_factory() {
   };
 }
 
+// Portable ARBC_PLUGIN_PATH mutation: `_putenv_s` on Windows, `setenv`/`unsetenv` on
+// POSIX. Both loader suites share this shape so they compile and run on the msvc-debug
+// lane. `_putenv_s(name, "")` removes the variable, matching `unsetenv` semantics.
+void set_plugin_path(const char* value) {
+#if defined(_WIN32)
+  ::_putenv_s("ARBC_PLUGIN_PATH", value);
+#else
+  ::setenv("ARBC_PLUGIN_PATH", value, 1);
+#endif
+}
+void unset_plugin_path() {
+#if defined(_WIN32)
+  ::_putenv_s("ARBC_PLUGIN_PATH", "");
+#else
+  ::unsetenv("ARBC_PLUGIN_PATH");
+#endif
+}
+
 // RAII save/restore of ARBC_PLUGIN_PATH so a test that mutates it does not leak the
 // value into sibling test cases in the same binary.
 class ScopedPluginPath {
@@ -41,9 +59,9 @@ public:
   }
   ~ScopedPluginPath() {
     if (d_had) {
-      ::setenv("ARBC_PLUGIN_PATH", d_prior.c_str(), 1);
+      set_plugin_path(d_prior.c_str());
     } else {
-      ::unsetenv("ARBC_PLUGIN_PATH");
+      unset_plugin_path();
     }
   }
 
@@ -74,7 +92,7 @@ TEST_CASE("scan_plugin_path is a no-op with ARBC_PLUGIN_PATH unset or empty") {
   const std::size_t before = host.registry().size();
 
   SECTION("unset") {
-    ::unsetenv("ARBC_PLUGIN_PATH");
+    unset_plugin_path();
     PluginScanReport report;
     REQUIRE_NOTHROW(report = host.scan_plugin_path());
     REQUIRE(report.loaded == 0);
@@ -83,7 +101,7 @@ TEST_CASE("scan_plugin_path is a no-op with ARBC_PLUGIN_PATH unset or empty") {
   }
 
   SECTION("empty") {
-    ::setenv("ARBC_PLUGIN_PATH", "", 1);
+    set_plugin_path("");
     PluginScanReport report;
     REQUIRE_NOTHROW(report = host.scan_plugin_path());
     REQUIRE(report.loaded == 0);
@@ -94,7 +112,7 @@ TEST_CASE("scan_plugin_path is a no-op with ARBC_PLUGIN_PATH unset or empty") {
 
 TEST_CASE("scan_plugin_path over a nonexistent directory loads nothing, never throws") {
   ScopedPluginPath guard;
-  ::setenv("ARBC_PLUGIN_PATH", "/no/such/plugin/dir/zzz", 1);
+  set_plugin_path("/no/such/plugin/dir/zzz");
   PluginHost host;
   PluginScanReport report;
   REQUIRE_NOTHROW(report = host.scan_plugin_path());

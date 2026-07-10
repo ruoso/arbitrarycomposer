@@ -148,6 +148,7 @@ Append one `###` block per item, newest at the bottom:
 - **Source**: closer for `runtime.plugin_loading` (see accompanying commit); flagged in implementer return summary as open-question surface (b).
 - **Question**: Decision 4 in `tasks/refinements/runtime/plugin_loading.md` defers `runtime.plugin_loading_win32` on the premise that "no Windows CI runner exists today." Is this still true? If a Windows CI runner has been added, the deferral premise is invalid and `runtime.plugin_loading_win32` should be moved to an earlier milestone or prioritized within M9.
 - **Why parked**: Confirming CI runner existence is a project-state/infrastructure check that only a human (or the CI admin) can definitively answer. The WBS leaf is registered at M9 and will not block M8 either way; this entry is a trigger to re-evaluate milestone placement if Windows CI lands sooner than M9.
+- **Resolved** (2026-07-10, closer for `runtime.plugin_loading_win32`): The `msvc-debug`/`win-dev` lane has been in `.github/workflows/ci.yml:55` since bootstrap commit `0fb88bc`. The deferral premise was false. `runtime.plugin_loading_win32` was implemented and landed with `complete 100`; acceptance is the existing Windows CI lane.
 
 ### 2026-07-09 — `model.workspace_backing` blocked: per-store chunk routing absent in workspace format
 

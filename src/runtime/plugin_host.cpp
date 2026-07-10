@@ -1,31 +1,40 @@
 #include <arbc/runtime/plugin_host.hpp>
 
+// Platform dynamic-loader backing. POSIX `dlfcn`/`dirent` was the v1 implementation;
+// the Windows `LoadLibrary`/`GetProcAddress`/`FreeLibrary` + `FindFirstFile` backing
+// (`runtime.plugin_loading_win32`, M9) lives behind this single `_WIN32` seam --
+// mirroring the guard in plugin.hpp:8-12. Only the platform leaf calls differ; the
+// orchestration (load_plugin, scan, error mapping, the shared std::sort) is common,
+// so "mirrors POSIX dlfcn behavior" is a structural guarantee (Decision 1).
 #if defined(_WIN32)
-// POSIX `dlfcn` is the v1 backing (Decision 4, Constraint 7). The Windows
-// `LoadLibrary`/`GetProcAddress`/`FreeLibrary` backing -- and the `;`
-// `ARBC_PLUGIN_PATH` separator -- are the deferred `runtime.plugin_loading_win32`
-// leaf (M9). This single `_WIN32` seam mirrors the guard in plugin.hpp:8-12.
-#error                                                                                             \
-    "runtime.plugin_loading is POSIX/dlfcn only for v1; the Windows backing is runtime.plugin_loading_win32 (M9). See tasks/refinements/runtime/plugin_loading.md Decision 4."
-#endif
-
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <dirent.h>
 #include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
+#include <string>
 
 namespace arbc {
 
 namespace detail {
 
-// dlclose the handle when the host tears down -- AFTER the registry and every
+// Unmap the handle when the host tears down -- AFTER the registry and every
 // factory it minted are gone (PluginHost member order), so the code backing them
-// is never unmapped while live (Constraint 4).
+// is never unmapped while live (Constraint 4/6). The wrapper stores the HMODULE as
+// void*, so the lifetime contract is identical on both platforms.
 PluginHandle::~PluginHandle() {
   if (d_handle != nullptr) {
+#if defined(_WIN32)
+    ::FreeLibrary(static_cast<HMODULE>(d_handle));
+#else
     ::dlclose(d_handle);
+#endif
   }
 }
 
@@ -36,13 +45,41 @@ namespace {
 // The `extern "C"` plugin entry point (plugin.hpp:20).
 constexpr const char* k_entry_point = "arbc_plugin_register";
 
-// POSIX facts (Constraint 7): the shared-library filename suffix a scan matches,
-// and the `ARBC_PLUGIN_PATH` directory-list separator. The Windows values live
-// behind the `_WIN32` seam above (deferred).
+// Platform facts (Constraint 7): the shared-library filename suffix a scan matches,
+// and the `ARBC_PLUGIN_PATH` directory-list separator.
+#if defined(_WIN32)
+constexpr std::string_view k_shared_lib_suffix = ".dll";
+constexpr char k_path_separator = ';';
+#else
 constexpr std::string_view k_shared_lib_suffix = ".so";
 constexpr char k_path_separator = ':';
+#endif
 
 using RegisterFn = void (*)(Registry&);
+
+#if defined(_WIN32)
+// The FormatMessage analog of dlerror(): render the last Win32 error as a captured
+// diagnostic string (Decision 3). Errors are values on Windows too -- never thrown
+// (Constraint 2, doc 03:176-180).
+std::string last_error_message() {
+  const DWORD code = ::GetLastError();
+  if (code == 0) {
+    return "";
+  }
+  LPSTR buffer = nullptr;
+  const DWORD len = ::FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                         FORMAT_MESSAGE_IGNORE_INSERTS,
+                                     nullptr, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                     // NOLINTNEXTLINE(*-reinterpret-cast): FormatMessage's
+                                     // FORMAT_MESSAGE_ALLOCATE_BUFFER out-pointer ABI.
+                                     reinterpret_cast<LPSTR>(&buffer), 0, nullptr);
+  std::string message(buffer != nullptr ? buffer : "", buffer != nullptr ? len : 0);
+  if (buffer != nullptr) {
+    ::LocalFree(buffer);
+  }
+  return message;
+}
+#endif
 
 bool has_suffix(std::string_view name, std::string_view suffix) {
   return name.size() >= suffix.size() &&
@@ -63,6 +100,29 @@ struct OpenResult {
 
 OpenResult open_and_resolve(const std::string& path) {
   OpenResult result;
+#if defined(_WIN32)
+  // Default LoadLibraryA is the faithful analog of dlopen(RTLD_NOW | RTLD_LOCAL):
+  // Windows resolves imports at load and has no global symbol namespace, and the
+  // loader always hands a resolved path (Decision 3).
+  ::SetLastError(0); // clear any stale error state
+  HMODULE handle = ::LoadLibraryA(path.c_str());
+  if (handle == nullptr) {
+    result.diagnostic = last_error_message();
+    return result; // opened == false, CannotOpen
+  }
+  result.opened = true;
+  ::SetLastError(0);
+  FARPROC symbol = ::GetProcAddress(handle, k_entry_point);
+  if (symbol == nullptr) {
+    result.diagnostic = last_error_message();
+    ::FreeLibrary(handle); // nothing registered from this image; unmap it now
+    return result;         // opened == true, fn == nullptr -> MissingEntryPoint / skip
+  }
+  result.handle = handle;
+  // NOLINTNEXTLINE(*-reinterpret-cast): the extern "C" entry-point ABI.
+  result.fn = reinterpret_cast<RegisterFn>(symbol);
+  return result;
+#else
   ::dlerror(); // clear any stale error state
   void* handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (handle == nullptr) {
@@ -83,6 +143,7 @@ OpenResult open_and_resolve(const std::string& path) {
   // NOLINTNEXTLINE(*-reinterpret-cast): the extern "C" entry-point ABI.
   result.fn = reinterpret_cast<RegisterFn>(symbol);
   return result;
+#endif
 }
 
 } // namespace
@@ -145,13 +206,41 @@ PluginScanReport PluginHost::scan_plugin_path() {
 
   for (const std::string& dir : directories) {
     // Enumerate the directory's shared-library entries. Missing/unreadable
-    // directories are silently ignored (opendir returns null) -- a stale
-    // `ARBC_PLUGIN_PATH` entry is not a loader error.
+    // directories are silently ignored -- a stale `ARBC_PLUGIN_PATH` entry is not a
+    // loader error. The candidate set is filtered by the shared `has_suffix`, so the
+    // library suffix is single-sourced across platforms.
+    std::vector<std::string> candidates;
+#if defined(_WIN32)
+    // FindFirstFile over `dir\*`; INVALID_HANDLE_VALUE is the `opendir == nullptr`
+    // silent skip. Its enumeration order is unspecified -- the shared std::sort below
+    // is what makes the scan deterministic (Constraint 4/5).
+    std::string pattern = dir;
+    if (!pattern.empty() && pattern.back() != '\\' && pattern.back() != '/') {
+      pattern.push_back('\\');
+    }
+    pattern.push_back('*');
+    WIN32_FIND_DATAA find_data;
+    HANDLE handle = ::FindFirstFileA(pattern.c_str(), &find_data);
+    if (handle == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    do {
+      const std::string_view name(find_data.cFileName);
+      if (has_suffix(name, k_shared_lib_suffix)) {
+        std::string full = dir;
+        if (!full.empty() && full.back() != '\\' && full.back() != '/') {
+          full.push_back('\\');
+        }
+        full.append(name);
+        candidates.push_back(std::move(full));
+      }
+    } while (::FindNextFileA(handle, &find_data) != 0);
+    ::FindClose(handle);
+#else
     DIR* handle = ::opendir(dir.c_str());
     if (handle == nullptr) {
       continue;
     }
-    std::vector<std::string> candidates;
     for (const dirent* entry = ::readdir(handle); entry != nullptr; entry = ::readdir(handle)) {
       const std::string_view name(entry->d_name);
       if (has_suffix(name, k_shared_lib_suffix)) {
@@ -164,6 +253,7 @@ PluginScanReport PluginHost::scan_plugin_path() {
       }
     }
     ::closedir(handle);
+#endif
 
     // Deterministic load order (Constraint 5): sort lexicographically so the
     // registration sequence -- and thus any DuplicateId outcome -- is reproducible.

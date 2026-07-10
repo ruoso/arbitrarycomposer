@@ -78,7 +78,8 @@ TEST_CASE("damage_router: fans a batch out to every registrant once, in registra
 }
 
 // enforces: 01-core-concepts#multiple-viewports-observe-one-composition
-TEST_CASE("damage_router: unregister-on-destroy leaves the router and remaining registrants intact") {
+TEST_CASE(
+    "damage_router: unregister-on-destroy leaves the router and remaining registrants intact") {
   arbc::Model model;
   DamageRouter router(model);
   const std::vector<Damage> batch = one_batch();

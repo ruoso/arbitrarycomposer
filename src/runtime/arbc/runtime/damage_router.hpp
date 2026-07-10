@@ -50,8 +50,7 @@ public:
     Registration(const Registration&) = delete;
     Registration& operator=(const Registration&) = delete;
 
-    Registration(Registration&& other) noexcept
-        : d_router(other.d_router), d_sink(other.d_sink) {
+    Registration(Registration&& other) noexcept : d_router(other.d_router), d_sink(other.d_sink) {
       other.d_router = nullptr;
       other.d_sink = nullptr;
     }
