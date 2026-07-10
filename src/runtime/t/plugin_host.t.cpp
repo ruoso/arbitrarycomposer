@@ -37,7 +37,7 @@ namespace {
 // registry's value-level accept/reject, not content construction).
 ContentFactory stub_factory() {
   return [](ContentConfig) {
-    return expected<std::unique_ptr<Content>, std::string>(unexpected<std::string>("stub"));
+    return expected<std::unique_ptr<Content>, std::string>(arbc::unexpected<std::string>("stub"));
   };
 }
 
