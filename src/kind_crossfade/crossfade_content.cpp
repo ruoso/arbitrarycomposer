@@ -61,6 +61,15 @@ void CrossfadeContent::attach(PullService& pull, Backend& backend) {
   d_backend = &backend;
 }
 
+void CrossfadeContent::detach() noexcept {
+  d_pull = nullptr;
+  d_backend = nullptr;
+}
+
+bool CrossfadeContent::attached() const noexcept {
+  return d_pull != nullptr && d_backend != nullptr;
+}
+
 // Extent = union of the two inputs' bounds (constraint 3): a crossfade's output
 // covers both inputs' footprints. Not fade's single-input pass-through, never an
 // intersection.

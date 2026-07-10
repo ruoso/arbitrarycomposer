@@ -102,8 +102,9 @@ std::vector<std::byte> render_visual_reference() {
 
   const auto target = backend.make_surface(2, 2, k_working_rgba32f);
   REQUIRE(target.has_value());
-  const RenderRequest req{Rect::from_size(2.0, 2.0), 1.0,          Time{500},        StateHandle{},
-                          **target,                  Exactness::Exact, Deadline::none()};
+  const RenderRequest req{
+      Rect::from_size(2.0, 2.0), 1.0, Time{500}, StateHandle{}, **target, Exactness::Exact,
+      Deadline::none()};
   auto done = std::make_shared<RenderCompletion>();
   const std::optional<RenderResult> r = fade.render(req, done);
   REQUIRE(r.has_value());

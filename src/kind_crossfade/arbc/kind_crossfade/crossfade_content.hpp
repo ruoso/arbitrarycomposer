@@ -47,9 +47,21 @@ public:
   CrossfadeContent(ContentRef from, ContentRef to, CrossfadeParams params);
 
   // Attach seam (mirrors FadeContent::attach): crossfade borrows the pull
-  // service and backend, owning neither. Production wiring is the deferred
-  // follow-up operators.crossfade_runtime_binding; tests inject inline doubles.
+  // service and backend, owning neither. The runtime binds a live
+  // `PullServiceImpl`/`Backend` here at instantiation
+  // (`operators.crossfade_runtime_binding`); tests inject inline doubles.
   void attach(PullService& pull, Backend& backend);
+
+  // Teardown twin of `attach` (Constraint 3): clear the borrowed pointers so no
+  // render after the binding scope ends dereferences a released service. Called by
+  // the runtime binder on scope exit; a subsequent `render`/`render_audio` asserts
+  // (unattached) rather than touching a dangling service.
+  void detach() noexcept;
+
+  // Whether a live service is currently borrowed (both pointers set). Observability
+  // for the runtime binding's teardown assertion; adds no dependency, changes no
+  // behavior.
+  bool attached() const noexcept;
 
   // Spatial/temporal metadata: bounds() and time_extent() return the UNION of
   // the two inputs' respective extents (constraint 3). stability() is `Timed`

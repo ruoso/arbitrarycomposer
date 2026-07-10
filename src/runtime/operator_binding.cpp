@@ -1,7 +1,6 @@
-#include <arbc/runtime/operator_binding.hpp>
-
 #include <arbc/contract/content.hpp> // Content, ContentRef, PullService
 #include <arbc/runtime/document.hpp> // Document
+#include <arbc/runtime/operator_binding.hpp>
 
 #include <functional>
 #include <string_view>
@@ -9,11 +8,13 @@
 
 namespace arbc {
 
-// Defined by the fade codec TU (`codec_fade.cpp`, the only runtime TU that legally
-// names the concrete `FadeContent` type, doc 17:60). Forward-declared here to avoid
-// pulling the JSON-bearing `builtin_codecs.hpp` into this generic TU; a sibling
-// runtime-binding task adds its own `register_*_binder()` beside this call.
+// Defined by the operator codec TUs (`codec_fade.cpp` / `codec_crossfade.cpp`, the
+// only runtime TUs that legally name the concrete `FadeContent` / `CrossfadeContent`
+// types, doc 17:60). Forward-declared here to avoid pulling the JSON-bearing
+// `builtin_codecs.hpp` into this generic TU; a sibling runtime-binding task adds its
+// own `register_*_binder()` beside these calls.
 void register_fade_binder();
+void register_crossfade_binder();
 
 namespace {
 
@@ -47,6 +48,7 @@ void register_builtin_operator_binders() {
   // concurrent read and needs no further synchronization.
   static const bool once = [] {
     register_fade_binder();
+    register_crossfade_binder();
     return true;
   }();
   (void)once;

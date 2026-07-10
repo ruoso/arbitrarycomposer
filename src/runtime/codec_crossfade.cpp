@@ -10,6 +10,7 @@
 #include <arbc/base/time.hpp>
 #include <arbc/kind_crossfade/crossfade_content.hpp>
 #include <arbc/runtime/builtin_codecs.hpp>
+#include <arbc/runtime/operator_binding.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -89,5 +90,22 @@ deserialize_crossfade(const json& params, std::span<const ContentRef> inputs,
 } // namespace
 
 Codec crossfade_codec() { return Codec{serialize_crossfade, deserialize_crossfade}; }
+
+void register_crossfade_binder() {
+  // The typed match lives here, the one runtime TU that names `CrossfadeContent`
+  // (doc 17:60), so the render drivers stay kind-agnostic (Decision 2). `try_attach`
+  // dynamic-casts exactly as `serialize_crossfade` above; `detach` runs only after a
+  // matched attach, so a `static_cast` is sound.
+  register_operator_binder(
+      CrossfadeContent::kind_id,
+      OperatorBinder{[](Content& c, PullService& pull, Backend& backend) -> bool {
+                       if (auto* cf = dynamic_cast<CrossfadeContent*>(&c)) {
+                         cf->attach(pull, backend);
+                         return true;
+                       }
+                       return false;
+                     },
+                     [](Content& c) noexcept { static_cast<CrossfadeContent&>(c).detach(); }});
+}
 
 } // namespace arbc

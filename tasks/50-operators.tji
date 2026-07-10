@@ -29,8 +29,9 @@ task operators "Operators" {
   task crossfade_runtime_binding "org.arbc.crossfade runtime injection wiring" {
     effort 0.5d
     allocate team
+    complete 100
     depends !crossfade, model.content_binding
-    note "Wire CrossfadeContent attach injection (PullService, Backend) onto live services at runtime instantiation, tear down on release. Source of debt: tasks/refinements/operators/crossfade.md. Doc 13."
+    note "Wire CrossfadeContent attach injection (PullService, Backend) onto live services at runtime instantiation, tear down on release. Source of debt: tasks/refinements/operators/crossfade.md. Doc 13. Refinement: tasks/refinements/operators/crossfade_runtime_binding.md"
   }
   task operator_conformance "Operator conformance additions" {
     effort 1d

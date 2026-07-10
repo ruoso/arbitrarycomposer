@@ -286,6 +286,19 @@ target_link_libraries(arbc_crossfade_identity_counter_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_crossfade_identity_counter_t)
 
+# operators.crossfade_runtime_binding end-to-end: builds a Document with a crossfade
+# over two inputs and drives it through the real offline (SequenceRenderer, inline +
+# parallel) and export (ExportMonitor) drivers with the PRODUCTION attach injection,
+# asserting it renders to completion (would abort without the wiring), byte-exact to
+# the manually-attached golden, with the identity/pull counters and RAII teardown --
+# the two-input analog of arbc_fade_runtime_binding_t. Cross-component (drives
+# CpuBackend + kind_crossfade + runtime drivers), so like crossfade_goldens it lives
+# here and links the umbrella `arbc`.
+add_executable(arbc_crossfade_runtime_binding_t crossfade_runtime_binding.t.cpp)
+target_link_libraries(arbc_crossfade_runtime_binding_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_crossfade_runtime_binding_t)
+
 # org.arbc.nested byte-exact goldens: nested's output vs the compositor's own
 # per-layer loop over the same layers (the rendering-is-recursion identity), plus
 # snapshot consistency, budget flow-through, and Droste-cycle termination.

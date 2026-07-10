@@ -64,6 +64,12 @@ task runtime "Runtime" {
     depends !document_serialize, serialize.sharing, operators.fade, operators.crossfade, kinds.nested
     note "Register org.arbc.fade/crossfade/nested codecs against the extended DeserializeFn (build input ContentRefs), give the runtime ContentSink input-child ownership (nodes without an ObjectId) and the live Content-ptr-to-kind reverse map behind the const Content-ref-keyed ContentMetaProvider, and add an end-to-end operator-graph load-save byte-exact golden. Docs 08/17. Source: tasks/refinements/runtime/document_serialize.md Decision 7. Refinement: tasks/refinements/runtime/operator_codecs.md"
   }
+  task operator_input_cache_identity "Distinct cache identity for operator input children" {
+    effort 1d
+    allocate team
+    depends operators.crossfade_runtime_binding
+    note "Give operator input children distinct, stable cache identities in the offline/export PullConfig (id_of) so multi-input operators render byte-exact; fixes ObjectId collision where both same-stability inputs key on ObjectId{} and receive identical tiles. Carries deferred crossfade visual byte-exact + parallel/TSan acceptance from operators.crossfade_runtime_binding. Source: tasks/refinements/operators/crossfade_runtime_binding.md. Doc 13/17."
+  }
   task housekeeping "Housekeeping" {
     effort 1d
     allocate team

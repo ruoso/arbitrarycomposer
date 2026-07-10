@@ -57,4 +57,12 @@ void register_fade_binder();
 // arity other than 2 is a `ReaderError` value.
 Codec crossfade_codec();
 
+// Register the runtime binder for `org.arbc.crossfade` (a typed attach/detach thunk
+// over the concrete two-input `CrossfadeContent`,
+// `operators.crossfade_runtime_binding`). Defined in the same TU as
+// `crossfade_codec()` -- the only runtime TU that legally names `CrossfadeContent`
+// (doc 17:60). Reached once via `register_builtin_operator_binders()`
+// (`operator_binding.hpp`), beside `register_fade_binder()`.
+void register_crossfade_binder();
+
 } // namespace arbc
