@@ -143,14 +143,15 @@ private:
   // `ARBC_RT_NONBLOCKING` (audio.rt_safety): under RealtimeSanitizer their whole
   // call graph must issue no lock / allocation / blocking syscall; `fill_rt` arms
   // the `RtScope` guard for the debug-hardened Layer-B backstop.
-  void fill_rt(float* out, std::uint32_t frames) ARBC_RT_NONBLOCKING; // device RT callback
-  void drain_block() ARBC_RT_NONBLOCKING; // pull one working block into d_scratch (RT)
-  void run_master();                      // the owner-thread loop
+  void fill_rt(float* out, std::uint32_t frames) noexcept ARBC_RT_NONBLOCKING; // device RT callback
+  void drain_block() noexcept ARBC_RT_NONBLOCKING; // pull one working block into d_scratch (RT)
+  void run_master();                               // the owner-thread loop
   void master_step();
   // Remix `frames` interleaved working-LAYOUT frames (already at the device RATE --
   // the resampler runs first) to the device layout. Pure, allocation-free (memcpy
   // for an identity layout; average/duplicate for a mono<->stereo remap).
-  void convert_frames(const float* src, float* dst, std::uint32_t frames) const ARBC_RT_NONBLOCKING;
+  void convert_frames(const float* src, float* dst,
+                      std::uint32_t frames) const noexcept ARBC_RT_NONBLOCKING;
   // The first output-block index the device draws from: the block covering the
   // transport's current playhead, so the drain cursor starts aligned with the clock.
   std::int64_t start_block_index() const;

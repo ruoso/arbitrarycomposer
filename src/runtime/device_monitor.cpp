@@ -124,7 +124,7 @@ std::int64_t DeviceMonitor::start_block_index() const {
 }
 
 void DeviceMonitor::convert_frames(const float* src, float* dst,
-                                   std::uint32_t frames) const ARBC_RT_NONBLOCKING {
+                                   std::uint32_t frames) const noexcept ARBC_RT_NONBLOCKING {
   if (d_config.working_layout == d_device.layout) {
     std::memcpy(dst, src, static_cast<std::size_t>(frames) * d_working_channels * sizeof(float));
     return;
@@ -149,7 +149,7 @@ void DeviceMonitor::convert_frames(const float* src, float* dst,
   }
 }
 
-void DeviceMonitor::drain_block() ARBC_RT_NONBLOCKING {
+void DeviceMonitor::drain_block() noexcept ARBC_RT_NONBLOCKING {
   AudioBlock block{d_scratch.data(), d_config.block_frames, d_config.working_layout,
                    d_config.working_rate};
   AudioResult meta{};
@@ -163,7 +163,7 @@ void DeviceMonitor::drain_block() ARBC_RT_NONBLOCKING {
   d_carry_pos = 0;
 }
 
-void DeviceMonitor::fill_rt(float* out, std::uint32_t frames) ARBC_RT_NONBLOCKING {
+void DeviceMonitor::fill_rt(float* out, std::uint32_t frames) noexcept ARBC_RT_NONBLOCKING {
   // Arm the debug RT guard for the whole callback body (audio.rt_safety, Layer B,
   // Decision D1): under the debug-hardened build any heap allocation on this thread
   // now aborts build-failingly, and `RtScope::allocations()` counts them for the

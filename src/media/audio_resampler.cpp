@@ -800,7 +800,7 @@ void StreamingResampler::produce(float* out_frame) noexcept ARBC_RT_NONBLOCKING 
 }
 
 void StreamingResampler::push_input(const float* samples,
-                                    std::uint32_t frames) ARBC_RT_NONBLOCKING {
+                                    std::uint32_t frames) noexcept ARBC_RT_NONBLOCKING {
   if (frames == 0) {
     return;
   }

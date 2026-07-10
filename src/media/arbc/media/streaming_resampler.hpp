@@ -62,7 +62,7 @@ public:
   // drops history frames no future output can reach (allocation-free compaction),
   // so a bounded window stays within the configured capacity. Precondition:
   // `frames <= block_frames`, with all producible output drained between pushes.
-  void push_input(const float* samples, std::uint32_t frames) ARBC_RT_NONBLOCKING;
+  void push_input(const float* samples, std::uint32_t frames) noexcept ARBC_RT_NONBLOCKING;
 
   // Whether the next output frame's whole filter support is resident. False means
   // push more input before producing.

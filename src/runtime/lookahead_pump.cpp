@@ -34,7 +34,7 @@ LookaheadPump::~LookaheadPump() {
 }
 
 bool LookaheadPump::drain(std::int64_t index, AudioBlock& out,
-                          AudioResult& meta) ARBC_RT_NONBLOCKING {
+                          AudioResult& meta) noexcept ARBC_RT_NONBLOCKING {
   // Lock-free (audio.rt_safety, Decision D2): `LookaheadRing::drain` reads the
   // target slot through a per-slot seqlock, so the RT consumer takes NO mutex and
   // runs concurrently with the pump tick's ring mutation. The `d_mutex` that used

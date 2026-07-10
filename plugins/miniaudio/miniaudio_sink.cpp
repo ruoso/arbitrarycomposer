@@ -20,7 +20,7 @@ struct MiniaudioSink::Impl {
   // The RT boundary crossing into our code (audio.rt_safety): `ARBC_RT_NONBLOCKING`
   // puts it under RealtimeSanitizer -- it only invokes the monitor's already-annotated
   // `DeviceFillCallback` (which drains lock-free and bumps one atomic counter).
-  static void on_data(void* user, float* out, unsigned int frames) ARBC_RT_NONBLOCKING {
+  static void on_data(void* user, float* out, unsigned int frames) noexcept ARBC_RT_NONBLOCKING {
     auto* self = static_cast<Impl*>(user);
     if (self->fill) {
       self->fill(out, frames);

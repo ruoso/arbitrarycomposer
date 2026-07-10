@@ -425,7 +425,7 @@ void LookaheadRing::mix_block(std::int64_t index) {
 }
 
 bool LookaheadRing::drain(std::int64_t index, AudioBlock& out,
-                          AudioResult& meta) ARBC_RT_NONBLOCKING {
+                          AudioResult& meta) noexcept ARBC_RT_NONBLOCKING {
   const std::size_t n = static_cast<std::size_t>(out.frames) * channel_count(out.layout);
   Slot& slot = slot_at(index);
   // Lock-free seqlock read (Decision D2): acquire the generation, copy the payload

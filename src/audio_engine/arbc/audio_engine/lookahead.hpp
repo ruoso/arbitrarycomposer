@@ -180,7 +180,7 @@ public:
   // (Decision D2): it reads the target slot by index with acquire loads and a
   // seqlock re-validation, so it runs concurrently with the producer's tick with
   // no mutex. `ARBC_RT_NONBLOCKING` puts that under RealtimeSanitizer.
-  bool drain(std::int64_t index, AudioBlock& out, AudioResult& meta) ARBC_RT_NONBLOCKING;
+  bool drain(std::int64_t index, AudioBlock& out, AudioResult& meta) noexcept ARBC_RT_NONBLOCKING;
 
   // Transport change (`seek`/`set_rate`/direction, doc 12:162-164): drop prepared
   // blocks no longer within the new `[playhead, playhead+horizon)` window; blocks

@@ -77,7 +77,7 @@ public:
   // copies the mixed samples if ready, else silence + an underrun. It NEVER mixes,
   // allocates, or takes a lock -- `ARBC_RT_NONBLOCKING` puts the whole RT callback
   // chain from here down under RealtimeSanitizer.
-  bool drain(std::int64_t index, AudioBlock& out, AudioResult& meta) ARBC_RT_NONBLOCKING;
+  bool drain(std::int64_t index, AudioBlock& out, AudioResult& meta) noexcept ARBC_RT_NONBLOCKING;
 
   // Flag a transport change (`seek`/`set_rate`/direction): the next tick calls the
   // ring's `reprime` from the freshly-sampled playhead (flush + re-enumerate).
