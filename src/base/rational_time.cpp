@@ -8,20 +8,17 @@ namespace arbc {
 
 namespace {
 
-using i128 = rational_i128;
-using u128 = rational_u128;
-
-constexpr u128 gcd_u128(u128 a, u128 b) {
-  while (b != u128{}) {
-    const u128 t = a % b;
+constexpr rational_u128 gcd_u128(rational_u128 a, rational_u128 b) {
+  while (b != rational_u128{}) {
+    const rational_u128 t = a % b;
     a = b;
     b = t;
   }
   return a;
 }
 
-constexpr u128 magnitude_i128(i128 v) {
-  return v < 0 ? u128{} - static_cast<u128>(v) : static_cast<u128>(v);
+constexpr rational_u128 magnitude_i128(rational_i128 v) {
+  return v < 0 ? rational_u128{} - static_cast<rational_u128>(v) : static_cast<rational_u128>(v);
 }
 
 TimeError overflow() { return TimeError{TimeError::Kind::Overflow}; }
@@ -30,32 +27,33 @@ TimeError overflow() { return TimeError{TimeError::Kind::Overflow}; }
 // On GCC/Clang with __int128 the builtins are used directly; on MSVC the
 // struct-based helpers from int128_msvc.hpp are used instead.
 #ifdef __SIZEOF_INT128__
-static bool mul_overflow(i128 a, i128 b, i128& result) noexcept {
+static bool mul_overflow(rational_i128 a, rational_i128 b, rational_i128& result) noexcept {
   return __builtin_mul_overflow(a, b, &result);
 }
-static bool add_overflow(i128 a, i128 b, i128& result) noexcept {
+static bool add_overflow(rational_i128 a, rational_i128 b, rational_i128& result) noexcept {
   return __builtin_add_overflow(a, b, &result);
 }
 #else
-static bool mul_overflow(i128 a, i128 b, i128& result) noexcept {
+static bool mul_overflow(rational_i128 a, rational_i128 b, rational_i128& result) noexcept {
   return arbc_mul_overflow_i128(a, b, result);
 }
-static bool add_overflow(i128 a, i128 b, i128& result) noexcept {
+static bool add_overflow(rational_i128 a, rational_i128 b, rational_i128& result) noexcept {
   return arbc_add_overflow_i128(a, b, result);
 }
 #endif
 
 } // namespace
 
-expected<Rational, TimeError> Rational::from_i128(i128 num, i128 den) {
+expected<Rational, TimeError> Rational::from_i128(rational_i128 num, rational_i128 den) {
   assert(den != 0 && "Rational denominator must be non-zero");
   const bool negative = (num < 0) != (den < 0);
-  u128 an = magnitude_i128(num);
-  u128 ad = magnitude_i128(den);
-  const u128 g = gcd_u128(an, ad); // ad != 0 so g >= 1
+  rational_u128 an = magnitude_i128(num);
+  rational_u128 ad = magnitude_i128(den);
+  const rational_u128 g = gcd_u128(an, ad); // ad != 0 so g >= 1
   an /= g;
   ad /= g;
-  constexpr u128 kMaxMag = static_cast<u128>(std::numeric_limits<std::int64_t>::max());
+  constexpr rational_u128 kMaxMag =
+      static_cast<rational_u128>(std::numeric_limits<std::int64_t>::max());
   if (an > kMaxMag || ad > kMaxMag) {
     return unexpected(overflow());
   }
@@ -67,14 +65,16 @@ expected<Rational, TimeError> Rational::from_i128(i128 num, i128 den) {
 expected<Rational, TimeError> Rational::mul(const Rational& other) const {
   // Products of two int64 fit in 128 bits (< 2^127), so the only failure is the
   // reduced result exceeding int64.
-  return from_i128(static_cast<i128>(d_num) * other.d_num, static_cast<i128>(d_den) * other.d_den);
+  return from_i128(static_cast<rational_i128>(d_num) * other.d_num,
+                   static_cast<rational_i128>(d_den) * other.d_den);
 }
 
 expected<Rational, TimeError> Rational::add(const Rational& other) const {
   // Each cross-product is < 2^126 and their sum < 2^127, so the 128-bit
   // intermediates never overflow for canonical int64 operands.
-  const i128 num = static_cast<i128>(d_num) * other.d_den + static_cast<i128>(other.d_num) * d_den;
-  const i128 den = static_cast<i128>(d_den) * other.d_den;
+  const rational_i128 num = static_cast<rational_i128>(d_num) * other.d_den +
+                            static_cast<rational_i128>(other.d_num) * d_den;
+  const rational_i128 den = static_cast<rational_i128>(d_den) * other.d_den;
   return from_i128(num, den);
 }
 
@@ -138,25 +138,25 @@ expected<Time, TimeError> ComposedTimeMap::evaluate(Time parent_time) const {
   // a.num*parent is a product of two int64, so it fits 128 bits; the remaining
   // multiply/add are overflow-checked so an adversarial instant faults rather
   // than wrapping.
-  const i128 an = a.num();
-  const i128 ad = a.den();
-  const i128 bn = b.num();
-  const i128 bd = b.den();
+  const rational_i128 an = a.num();
+  const rational_i128 ad = a.den();
+  const rational_i128 bn = b.num();
+  const rational_i128 bd = b.den();
 
-  i128 term = an * static_cast<i128>(parent_time.flicks); // fits: |.| < 2^126
+  rational_i128 term = an * static_cast<rational_i128>(parent_time.flicks); // fits: |.| < 2^126
   if (mul_overflow(term, bd, term)) {
     return unexpected(overflow());
   }
-  i128 n = 0;
+  rational_i128 n = 0;
   if (add_overflow(term, bn * ad, n)) { // bn*ad fits (< 2^126)
     return unexpected(overflow());
   }
   // d > 0 and fits: canonical denominators are <= INT64_MAX, so ad*bd < 2^126.
-  const i128 d = ad * bd;
+  const rational_i128 d = ad * bd;
 
   // Floor division: q = floor(n/d), 0 <= r < d.
-  i128 q = n / d;
-  i128 r = n % d;
+  rational_i128 q = n / d;
+  rational_i128 r = n % d;
   if (r < 0) {
     q -= 1;
     r += d;
@@ -164,13 +164,13 @@ expected<Time, TimeError> ComposedTimeMap::evaluate(Time parent_time) const {
   // Round to nearest, ties to even. Candidates are q (floor) and q+1; compare
   // 2r against d. This is sign-symmetric because it operates on the true
   // rational value, so reverse playback is unbiased.
-  const i128 twice = 2 * r; // r < d, so 2r < 2^127: no overflow
+  const rational_i128 twice = 2 * r; // r < d, so 2r < 2^127: no overflow
   if (twice > d || (twice == d && (q & 1) != 0)) {
     q += 1;
   }
 
-  constexpr i128 kMax = std::numeric_limits<std::int64_t>::max();
-  constexpr i128 kMinV = std::numeric_limits<std::int64_t>::min();
+  constexpr rational_i128 kMax = std::numeric_limits<std::int64_t>::max();
+  constexpr rational_i128 kMinV = std::numeric_limits<std::int64_t>::min();
   if (q > kMax || q < kMinV) {
     return unexpected(overflow());
   }

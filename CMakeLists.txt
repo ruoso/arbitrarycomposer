@@ -29,9 +29,18 @@ target_compile_options(
 set(ARBC_SANITIZERS
     ""
     CACHE STRING "Comma-separated sanitizer list (e.g. address,undefined)")
-if(ARBC_SANITIZERS)
-  add_compile_options(-fsanitize=${ARBC_SANITIZERS} -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=${ARBC_SANITIZERS})
+set(ARBC_EFFECTIVE_SANITIZERS "${ARBC_SANITIZERS}")
+if(ARBC_EFFECTIVE_SANITIZERS STREQUAL "realtime")
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("-fsanitize=realtime" ARBC_HAS_REALTIME_SANITIZER)
+  if(NOT ARBC_HAS_REALTIME_SANITIZER)
+    message(WARNING "RealtimeSanitizer not supported by this compiler; building without sanitizer flags")
+    set(ARBC_EFFECTIVE_SANITIZERS "")
+  endif()
+endif()
+if(ARBC_EFFECTIVE_SANITIZERS)
+  add_compile_options(-fsanitize=${ARBC_EFFECTIVE_SANITIZERS} -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=${ARBC_EFFECTIVE_SANITIZERS})
 endif()
 
 # Coverage rides arbc_build_flags so only project code is instrumented —
@@ -52,7 +61,7 @@ endif()
 # "covered" (it aborts the instant it runs); Release carries no guard. The define
 # rides arbc_build_flags, which every component and test links, so the base TU
 # that owns the override and every RT-chain TU see it uniformly.
-if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARBC_SANITIZERS AND NOT ARBC_COVERAGE)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARBC_EFFECTIVE_SANITIZERS AND NOT ARBC_COVERAGE)
   target_compile_definitions(arbc_build_flags INTERFACE ARBC_RT_HARDENED)
 endif()
 

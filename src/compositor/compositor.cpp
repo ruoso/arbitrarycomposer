@@ -77,11 +77,11 @@ void render_layer(const ContentResolver& resolve, const LayerRecord& layer, cons
     return;
   }
   done->complete(*inline_result);
-  const std::optional<expected<RenderResult, RenderError>> settled = done->take();
+  std::optional<expected<RenderResult, RenderError>> settled = done->take();
   if (!settled.has_value() || !settled->has_value()) {
     return; // inline content failed to produce pixels: cull this layer
   }
-  RenderResult result = **settled;
+  RenderResult& result = settled->value();
 
   // temp pixel (i, j) covers local (region origin + (i, j) / achieved):
   // map temp space through local space to device space. A content-provided

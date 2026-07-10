@@ -40,18 +40,12 @@ struct rational_u128 {
       : lo(static_cast<std::uint64_t>(v)), hi(0) {}
 
   // ── Comparison ────────────────────────────────────────────────────────────
-  constexpr bool operator==(rational_u128 o) const noexcept {
-    return lo == o.lo && hi == o.hi;
-  }
-  constexpr bool operator!=(rational_u128 o) const noexcept {
-    return !(*this == o);
-  }
+  constexpr bool operator==(rational_u128 o) const noexcept { return lo == o.lo && hi == o.hi; }
+  constexpr bool operator!=(rational_u128 o) const noexcept { return !(*this == o); }
   constexpr bool operator<(rational_u128 o) const noexcept {
     return hi < o.hi || (hi == o.hi && lo < o.lo);
   }
-  constexpr bool operator<=(rational_u128 o) const noexcept {
-    return !(o < *this);
-  }
+  constexpr bool operator<=(rational_u128 o) const noexcept { return !(o < *this); }
   constexpr bool operator>(rational_u128 o) const noexcept { return o < *this; }
 
   // ── Arithmetic ────────────────────────────────────────────────────────────
@@ -85,7 +79,8 @@ struct rational_u128 {
 
   constexpr rational_u128 operator<<(unsigned shift) const noexcept {
     rational_u128 r;
-    if (shift == 0u) return *this;
+    if (shift == 0u)
+      return *this;
     if (shift < 64u) {
       r.lo = lo << shift;
       r.hi = (hi << shift) | (lo >> (64u - shift));
@@ -97,7 +92,8 @@ struct rational_u128 {
   }
   constexpr rational_u128 operator>>(unsigned shift) const noexcept {
     rational_u128 r;
-    if (shift == 0u) return *this;
+    if (shift == 0u)
+      return *this;
     if (shift < 64u) {
       r.lo = (lo >> shift) | (hi << (64u - shift));
       r.hi = hi >> shift;
@@ -109,8 +105,8 @@ struct rational_u128 {
   }
 
   // Binary long division: returns {quotient, remainder}.
-  static constexpr std::pair<rational_u128, rational_u128> divmod(
-      rational_u128 a, rational_u128 b) noexcept {
+  static constexpr std::pair<rational_u128, rational_u128> divmod(rational_u128 a,
+                                                                  rational_u128 b) noexcept {
     if (b.hi == 0u && b.lo == 0u) {
       return {}; // undefined — avoid crash
     }
@@ -161,8 +157,7 @@ struct rational_i128 {
   // Implicit conversion from int64 (models `const i128 x = int64_value`)
   // NOLINTNEXTLINE(google-explicit-constructor)
   constexpr rational_i128(std::int64_t v) noexcept
-      : lo(static_cast<std::uint64_t>(v)),
-        hi(v < 0 ? std::int64_t{-1} : std::int64_t{0}) {}
+      : lo(static_cast<std::uint64_t>(v)), hi(v < 0 ? std::int64_t{-1} : std::int64_t{0}) {}
 
   // Bit-reinterpret from u128 (used internally after unsigned arithmetic)
   explicit constexpr rational_i128(rational_u128 v) noexcept
@@ -187,12 +182,8 @@ struct rational_i128 {
   }
 
   // ── Comparison ────────────────────────────────────────────────────────────
-  constexpr bool operator==(rational_i128 o) const noexcept {
-    return lo == o.lo && hi == o.hi;
-  }
-  constexpr bool operator!=(rational_i128 o) const noexcept {
-    return !(*this == o);
-  }
+  constexpr bool operator==(rational_i128 o) const noexcept { return lo == o.lo && hi == o.hi; }
+  constexpr bool operator!=(rational_i128 o) const noexcept { return !(*this == o); }
   constexpr bool operator!=(int v) const noexcept {
     return *this != rational_i128(static_cast<std::int64_t>(v));
   }
@@ -204,9 +195,7 @@ struct rational_i128 {
     return *this < rational_i128(static_cast<std::int64_t>(v));
   }
   constexpr bool operator>(rational_i128 o) const noexcept { return o < *this; }
-  constexpr bool operator>=(rational_i128 o) const noexcept {
-    return !(*this < o);
-  }
+  constexpr bool operator>=(rational_i128 o) const noexcept { return !(*this < o); }
 
   // ── Arithmetic ────────────────────────────────────────────────────────────
   constexpr rational_i128 operator-() const noexcept {
@@ -223,13 +212,11 @@ struct rational_i128 {
     const std::uint64_t carry = (r_lo < lo) ? std::uint64_t{1} : std::uint64_t{0};
     rational_i128 r;
     r.lo = r_lo;
-    r.hi = static_cast<std::int64_t>(
-        static_cast<std::uint64_t>(hi) + static_cast<std::uint64_t>(o.hi) + carry);
+    r.hi = static_cast<std::int64_t>(static_cast<std::uint64_t>(hi) +
+                                     static_cast<std::uint64_t>(o.hi) + carry);
     return r;
   }
-  constexpr rational_i128 operator-(rational_i128 o) const noexcept {
-    return *this + (-o);
-  }
+  constexpr rational_i128 operator-(rational_i128 o) const noexcept { return *this + (-o); }
   constexpr rational_i128& operator+=(rational_i128 o) noexcept {
     *this = *this + o;
     return *this;
@@ -250,12 +237,12 @@ struct rational_i128 {
     //           + (aa.hi * bb.lo + aa.lo * bb.hi) * 2^64
     //           + aa.lo * bb.lo
     const std::uint64_t r_lo = aa.lo * bb.lo;
-    const std::uint64_t r_hi = arbc_mul64_high(aa.lo, bb.lo) +
-                               aa.hi * bb.lo + aa.lo * bb.hi;
+    const std::uint64_t r_hi = arbc_mul64_high(aa.lo, bb.lo) + aa.hi * bb.lo + aa.lo * bb.hi;
     rational_u128 mag;
     mag.lo = r_lo;
     mag.hi = r_hi;
-    if (neg) mag = -mag;
+    if (neg)
+      mag = -mag;
     return rational_i128(mag);
   }
 
@@ -319,32 +306,37 @@ inline bool arbc_mul_overflow_i128(rational_i128 a, rational_i128 b,
   // Sum: r0_h + cross_lo + cross_hi_0 (with carry tracking)
   std::uint64_t carry = 0;
   std::uint64_t mid = r0_h;
-  if (mid + cross_lo < mid) ++carry;
+  if (mid + cross_lo < mid)
+    ++carry;
   mid += cross_lo;
-  if (mid + cross_hi_0 < mid) ++carry;
+  if (mid + cross_hi_0 < mid)
+    ++carry;
   mid += cross_hi_0;
 
   // Bits 128+ (if non-zero, the product overflows i128)
-  const std::uint64_t hi_overflow = a1 * b1 +
-                                    arbc_mul64_high(a1, b0) +
-                                    arbc_mul64_high(a0, b1) + carry;
+  const std::uint64_t hi_overflow =
+      a1 * b1 + arbc_mul64_high(a1, b0) + arbc_mul64_high(a0, b1) + carry;
 
-  if (hi_overflow != 0u) return true; // product >= 2^128 -> overflow
+  if (hi_overflow != 0u)
+    return true; // product >= 2^128 -> overflow
 
   // Check whether the 128-bit magnitude fits in a signed 128-bit value:
   //   positive:  mag <= INT128_MAX  = 2^127 - 1  (high bit of mag must be 0)
   //   negative:  mag <= 2^127       (INT128_MIN = -2^127 is representable)
   const bool high_bit_set = (mid >> 63u) != 0u;
-  if (!neg && high_bit_set) return true;
+  if (!neg && high_bit_set)
+    return true;
   if (neg && high_bit_set) {
     // -2^127 is the only negative value with high_bit set that's representable
-    if (mid != (std::uint64_t{1} << 63u) || r0 != 0u) return true;
+    if (mid != (std::uint64_t{1} << 63u) || r0 != 0u)
+      return true;
   }
 
   rational_u128 mag;
   mag.lo = r0;
   mag.hi = mid;
-  if (neg) mag = -mag;
+  if (neg)
+    mag = -mag;
   result = rational_i128(mag);
   return false;
 }
