@@ -26,8 +26,11 @@
 #include "pool_bench_workloads.hpp"
 #include <benchmark/benchmark.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -100,6 +103,61 @@ void BM_Traversal_Shared_ByValue_baseline(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_Traversal_Shared_ByValue_baseline);
+
+// --- Concurrent pin interference: consumer traversal timed while a background --
+//     producer churns version pins on the shared interior nodes. --------------
+// The single read-path win a single-threaded traversal ratio cannot capture
+// (doc 15:96-100): the managed consumer's peek walk should NOT degrade under the
+// pinner (pin traffic hits the parallel count column, disjoint from the data),
+// while the make_shared consumer's const& walk degrades under the co-located
+// control block's cross-core coherency traffic. The solo BM_Traversal_* benches
+// are the uncontended reference; the managed interfered/solo ratio should trend
+// ~= 1 while the shared ratio climbs. Timing TRENDS via JSON (doc 16:82-87),
+// never a quoted ratio, never a gate.
+
+void BM_ConcurrentPin_Managed(benchmark::State& state) {
+  arbc::Arena arena;
+  arbc::RefStore<BenchNode> store(arena);
+  std::uint64_t counter = 0;
+  arbc::Ref<BenchNode> root = build_managed_tree(store, k_tree_depth, counter);
+  std::vector<arbc::SlotRef<BenchNode>> interior;
+  collect_interior_slots_managed(store, root.slot(), interior);
+
+  std::atomic<bool> stop{false};
+  std::thread producer([&] {
+    while (!stop.load(std::memory_order_acquire)) {
+      benchmark::DoNotOptimize(churn_pins_managed(store, interior, 64));
+    }
+  });
+  for (auto _ : state) {
+    std::uint64_t sum = traverse_managed_peek(store, root.get());
+    benchmark::DoNotOptimize(sum);
+  }
+  stop.store(true, std::memory_order_release);
+  producer.join();
+}
+BENCHMARK(BM_ConcurrentPin_Managed);
+
+void BM_ConcurrentPin_Shared(benchmark::State& state) {
+  std::uint64_t counter = 0;
+  std::shared_ptr<SharedNode> root = build_shared_tree(k_tree_depth, counter);
+  std::vector<std::shared_ptr<SharedNode>> interior;
+  collect_interior_shared(root, interior);
+
+  std::atomic<bool> stop{false};
+  std::thread producer([&] {
+    while (!stop.load(std::memory_order_acquire)) {
+      benchmark::DoNotOptimize(churn_pins_shared(interior, 64));
+    }
+  });
+  for (auto _ : state) {
+    std::uint64_t sum = traverse_shared_constref(root);
+    benchmark::DoNotOptimize(sum);
+  }
+  stop.store(true, std::memory_order_release);
+  producer.join();
+}
+BENCHMARK(BM_ConcurrentPin_Shared);
 
 // --- Steady-state allocation: warm pop-from-freelist vs new/make_shared. ------
 

@@ -23,6 +23,7 @@
 // enforces: 15-memory-model#const-ref-traversal-touches-no-refcount-page
 // enforces: 15-memory-model#housekeeping-thread-single-drainer
 
+#include <arbc/pool/chunk_source.hpp>
 #include <arbc/pool/reclamation.hpp>
 #include <arbc/pool/refs.hpp>
 #include <arbc/pool/slot_store.hpp>
@@ -40,6 +41,10 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 namespace {
 
@@ -204,6 +209,40 @@ void run_publish_pin_stress(std::uint32_t seed_begin, std::uint32_t seed_end, in
   }
 }
 
+#if defined(__linux__)
+
+// A ChunkSource that mmaps page-granular anonymous DATA chunks and can flip their
+// protection, so the concurrent claim test can freeze the data pages read-only
+// and prove that a producer's pin churn (count-only writes to the anonymous
+// parallel column) never faults them, even under concurrent traversal. This is
+// the concurrent extension of refs.t.cpp:311's single-threaded pattern.
+class MmapRecordingSource final : public arbc::ChunkSource {
+public:
+  arbc::expected<arbc::ChunkSpan, arbc::PoolError> acquire(std::size_t size,
+                                                           std::size_t /*alignment*/) override {
+    const std::size_t rounded = (size + 4095) & ~std::size_t{4095};
+    void* base =
+        ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (base == MAP_FAILED) {
+      return arbc::unexpected(arbc::PoolError::OutOfMemory);
+    }
+    d_spans.push_back(arbc::ChunkSpan{base, rounded});
+    return arbc::ChunkSpan{base, rounded};
+  }
+  void release(arbc::ChunkSpan span) noexcept override { ::munmap(span.base, span.size); }
+
+  void protect(int prot) {
+    for (const arbc::ChunkSpan& span : d_spans) {
+      ::mprotect(span.base, span.size, prot);
+    }
+  }
+
+private:
+  std::vector<arbc::ChunkSpan> d_spans;
+};
+
+#endif // __linux__
+
 } // namespace
 
 TEST_CASE("stress: seeded pin/peek/unpin races a committing writer and a housekeeping drainer") {
@@ -219,3 +258,101 @@ TEST_CASE("stress: publish/pin seeded schedule sweep (long-form)", "[.nightly]")
   run_publish_pin_stress(/*seed_begin=*/0, /*seed_end=*/48, /*publishes=*/1500,
                          /*chain_depth=*/8, /*pinner_count=*/3);
 }
+
+#if defined(__linux__)
+
+// enforces: 15-memory-model#interference-free-concurrent-pin
+//
+// The concurrent composition of the two single-threaded page-cleanliness claims
+// (#const-ref-traversal-touches-no-refcount-page,
+// #refcounts-outside-data-pages): a producer thread churns version pins
+// (retain/release) on the shared interior nodes of a published version while a
+// consumer thread `peek`-traverses that same version, with the DATA chunks
+// mprotected read-only. In `arbc::pool` the producer's count-only writes land in
+// the anonymous parallel column, disjoint from the read-only data pages, so
+// neither thread faults and the consumer observes no torn value under real
+// contention -- the two threads' page-write and page-read sets are provably
+// disjoint. The concurrency, the shared read/write set, and the no-torn-read are
+// the new facts neither single-threaded claim individually witnesses. Runs clean
+// on the tsan lane. (mprotect faults would SIGSEGV, so completion is itself the
+// no-fault witness; the atomics carry the torn-read verdict.)
+TEST_CASE(
+    "interference-free concurrent pin: pin churn and peek traversal touch disjoint data pages") {
+  MmapRecordingSource source;
+  arbc::Arena arena(source);
+  arbc::RefStore<VerNode> store(arena);
+
+  constexpr int chain_depth = 12;
+  constexpr std::uint32_t payload = 0x00C0FFEEU;
+  arbc::Ref<VerNode> root = build_chain(store, chain_depth, payload);
+
+  // The shared interior nodes: every node carrying a child edge, reached by
+  // following in-record SlotRef edges from the root. The producer pins THESE (the
+  // subtree a pinned reader is reading, doc 15:58-62), not merely the root.
+  std::vector<arbc::SlotRef<VerNode>> interior;
+  {
+    arbc::SlotRef<VerNode> s = root.slot();
+    for (const VerNode* n = store.peek(s); n->has_child; n = store.peek(s)) {
+      interior.push_back(s);
+      s = n->child;
+    }
+  }
+  REQUIRE_FALSE(interior.empty());
+
+  // Freeze the DATA pages read-only. From here the producer's count-only writes
+  // must never fault a data page, and the consumer reads only immutable data.
+  source.protect(PROT_READ);
+
+  std::atomic<bool> go{false};
+  std::atomic<bool> stop{false};
+  std::atomic<bool> bad{false};
+  std::atomic<bool> torn{false};
+
+  constexpr int producer_rounds = 4000;
+  std::thread producer([&] {
+    while (!go.load(std::memory_order_acquire)) {
+    }
+    for (int i = 0; i < producer_rounds; ++i) {
+      for (arbc::SlotRef<VerNode> s : interior) {
+        // retain/release write only the anonymous count column; the interior
+        // node is pinned by the record edge above it, so a count never reaches
+        // zero and no reclamation (which would write a data page) is triggered.
+        if (!store.retain(s).has_value()) {
+          bad.store(true, std::memory_order_relaxed);
+        } else {
+          store.release(s);
+        }
+      }
+    }
+    stop.store(true, std::memory_order_release);
+  });
+
+  go.store(true, std::memory_order_release);
+  // Consumer (main thread): peek-traverse the pinned version while the producer
+  // churns pins. A pinned version is immutable, so every node still carries its
+  // published payload; a torn read would mean the pin traffic dirtied the data.
+  while (!stop.load(std::memory_order_acquire)) {
+    const VerNode* node = store.peek(root.slot());
+    while (node != nullptr) {
+      if (node->payload != payload) {
+        torn.store(true, std::memory_order_relaxed);
+      }
+      if (!node->has_child) {
+        break;
+      }
+      node = store.peek(node->child);
+    }
+  }
+  producer.join();
+
+  REQUIRE_FALSE(bad.load());  // no overflow on the checked pin path
+  REQUIRE_FALSE(torn.load()); // consumer saw no torn value under real contention
+
+  // Restore writability so the immediate-sink reclaim cascade (which writes data
+  // pages) and munmap are safe at teardown.
+  source.protect(PROT_READ | PROT_WRITE);
+  root = arbc::Ref<VerNode>{}; // drop the version -> immediate cascade reclaim
+  REQUIRE(store.slots_live() == 0);
+}
+
+#endif // __linux__

@@ -96,10 +96,15 @@ pins interference-free.
    traversal *speedup* is claimed: the design's read-path win is the
    *interference-free concurrent pin* (a producer pinning/unpinning versions
    never dirties the cache lines the consumer reads — the property caveat's
-   `const-ref` claim guards), plus fragmentation-free reuse and O(1) arena
-   teardown, none of which a single-threaded traversal ratio captures.
-   Numbers trend per-commit through the benchmark's JSON output, never a
-   quoted ratio in the docs (doc 16:82-87, 225-226).
+   `const-ref` claim guards, and now the concurrent
+   `BM_ConcurrentPin_Managed`/`_Shared` benches in `src/pool/bench/` measure it
+   against the `make_shared` co-located-control-block baseline, with the
+   page-disjointness under contention machine-checked by the
+   `15-memory-model#interference-free-concurrent-pin` claim), plus
+   fragmentation-free reuse and O(1) arena teardown, none of which a
+   single-threaded traversal ratio captures. Numbers trend per-commit through
+   the benchmark's JSON output, never a quoted ratio in the docs (doc
+   16:82-87, 225-226).
 4. Production hardening: default `REFCNT_TYPE = short` (32 k pins
    overflows silently — needs `uint32_t` + overflow check), OOM handling
    by `std::abort`, racy capacity-growth handshake (works in practice,

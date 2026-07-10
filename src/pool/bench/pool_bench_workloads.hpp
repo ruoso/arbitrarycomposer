@@ -216,4 +216,92 @@ inline void churn_cycle(arbc::RefStore<std::uint64_t>& store, arbc::ReclamationQ
   queue.drain(); // iterative cascade to quiescence
 }
 
+// ---------------------------------------------------------------------------
+// Concurrent pin interference: a producer churns version pins on the shared
+// interior nodes of a published version while a consumer traverses that same
+// version (doc 15:58-62,96-100). In `arbc::pool` the pin traffic lands in the
+// parallel count column, never the immutable data pages the consumer reads, so
+// the consumer's traversal does not degrade under the pinner; in the
+// `make_shared` baseline the control block is co-located with the node data, so
+// every retain/release dirties the exact cache line the consumer is reading.
+// The workload bodies here are harness-free: the benchmark spawns the producer
+// as a background thread and times the consumer; the bench-smoke drives them for
+// a bounded op count and asserts the behavioral facts (no torn read, arena back
+// to baseline). No timing lives in this header.
+// ---------------------------------------------------------------------------
+
+// Collect the SlotRefs of the shared INTERIOR nodes (every node carrying a child
+// edge) of a managed version, reached by following in-record SlotRef edges from
+// the root. These are the shared subtree a pinned reader is reading -- the honest
+// read set the producer's pin churn must land on (doc 15:58-62), not merely a
+// root handle. Pure reads (`peek`), no count touched.
+inline void collect_interior_slots_managed(const arbc::RefStore<BenchNode>& store,
+                                           arbc::SlotRef<BenchNode> slot,
+                                           std::vector<arbc::SlotRef<BenchNode>>& out) {
+  const BenchNode* node = store.peek(slot);
+  if (node->has_left || node->has_right) {
+    out.push_back(slot);
+  }
+  if (node->has_left) {
+    collect_interior_slots_managed(store, node->left, out);
+  }
+  if (node->has_right) {
+    collect_interior_slots_managed(store, node->right, out);
+  }
+}
+
+// Producer body (managed): `ops` full passes of retain/release over the shared
+// interior slots. Each interior node is pinned by the record edge above it, so a
+// count never reaches zero and no reclamation is triggered -- the retain/release
+// only touches the anonymous count column (any thread, doc 15:140-141). Returns
+// an accumulator so the caller can keep the churn from being optimized away.
+inline std::uint64_t churn_pins_managed(arbc::RefStore<BenchNode>& store,
+                                        const std::vector<arbc::SlotRef<BenchNode>>& interior,
+                                        int ops) {
+  std::uint64_t acc = 0;
+  for (int i = 0; i < ops; ++i) {
+    for (arbc::SlotRef<BenchNode> s : interior) {
+      arbc::expected<std::uint32_t, arbc::RefError> c = store.retain(s);
+      if (c.has_value()) {
+        acc += *c;
+      }
+      store.release(s); // never zero: the record edge above pins this node
+    }
+  }
+  return acc;
+}
+
+// The `make_shared` analog: collect the shared_ptr interior nodes (the honest
+// co-located-control-block comparator, doc 15:59). Held by copy so the producer
+// can bump the control block adjacent to the node data.
+inline void collect_interior_shared(const std::shared_ptr<SharedNode>& node,
+                                    std::vector<std::shared_ptr<SharedNode>>& out) {
+  if (node->left || node->right) {
+    out.push_back(node);
+  }
+  if (node->left) {
+    collect_interior_shared(node->left, out);
+  }
+  if (node->right) {
+    collect_interior_shared(node->right, out);
+  }
+}
+
+// Producer body (`make_shared`): `ops` passes copying then dropping each interior
+// shared_ptr. Each copy/drop is an atomic bump/decrement of the control block
+// co-located with the node data, dirtying the exact cache line the consumer's
+// const& traversal reads -- the interference the inside-out layout avoids. The
+// parent shared_ptrs keep every node alive, so a count never reaches zero.
+inline std::uint64_t churn_pins_shared(const std::vector<std::shared_ptr<SharedNode>>& interior,
+                                       int ops) {
+  std::uint64_t acc = 0;
+  for (int i = 0; i < ops; ++i) {
+    for (const std::shared_ptr<SharedNode>& n : interior) {
+      std::shared_ptr<SharedNode> pin = n; // bump the co-located control block
+      acc += static_cast<std::uint64_t>(pin.use_count());
+    }
+  }
+  return acc;
+}
+
 } // namespace arbc::pool_bench

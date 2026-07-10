@@ -96,7 +96,8 @@ task pool "Memory pool" {
   task concurrent_pin_benchmark "Concurrent pin-interference benchmark" {
     effort 1d
     allocate team
+    complete 100
     depends !benchmarks
-    note "Concurrent producer/consumer benchmark isolating the interference-free-pin page-undirtying advantage: undirtied refcount pages under concurrent version pinning that the single-threaded traversal rerun cannot capture. Establishes the concurrent performance story for arbc::pool. Source-of-debt: tasks/refinements/pool/benchmarks.md. Docs 15/16."
+    note "Concurrent producer/consumer benchmark isolating the interference-free-pin page-undirtying advantage: undirtied refcount pages under concurrent version pinning that the single-threaded traversal rerun cannot capture. Establishes the concurrent performance story for arbc::pool. Source-of-debt: tasks/refinements/pool/benchmarks.md. Docs 15/16. Refinement: tasks/refinements/pool/concurrent_pin_benchmark.md"
   }
 }

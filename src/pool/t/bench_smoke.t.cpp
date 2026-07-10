@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #if defined(__linux__)
@@ -123,6 +124,89 @@ TEST_CASE("dropping a deep managed subtree and draining once runs every ~T exact
   queue.drain();
   REQUIRE(destructions == static_cast<int>(nodes)); // each ~BenchNode ran once
   REQUIRE(store.slots_live() == baseline);          // leak check: back to baseline
+}
+
+// Drives the concurrent-pin workload body (a background producer churns version
+// pins on the shared interior nodes while the consumer traverses that version)
+// for a bounded op count on both substrates, asserting the BEHAVIORAL facts the
+// BM_ConcurrentPin_* benches are shaped around -- no torn read, arena back to
+// baseline -- with no timing. Exercises the cross-thread release path of
+// 15-memory-model#thread-local-free-pools-spill-to-global (the producer's
+// retain/release run off the writer thread) and, on teardown+drain,
+// 15-memory-model#slots-recycle-in-place (both existing claims -- no new claim).
+TEST_CASE(
+    "concurrent pin churn: the consumer sees no torn value and the arena returns to baseline") {
+  constexpr int depth = 8; // 255 nodes
+  const std::uint64_t expected = full_tree_sum(depth);
+
+  SECTION("managed: peek traversal under a pin-churning producer") {
+    arbc::Arena arena;
+    arbc::RefStore<BenchNode> store(arena);
+    arbc::DeferredReclaimSink<BenchNode> sink(store);
+    arbc::ReclamationQueue queue;
+    queue.register_store(store, sink);
+
+    const std::size_t baseline = arena.total_slots_live();
+
+    std::uint64_t counter = 0;
+    arbc::Ref<BenchNode> root = build_managed_tree(store, depth, counter);
+
+    std::vector<arbc::SlotRef<BenchNode>> interior;
+    collect_interior_slots_managed(store, root.slot(), interior);
+    REQUIRE_FALSE(interior.empty());
+
+    std::atomic<bool> stop{false};
+    std::atomic<bool> torn{false};
+    std::thread producer([&] {
+      while (!stop.load(std::memory_order_acquire)) {
+        churn_pins_managed(store, interior, 32);
+      }
+    });
+
+    for (int i = 0; i < 200; ++i) {
+      if (traverse_managed_peek(store, root.get()) != expected) {
+        torn.store(true, std::memory_order_relaxed);
+      }
+    }
+    stop.store(true, std::memory_order_release);
+    producer.join();
+
+    REQUIRE_FALSE(torn.load()); // the pin churn never dirtied the read data
+
+    root = arbc::Ref<BenchNode>{}; // drop the version -> deferred cascade
+    queue.drain();
+    REQUIRE(arena.total_slots_live() == baseline); // back to pre-run baseline
+  }
+
+  SECTION("make_shared: const& traversal under a pin-churning producer") {
+    std::uint64_t counter = 0;
+    std::shared_ptr<SharedNode> root = build_shared_tree(depth, counter);
+
+    std::vector<std::shared_ptr<SharedNode>> interior;
+    collect_interior_shared(root, interior);
+    REQUIRE_FALSE(interior.empty());
+
+    std::atomic<bool> stop{false};
+    std::atomic<bool> torn{false};
+    std::thread producer([&] {
+      while (!stop.load(std::memory_order_acquire)) {
+        churn_pins_shared(interior, 32);
+      }
+    });
+
+    for (int i = 0; i < 200; ++i) {
+      if (traverse_shared_constref(root) != expected) {
+        torn.store(true, std::memory_order_relaxed);
+      }
+    }
+    stop.store(true, std::memory_order_release);
+    producer.join();
+
+    REQUIRE_FALSE(torn.load());
+
+    interior.clear();
+    root.reset(); // recursive teardown returns every node
+  }
 }
 
 #if defined(__linux__)
