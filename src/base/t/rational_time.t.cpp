@@ -355,9 +355,8 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
     i128 term = A->n * static_cast<i128>(p);
     i128 nn = 0;
 #ifdef _MSC_VER
-    const bool eval_overflow =
-        arbc::arbc_mul_overflow_i128(term, B->d, term) ||
-        arbc::arbc_add_overflow_i128(term, B->n * A->d, nn);
+    const bool eval_overflow = arbc::arbc_mul_overflow_i128(term, B->d, term) ||
+                               arbc::arbc_add_overflow_i128(term, B->n * A->d, nn);
 #else
     const bool eval_overflow =
         __builtin_mul_overflow(term, B->d, &term) || __builtin_add_overflow(term, B->n * A->d, &nn);
