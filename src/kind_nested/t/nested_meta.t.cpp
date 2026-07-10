@@ -51,7 +51,7 @@ class NullBackend final : public testing::StubBackend {
 public:
   BackendCaps capabilities() const override { return {}; }
   expected<std::unique_ptr<Surface>, SurfaceError> make_surface(int, int, SurfaceFormat) override {
-    return unexpected(SurfaceError::UnsupportedFormat);
+    return arbc::unexpected<SurfaceError>(SurfaceError::UnsupportedFormat);
   }
   void clear(Surface&, float, float, float, float) override {}
   void composite(Surface&, const Surface&, const Affine&, double) override {}
