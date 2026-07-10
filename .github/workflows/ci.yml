@@ -37,8 +37,13 @@ jobs:
         include:
           - { name: gcc-debug, os: ubuntu-latest, cxx: g++, preset: dev }
           - { name: gcc-release, os: ubuntu-latest, cxx: g++, preset: release }
-          - { name: clang-debug, os: ubuntu-latest, cxx: clang++-18, preset: dev }
-          - { name: clang-asan, os: ubuntu-latest, cxx: clang++-18, preset: asan }
+          # clang lanes pin clang 20: `-fsanitize=realtime` (rtsan lane) needs
+          # LLVM >= 20 -- clang 18 rejects the flag outright -- and the other
+          # clang lanes ride the same version so one toolchain covers all
+          # three. The "install clang-20" step below provisions it from
+          # apt.llvm.org when the runner doesn't already have it.
+          - { name: clang-debug, os: ubuntu-latest, cxx: clang++-20, preset: dev }
+          - { name: clang-asan, os: ubuntu-latest, cxx: clang++-20, preset: asan }
           # TSan lane (doc 16:66,101-103): the full suite short-form under
           # ThreadSanitizer -- ASan cannot detect data races. gcc's TSan is
           # complete and composes with the mprotect/SIGSEGV/fork crash harness
@@ -51,7 +56,7 @@ jobs:
           # chain fire at runtime -- any lock/allocation/blocking syscall in the
           # annotated graph is a failure. RTSan is Clang-only, so this rides the
           # clang lane; GCC/MSVC keep Layer B + the grep-lint.
-          - { name: clang-rtsan, os: ubuntu-latest, cxx: clang++-18, preset: rtsan }
+          - { name: clang-rtsan, os: ubuntu-latest, cxx: clang++-20, preset: rtsan }
           - { name: msvc-debug, os: windows-latest, cxx: "", preset: win-dev }
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -63,6 +68,17 @@ jobs:
       - name: install ninja (Windows)
         if: runner.os == 'Windows'
         run: pip install ninja
+      # Skipped when clang-20 is already present (e.g. the local act runner
+      # image pre-installs it, keeping orchestrator iterations offline-fast).
+      - name: install clang-20
+        if: runner.os == 'Linux' && startsWith(matrix.cxx, 'clang')
+        run: |
+          if ! command -v ${{ matrix.cxx }} >/dev/null 2>&1; then
+            wget -q https://apt.llvm.org/llvm.sh
+            chmod +x llvm.sh
+            sudo ./llvm.sh 20
+            sudo apt-get install -y libclang-rt-20-dev
+          fi
       - name: configure
         shell: bash
         run: |
