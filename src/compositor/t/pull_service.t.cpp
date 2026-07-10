@@ -107,6 +107,43 @@ public:
   void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
 };
 
+// A `MarkBackend` that additionally records the last `composite` (dst / src /
+// affine / opacity), so a delivery test can witness both THAT `pull` composited
+// the covering tile into the caller's target and the tile->target affine it used
+// (the region/scale-honoring mapping, Constraint 1) -- not just that some
+// composite ran.
+class CaptureBackend : public arbc::Backend {
+public:
+  struct Composite {
+    const arbc::Surface* dst{nullptr};
+    const arbc::Surface* src{nullptr};
+    arbc::Affine affine{};
+    double opacity{0.0};
+  };
+  int composites{0};
+  Composite last{};
+
+  arbc::BackendCaps capabilities() const override { return {}; }
+  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
+  make_surface(int width, int height, arbc::SurfaceFormat /*format*/) override {
+    return std::unique_ptr<arbc::Surface>(std::make_unique<BufferSurface>(width, height));
+  }
+  void clear(arbc::Surface& surface, float /*r*/, float /*g*/, float /*b*/, float /*a*/) override {
+    std::span<std::byte> bytes = surface.cpu_bytes();
+    std::memset(bytes.data(), 0, bytes.size_bytes());
+  }
+  void composite(arbc::Surface& dst, const arbc::Surface& src, const arbc::Affine& m,
+                 double opacity) override {
+    ++composites;
+    last = Composite{&dst, &src, m, opacity};
+    const auto mark = static_cast<unsigned>(opacity * 251.0) + 1u;
+    for (std::byte& b : dst.cpu_bytes()) {
+      b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);
+    }
+  }
+  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
+};
+
 // A configurable operator/leaf `Content` double. Empty `inputs` -> a leaf; an
 // operator carries input edges, an optional request-invariant `identity()` index,
 // and -- when a `service` is wired -- recursively pulls its first input inside
@@ -303,6 +340,194 @@ TEST_CASE(
     REQUIRE(done->settled());
     CHECK(cache.lookup(key).has_value());
   }
+}
+
+// enforces: 13-effects-as-operators#pull-delivers-to-caller-target
+// enforces: 13-effects-as-operators#pull-is-cache-first
+TEST_CASE("pull_service: a warm hit delivers the resident tile's pixels into the caller's target, "
+          "no dispatch") {
+  CaptureBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  auto rec = std::make_shared<DispatchRecorder>();
+  BufferSurface caller_target(256, 256);
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{31};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+
+  CompositorCounters counters;
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  PullServiceImpl service(cache, backend, recording_dispatch(rec), config);
+  const TileKey key = tile_key(leaf_id, k_rev);
+
+  // Seed the input's covering tile under its identity + revision at exact rung
+  // scale, and remember the resident surface so delivery's `src` can be checked.
+  auto surf = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(surf.has_value());
+  const arbc::Surface* const tile_ptr = surf->get();
+  const std::size_t bytes = arbc::tile_byte_cost(**surf);
+  cache.insert(key, TileValue{std::move(*surf), {1.0, true}}, bytes, arbc::PriorityClass::Visible);
+
+  SECTION("an aligned region at native scale delivers under the identity affine") {
+    // The caller's target starts transparent (`BufferSurface` zero-fills).
+    for (const std::byte b : caller_target.cpu_bytes()) {
+      REQUIRE(std::to_integer<unsigned>(b) == 0u);
+    }
+
+    auto done = std::make_shared<RenderCompletion>();
+    service.pull(&leaf, one_tile_request(caller_target, StateHandle{}, Deadline::none()), done);
+
+    // Cache-first: no render dispatched -- delivery is a composite, not a render.
+    CHECK(rec->calls == 0);
+    CHECK(counters.requests_issued() == 0);
+    CHECK(leaf.renders() == 0);
+    REQUIRE(done->settled()); // completed synchronously from the cache
+
+    // Delivery composited the resident tile into the caller's target: for a
+    // `from_size(256,256)` region at scale 1.0 over rung-0 tile (0,0) the
+    // tile->target affine is the identity, src is the resident tile, dst the
+    // caller's target, opacity 1.0 -- exactly one composite, no new cache tile.
+    CHECK(backend.composites == 1);
+    CHECK(backend.last.dst == static_cast<const arbc::Surface*>(&caller_target));
+    CHECK(backend.last.src == tile_ptr);
+    CHECK(backend.last.opacity == 1.0);
+    const arbc::Affine m = backend.last.affine;
+    CHECK(m.a == 1.0);
+    CHECK(m.b == 0.0);
+    CHECK(m.c == 0.0);
+    CHECK(m.d == 1.0);
+    CHECK(m.tx == 0.0);
+    CHECK(m.ty == 0.0);
+    for (const std::byte b : caller_target.cpu_bytes()) {
+      CHECK(std::to_integer<unsigned>(b) == 252u); // opacity-1.0 mark folded in
+    }
+  }
+
+  SECTION("an off-origin sub-tile region honors the request origin (not a raw blit)") {
+    // A 128x128 region offset to local (40,24), still covered by the single rung-0
+    // tile (0,0). Delivery must map the tile into `target` under the request's
+    // region origin -- a `translate(-40,-24)` -- proving it does NOT assume the
+    // target and the tile share an origin (Constraint 1).
+    const arbc::RenderRequest req{arbc::Rect{40.0, 24.0, 168.0, 152.0},
+                                  1.0,
+                                  arbc::Time::zero(),
+                                  StateHandle{},
+                                  caller_target,
+                                  arbc::Exactness::BestEffort,
+                                  Deadline::none()};
+
+    auto done = std::make_shared<RenderCompletion>();
+    service.pull(&leaf, req, done);
+
+    CHECK(rec->calls == 0); // still a warm hit (same covering tile / key)
+    REQUIRE(done->settled());
+    CHECK(backend.composites == 1);
+    const arbc::Affine m = backend.last.affine;
+    CHECK(m.a == 1.0);
+    CHECK(m.d == 1.0);
+    CHECK(m.tx == -40.0);
+    CHECK(m.ty == -24.0);
+  }
+}
+
+// enforces: 13-effects-as-operators#pull-delivers-to-caller-target
+TEST_CASE("pull_service: a synchronous miss delivers the freshly-rendered tile into the caller's "
+          "target in one pass") {
+  CaptureBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  auto rec = std::make_shared<DispatchRecorder>(); // runs render inline (synchronous driver)
+  BufferSurface caller_target(256, 256);
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{32};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+
+  CompositorCounters counters;
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  PullServiceImpl service(cache, backend, recording_dispatch(rec), config);
+  const TileKey key = tile_key(leaf_id, k_rev);
+
+  auto done = std::make_shared<RenderCompletion>();
+  service.pull(&leaf, one_tile_request(caller_target, StateHandle{}, Deadline::none()), done);
+
+  // Exactly one render dispatched, and the tile was cached under the input's key.
+  CHECK(rec->calls == 1);
+  CHECK(counters.requests_issued() == 1);
+  REQUIRE(done->settled());
+  auto hit = cache.lookup(key);
+  REQUIRE(hit.has_value());
+
+  // Delivery composited the just-rendered cache tile into the caller's target in
+  // the same pass: identity affine for this aligned request, opacity 1.0, and the
+  // sole composite (the render filled the tile in-place -- no provided-surface
+  // copy -- so delivery is the only composite the miss performs).
+  CHECK(backend.composites == 1);
+  CHECK(backend.last.dst == static_cast<const arbc::Surface*>(&caller_target));
+  CHECK(backend.last.src == hit->get().surface.get());
+  CHECK(backend.last.opacity == 1.0);
+  const arbc::Affine m = backend.last.affine;
+  CHECK(m.a == 1.0);
+  CHECK(m.b == 0.0);
+  CHECK(m.c == 0.0);
+  CHECK(m.d == 1.0);
+  CHECK(m.tx == 0.0);
+  CHECK(m.ty == 0.0);
+  for (const std::byte b : caller_target.cpu_bytes()) {
+    CHECK(std::to_integer<unsigned>(b) == 252u);
+  }
+}
+
+// enforces: 13-effects-as-operators#pull-retains-render-surface-until-settle
+TEST_CASE("pull_service: an async dispatch with no reap sink degrades to the placeholder plus one "
+          "diagnostic, freeing no live surface") {
+  MarkBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  auto rec = std::make_shared<DispatchRecorder>();
+  rec->defer = true; // the dispatch answers asynchronously: `done` is left unsettled
+  BufferSurface caller_target(256, 256);
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{33};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+
+  GraphDiagnostics diags;
+  PullConfig config;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  config.diagnostics = &diags;
+  config.pending = nullptr; // NO reap sink: the Decision-3 misconfiguration
+  PullServiceImpl service(cache, backend, recording_dispatch(rec), config);
+
+  // Precondition of the misconfiguration: the injected dispatch answers async.
+  REQUIRE(rec->defer);
+
+#ifdef NDEBUG
+  // Release: `pull`'s `assert(done->settled())` is compiled out, so a sink-less
+  // async miss degrades safely instead of falling through to the use-after-free
+  // this branch used to leave. The render was dispatched, `done` fails with the
+  // placeholder, and exactly one diagnostic names the offending input -- no crash,
+  // and no live surface is freed (the deferred dispatch wrote nothing and nothing
+  // is retained).
+  auto done = std::make_shared<RenderCompletion>();
+  service.pull(&leaf, one_tile_request(caller_target, StateHandle{}, Deadline::none()), done);
+  CHECK(rec->calls == 1);
+  REQUIRE(done->settled());
+  const auto settled = done->take();
+  REQUIRE(settled.has_value());
+  CHECK_FALSE(settled->has_value()); // placeholder failure
+  CHECK(settled->error() == arbc::RenderError::ResourceUnavailable);
+  CHECK(diags.entries.size() == 1);
+#endif
+  // Debug: `pull` asserts `done->settled()` after a sink-less dispatch; the same
+  // precondition (an async-answering dispatch) is witnessed by `rec->defer` above
+  // without tripping the abort (mirrors the NDEBUG convention in
+  // backend_cpu/t/cpu_backend.t.cpp).
 }
 
 // enforces: 13-effects-as-operators#pull-inherits-snapshot-and-deadline

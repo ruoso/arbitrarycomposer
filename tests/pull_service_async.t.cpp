@@ -145,3 +145,77 @@ TEST_CASE("pull_service async: many concurrent worker pulls settle race-free int
   CHECK(cache.resident_bytes() == static_cast<std::size_t>(k_pulls) * k_tile_bytes);
   CHECK(cache.evictions() == 0);
 }
+
+// enforces: 13-effects-as-operators#pull-retains-render-surface-until-settle
+TEST_CASE("pull_service async: a caller cancel mid-flight frees no live surface; the render still "
+          "reaps race-free into the cache") {
+  constexpr int k_pulls = 64;
+  constexpr std::size_t k_tile_bytes = 256u * 256u * 16u; // rgba32f 256^2
+
+  CpuBackend backend;
+  WorkerPoolConfig pool_config;
+  pool_config.worker_count = 4;
+  WorkerPool pool(pool_config);
+  TileCache cache(256u * 1024 * 1024);
+
+  std::vector<std::unique_ptr<SolidLeaf>> leaves;
+  std::unordered_map<const Content*, ObjectId> ids;
+  for (int i = 0; i < k_pulls; ++i) {
+    leaves.push_back(std::make_unique<SolidLeaf>());
+    ids.emplace(leaves.back().get(), ObjectId{static_cast<std::uint32_t>(i + 1)});
+  }
+
+  RefinementQueue queue;
+  PullConfig config;
+  config.pending = &queue;
+  config.id_of = [&ids](const Content* c) {
+    const auto it = ids.find(c);
+    return it != ids.end() ? it->second : ObjectId{};
+  };
+  config.contribution = [](const Content*) { return std::uint64_t{1}; };
+
+  RenderDispatch dispatch = [&pool](Content* content, const RenderRequest& request,
+                                    std::shared_ptr<RenderCompletion> done) {
+    pool.submit(RenderTask{content, request, std::move(done)});
+  };
+  PullServiceImpl service(cache, backend, std::move(dispatch), config);
+
+  // Issue every pull, retaining the caller's completion handle AND its request
+  // target so we can cancel while a worker may still be mid-write on the surface
+  // the pending reap sink now owns.
+  std::vector<std::shared_ptr<RenderCompletion>> callers;
+  std::vector<std::unique_ptr<Surface>> scratch;
+  for (int i = 0; i < k_pulls; ++i) {
+    expected<std::unique_ptr<Surface>, SurfaceError> s =
+        backend.make_surface(1, 1, k_working_rgba32f);
+    REQUIRE(s.has_value());
+    scratch.push_back(std::move(*s));
+    auto done = std::make_shared<RenderCompletion>();
+    service.pull(leaves[static_cast<std::size_t>(i)].get(), one_tile_request(*scratch.back()),
+                 done);
+    callers.push_back(std::move(done));
+  }
+
+  // The caller abandons interest mid-flight. `cancel()` is advisory ONLY: it must
+  // not free the surface a worker is still writing (that surface lives in the
+  // pending reap sink, not with the caller) and it must not drop the pending
+  // entry. If cancel freed the surface, the worker's write is a use-after-free
+  // ASan/TSan reports; if it dropped the entry, the tile goes missing below.
+  for (const std::shared_ptr<RenderCompletion>& done : callers) {
+    done->cancel();
+  }
+
+  // Drain to quiescence: every retained render still settles and reaps into the
+  // cache regardless of the caller cancel (behavioral, never wall-clock).
+  while (!queue.tiles.empty()) {
+    poll_refinements(queue, cache);
+    if (queue.tiles.empty()) {
+      break;
+    }
+    pool.wait_completions(std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
+  }
+
+  CHECK(queue.tiles.empty());
+  CHECK(cache.resident_bytes() == static_cast<std::size_t>(k_pulls) * k_tile_bytes);
+  CHECK(cache.evictions() == 0);
+}

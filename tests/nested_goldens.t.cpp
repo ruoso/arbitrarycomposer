@@ -2,6 +2,8 @@
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/compositor/compositor.hpp>
+#include <arbc/compositor/counters.hpp>
+#include <arbc/compositor/pull_service.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/kind_nested/nested_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
@@ -139,6 +141,45 @@ std::vector<std::byte> render_flat(Scene& scene, Backend& backend, int dim, doub
   return bytes_of(**target);
 }
 
+// Render the child through NestedContent driven by the LIVE `PullServiceImpl`
+// (synchronous `direct_dispatch`), exercising delivery-to-target
+// (`pull-delivers-to-caller-target`): each child-layer pull now flows through the
+// real tile-cache / scheduling engine and the pulled child's pixels are delivered
+// into the nested temp. The "rendering is recursion" equality against the flat
+// oracle must still hold byte-exact -- proving delivery lands the right pixels for
+// a multi-layer nested composition.
+std::vector<std::byte> render_nested_live(Scene& scene, CpuBackend& backend, int dim,
+                                          double scale) {
+  const DocStatePtr doc = scene.model.current();
+  NestedContent nested(scene.comp);
+  TileCache cache(64u * 1024 * 1024);
+  std::unordered_map<const Content*, ObjectId> ids;
+  for (const auto& entry : scene.binding) {
+    ids.emplace(entry.second, entry.first);
+  }
+  PullConfig config;
+  config.id_of = [ids](const Content* c) {
+    const auto it = ids.find(c);
+    return it != ids.end() ? it->second : ObjectId{};
+  };
+  config.contribution = [](const Content*) { return std::uint64_t{1}; };
+  PullServiceImpl service(cache, backend, direct_dispatch(), config);
+  nested.attach(service, backend, scene.resolver(), *doc);
+  auto target = backend.make_surface(dim, dim, k_working_rgba32f);
+  REQUIRE(target.has_value());
+  const RenderRequest req{Rect{0.0, 0.0, dim / scale, dim / scale},
+                          scale,
+                          Time::zero(),
+                          StateHandle{},
+                          **target,
+                          Exactness::Exact,
+                          Deadline::none()};
+  auto done = std::make_shared<RenderCompletion>();
+  const std::optional<RenderResult> r = nested.render(req, done);
+  REQUIRE(r.has_value());
+  return bytes_of(**target);
+}
+
 } // namespace
 
 // enforces: 05-recursive-composition#nested-renders-through-synthetic-viewport
@@ -158,6 +199,27 @@ TEST_CASE("nested renders byte-identically to compositing the child's layers fla
   }
   SECTION("0.25x") {
     REQUIRE(bytes_equal(render_nested(scene, pull, backend, 8, 0.25),
+                        render_flat(scene, backend, 8, 0.25)));
+  }
+}
+
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 13-effects-as-operators#operator-pulls-only-via-pull-service
+TEST_CASE("nested re-runs the flat-scene equality byte-exact through the live pull service") {
+  Scene scene;
+  scene.build();
+  CpuBackend backend;
+
+  SECTION("native scale") {
+    REQUIRE(bytes_equal(render_nested_live(scene, backend, 8, 1.0),
+                        render_flat(scene, backend, 8, 1.0)));
+  }
+  SECTION("0.5x") {
+    REQUIRE(bytes_equal(render_nested_live(scene, backend, 8, 0.5),
+                        render_flat(scene, backend, 8, 0.5)));
+  }
+  SECTION("0.25x") {
+    REQUIRE(bytes_equal(render_nested_live(scene, backend, 8, 0.25),
                         render_flat(scene, backend, 8, 0.25)));
   }
 }

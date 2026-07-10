@@ -27,7 +27,10 @@
 
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/geometry.hpp>
+#include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
+#include <arbc/compositor/counters.hpp>
+#include <arbc/compositor/pull_service.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/kind_fade/fade_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
@@ -46,6 +49,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 using namespace arbc;
@@ -163,6 +167,63 @@ void require_bytes(const std::vector<std::byte>& got, std::span<const unsigned c
   REQUIRE(std::memcmp(got.data(), want.data(), want.size()) == 0);
 }
 
+// A `Content* -> ObjectId` reverse map (the runtime binding's, supplied here by
+// the test) so a live `PullServiceImpl` can key the input's tiles.
+std::function<ObjectId(const Content*)>
+id_map(const std::unordered_map<const Content*, ObjectId>& ids) {
+  return [&ids](const Content* c) {
+    const auto it = ids.find(c);
+    return it != ids.end() ? it->second : ObjectId{};
+  };
+}
+
+// The visual golden re-run through the LIVE `PullServiceImpl` (synchronous
+// `direct_dispatch`) bound to `CompositorCounters`, exercising delivery-to-target
+// (`pull-delivers-to-caller-target`): the fade's input pull now flows through the
+// real tile-cache / scheduling engine and the pulled pixels are delivered into
+// the fade's temp. The frozen table must still come out byte-exact -- proving
+// delivery lands the right pixels (Decision 1). `counters` is returned by ref so
+// the caller can assert the operator provoked exactly the input renders the
+// service issued (`operator-pulls-only-via-pull-service`).
+std::vector<std::byte> render_visual_golden_live(CompositorCounters& counters) {
+  CpuBackend backend;
+  SolidContent solid{Rgba{0.5F, 0.25F, 0.125F, 1.0F}, Rect{0.0, 0.0, 2.0, 2.0}};
+  FadeContent fade{&solid,
+                   FadeParams{FadeShape::Linear, FadeWindow{Time{0}, Time{1000}}, std::nullopt}};
+  TileCache cache(64u * 1024 * 1024);
+  const std::unordered_map<const Content*, ObjectId> ids{{&solid, ObjectId{1}}};
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = [](const Content*) { return std::uint64_t{1}; };
+  PullServiceImpl service(cache, backend, direct_dispatch(), config);
+  fade.attach(service, backend);
+  return render_fade_bytes(fade, backend, 2, 2, Time{500});
+}
+
+// The audio golden re-run through the live `PullServiceImpl`: `pull_audio`
+// dispatches the tone through `direct_audio_dispatch` into the fade's block (the
+// miss path writes the caller's block directly, no delivery copy), so the frozen
+// ramp comes out byte-exact.
+std::vector<std::byte> render_audio_golden_live(CompositorCounters& counters) {
+  CpuBackend backend;
+  ToneContent tone{440, 0.5F};
+  FadeContent fade{&tone, FadeParams{FadeShape::Linear,
+                                     FadeWindow{Time{0}, Time{static_cast<std::int64_t>(k_frames) *
+                                                              flicks_per_frame()}},
+                                     std::nullopt}};
+  TileCache cache(64u * 1024 * 1024);
+  const std::unordered_map<const Content*, ObjectId> ids{{&tone, ObjectId{1}}};
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = [](const Content*) { return std::uint64_t{1}; };
+  config.audio_dispatch = direct_audio_dispatch();
+  PullServiceImpl service(cache, backend, direct_dispatch(), config);
+  fade.attach(service, backend);
+  return render_fade_audio_bytes(fade);
+}
+
 // ===========================================================================
 // FROZEN EXPECTED TABLES -- regenerate deliberately (see procedure at top).
 // ===========================================================================
@@ -197,6 +258,24 @@ TEST_CASE("org.arbc.fade renders a byte-exact visual golden at a partial envelop
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 TEST_CASE("org.arbc.fade renders a byte-exact audio golden under a per-frame ramp") {
   require_bytes(render_audio_golden(), kAudioRamp);
+}
+
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 13-effects-as-operators#operator-pulls-only-via-pull-service
+TEST_CASE("org.arbc.fade re-runs the visual golden byte-exact through the live pull service") {
+  CompositorCounters counters;
+  require_bytes(render_visual_golden_live(counters), kVisualHalf);
+  // Cold input: the fade provoked exactly one input render, and it flowed through
+  // the service (delivery is a composite, not a second render).
+  CHECK(counters.requests_issued() == 1);
+}
+
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 13-effects-as-operators#operator-pulls-only-via-pull-service
+TEST_CASE("org.arbc.fade re-runs the audio golden byte-exact through the live pull service") {
+  CompositorCounters counters;
+  require_bytes(render_audio_golden_live(counters), kAudioRamp);
+  CHECK(counters.audio_dispatches() == 1);
 }
 
 // enforces: 13-effects-as-operators#fade-attenuates-both-facets

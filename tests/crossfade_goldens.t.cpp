@@ -26,7 +26,10 @@
 
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/geometry.hpp>
+#include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
+#include <arbc/compositor/counters.hpp>
+#include <arbc/compositor/pull_service.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/kind_crossfade/crossfade_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
@@ -45,6 +48,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 using namespace arbc;
@@ -122,6 +126,31 @@ std::vector<std::byte> render_visual_golden() {
   return render_crossfade_bytes(xf, backend, 2, 2, Time{500});
 }
 
+// The visual golden re-run through the LIVE `PullServiceImpl` (synchronous
+// `direct_dispatch`) bound to `CompositorCounters`, exercising delivery-to-target
+// (`pull-delivers-to-caller-target`): the crossfade's two input pulls now flow
+// through the real tile-cache / scheduling engine and each pulled input's pixels
+// are delivered into the crossfade's temp. The frozen table must still come out
+// byte-exact -- proving delivery lands the right pixels for a two-input operator.
+std::vector<std::byte> render_visual_golden_live(CompositorCounters& counters) {
+  CpuBackend backend;
+  SolidContent from{Rgba{0.5F, 0.25F, 0.125F, 1.0F}, Rect{0.0, 0.0, 2.0, 2.0}};
+  SolidContent to{Rgba{0.125F, 0.375F, 0.75F, 1.0F}, Rect{0.0, 0.0, 2.0, 2.0}};
+  CrossfadeContent xf{&from, &to, CrossfadeParams{CrossfadeShape::Linear, Time{0}, Time{1000}}};
+  TileCache cache(64u * 1024 * 1024);
+  const std::unordered_map<const Content*, ObjectId> ids{{&from, ObjectId{1}}, {&to, ObjectId{2}}};
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = [ids](const Content* c) {
+    const auto it = ids.find(c);
+    return it != ids.end() ? it->second : ObjectId{};
+  };
+  config.contribution = [](const Content*) { return std::uint64_t{1}; };
+  PullServiceImpl service(cache, backend, direct_dispatch(), config);
+  xf.attach(service, backend);
+  return render_crossfade_bytes(xf, backend, 2, 2, Time{500});
+}
+
 // Render `xf`'s audio for a 16-frame stereo block at 48 kHz over
 // [window_start, window_start + 16*fpf), returning the raw interleaved float32
 // bytes.
@@ -196,6 +225,17 @@ constexpr std::array<unsigned char, 128> kAudioMid = {
 // enforces: 13-effects-as-operators#crossfade-mixes-both-facets
 TEST_CASE("org.arbc.crossfade renders a byte-exact visual dissolve golden at w == 0.5") {
   require_bytes(render_visual_golden(), kVisualMid);
+}
+
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 13-effects-as-operators#operator-pulls-only-via-pull-service
+TEST_CASE("org.arbc.crossfade re-runs the visual dissolve golden byte-exact through the live pull "
+          "service") {
+  CompositorCounters counters;
+  require_bytes(render_visual_golden_live(counters), kVisualMid);
+  // An interior w pulls both inputs cold: exactly two input renders, each flowed
+  // through the service (delivery is a composite, not a render).
+  CHECK(counters.requests_issued() == 2);
 }
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens

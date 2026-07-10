@@ -88,6 +88,18 @@ any content. The nested kind reimplements on top of it; third-party
 operators get the proof (doc 05's closing argument) that plugins can do
 anything the core can.
 
+**A pull delivers into the caller's target.** `pull` writes the pulled
+input's pixels into the request's `target` surface — the visual analog of
+`pull_audio` writing samples into `AudioRequest.target` — on every path
+where the pixels are available synchronously: a resident cache hit
+composites the input's tile(s) into `target`, and a miss that settles
+inline composites the freshly-rendered tile into `target`, honoring the
+request's region and scale (doc 09's `provided`-surface contract, same
+reasoning). The operator then composites a `target` that actually holds its
+input's pixels. A pull whose input answers *asynchronously* delivers
+nothing this pass — the operator degrades for this frame and the async
+arrival re-drives it (below).
+
 Metadata composes synchronously: an operator computes `bounds()`,
 `time_extent()`, `scale_range()`, `stability()` by querying its inputs and
 applying its own contribution — a blur inflates bounds by its radius; a
@@ -129,7 +141,12 @@ output under the operator's. `identity()` short-circuits both levels.
 Async composes: an operator whose input answers asynchronously is itself
 asynchronous via the same completion plumbing; deadlines and cache budgets
 flow through pulls exactly as they flow through nesting (doc 05's budget
-rule, same reasoning).
+rule, same reasoning). The pull core retains a dispatched render's target
+surface until that render settles, so a caller abandoning its completion
+(`RenderCompletion::cancel`) never frees a surface an in-flight worker is
+still writing; a pull configured without an async reap sink must be given a
+synchronous dispatch, so its render settles before `pull` returns rather
+than dangling the surface.
 
 Cycles in the operator graph are feedback (video feedback, audio echo
 loops) and get doc 05's rules verbatim: convergent cycles (spatial scale

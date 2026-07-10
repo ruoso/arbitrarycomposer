@@ -5,15 +5,16 @@
 // `LoadLibrary`/`GetProcAddress`/`FreeLibrary` backing -- and the `;`
 // `ARBC_PLUGIN_PATH` separator -- are the deferred `runtime.plugin_loading_win32`
 // leaf (M9). This single `_WIN32` seam mirrors the guard in plugin.hpp:8-12.
-#error "runtime.plugin_loading is POSIX/dlfcn only for v1; the Windows backing is runtime.plugin_loading_win32 (M9). See tasks/refinements/runtime/plugin_loading.md Decision 4."
+#error                                                                                             \
+    "runtime.plugin_loading is POSIX/dlfcn only for v1; the Windows backing is runtime.plugin_loading_win32 (M9). See tasks/refinements/runtime/plugin_loading.md Decision 4."
 #endif
 
+#include <dirent.h>
 #include <dlfcn.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
-#include <dirent.h>
 
 namespace arbc {
 
@@ -44,7 +45,8 @@ constexpr char k_path_separator = ':';
 using RegisterFn = void (*)(Registry&);
 
 bool has_suffix(std::string_view name, std::string_view suffix) {
-  return name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+  return name.size() >= suffix.size() &&
+         name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 // The shared open+resolve step. Returns the resolved entry point (and, on the
@@ -53,10 +55,10 @@ bool has_suffix(std::string_view name, std::string_view suffix) {
 // no entry point" (a scan skips it, an explicit load faults it) from "could not
 // open at all". `diagnostic` captures the dlerror()-style message.
 struct OpenResult {
-  void* handle = nullptr;    // owned by the caller iff fn != nullptr
-  RegisterFn fn = nullptr;   // the resolved entry point, or nullptr
-  bool opened = false;       // dlopen succeeded (even if the symbol was absent)
-  std::string diagnostic;    // captured dlerror() on failure
+  void* handle = nullptr;  // owned by the caller iff fn != nullptr
+  RegisterFn fn = nullptr; // the resolved entry point, or nullptr
+  bool opened = false;     // dlopen succeeded (even if the symbol was absent)
+  std::string diagnostic;  // captured dlerror() on failure
 };
 
 OpenResult open_and_resolve(const std::string& path) {
@@ -90,8 +92,8 @@ expected<std::monostate, PluginLoadError> PluginHost::load_plugin(std::string_vi
   OpenResult opened = open_and_resolve(path_str);
 
   if (!opened.opened) {
-    return unexpected(PluginLoadError{PluginLoadError::Code::CannotOpen, path_str,
-                                      std::move(opened.diagnostic)});
+    return unexpected(
+        PluginLoadError{PluginLoadError::Code::CannotOpen, path_str, std::move(opened.diagnostic)});
   }
   if (opened.fn == nullptr) {
     // An explicit by-path load asserts "this IS a plugin", so a missing symbol is
@@ -170,8 +172,8 @@ PluginScanReport PluginHost::scan_plugin_path() {
     for (const std::string& candidate : candidates) {
       OpenResult opened = open_and_resolve(candidate);
       if (!opened.opened) {
-        report.entries.push_back({candidate, PluginScanEntry::Outcome::CannotOpen,
-                                  std::move(opened.diagnostic)});
+        report.entries.push_back(
+            {candidate, PluginScanEntry::Outcome::CannotOpen, std::move(opened.diagnostic)});
         continue;
       }
       if (opened.fn == nullptr) {

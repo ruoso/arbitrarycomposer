@@ -89,6 +89,33 @@ void settle_placeholder_audio(const std::shared_ptr<AudioCompletion>& done) {
   }
 }
 
+// Deliver the covering tile's pixels into the caller's `request.target`
+// (doc 13, `pull-delivers-to-caller-target`): the visual analog of `pull_audio`
+// copying the resident block into `request.target.samples` (`:317-319`). The
+// tile is cached at tile granularity (`k_tile_size` px) at rung scale `rung_px`
+// and grid `coord`; `request.target` holds `request.region` at `request.scale`.
+// Delivery composites the tile into `target` under the tile->region affine
+// `plan_layer` uses to composite tiles into a frame (`tile_planning.cpp:52-55,
+// 104-135`): tile pixel -> local (`translate(tile origin) . scale(1/rung_px)`)
+// chained with local -> target pixel (`scale(request.scale) .
+// translate(-region origin)`). So delivery honors region and scale and never
+// assumes `target` and the tile share dimensions or origin (Constraint 1). It is
+// one `Backend::composite`, no dispatched render and no cache write
+// (Constraints 2, 3) -- exactly the region/scale-honoring copy doc 09 mandates
+// for a provided surface, in reverse (cache tile -> `target`).
+void deliver_tile(Backend& backend, const Surface& tile, TileCoord coord, double rung_px,
+                  const RenderRequest& request) {
+  const double cell = static_cast<double>(k_tile_size) / rung_px;
+  const double local_x0 = static_cast<double>(coord.col) * cell;
+  const double local_y0 = static_cast<double>(coord.row) * cell;
+  const Affine local_from_tile = compose(Affine::translation(local_x0, local_y0),
+                                         Affine::scaling(1.0 / rung_px, 1.0 / rung_px));
+  const Affine target_from_local =
+      compose(Affine::scaling(request.scale, request.scale),
+              Affine::translation(-request.region.x0, -request.region.y0));
+  backend.composite(request.target, tile, compose(target_from_local, local_from_tile), 1.0);
+}
+
 } // namespace
 
 void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
@@ -172,6 +199,11 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
   // warm pull issues zero work.
   if (std::optional<CacheHold<TileValue>> hit = d_cache.lookup(key);
       hit.has_value() && hit->get().meta.exact && hit->get().meta.achieved_scale == rung_px) {
+    // Deliver the resident tile's pixels into the caller's `request.target`
+    // (`pull-delivers-to-caller-target`) before settling -- the visual analog of
+    // `pull_audio`'s hit copy-loop (`:317-319`). One composite, no dispatch: a
+    // warm operator-input pull's `requests_issued` delta stays 0 (Constraint 2).
+    deliver_tile(d_backend, *hit->get().surface, coord, rung_px, request);
     if (done) {
       done->complete(
           RenderResult{hit->get().meta.achieved_scale, hit->get().meta.exact, achieved_time});
@@ -212,14 +244,27 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
     }
   }
 
+  // Dispatch into an INTERNAL completion so the caller's `done` is never consumed
+  // by the render. An operator owns the `done` it passed and observes its input's
+  // result through it (`FadeContent::render` pulls into `temp` then reads `done`);
+  // if `pull` drained the caller's `done` here -- as it did before this task -- the
+  // operator's own read saw nothing and it cleared to transparent, which is why a
+  // delivered `temp` alone was not enough. `pull` now settles the caller's `done`
+  // itself: it `complete`s it from the render's result on an inline answer
+  // (symmetric with the cache-hit path, which also completes rather than takes),
+  // and leaves it unsettled on an async answer (the operator degrades to its
+  // placeholder this frame; the async arrival's damage re-drives a later frame that
+  // hits and delivers -- doc 13's "async composes").
+  auto inner = std::make_shared<RenderCompletion>();
+
   // The descent depth is in effect across the dispatch so an operator whose
   // `render` recursively pulls its own input re-enters `pull` at `d_depth + 1`.
   ++d_depth;
-  d_dispatch(input, render_request, done);
+  d_dispatch(input, render_request, inner);
   --d_depth;
 
-  if (done && done->settled()) {
-    const std::optional<expected<RenderResult, RenderError>> settled = done->take();
+  if (inner->settled()) {
+    const std::optional<expected<RenderResult, RenderError>> settled = inner->take();
     if (settled.has_value() && settled->has_value()) {
       RenderResult result = **settled;
       // Insert-key temporal linkage (doc 11:134-137): the pull keyed this tile at
@@ -237,24 +282,61 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
           d_backend.composite(tile_surface, src, Affine::identity(), 1.0);
         }
       });
+      // Deliver the freshly-rendered tile into the caller's `request.target`
+      // (`pull-delivers-to-caller-target`): the synchronous-miss analog of the
+      // hit delivery above, and of `pull_audio`'s miss writing the caller's
+      // block. One composite; the render was already dispatched (Constraint 2).
+      deliver_tile(d_backend, tile_surface, coord, rung_px, request);
       const std::size_t bytes = tile_byte_cost(tile_surface);
       d_cache.insert(key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
                      bytes, PriorityClass::Visible);
+      // Settle the caller's completion from the render's result (its `provided`
+      // surface already consumed + released above), so the operator that owns
+      // `done` reads a clean result exactly as it would on a warm hit.
+      if (done) {
+        done->complete(result);
+      }
+    } else if (done) {
+      // A settled-via-fail inline render: no insert, no pending. Propagate the
+      // failure onto the caller's completion so it degrades to the placeholder.
+      done->fail(RenderError::ResourceUnavailable);
     }
-    // A settled-via-fail inline render is dropped: no insert, no pending -- the
-    // caller sees the failure on `done` and degrades to the placeholder.
   } else if (d_config.pending != nullptr) {
     // Async (doc 02:69-71 step 6, doc 13:128-130): the render answered
-    // asynchronously (the completion is still live). Record it -- the cache-owned
-    // surface and the completion travel with it -- so a later `poll_refinements`
-    // inserts it under `Visible` and emits damage; the render occupies no worker
-    // while pending. The cache stays single-writer on the draining frame thread
-    // (Decision 4): only `content->render` into the thread-confined target ran on
-    // a worker. `done` was NOT taken above, so it is the live completion the
-    // worker settles and `poll_refinements` drains.
+    // asynchronously (`inner` is still live). Record it -- the cache-owned surface
+    // and the render's completion `inner` travel with it -- so a later
+    // `poll_refinements` inserts it under `Visible` and emits damage; the render
+    // occupies no worker while pending. The cache stays single-writer on the
+    // draining frame thread (Decision 4): only `content->render` into the
+    // thread-confined target ran on a worker. The caller's `done` is left unsettled
+    // -- the operator sees `!done->settled()` and degrades this frame -- and the
+    // reap sink, not the caller, owns the surface + `inner` until the worker
+    // settles, so a caller `cancel()` never frees a surface an in-flight worker is
+    // still writing (`pull-retains-render-surface-until-settle`).
     const std::size_t bytes = tile_byte_cost(tile_surface);
-    d_config.pending->tiles.push_back(
-        PendingTile{key, request.region, id, stability, bytes, std::move(*owned), std::move(done)});
+    d_config.pending->tiles.push_back(PendingTile{key, request.region, id, stability, bytes,
+                                                  std::move(*owned), std::move(inner)});
+  } else {
+    // Async dispatch with no reap sink (Decision 3, `pull-retains-render-surface-
+    // until-settle`): the injected `d_dispatch` answered asynchronously (`inner`
+    // unsettled) against a service configured without a `pending` sink -- a
+    // driver-precondition violation. There is nowhere to retain `owned` (the
+    // surface a worker may still be writing) + `inner` until the render settles, so
+    // we cannot proceed as the top-level async path does. Assert the precondition
+    // in debug (a sink-less path MUST be given a synchronous dispatch, which settles
+    // inline above); in release, degrade to the placeholder plus exactly one
+    // diagnostic naming the offending input rather than the silent use-after-free
+    // this branch used to fall through to (`owned` freed at scope exit while a
+    // worker wrote it). The runtime binds a synchronous dispatch for every sink-less
+    // path (offline goldens use `direct_dispatch`), so this fires only on a
+    // misconfiguration -- never on a conformant caller.
+    assert(inner->settled() &&
+           "PullServiceImpl::pull: an async-capable dispatch requires a `pending` reap sink; a "
+           "service configured without one must be given a synchronous dispatch (Decision 3)");
+    if (d_config.diagnostics != nullptr) {
+      d_config.diagnostics->entries.push_back(GraphDiagnostic{input, d_depth, {input}});
+    }
+    settle_placeholder(done);
   }
 }
 
