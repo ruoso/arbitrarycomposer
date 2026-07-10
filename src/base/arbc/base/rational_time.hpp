@@ -7,17 +7,22 @@
 #include <cstddef>
 #include <cstdint>
 
+// The MSVC fallback for 128-bit integers must be included before opening
+// namespace arbc, because int128_msvc.hpp itself declares namespace arbc.
+// Including it inside namespace arbc would create a nested arbc::arbc scope.
+#ifndef __SIZEOF_INT128__
+#include <arbc/base/detail/int128_msvc.hpp>
+#endif
+
 namespace arbc {
 
 // The 128-bit intermediate the rate math reduces through (doc 11 Decision 2).
-// `__int128` is a GCC/Clang extension; MSVC uses a portable struct fallback.
+// `__int128` is a GCC/Clang extension; MSVC uses a portable struct fallback
+// (included above, outside this namespace).
 #ifdef __SIZEOF_INT128__
 // GCC and Clang: use the native type directly.
 __extension__ typedef __int128 rational_i128;
 __extension__ typedef unsigned __int128 rational_u128;
-#else
-// MSVC (and any other compiler without __int128): struct-based fallback.
-#include <arbc/base/detail/int128_msvc.hpp>
 #endif
 
 // Error value for rational-time arithmetic. A compose or evaluate that would
