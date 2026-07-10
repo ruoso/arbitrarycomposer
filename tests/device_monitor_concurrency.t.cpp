@@ -343,15 +343,21 @@ TEST_CASE("TSan: mastered-clock publish races the pump + a viewport; goldens sur
   // `d_drain_index` -- the TSan lane flags any race on `d_realign_index` /
   // `d_realign_request`. Targets sweep varied block-aligned playheads via a seeded LCG
   // (deterministic, no wall clock); genuine thread scheduling perturbs the interleaving.
+  // The loop is a do-while so it executes at least once even if the RT thread has
+  // already delivered the target frame count before this thread is first scheduled
+  // (possible under TSan where three threads compete with high per-operation overhead).
+  // The exit condition also requires at least one realign to have been consumed by the
+  // RT callback: this closes the window where the final flush_master sets
+  // d_realign_request=true but sink.stop() races the RT thread before fill_rt fires.
   const std::uint64_t target = static_cast<std::uint64_t>(k_blocks) * k_block_frames * 16;
   std::uint64_t rng = 0x9E3779B97F4A7C15ULL; // fixed seed; interleaving is the perturbation
-  while (monitor.delivered_frames() < target) {
+  do {
     rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
     const std::int64_t block =
         static_cast<std::int64_t>((rng >> 33) % static_cast<std::uint64_t>(k_blocks));
     monitor.seek(Time{block * span}); // storms the owner->RT realign channel
     monitor.flush_master();           // forces one owner-thread mastering step, races the device
-  }
+  } while (monitor.delivered_frames() < target || monitor.drain_realigns() == 0);
   monitor.flush_master(); // one more to master the final delivered frames
 
   // Quiesce the RT device thread (the DeviceSink contract: fill not invoked after),
