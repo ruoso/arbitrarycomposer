@@ -37,8 +37,8 @@ jobs:
         include:
           - { name: gcc-debug, os: ubuntu-latest, cxx: g++, preset: dev }
           - { name: gcc-release, os: ubuntu-latest, cxx: g++, preset: release }
-          - { name: clang-debug, os: ubuntu-latest, cxx: clang++, preset: dev }
-          - { name: clang-asan, os: ubuntu-latest, cxx: clang++, preset: asan }
+          - { name: clang-debug, os: ubuntu-latest, cxx: clang++-18, preset: dev }
+          - { name: clang-asan, os: ubuntu-latest, cxx: clang++-18, preset: asan }
           # TSan lane (doc 16:66,101-103): the full suite short-form under
           # ThreadSanitizer -- ASan cannot detect data races. gcc's TSan is
           # complete and composes with the mprotect/SIGSEGV/fork crash harness
@@ -51,7 +51,7 @@ jobs:
           # chain fire at runtime -- any lock/allocation/blocking syscall in the
           # annotated graph is a failure. RTSan is Clang-only, so this rides the
           # clang lane; GCC/MSVC keep Layer B + the grep-lint.
-          - { name: clang-rtsan, os: ubuntu-latest, cxx: clang++, preset: rtsan }
+          - { name: clang-rtsan, os: ubuntu-latest, cxx: clang++-18, preset: rtsan }
           - { name: msvc-debug, os: windows-latest, cxx: "", preset: win-dev }
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -91,6 +91,7 @@ jobs:
         run: ctest --preset coverage
       - name: coverage report
         run: gcovr --root . --filter 'src/' --xml -o coverage.xml
+          --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
           build/coverage/src build/coverage/tests
       # Hard diff-coverage gate on changed lines (doc 16). Skipped when no
       # comparable base exists (first push, forced push).

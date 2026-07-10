@@ -21,7 +21,7 @@ jobs:
           python-version: "3.12"
       - run: pip install clang-tidy==19.1.0
       - name: configure
-        run: CXX=clang++ cmake --preset dev
+        run: CXX=clang++-18 cmake --preset dev
       - name: tidy
         run: |
           git ls-files 'src/**/*.cpp' | xargs -r clang-tidy -p build/dev
@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: configure
-        run: CXX=clang++ cmake --preset asan
+        run: CXX=clang++-18 cmake --preset asan
       - name: build
         run: cmake --build --preset asan --parallel 4
       - name: test
@@ -71,15 +71,15 @@ jobs:
       - name: check clang availability
         id: clang
         run: |
-          if command -v clang++ >/dev/null 2>&1; then
+          if command -v clang++-18 >/dev/null 2>&1; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "clang++ not found -- skipping the coverage-guided fuzz lane (the ASan corpus-replay lane still enforces loader safety per-push)."
+            echo "clang++-18 not found -- skipping the coverage-guided fuzz lane (the ASan corpus-replay lane still enforces loader safety per-push)."
           fi
       - name: configure
         if: steps.clang.outputs.available == 'true'
-        run: CXX=clang++ cmake --preset fuzz
+        run: CXX=clang++-18 cmake --preset fuzz
       - name: build
         if: steps.clang.outputs.available == 'true'
         run: cmake --build --preset fuzz --parallel 4

@@ -115,7 +115,8 @@ TEST_CASE("a blob is shared by refcount and reclaimed to its class free pool on 
   REQUIRE(pool.count(ref) == 1);
   std::span<const std::byte> shared = pool.peek(ref);
   REQUIRE(shared.size() == k_page);
-  REQUIRE(std::all_of(shared.begin(), shared.end(), [](std::byte b) { return b == std::byte{0x5A}; }));
+  REQUIRE(
+      std::all_of(shared.begin(), shared.end(), [](std::byte b) { return b == std::byte{0x5A}; }));
 
   // The final release drops the count to zero and returns the slot to its class
   // free pool.
@@ -153,7 +154,7 @@ TEST_CASE("blobs_allocated counts distinct allocations only; reuse does not grow
   // one slot: reserved bytes stay flat after the first allocation.
   const std::size_t reserved0 = pool.arena().total_bytes_reserved();
   for (int i = 0; i < 32; ++i) {
-    blob = arbc::BlockRef{};      // release to zero
+    blob = arbc::BlockRef{};       // release to zero
     blob = *pool.allocate(k_page); // reuse the freed slot
   }
   REQUIRE(pool.blobs_allocated() == 1 + 32);
@@ -167,8 +168,8 @@ TEST_CASE("retain at the count ceiling surfaces a loud overflow, never wrapping"
 
   // Saturate the count directly on the store-owned column.
   arbc::SlotStore& store = pool.class_store(k_page);
-  store.count_ref(blob.index()).store(std::numeric_limits<std::uint32_t>::max(),
-                                      std::memory_order_release);
+  store.count_ref(blob.index())
+      .store(std::numeric_limits<std::uint32_t>::max(), std::memory_order_release);
 
   auto retained = pool.retain(ref);
   REQUIRE_FALSE(retained.has_value());

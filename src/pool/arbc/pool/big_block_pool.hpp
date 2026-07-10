@@ -147,7 +147,7 @@ public:
   // is an error, never a silent wrap. Mirrors `RefStore`'s `k_max_count`.
   static constexpr std::uint32_t k_max_count = std::numeric_limits<std::uint32_t>::max();
 
-  BigBlockPool();                      // owns a default AnonymousChunkSource
+  BigBlockPool();                             // owns a default AnonymousChunkSource
   explicit BigBlockPool(ChunkSource& source); // borrows an external source
   ~BigBlockPool();
   BigBlockPool(const BigBlockPool&) = delete;

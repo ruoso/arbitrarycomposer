@@ -10,10 +10,15 @@
 namespace arbc {
 
 // The 128-bit intermediate the rate math reduces through (doc 11 Decision 2).
-// `__int128` is a compiler extension; name it once behind `__extension__` so the
-// pedantic build stays clean and the keyword appears nowhere else.
+// `__int128` is a GCC/Clang extension; MSVC uses a portable struct fallback.
+#ifdef __SIZEOF_INT128__
+// GCC and Clang: use the native type directly.
 __extension__ typedef __int128 rational_i128;
 __extension__ typedef unsigned __int128 rational_u128;
+#else
+// MSVC (and any other compiler without __int128): struct-based fallback.
+#include <arbc/base/detail/int128_msvc.hpp>
+#endif
 
 // Error value for rational-time arithmetic. A compose or evaluate that would
 // exceed the fixed integer width even after reduction surfaces as this value

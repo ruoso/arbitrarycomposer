@@ -12,7 +12,7 @@ using i128 = rational_i128;
 using u128 = rational_u128;
 
 constexpr u128 gcd_u128(u128 a, u128 b) {
-  while (b != 0) {
+  while (b != u128{}) {
     const u128 t = a % b;
     a = b;
     b = t;
@@ -21,10 +21,29 @@ constexpr u128 gcd_u128(u128 a, u128 b) {
 }
 
 constexpr u128 magnitude_i128(i128 v) {
-  return v < 0 ? u128(0) - static_cast<u128>(v) : static_cast<u128>(v);
+  return v < 0 ? u128{} - static_cast<u128>(v) : static_cast<u128>(v);
 }
 
 TimeError overflow() { return TimeError{TimeError::Kind::Overflow}; }
+
+// Portable overflow-checked arithmetic wrappers.
+// On GCC/Clang with __int128 the builtins are used directly; on MSVC the
+// struct-based helpers from int128_msvc.hpp are used instead.
+#ifdef __SIZEOF_INT128__
+static bool mul_overflow(i128 a, i128 b, i128& result) noexcept {
+  return __builtin_mul_overflow(a, b, &result);
+}
+static bool add_overflow(i128 a, i128 b, i128& result) noexcept {
+  return __builtin_add_overflow(a, b, &result);
+}
+#else
+static bool mul_overflow(i128 a, i128 b, i128& result) noexcept {
+  return arbc_mul_overflow_i128(a, b, result);
+}
+static bool add_overflow(i128 a, i128 b, i128& result) noexcept {
+  return arbc_add_overflow_i128(a, b, result);
+}
+#endif
 
 } // namespace
 
@@ -125,11 +144,11 @@ expected<Time, TimeError> ComposedTimeMap::evaluate(Time parent_time) const {
   const i128 bd = b.den();
 
   i128 term = an * static_cast<i128>(parent_time.flicks); // fits: |.| < 2^126
-  if (__builtin_mul_overflow(term, bd, &term)) {
+  if (mul_overflow(term, bd, term)) {
     return unexpected(overflow());
   }
   i128 n = 0;
-  if (__builtin_add_overflow(term, bn * ad, &n)) { // bn*ad fits (< 2^126)
+  if (add_overflow(term, bn * ad, n)) { // bn*ad fits (< 2^126)
     return unexpected(overflow());
   }
   // d > 0 and fits: canonical denominators are <= INT64_MAX, so ad*bd < 2^126.

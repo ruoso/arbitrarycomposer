@@ -52,10 +52,13 @@ void LookaheadRing::publish_slot(std::int64_t index, const AudioResult& meta) {
   // (even) with a release so a reader that observes the even generation also
   // observes the payload. The write critical section is a bounded copy of one
   // pre-mixed block -- the RT reader only ever retries across it, never blocks.
+  //
+  // The odd increment uses acq_rel: the acquire side prevents the subsequent
+  // data stores from being reordered before the odd store (TSan-compatible
+  // replacement for an explicit release fence), and the release side orders
+  // prior stores. The final even store uses release as before.
   Slot& slot = slot_at(index);
-  const std::uint64_t s = slot.seq.load(std::memory_order_relaxed);
-  slot.seq.store(s + 1, std::memory_order_relaxed);
-  std::atomic_thread_fence(std::memory_order_release);
+  const std::uint64_t s = slot.seq.fetch_add(1, std::memory_order_acq_rel);
   const std::size_t n = d_mix_scratch.size();
   for (std::size_t i = 0; i < n; ++i) {
     std::atomic_ref<float>(slot.samples[i]).store(d_mix_scratch[i], std::memory_order_relaxed);
@@ -70,9 +73,8 @@ void LookaheadRing::retire_slot(Slot& slot) {
   // Seqlock write that empties a slot on reprime/damage: the generation bump makes
   // a concurrent drain of this block re-validate and see the empty index, returning
   // silence + underrun (composes with seek_drain_realign's cursor re-seat).
-  const std::uint64_t s = slot.seq.load(std::memory_order_relaxed);
-  slot.seq.store(s + 1, std::memory_order_relaxed);
-  std::atomic_thread_fence(std::memory_order_release);
+  // Same acq_rel / release pattern as publish_slot for TSan compatibility.
+  const std::uint64_t s = slot.seq.fetch_add(1, std::memory_order_acq_rel);
   slot.index.store(k_empty_slot, std::memory_order_relaxed);
   slot.seq.store(s + 2, std::memory_order_release);
 }
@@ -445,8 +447,9 @@ bool LookaheadRing::drain(std::int64_t index, AudioBlock& out,
         out.samples[i] = std::atomic_ref<float>(slot.samples[i]).load(std::memory_order_relaxed);
       }
     }
-    std::atomic_thread_fence(std::memory_order_acquire);
-    if (slot.seq.load(std::memory_order_relaxed) != s1) {
+    // Acquire on the final seq re-check orders all data reads before it, replacing
+    // the explicit acquire fence (TSan-compatible).
+    if (slot.seq.load(std::memory_order_acquire) != s1) {
       continue; // torn: the producer republished this slot during the read -> retry
     }
     if (have == index) {

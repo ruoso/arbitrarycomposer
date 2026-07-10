@@ -51,7 +51,17 @@ template <class Result> std::optional<expected<Result, RenderError>> Completion<
                                        std::memory_order_acquire)) {
     return std::nullopt; // a concurrent take() drained it first
   }
+  // Move the payload out. GCC's static analysis emits a spurious
+  // maybe-uninitialized diagnostic for the shared_ptr members of
+  // RenderResult inside the optional<expected<...>> here; suppress it.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
   std::optional<expected<Result, RenderError>> out = std::move(d_payload);
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
   d_payload.reset();
   return out;
 }
