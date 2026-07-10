@@ -25,8 +25,12 @@
 //     counter (device_monitor.md:311-312) -- "not a convention but a
 //     build-failing check".
 
-#if defined(__clang__) && __has_attribute(nonblocking)
+#ifdef __clang__
+#if __has_attribute(nonblocking)
 #define ARBC_RT_NONBLOCKING [[clang::nonblocking]]
+#else
+#define ARBC_RT_NONBLOCKING
+#endif
 #else
 #define ARBC_RT_NONBLOCKING
 #endif
