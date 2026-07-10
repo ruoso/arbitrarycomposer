@@ -43,8 +43,9 @@ task pool "Memory pool" {
   task big_block_pool "Big-block pool" {
     effort 2d
     allocate team
+    complete 100
     depends !refs
-    note "Variable-size bulk-pixel payload allocator (doc 15:19-20, 240-242): tile-pixel blobs for kind_raster and any future kind with large-block payloads; refcount-managed, arena-backed. Docs 14/15. Source-of-debt: tasks/refinements/kinds/raster.md"
+    note "Variable-size bulk-pixel payload allocator (doc 15:19-20, 240-242): tile-pixel blobs for kind_raster and any future kind with large-block payloads; refcount-managed, arena-backed. Docs 14/15. Source-of-debt: tasks/refinements/kinds/raster.md. Refinement: tasks/refinements/pool/big_block_pool.md"
   }
   task mmap_backing "mmap workspace backing" {
     effort 3d
