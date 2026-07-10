@@ -231,8 +231,15 @@ private:
     copy_file(d_path, d_snapshot);
     const int fd = ::open(d_snapshot.c_str(), O_RDWR);
     if (fd >= 0) {
-      ::pwrite(fd, &d_durable_a, sizeof(d_durable_a), offsetof(arbc::WorkspaceHeader, root_slot_a));
-      ::pwrite(fd, &d_durable_b, sizeof(d_durable_b), offsetof(arbc::WorkspaceHeader, root_slot_b));
+      const ssize_t wrote_a = ::pwrite(fd, &d_durable_a, sizeof(d_durable_a),
+                                       offsetof(arbc::WorkspaceHeader, root_slot_a));
+      const ssize_t wrote_b = ::pwrite(fd, &d_durable_b, sizeof(d_durable_b),
+                                       offsetof(arbc::WorkspaceHeader, root_slot_b));
+      if (wrote_a != static_cast<ssize_t>(sizeof(d_durable_a)) ||
+          wrote_b != static_cast<ssize_t>(sizeof(d_durable_b))) {
+        ::close(fd);
+        return;
+      }
       ::close(fd);
     }
     d_captured = true;
