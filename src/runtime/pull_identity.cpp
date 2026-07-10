@@ -1,8 +1,7 @@
-#include <arbc/runtime/pull_identity.hpp>
-
 #include <arbc/contract/content.hpp> // Content, ContentRef, inputs()
 #include <arbc/model/model.hpp>      // DocRoot::for_each_layer
 #include <arbc/model/records.hpp>    // LayerRecord
+#include <arbc/runtime/pull_identity.hpp>
 
 #include <cstdint>
 #include <unordered_set>

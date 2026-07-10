@@ -33,7 +33,9 @@ CrossfadeParams linear_params() {
   return CrossfadeParams{CrossfadeShape::Linear, Time{0}, Time{1000}};
 }
 
-SolidContent make_solid(float r) { return SolidContent{Rgba{r, r, r, 1.0F}, Rect{0.0, 0.0, 2.0, 2.0}}; }
+SolidContent make_solid(float r) {
+  return SolidContent{Rgba{r, r, r, 1.0F}, Rect{0.0, 0.0, 2.0, 2.0}};
+}
 
 std::function<Content*(ObjectId)> resolver_of(Document& doc) {
   return [&doc](ObjectId id) { return doc.resolve(id); };

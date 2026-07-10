@@ -239,24 +239,31 @@ TEST_CASE("org.arbc.crossfade renders a byte-exact interior dissolve through the
   require_equal(to_bytes((**frame).cpu_bytes()), expected);
 }
 
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 13-effects-as-operators#identity-layer-delivers-input-to-frame
 // enforces: 13-effects-as-operators#crossfade-identity-at-endpoints
 // enforces: 13-effects-as-operators#identity-plan-issues-no-operator-render
+// enforces: 03-layer-plugin-interface#operator-identity-faithful
+// enforces: 13-effects-as-operators#pull-delivers-to-caller-target
 // enforces: 13-effects-as-operators#operator-input-children-have-distinct-cache-identity
-TEST_CASE("org.arbc.crossfade endpoint pass-through hits the identity short-circuit through the "
+TEST_CASE("org.arbc.crossfade endpoint pass-through delivers input N byte-exact through the "
           "offline driver") {
   CpuBackend backend;
-  // Window [1000, 2000): at t == 0 the position is w == 0 (serve input 0); at t == 3000
-  // it is w == 1 (serve input 1). The identity short-circuit serves an input directly
-  // with no new cache entry (doc 13:60-65) and allocates NO child key, so the
-  // child-distinct `id_of` must not perturb it: the observable proof through the driver
-  // is that the endpoint issues zero operator renders (Constraint 6). The endpoint
-  // pixel bytes are pinned at the content level by tests/crossfade_goldens.t.cpp;
-  // delivering the identity-served input child to the offline frame is a separate
-  // compositor delivery concern (see runtime.operator_identity_offline_delivery
-  // follow-up), out of this cache-identity task's scope.
+  // Window [1000, 1000): at t == 0 the position is w == 0 (serve input 0); at t == 3000
+  // it is w == 1 (serve input 1). The identity short-circuit issues NO operator render
+  // and creates NO operator-output cache entry (doc 13:60-65); this task
+  // (runtime.operator_identity_offline_delivery) wires the frame driver to DELIVER the
+  // served input's pixels into the layer footprint through PullService::pull, so the
+  // endpoint frame is byte-identical to input N rendered directly. Pre-fix the endpoint
+  // frame came out blank (the short-circuit delivered nothing). The oracle
+  // render_crossfade_reference renders the crossfade at the endpoint, whose render()
+  // pulls the pass-through input straight through -- the same bytes the driver must
+  // now produce.
   const CrossfadeParams endpoints{CrossfadeShape::Linear, Time{1000}, Time{1000}};
+  const std::vector<std::byte> expected_w0 = render_crossfade_reference(endpoints, Time{0});
+  const std::vector<std::byte> expected_w1 = render_crossfade_reference(endpoints, Time{3000});
 
-  SECTION("w == 0 serves input 0: zero operator renders") {
+  SECTION("inline: w == 0 delivers input 0 byte-exact, zero operator renders") {
     SolidContent from{from_color(), Rect{0.0, 0.0, 2.0, 2.0}};
     SolidContent to{to_color(), Rect{0.0, 0.0, 2.0, 2.0}};
     Document doc;
@@ -264,10 +271,16 @@ TEST_CASE("org.arbc.crossfade endpoint pass-through hits the identity short-circ
     SequenceRenderer renderer(doc, Viewport{2, 2, Affine::identity()}, backend);
     const auto frame = renderer.render_frame_at(Time{0});
     REQUIRE(frame.has_value());
+    require_equal(to_bytes((**frame).cpu_bytes()), expected_w0);
+    // Zero operator renders (the operator never renders at the short-circuit) and
+    // exactly ONE input render -- only the served input 0, cold; input 1 is never
+    // pulled at w == 0. Delivering did not re-introduce an operator render, and no
+    // operator-output cache entry was created.
     CHECK(renderer.counters().operator_renders() == 0U);
+    CHECK(renderer.counters().requests_issued() - renderer.counters().operator_renders() == 1U);
   }
 
-  SECTION("w == 1 serves input 1: zero operator renders") {
+  SECTION("inline: w == 1 delivers input 1 byte-exact, zero operator renders") {
     SolidContent from{from_color(), Rect{0.0, 0.0, 2.0, 2.0}};
     SolidContent to{to_color(), Rect{0.0, 0.0, 2.0, 2.0}};
     Document doc;
@@ -275,8 +288,80 @@ TEST_CASE("org.arbc.crossfade endpoint pass-through hits the identity short-circ
     SequenceRenderer renderer(doc, Viewport{2, 2, Affine::identity()}, backend);
     const auto frame = renderer.render_frame_at(Time{3000});
     REQUIRE(frame.has_value());
+    require_equal(to_bytes((**frame).cpu_bytes()), expected_w1);
+    CHECK(renderer.counters().operator_renders() == 0U);
+    CHECK(renderer.counters().requests_issued() - renderer.counters().operator_renders() == 1U);
+  }
+
+  // The parallel exact path runs under the tsan preset (the file's TSan lane,
+  // Constraint 7): the terminal serve runs on the driver thread, the leaf render on a
+  // worker, reaped to quiescence before the exact re-composite -- so the endpoint frame
+  // is byte-exact AND race-free.
+  SECTION("parallel: w == 0 delivers input 0 byte-exact, race-free, zero operator renders") {
+    SolidContent from{from_color(), Rect{0.0, 0.0, 2.0, 2.0}};
+    SolidContent to{to_color(), Rect{0.0, 0.0, 2.0, 2.0}};
+    Document doc;
+    visual_scene(doc, from, to, endpoints);
+    WorkerPoolConfig pool;
+    pool.worker_count = 4;
+    SequenceRenderer renderer(doc, Viewport{2, 2, Affine::identity()}, backend, pool);
+    const auto frame = renderer.render_frame_at(Time{0});
+    REQUIRE(frame.has_value());
+    require_equal(to_bytes((**frame).cpu_bytes()), expected_w0);
     CHECK(renderer.counters().operator_renders() == 0U);
   }
+
+  SECTION("parallel: w == 1 delivers input 1 byte-exact, race-free, zero operator renders") {
+    SolidContent from{from_color(), Rect{0.0, 0.0, 2.0, 2.0}};
+    SolidContent to{to_color(), Rect{0.0, 0.0, 2.0, 2.0}};
+    Document doc;
+    visual_scene(doc, from, to, endpoints);
+    WorkerPoolConfig pool;
+    pool.worker_count = 4;
+    SequenceRenderer renderer(doc, Viewport{2, 2, Affine::identity()}, backend, pool);
+    const auto frame = renderer.render_frame_at(Time{3000});
+    REQUIRE(frame.has_value());
+    require_equal(to_bytes((**frame).cpu_bytes()), expected_w1);
+    CHECK(renderer.counters().operator_renders() == 0U);
+  }
+}
+
+// enforces: 11-time-and-video#static-tiles-survive-clock
+// enforces: 11-time-and-video#achieved-time-coalescing-issues-zero-renders
+// enforces: 13-effects-as-operators#identity-layer-delivers-input-to-frame
+// enforces: 13-effects-as-operators#operator-input-children-have-distinct-cache-identity
+TEST_CASE("a crossfade endpoint served across an advancing clock re-renders the input zero times "
+          "after the first frame") {
+  CpuBackend backend;
+  SolidContent from{from_color(), Rect{0.0, 0.0, 2.0, 2.0}};
+  SolidContent to{to_color(), Rect{0.0, 0.0, 2.0, 2.0}};
+  Document doc;
+  // Window [1000, 1000): every t < 1000 is w == 0, so the endpoint serves input 0.
+  const CrossfadeParams endpoints{CrossfadeShape::Linear, Time{1000}, Time{1000}};
+  visual_scene(doc, from, to, endpoints);
+  SequenceRenderer renderer(doc, Viewport{2, 2, Affine::identity()}, backend);
+
+  // First w == 0 frame: the served input 0 (a Static solid) renders exactly once and no
+  // operator render fires (the endpoint short-circuits).
+  const auto f0 = renderer.render_frame_at(Time{0});
+  REQUIRE(f0.has_value());
+  CHECK(renderer.counters().operator_renders() == 0U);
+  const std::uint64_t inputs_after_first =
+      renderer.counters().requests_issued() - renderer.counters().operator_renders();
+  CHECK(inputs_after_first == 1U);
+
+  // The clock advances but stays before the window, so w stays 0 and the served input's
+  // Static tile -- cached under its own stable identity by pulls->pull, never under the
+  // operator's key -- survives the clock: subsequent endpoint frames re-render the input
+  // zero times and still issue zero operator renders.
+  for (const std::int64_t t : {std::int64_t{200}, std::int64_t{500}}) {
+    const auto f = renderer.render_frame_at(Time{t});
+    REQUIRE(f.has_value());
+  }
+  const std::uint64_t inputs_after_more =
+      renderer.counters().requests_issued() - renderer.counters().operator_renders();
+  CHECK(inputs_after_more == inputs_after_first);
+  CHECK(renderer.counters().operator_renders() == 0U);
 }
 
 // enforces: 11-time-and-video#static-tiles-survive-clock

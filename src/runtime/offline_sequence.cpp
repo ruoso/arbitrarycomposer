@@ -118,10 +118,16 @@ SequenceRenderer::render_frame_at(Time composition_time) {
     // (Constraint 4).
     PullServiceImpl inline_pull(d_cache, d_backend, direct_dispatch(), make_config(nullptr));
     const OperatorBindingScope binding = bind_operators(d_document, inline_pull, d_backend);
+    // Pass the already-built `inline_pull` (not `nullptr`) so the frame driver can
+    // SERVE an operator layer's identity short-circuit -- deliver input N's tiles
+    // into the layer footprint through `pull` (runtime.operator_identity_offline_
+    // delivery). Byte-for-byte safe on the non-identity path: `inline_pull` uses
+    // `direct_dispatch`, so `pulls->dispatch` is exactly the prior inline
+    // `content->render` + `done->complete` (pull_service.hpp:195-199).
     render_frame_interactive(state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame,
                              Deadline::none(), /*prior_revision=*/std::nullopt,
                              /*pending=*/nullptr, &d_counters, /*dirty=*/nullptr, composition_time,
-                             /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, /*pulls=*/nullptr,
+                             /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, &inline_pull,
                              Exactness::Exact);
     return std::move(*target);
   }
@@ -156,10 +162,15 @@ SequenceRenderer::render_frame_at(Time composition_time) {
   }
   // Re-composite from the now fully-warm cache: every tile is a fresh exact hit, so
   // this pass dispatches nothing and composites the exact frame (Decision 3/4).
+  // `pulls` (not `nullptr`) so an operator layer's identity short-circuit is SERVED
+  // on this pass too (runtime.operator_identity_offline_delivery, Constraint 6):
+  // there is no operator-output cache entry to hit, so the endpoint tile is always a
+  // miss and must deliver input N through `pull`. The terminal's own tiles are warm
+  // (reaped to quiescence above), so `pull` hits cache-first and dispatches nothing.
   render_frame_interactive(state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame,
                            Deadline::none(), /*prior_revision=*/std::nullopt, /*pending=*/nullptr,
                            &d_counters, /*dirty=*/nullptr, composition_time,
-                           /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, /*pulls=*/nullptr,
+                           /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, &pulls,
                            Exactness::Exact);
   return std::move(*target);
 }

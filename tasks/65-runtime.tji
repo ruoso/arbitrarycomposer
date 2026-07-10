@@ -74,8 +74,9 @@ task runtime "Runtime" {
   task operator_identity_offline_delivery "Deliver identity-served operator input pixels to offline/export frame" {
     effort 1d
     allocate team
+    complete 100
     depends !operator_input_cache_identity
-    note "Wire the compositor delivery seam so an identity-served (w==0/w==1) operator-input child's pixels reach the offline/export frame buffer; unblocks endpoint byte-exact-frame acceptance deferred by runtime.operator_input_cache_identity. Source-of-debt: tasks/refinements/runtime/operator_input_cache_identity.md. Doc 13."
+    note "Wire the compositor delivery seam so an identity-served (w==0/w==1) operator-input child's pixels reach the offline/export frame buffer; unblocks endpoint byte-exact-frame acceptance deferred by runtime.operator_input_cache_identity. Source-of-debt: tasks/refinements/runtime/operator_input_cache_identity.md. Doc 13. Refinement: tasks/refinements/runtime/operator_identity_offline_delivery.md"
   }
   task housekeeping "Housekeeping" {
     effort 1d

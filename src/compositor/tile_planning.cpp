@@ -379,10 +379,21 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
           // render is driven and counted (`operator_renders`). A leaf never
           // enters this branch (`op_layer` false), so its path is byte-identical.
           bool issue_render = true;
+          const Content* identity_terminal = nullptr;
           if (op_layer) {
             const IdentityResolution ident =
                 resolve_identity(content, request, GraphBudget{}, diagnostics);
             issue_render = !(ident.short_circuited || ident.budget_exceeded);
+            // An identity pass-through resolves to a terminal input whose pixels
+            // the frame must SERVE (runtime.operator_identity_offline_delivery,
+            // doc 13:59-65). Capture it so the delivery branch below routes input
+            // N through `pulls->pull` instead of the suppressed operator render:
+            // the serving half `operator_graph.md` Decision 5 deferred to
+            // `pull_service`. A budget-exceeded descent leaves `terminal` null and
+            // renders the placeholder, so it stays out of the delivery branch.
+            if (ident.short_circuited) {
+              identity_terminal = ident.terminal;
+            }
           }
           if (issue_render) {
             // The single settle path (doc 03:117-121), exactly as `render_frame`.
@@ -458,6 +469,50 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                                                    content->stability(), bytes, std::move(*owned),
                                                    std::move(done)});
             }
+          } else if (identity_terminal != nullptr && pulls != nullptr) {
+            // Identity delivery (runtime.operator_identity_offline_delivery): the
+            // operator layer short-circuited to `identity_terminal`, so SERVE that
+            // input's cached tiles into this layer's tile surface through the
+            // existing pull machinery -- cache-first, every covering tile,
+            // delivered via `deliver_tile` -- keyed under the terminal's own
+            // identity (via `PullConfig::id_of`), NOT the operator's (doc
+            // 13:59-65,141-154; `operator_graph.md` Decision 5). `request.target`
+            // is `tile_surface`, so `pull` fills exactly the pixels a direct input
+            // render would (Decision 1). This adds ZERO operator renders
+            // (`issue_render` is false, so `note_operator_render` never fired) and
+            // NO operator-output cache entry (we composite the delivered surface
+            // directly and never `cache.insert` under the operator's `tile.key`,
+            // Decision 3); the terminal's own tile is cached under its identity by
+            // `pull`, shared by every consumer.
+            auto done = std::make_shared<RenderCompletion>();
+            pulls->pull(const_cast<Content*>(identity_terminal), request, done);
+            if (done->settled()) {
+              const std::optional<expected<RenderResult, RenderError>> settled = done->take();
+              if (settled.has_value() && settled->has_value()) {
+                // `pull` delivered input N's pixels into `tile_surface`; composite
+                // it at the layer's device affine/opacity, the same placement the
+                // `issue_render` path uses -- but read directly from `tile_surface`
+                // (there is no operator-keyed cache hold to read from). Drop any
+                // planned coarser/stale fallback hold and mark the tile Fresh so
+                // the composite switch below is a no-op (`tile.hold` invalid):
+                // this direct composite is the sole paint, so the frame is not
+                // counted degraded (offline no-degrade guarantee).
+                backend.composite(target, tile_surface,
+                                  surface_to_device(composed, tile.local_rect, rung_px),
+                                  layer.opacity);
+                if (counters != nullptr) {
+                  counters->note_composite();
+                }
+                tile.hold = CacheHold<TileValue>{};
+                tile.display_source = TileSource::Fresh;
+              }
+            }
+            // A `done` left unsettled means a covering terminal tile answered
+            // asynchronously (parallel path, Constraint 6, Decision 4): `pull`
+            // recorded that terminal tile in its own pending sink, so the driver
+            // reaps it to quiescence and the re-composite pass delivers it
+            // synchronously. The operator tile keeps its planned fallback this
+            // frame -- no special-casing, exactly the non-identity async path.
           }
         }
       }
