@@ -182,6 +182,12 @@ Append one `###` block per item, newest at the bottom:
 - **Why parked**: Minting a WBS leaf now risks duplicating an existing interactive-audio stream task. The `pull_identity` helper is already extracted and reusable as a one-line call. Human call to confirm whether an existing interactive-audio task already covers reusing it, and if not, to scope and wire the leaf to the appropriate milestone.
 - **Resolved** (2026-07-10, triage): audited every stream's task list — no existing task covers it. Scoped as `audio.interactive_pull_identity` (tasks/45-audio.tji), reusing the `pull_identity` helper; wired to M9.
 
+### 2026-07-10 — `check_levels.py` ALLOWED set for `kind_raster` does not permit direct `pool` edge
+
+- **Source**: closer for `kinds.raster_pool_backing` (2026-07-10); flagged in implementer deviation note.
+- **Question**: Refinement Constraint 6 requires `src/kind_raster/CMakeLists.txt` to add a direct `pool` edge to `DEPENDS` (a legal strictly-lower L1 edge per doc 17:41-44). The implementer could not do so because `scripts/check_levels.py` encodes `ALLOWED["kind_raster"] = {contract}` and check-(1) (`DEPENDS ⊆ ALLOWED`) rejects any edge not in that set, including `pool`. Should `check_levels.py` be updated to add `pool` to `ALLOWED["kind_raster"]`, making the direct CMake dependency explicit and CI-enforced? Or is the current transitive resolution (`kind_raster→contract→model→pool` in the include-closure, linked through the umbrella) a sufficient and acceptable deviation from the refinement constraint?
+- **Why parked**: Editing `scripts/check_levels.py` to extend `ALLOWED["kind_raster"]` is a project-policy decision about whether levelization hygiene requires explicit direct CMake edges for every header include or permits transitive resolution. Both `check_levels` and `check_claims` currently pass green without the explicit edge. Human call.
+
 ### 2026-07-10 — Interactive frame endpoint delivery gap (`render_frame_interactive` with `pulls == nullptr`)
 
 - **Source**: closer for `runtime.operator_identity_offline_delivery`; flagged in refinement Open questions.

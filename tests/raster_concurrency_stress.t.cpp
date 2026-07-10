@@ -1,10 +1,19 @@
 // Concurrency stress for org.arbc.raster (doc 16 tier-6; refinement Acceptance
 // "Concurrency"): N worker threads render a pinned StateHandle H concurrently
-// while an editor thread paints new versions. Every reader must observe
+// while the writer thread paints new versions. Every reader must observe
 // byte-stable pixels for H, and TSan must report no data race -- the "render
 // workers read frozen state while the writer keeps editing" invariant
 // (doc 14:159-162). Cross-component (kind_raster + threads), so it lives in
 // tests/ and links the umbrella `arbc` (doc 17:153).
+//
+// The edits (build + every paint) run on a single writer thread and the readers
+// only ever `peek` -- exactly the pool's threading contract (doc 15:137-143;
+// `pool.big_block_pool` writer-only `allocate`, any-thread `peek`, blob
+// retain/release on the writer/drain thread only; refinement Decision 4). Here
+// the main thread is that sole writer; the four worker threads are the RT-side
+// readers. This is the end-to-end proof that pool-backed blob allocation stays
+// off the reader threads and `peek` is race-free against concurrent writer
+// allocation.
 
 #include <arbc/kind_raster/raster_content.hpp>
 #include <arbc/media/surface_format.hpp>
@@ -84,7 +93,6 @@ TEST_CASE("raster render workers read a frozen snapshot while the editor keeps p
   constexpr int k_iterations = 400;
   std::atomic<bool> go{false};
   std::atomic<bool> bad{false};
-  std::atomic<bool> stop{false};
 
   std::vector<std::thread> readers;
   for (int r = 0; r < k_readers; ++r) {
@@ -99,23 +107,20 @@ TEST_CASE("raster render workers read a frozen snapshot while the editor keeps p
     });
   }
 
-  std::thread editor([&] {
-    while (!go.load(std::memory_order_acquire)) {
-    }
-    StateHandle base = content.base_handle();
-    while (!stop.load(std::memory_order_acquire)) {
-      Rect t{};
-      base = content.store().paint(base, Rect{0.0, 0.0, 4.0, 4.0},
-                                   WorkingPixel{1.0F, 0.0F, 0.0F, 1.0F}, t);
-    }
-  });
-
+  // The main thread is the sole pool writer: it churns new versions
+  // (writer-side pool.allocate + retain/release) while the reader threads peek
+  // the pinned snapshot H concurrently.
   go.store(true, std::memory_order_release);
+  StateHandle base = content.base_handle();
+  for (int i = 0; i < k_iterations; ++i) {
+    Rect t{};
+    base = content.store().paint(base, Rect{0.0, 0.0, 4.0, 4.0},
+                                 WorkingPixel{1.0F, 0.0F, 0.0F, 1.0F}, t);
+  }
+
   for (std::thread& t : readers) {
     t.join();
   }
-  stop.store(true, std::memory_order_release);
-  editor.join();
 
   REQUIRE_FALSE(bad.load());
   content.store().release_version(h);

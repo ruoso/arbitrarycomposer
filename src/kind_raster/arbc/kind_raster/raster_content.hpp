@@ -6,6 +6,8 @@
 #include <arbc/model/journal.hpp>        // StateCostFn, RestoreSink
 #include <arbc/model/model.hpp>          // Model::Transaction, StateRefSink
 #include <arbc/model/records.hpp>        // StateHandle, k_state_none
+#include <arbc/pool/big_block_pool.hpp>  // BigBlockPool, BlockSlotRef (doc 15 bulk pool)
+#include <arbc/pool/chunk_source.hpp>    // ChunkSource, AnonymousChunkSource
 
 #include <cstddef>
 #include <cstdint>
@@ -47,34 +49,54 @@ struct DecodedImage {
   std::vector<std::byte> bytes;
 };
 
-// One immutable tile-pixel blob: `edge*edge` working-linear premultiplied RGBA
-// floats (doc 15:19-20 "bulk pixel payloads"). Shared across versions by
-// refcount (a `shared_ptr`); an untouched tile keeps its blob identity across a
-// paint, a touched tile gets a fresh blob (structural sharing, doc 14:164-171).
-struct TileBlob {
-  std::vector<float> px; // size edge*edge*k_tile_channels
-};
-using TileBlobPtr = std::shared_ptr<const TileBlob>;
-
 // One mip level: a grid of `tiles_x * tiles_y` tile blobs (row-major) covering a
 // `width x height` logical pixel field. Level 0 is the decoded buffer; each
 // higher level is a 2x box-downsample of the level below (doc 14:219 scale
 // rungs).
+//
+// Each tile is an immutable `edge*edge` working-linear premultiplied RGBA-float
+// blob allocated from the content's `BigBlockPool` (doc 15:19-20 "bulk pixel
+// payloads … dedicated big-block pool"); the in-record, position-independent,
+// 8-byte `BlockSlotRef` is what the tile *table* holds in slabs (doc 15:257).
+// An untouched tile keeps its `BlockSlotRef` identity across a paint (shared by
+// the pool's inside-out refcount); a touched tile gets a fresh blob (structural
+// sharing, doc 14:164-171).
 struct Level {
   int width{0};
   int height{0};
   int tiles_x{0};
   int tiles_y{0};
-  std::vector<TileBlobPtr> tiles;
+  std::vector<BlockSlotRef> tiles;
 };
 
 // One immutable captured tile-table version (the persistent CoW state, doc
 // 15:240-242 "tile table in slabs"). A paint produces a new TileTable that
-// shares every untouched tile blob with its predecessor by refcount.
+// shares every untouched tile blob with its predecessor by the pool's per-slot
+// refcount. The table holds exactly one pool count on every `BlockSlotRef` it
+// stores: the constructor retains each ref and the destructor releases each --
+// so the caller keeps its own counts on the refs it hands in (a fresh blob's
+// allocate-count, or a predecessor version's shared count).
 class TileTable {
 public:
-  TileTable(int width, int height, int edge, std::vector<Level> levels)
-      : d_width(width), d_height(height), d_edge(edge), d_levels(std::move(levels)) {}
+  TileTable(int width, int height, int edge, std::vector<Level> levels, BigBlockPool* pool)
+      : d_width(width), d_height(height), d_edge(edge), d_levels(std::move(levels)), d_pool(pool) {
+    for (Level& lvl : d_levels) {
+      for (const BlockSlotRef& ref : lvl.tiles) {
+        (void)d_pool->retain(ref);
+      }
+    }
+  }
+  ~TileTable() {
+    // Runs on the writer/drain thread (never an RT render worker, Decision 4):
+    // releasing a no-longer-shared blob reclaims it by the pool refcount.
+    for (Level& lvl : d_levels) {
+      for (const BlockSlotRef& ref : lvl.tiles) {
+        d_pool->release(ref);
+      }
+    }
+  }
+  TileTable(const TileTable&) = delete;
+  TileTable& operator=(const TileTable&) = delete;
 
   int width() const { return d_width; }
   int height() const { return d_height; }
@@ -84,7 +106,8 @@ public:
   const std::vector<Level>& levels() const { return d_levels; }
 
   // The working-float value of level `l`'s logical pixel (x, y), reading the
-  // owning tile and clamping to level bounds (so tile padding is never sampled).
+  // owning tile through `pool.peek` (a zero-refcount immutable-after-fill read)
+  // and clamping to level bounds (so tile padding is never sampled).
   WorkingPixel pixel(std::size_t l, int x, int y) const;
 
   // Level `l`'s logical pixels as a flat width*height*4 float buffer, in
@@ -99,6 +122,7 @@ private:
   int d_height;
   int d_edge;
   std::vector<Level> d_levels;
+  BigBlockPool* d_pool;
 };
 using TileTablePtr = std::shared_ptr<const TileTable>;
 
@@ -107,16 +131,28 @@ using TileTablePtr = std::shared_ptr<const TileTable>;
 // `StateHandle` slot the model pins. Version slots carry a refcount the model's
 // StateRefSink drives (retain on record publish, release at record reclaim, doc
 // 14:173-176); a zero-count non-base version drops its blobs, which reclaims any
-// no-longer-shared tile-pixel blob by refcount.
+// no-longer-shared tile-pixel blob by the pool refcount.
+//
+// The store owns one dedicated `BigBlockPool` per content (doc 15's "dedicated"
+// bulk-media population, Decision 2) over an `AnonymousChunkSource` it owns by
+// default; the `ChunkSource` is a construction-time injection point so the
+// runtime can later supply a durable workspace-file source (Decision 3). The
+// pool's lifetime is the content's -- content teardown reclaims every blob.
 //
 // Thread-safety: `resolve()`/`intern()`/`paint()`/retain/release take a short
 // mutex only to copy or publish the version `shared_ptr`; the returned immutable
-// TileTable is then read lock-free, so render workers read frozen blobs while the
-// editor paints new versions (doc 14:159-162, refinement Decision "renders
-// inline; render_thread_safe() == true").
+// TileTable is then read lock-free via `pool.peek` (data pages immutable after
+// fill), so render workers read frozen blobs while the editor paints new
+// versions (doc 14:159-162, refinement Decision 4). `pool.allocate` is
+// writer-only; blob retain/release run only on the writer/drain thread via the
+// version-lifetime path, never on an RT render worker.
 class RasterStore {
 public:
-  RasterStore() = default;
+  // Default: own an AnonymousChunkSource and a BigBlockPool over it.
+  RasterStore();
+  // Injected: borrow an external ChunkSource (e.g. a workspace-file source the
+  // runtime supplies). The source must outlive the store.
+  explicit RasterStore(ChunkSource& source);
   RasterStore(const RasterStore&) = delete;
   RasterStore& operator=(const RasterStore&) = delete;
 
@@ -135,8 +171,8 @@ public:
   // Paint `color` over `region` (in level-0 pixel units) onto the version `base`
   // resolves to, returning a NEW interned version. Copies only the level-0 tiles
   // the region touches (plus the mip tiles geometrically above them) and shares
-  // every untouched blob with `base` by refcount (doc 14:164-171). Records the
-  // touched-tile bounding rect for the caller's damage.
+  // every untouched blob with `base` by the pool refcount (doc 14:164-171).
+  // Records the touched-tile bounding rect for the caller's damage.
   StateHandle paint(StateHandle base, const Rect& region, const WorkingPixel& color,
                     Rect& touched_out);
 
@@ -148,11 +184,17 @@ public:
 
   // --- behavioral-counter / inspection surface (doc 16:54-62) ---
   // Total tile-pixel blobs ever allocated -- the witness that a paint allocates
-  // exactly |touched tiles| (+ mip blobs above) and shares the rest.
+  // exactly |touched tiles| (+ mip blobs above) and shares the rest. Backed by
+  // the dedicated pool's own allocation counter (refinement Constraint 8).
   std::uint64_t blobs_allocated() const;
   // Live interned versions (a still-referenced version count).
   std::size_t live_versions() const;
   std::uint32_t version_refcount(StateHandle handle) const;
+
+  // The dedicated tile-pixel pool (inspection: alignment, per-slot refcount,
+  // arena accounting for the doc-15 reference-proof tests).
+  BigBlockPool& pool() { return d_pool; }
+  const BigBlockPool& pool() const { return d_pool; }
 
 private:
   struct Version {
@@ -164,11 +206,17 @@ private:
   // to 1). Caller must keep a `shared_ptr` (or retain) alive until then.
   StateHandle intern(TileTablePtr table);
 
+  // Declared before the version state so it outlives every TileTable: a
+  // TileTable destructor releases blobs into `d_pool`, and members destruct in
+  // reverse declaration order (d_base_table/d_versions first, then the pool,
+  // then the owned source).
+  std::unique_ptr<ChunkSource> d_owned_source; // non-null only for the default ctor
+  BigBlockPool d_pool;                         // over the owned or injected source
+
   mutable std::mutex d_mutex;
-  std::vector<Version> d_versions;    // indexed by slot
-  std::vector<SlotIndex> d_free;      // recycled slots
-  TileTablePtr d_base_table;          // pins the current live base version
-  std::uint64_t d_blobs_allocated{0}; // monotonic allocation counter
+  std::vector<Version> d_versions; // indexed by slot
+  std::vector<SlotIndex> d_free;   // recycled slots
+  TileTablePtr d_base_table;       // pins the current live base version
 };
 
 // A visual-only decoded-buffer raster content (Content + Editable facets). Owns

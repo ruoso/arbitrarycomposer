@@ -32,8 +32,9 @@ task kinds "Reference kinds" {
   task raster_pool_backing "org.arbc.raster big-block pool tile backing" {
     effort 2d
     allocate team
+    complete 100
     depends !raster, pool.big_block_pool
-    note "Migrate tile-pixel payloads from refcounted shared_ptr onto the doc-15 big-block pool once that L1 primitive exists; restores the doc-15 tile-table/tile-pixel storage split. Docs 14/15. Source-of-debt: tasks/refinements/kinds/raster.md"
+    note "Migrate tile-pixel payloads from refcounted shared_ptr onto the doc-15 big-block pool once that L1 primitive exists; restores the doc-15 tile-table/tile-pixel storage split. Docs 14/15. Source-of-debt: tasks/refinements/kinds/raster.md Refinement: tasks/refinements/kinds/raster_pool_backing.md"
   }
   task nested "org.arbc.nested" {
     effort 4d

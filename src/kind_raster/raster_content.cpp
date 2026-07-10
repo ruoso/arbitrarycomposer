@@ -1,10 +1,13 @@
 #include <arbc/kind_raster/raster_content.hpp>
 #include <arbc/media/pixel_format.hpp>
+#include <arbc/pool/big_block_pool.hpp>
 #include <arbc/surface/typed_span.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
+#include <span>
 #include <utility>
 
 namespace arbc {
@@ -44,43 +47,58 @@ std::vector<WorkingPixel> decode_image(const DecodedImage& image) {
 
 int tiles_across(int extent, int edge) { return (extent + edge - 1) / edge; }
 
-WorkingPixel level_pixel(const Level& lvl, int edge, int x, int y) {
+// The logical byte size of one `edge*edge` working-float tile blob. For the
+// default 256-edge tile this is exactly 1 MiB -- an exact pool size-class rung
+// (doc 15:19-20, `big_block_pool.md`).
+std::size_t blob_bytes(int edge) {
+  return static_cast<std::size_t>(edge) * static_cast<std::size_t>(edge) * k_tile_channels *
+         sizeof(float);
+}
+
+// Read the working pixel at level-logical (x, y) through the pool: locate the
+// owning tile blob and `peek` it (zero-refcount, immutable-after-fill read).
+WorkingPixel level_pixel(const Level& lvl, const BigBlockPool& pool, int edge, int x, int y) {
   const int tx = x / edge;
   const int ty = y / edge;
   const int ix = x % edge;
   const int iy = y % edge;
-  const TileBlob& blob =
-      *lvl.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(lvl.tiles_x) +
-                 static_cast<std::size_t>(tx)];
+  const BlockSlotRef ref =
+      lvl.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(lvl.tiles_x) +
+                static_cast<std::size_t>(tx)];
+  const std::span<const std::byte> raw = pool.peek(ref);
+  const auto* px = reinterpret_cast<const float*>(raw.data());
   const std::size_t o = (static_cast<std::size_t>(iy) * static_cast<std::size_t>(edge) +
                          static_cast<std::size_t>(ix)) *
                         k_tile_channels;
-  return {blob.px[o], blob.px[o + 1], blob.px[o + 2], blob.px[o + 3]};
+  return {px[o], px[o + 1], px[o + 2], px[o + 3]};
 }
 
-// A fresh transparent tile blob (edge*edge*4 zeros).
-std::shared_ptr<TileBlob> new_blob(int edge, std::uint64_t& alloc) {
-  ++alloc;
-  auto blob = std::make_shared<TileBlob>();
-  blob->px.assign(static_cast<std::size_t>(edge) * static_cast<std::size_t>(edge) * k_tile_channels,
-                  0.0F);
-  return blob;
+// Allocate a fresh transparent tile blob from the pool (edge*edge*4 zeros). The
+// returned owning `BlockRef` keeps the allocate-count alive until the caller has
+// handed the blob's `BlockSlotRef` to a TileTable (whose ctor retains it); the
+// caller drops the BlockRef afterward so the table holds the sole count.
+BlockRef new_blob(BigBlockPool& pool, int edge) {
+  BlockRef ref = *pool.allocate(blob_bytes(edge));
+  std::memset(ref.data(), 0, ref.size());
+  return ref;
 }
 
-void put(std::shared_ptr<TileBlob>& blob, int edge, int ix, int iy, const WorkingPixel& c) {
+void put(float* px, int edge, int ix, int iy, const WorkingPixel& c) {
   const std::size_t o = (static_cast<std::size_t>(iy) * static_cast<std::size_t>(edge) +
                          static_cast<std::size_t>(ix)) *
                         k_tile_channels;
-  blob->px[o] = c[0];
-  blob->px[o + 1] = c[1];
-  blob->px[o + 2] = c[2];
-  blob->px[o + 3] = c[3];
+  px[o] = c[0];
+  px[o + 1] = c[1];
+  px[o + 2] = c[2];
+  px[o + 3] = c[3];
 }
 
 // Build level 0 from the decoded grid, then a deterministic 2x box-downsample
-// chain down to a single 1x1 pixel (doc 14:219 scale rungs).
+// chain down to a single 1x1 pixel (doc 14:219 scale rungs). Fresh blobs are
+// appended to `keep` (owning BlockRefs) so their allocate-counts survive until
+// the TileTable that will own them is constructed.
 std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, int h, int edge,
-                                std::uint64_t& alloc) {
+                                BigBlockPool& pool, std::vector<BlockRef>& keep) {
   std::vector<Level> levels;
 
   // Level 0.
@@ -93,20 +111,22 @@ std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, in
     l0.tiles.resize(static_cast<std::size_t>(l0.tiles_x) * static_cast<std::size_t>(l0.tiles_y));
     for (int ty = 0; ty < l0.tiles_y; ++ty) {
       for (int tx = 0; tx < l0.tiles_x; ++tx) {
-        auto blob = new_blob(edge, alloc);
+        BlockRef blob = new_blob(pool, edge);
+        auto* px = reinterpret_cast<float*>(blob.data());
         for (int iy = 0; iy < edge; ++iy) {
           for (int ix = 0; ix < edge; ++ix) {
             const int gx = tx * edge + ix;
             const int gy = ty * edge + iy;
             if (gx < w && gy < h) {
-              put(blob, edge, ix, iy,
+              put(px, edge, ix, iy,
                   grid[static_cast<std::size_t>(gy) * static_cast<std::size_t>(w) +
                        static_cast<std::size_t>(gx)]);
             }
           }
         }
         l0.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(l0.tiles_x) +
-                 static_cast<std::size_t>(tx)] = std::move(blob);
+                 static_cast<std::size_t>(tx)] = blob.slot();
+        keep.push_back(std::move(blob));
       }
     }
     levels.push_back(std::move(l0));
@@ -123,29 +143,31 @@ std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, in
     up.tiles.resize(static_cast<std::size_t>(up.tiles_x) * static_cast<std::size_t>(up.tiles_y));
     for (int ty = 0; ty < up.tiles_y; ++ty) {
       for (int tx = 0; tx < up.tiles_x; ++tx) {
-        auto blob = new_blob(edge, alloc);
+        BlockRef blob = new_blob(pool, edge);
+        auto* px = reinterpret_cast<float*>(blob.data());
         for (int iy = 0; iy < edge; ++iy) {
           for (int ix = 0; ix < edge; ++ix) {
-            const int px = tx * edge + ix;
-            const int py = ty * edge + iy;
-            if (px < up.width && py < up.height) {
-              const int cx0 = std::min(2 * px, child.width - 1);
-              const int cy0 = std::min(2 * py, child.height - 1);
-              const int cx1 = std::min(2 * px + 1, child.width - 1);
-              const int cy1 = std::min(2 * py + 1, child.height - 1);
-              const WorkingPixel a = level_pixel(child, edge, cx0, cy0);
-              const WorkingPixel b = level_pixel(child, edge, cx1, cy0);
-              const WorkingPixel c = level_pixel(child, edge, cx0, cy1);
-              const WorkingPixel d = level_pixel(child, edge, cx1, cy1);
+            const int cpx = tx * edge + ix;
+            const int cpy = ty * edge + iy;
+            if (cpx < up.width && cpy < up.height) {
+              const int cx0 = std::min(2 * cpx, child.width - 1);
+              const int cy0 = std::min(2 * cpy, child.height - 1);
+              const int cx1 = std::min(2 * cpx + 1, child.width - 1);
+              const int cy1 = std::min(2 * cpy + 1, child.height - 1);
+              const WorkingPixel a = level_pixel(child, pool, edge, cx0, cy0);
+              const WorkingPixel b = level_pixel(child, pool, edge, cx1, cy0);
+              const WorkingPixel c = level_pixel(child, pool, edge, cx0, cy1);
+              const WorkingPixel d = level_pixel(child, pool, edge, cx1, cy1);
               const WorkingPixel avg{
                   (a[0] + b[0] + c[0] + d[0]) * 0.25F, (a[1] + b[1] + c[1] + d[1]) * 0.25F,
                   (a[2] + b[2] + c[2] + d[2]) * 0.25F, (a[3] + b[3] + c[3] + d[3]) * 0.25F};
-              put(blob, edge, ix, iy, avg);
+              put(px, edge, ix, iy, avg);
             }
           }
         }
         up.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(up.tiles_x) +
-                 static_cast<std::size_t>(tx)] = std::move(blob);
+                 static_cast<std::size_t>(tx)] = blob.slot();
+        keep.push_back(std::move(blob));
       }
     }
     levels.push_back(std::move(up));
@@ -197,7 +219,7 @@ WorkingPixel TileTable::pixel(std::size_t l, int x, int y) const {
   const Level& lvl = d_levels[l];
   const int cx = std::clamp(x, 0, lvl.width - 1);
   const int cy = std::clamp(y, 0, lvl.height - 1);
-  return level_pixel(lvl, d_edge, cx, cy);
+  return level_pixel(lvl, *d_pool, d_edge, cx, cy);
 }
 
 std::vector<float> TileTable::level_pixels(std::size_t l) const {
@@ -206,7 +228,7 @@ std::vector<float> TileTable::level_pixels(std::size_t l) const {
                          static_cast<std::size_t>(lvl.height) * k_tile_channels);
   for (int y = 0; y < lvl.height; ++y) {
     for (int x = 0; x < lvl.width; ++x) {
-      const WorkingPixel p = level_pixel(lvl, d_edge, x, y);
+      const WorkingPixel p = level_pixel(lvl, *d_pool, d_edge, x, y);
       const std::size_t o = (static_cast<std::size_t>(y) * static_cast<std::size_t>(lvl.width) +
                              static_cast<std::size_t>(x)) *
                             k_tile_channels;
@@ -222,14 +244,19 @@ std::vector<float> TileTable::level_pixels(std::size_t l) const {
 std::size_t TileTable::byte_cost() const {
   std::size_t total = 0;
   for (const Level& lvl : d_levels) {
-    for (const TileBlobPtr& t : lvl.tiles) {
-      total += t->px.size() * sizeof(float);
+    for (const BlockSlotRef& ref : lvl.tiles) {
+      total += ref.size();
     }
   }
   return total;
 }
 
 // --- RasterStore ------------------------------------------------------------
+
+RasterStore::RasterStore()
+    : d_owned_source(std::make_unique<AnonymousChunkSource>()), d_pool(*d_owned_source) {}
+
+RasterStore::RasterStore(ChunkSource& source) : d_owned_source(nullptr), d_pool(source) {}
 
 StateHandle RasterStore::intern(TileTablePtr table) {
   std::lock_guard<std::mutex> lock(d_mutex);
@@ -247,13 +274,15 @@ StateHandle RasterStore::intern(TileTablePtr table) {
 
 StateHandle RasterStore::build(const DecodedImage& image, int edge) {
   const std::vector<WorkingPixel> grid = decode_image(image);
-  std::uint64_t alloc = 0;
-  std::vector<Level> levels = build_levels(grid, image.width, image.height, edge, alloc);
-  auto table =
-      std::make_shared<const TileTable>(image.width, image.height, edge, std::move(levels));
+  // `keep` holds the fresh blobs' allocate-counts alive until the TileTable
+  // constructor retains each ref; it drops at scope exit so the table owns the
+  // sole count on every fresh blob.
+  std::vector<BlockRef> keep;
+  std::vector<Level> levels = build_levels(grid, image.width, image.height, edge, d_pool, keep);
+  auto table = std::make_shared<const TileTable>(image.width, image.height, edge, std::move(levels),
+                                                 &d_pool);
   {
     std::lock_guard<std::mutex> lock(d_mutex);
-    d_blobs_allocated += alloc;
     d_base_table = table;
   }
   return intern(std::move(table));
@@ -290,9 +319,14 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
   const int w = baseTable->width();
   const int h = baseTable->height();
 
-  std::uint64_t alloc = 0;
+  // `keep` holds fresh blobs' allocate-counts until the new TileTable retains
+  // them (see build()).
+  std::vector<BlockRef> keep;
 
-  // Copy the level list (shared_ptr copies keep untouched blobs shared).
+  // Copy the level list. BlockSlotRef copies are position-independent bit-copies
+  // that carry no count; the new TileTable ctor retains every ref, so untouched
+  // (shared) tiles gain a count against the new version while fresh tiles are
+  // held alive by `keep` until then.
   std::vector<Level> levels = baseTable->levels();
 
   // Level 0: replace only the tiles the region touches.
@@ -304,21 +338,26 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
         if (!tile_overlaps(tx, ty, edge, region)) {
           continue;
         }
-        auto blob = std::make_shared<TileBlob>(
-            *l0.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(l0.tiles_x) +
-                      static_cast<std::size_t>(tx)]);
-        ++alloc;
+        const std::size_t idx =
+            static_cast<std::size_t>(ty) * static_cast<std::size_t>(l0.tiles_x) +
+            static_cast<std::size_t>(tx);
+        BlockRef blob = new_blob(d_pool, edge);
+        // Copy the predecessor's blob bytes (including tile padding) so untouched
+        // pixels stay byte-identical, then mutate only the touched pixels.
+        const std::span<const std::byte> src = d_pool.peek(l0.tiles[idx]);
+        std::memcpy(blob.data(), src.data(), blob.size());
+        auto* px = reinterpret_cast<float*>(blob.data());
         for (int iy = 0; iy < edge; ++iy) {
           for (int ix = 0; ix < edge; ++ix) {
             const int gx = tx * edge + ix;
             const int gy = ty * edge + iy;
             if (gx < w && gy < h && center_inside(region, gx, gy)) {
-              put(blob, edge, ix, iy, color);
+              put(px, edge, ix, iy, color);
             }
           }
         }
-        l0.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(l0.tiles_x) +
-                 static_cast<std::size_t>(tx)] = std::move(blob);
+        l0.tiles[idx] = blob.slot();
+        keep.push_back(std::move(blob));
         const Rect tile{static_cast<double>(tx * edge), static_cast<double>(ty * edge),
                         std::min(static_cast<double>((tx + 1) * edge), static_cast<double>(w)),
                         std::min(static_cast<double>((ty + 1) * edge), static_cast<double>(h))};
@@ -341,39 +380,39 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
         if (!tile_overlaps(tx, ty, edge, parent_rect)) {
           continue;
         }
-        auto blob = new_blob(edge, alloc);
+        const std::size_t idx =
+            static_cast<std::size_t>(ty) * static_cast<std::size_t>(up.tiles_x) +
+            static_cast<std::size_t>(tx);
+        BlockRef blob = new_blob(d_pool, edge);
+        auto* px = reinterpret_cast<float*>(blob.data());
         for (int iy = 0; iy < edge; ++iy) {
           for (int ix = 0; ix < edge; ++ix) {
-            const int px = tx * edge + ix;
-            const int py = ty * edge + iy;
-            if (px < up.width && py < up.height) {
-              const int cx0 = std::min(2 * px, child.width - 1);
-              const int cy0 = std::min(2 * py, child.height - 1);
-              const int cx1 = std::min(2 * px + 1, child.width - 1);
-              const int cy1 = std::min(2 * py + 1, child.height - 1);
-              const WorkingPixel a = level_pixel(child, edge, cx0, cy0);
-              const WorkingPixel b = level_pixel(child, edge, cx1, cy0);
-              const WorkingPixel c = level_pixel(child, edge, cx0, cy1);
-              const WorkingPixel d = level_pixel(child, edge, cx1, cy1);
+            const int cpx = tx * edge + ix;
+            const int cpy = ty * edge + iy;
+            if (cpx < up.width && cpy < up.height) {
+              const int cx0 = std::min(2 * cpx, child.width - 1);
+              const int cy0 = std::min(2 * cpy, child.height - 1);
+              const int cx1 = std::min(2 * cpx + 1, child.width - 1);
+              const int cy1 = std::min(2 * cpy + 1, child.height - 1);
+              const WorkingPixel a = level_pixel(child, d_pool, edge, cx0, cy0);
+              const WorkingPixel b = level_pixel(child, d_pool, edge, cx1, cy0);
+              const WorkingPixel c = level_pixel(child, d_pool, edge, cx0, cy1);
+              const WorkingPixel d = level_pixel(child, d_pool, edge, cx1, cy1);
               const WorkingPixel avg{
                   (a[0] + b[0] + c[0] + d[0]) * 0.25F, (a[1] + b[1] + c[1] + d[1]) * 0.25F,
                   (a[2] + b[2] + c[2] + d[2]) * 0.25F, (a[3] + b[3] + c[3] + d[3]) * 0.25F};
-              put(blob, edge, ix, iy, avg);
+              put(px, edge, ix, iy, avg);
             }
           }
         }
-        up.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(up.tiles_x) +
-                 static_cast<std::size_t>(tx)] = std::move(blob);
+        up.tiles[idx] = blob.slot();
+        keep.push_back(std::move(blob));
       }
     }
     propagate = parent_rect;
   }
 
-  auto table = std::make_shared<const TileTable>(w, h, edge, std::move(levels));
-  {
-    std::lock_guard<std::mutex> lock(d_mutex);
-    d_blobs_allocated += alloc;
-  }
+  auto table = std::make_shared<const TileTable>(w, h, edge, std::move(levels), &d_pool);
   return intern(std::move(table));
 }
 
@@ -401,7 +440,7 @@ void RasterStore::release_version(StateHandle handle) {
   }
   if (--v.refcount == 0) {
     // Drop the version's blobs; a no-longer-shared tile-pixel blob reclaims by
-    // refcount here (doc 14:173-176). The base table keeps its own pin.
+    // the pool refcount here (doc 14:173-176). The base table keeps its own pin.
     v.table.reset();
     d_free.push_back(handle.slot);
   }
@@ -412,10 +451,7 @@ std::size_t RasterStore::state_cost(StateHandle handle) const {
   return t ? t->byte_cost() : 0;
 }
 
-std::uint64_t RasterStore::blobs_allocated() const {
-  std::lock_guard<std::mutex> lock(d_mutex);
-  return d_blobs_allocated;
-}
+std::uint64_t RasterStore::blobs_allocated() const { return d_pool.blobs_allocated(); }
 
 std::size_t RasterStore::live_versions() const {
   std::lock_guard<std::mutex> lock(d_mutex);

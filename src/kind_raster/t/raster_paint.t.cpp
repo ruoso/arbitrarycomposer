@@ -3,6 +3,7 @@
 #include <arbc/media/pixel_traits.hpp>
 #include <arbc/model/journal.hpp>
 #include <arbc/model/model.hpp>
+#include <arbc/pool/big_block_pool.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -108,14 +109,25 @@ TEST_CASE("a raster paint copies only the touched tiles and shares the rest by r
   // tile) = 3 new blobs.
   REQUIRE(store.blobs_allocated() - blobs_before == 3);
 
-  // The three untouched level-0 tiles keep their blob identity (shared, not
-  // copied); only the touched tile [index 0] got a fresh blob.
+  // The three untouched level-0 tiles keep their pool-slot identity (shared by
+  // refcount, not copied); only the touched tile [index 0] got a fresh blob at a
+  // distinct pool slot.
   const Level& b0 = base_table->level(0);
   const Level& a0 = after_table->level(0);
-  REQUIRE(a0.tiles[0].get() != b0.tiles[0].get()); // touched: fresh blob
-  REQUIRE(a0.tiles[1].get() == b0.tiles[1].get()); // shared
-  REQUIRE(a0.tiles[2].get() == b0.tiles[2].get()); // shared
-  REQUIRE(a0.tiles[3].get() == b0.tiles[3].get()); // shared
+  REQUIRE(a0.tiles[0] != b0.tiles[0]); // touched: fresh pool blob
+  REQUIRE(a0.tiles[1] == b0.tiles[1]); // shared
+  REQUIRE(a0.tiles[2] == b0.tiles[2]); // shared
+  REQUIRE(a0.tiles[3] == b0.tiles[3]); // shared
+
+  // Re-witnessed at the pool layer: each untouched tile is shared by a per-slot
+  // refcount bump (base + after both hold it -> count 2), with no new blob
+  // allocation for them; the touched tile is held once by its own version.
+  const BigBlockPool& pool = store.pool();
+  REQUIRE(pool.count(b0.tiles[1]) == 2);
+  REQUIRE(pool.count(b0.tiles[2]) == 2);
+  REQUIRE(pool.count(b0.tiles[3]) == 2);
+  REQUIRE(pool.count(b0.tiles[0]) == 1); // base's own touched-slot version
+  REQUIRE(pool.count(a0.tiles[0]) == 1); // after's fresh touched blob
 
   // The emitted damage equals the touched tile's rect.
   REQUIRE(touched == Rect{0.0, 0.0, 2.0, 2.0});
