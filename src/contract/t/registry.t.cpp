@@ -18,7 +18,7 @@ namespace {
 ContentFactory ok_factory() {
   return [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
     // A registry test needs no real content; the factory shape is what matters.
-    return unexpected<std::string>("not constructed in this test");
+    return arbc::unexpected<std::string>("not constructed in this test");
   };
 }
 
