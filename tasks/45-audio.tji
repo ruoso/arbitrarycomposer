@@ -114,6 +114,12 @@ task audio "Audio" {
     depends !spatial_policy, !device_monitor
     note "Bind the interactive runtime's live visual viewport camera into the DeviceMonitor's Spatialization listener each tick and on camera/transport change, so audio spatialization tracks the user's zoom live (the interactive 'camera is the listener' coupling); audio.spatial_policy ships only the static seam. Source: audio.spatial_policy scope boundary; see tasks/refinements/audio/spatial_policy.md. Doc 12. Refinement: tasks/refinements/audio/spatial_camera_follow.md"
   }
+  task interactive_pull_identity "Production PullConfig::id_of for the interactive audio pump" {
+    effort 1d
+    allocate team
+    depends !device_monitor, runtime.operator_input_cache_identity
+    note "Build a production PullConfig::id_of for the interactive audio path — lookahead_pump/device_monitor key all content including layer roots on ObjectId{} today — reusing the pull_identity helper extracted by runtime.operator_input_cache_identity, so operator input children get distinct, stable audio cache identities interactively. Source: tasks/parking-lot.md 2026-07-10 (interactive audio id_of wiring). Docs 12/13."
+  }
   task rt_safety "RT-safety enforcement" {
     effort 1d
     allocate team

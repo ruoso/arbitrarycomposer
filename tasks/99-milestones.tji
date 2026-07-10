@@ -62,13 +62,13 @@ task milestones "Milestones" {
 
   task m8_persistence "M8: Documents as files" {
     milestone
-    depends serialize.format_tests, runtime.plugin_loading, model.workspace_backing, runtime.document_serialize, runtime.operator_codecs
-    note "Canonical .arbc round-trips with unknown-kind preservation; external nested projects load; plugins load by path. Doc 08 realized."
+    depends serialize.format_tests, runtime.plugin_loading, model.workspace_backing, runtime.document_serialize, runtime.operator_codecs, serialize.unknown_field_preservation, serialize.compositions_table, runtime.nested_codec
+    note "Canonical .arbc round-trips with unknown-kind and every-tier unknown-field preservation; nested compositions round-trip in-document (compositions table, Droste included); external nested projects load; plugins load by path. Docs 05/08 realized."
   }
 
   task m9_release "M9: v0.1 release" {
     milestone
-    depends packaging.release_01, packaging.plugin_helper, quality.testing_artifact, quality.tidy_promotion, quality.benchmark_history, quality.claims_audit, quality.repo_linters, quality.request_fuzz, kinds.dual_build, surfaces.import, pool.mmap_backing_win32, pool.checkpoints_win32, pool.crash_tests_win32, pool.concurrent_pin_benchmark, kinds.raster_resampling_quality, kinds.raster_runtime_binding, kinds.raster_pool_backing, pool.big_block_pool, kinds.nested_working_space_conversion, kinds.nested_runtime_binding, operators.fade_runtime_binding, operators.crossfade_runtime_binding, runtime.operator_input_cache_identity, runtime.operator_identity_offline_delivery, runtime.plugin_loading_win32, runtime.plugin_default_search_paths, compositor.pull_multi_tile_region, runtime.damage_router, runtime.housekeeping_win32
+    depends packaging.release_01, packaging.plugin_helper, quality.testing_artifact, quality.tidy_promotion, quality.benchmark_history, quality.claims_audit, quality.repo_linters, quality.request_fuzz, kinds.dual_build, surfaces.import, pool.mmap_backing_win32, pool.checkpoints_win32, pool.crash_tests_win32, pool.concurrent_pin_benchmark, kinds.raster_resampling_quality, kinds.raster_runtime_binding, kinds.raster_pool_backing, pool.big_block_pool, kinds.nested_working_space_conversion, kinds.nested_runtime_binding, operators.fade_runtime_binding, operators.crossfade_runtime_binding, runtime.operator_input_cache_identity, runtime.operator_identity_offline_delivery, runtime.plugin_loading_win32, runtime.plugin_default_search_paths, compositor.pull_multi_tile_region, runtime.damage_router, runtime.housekeeping_win32, audio.interactive_pull_identity, runtime.interactive_pull_wiring, runtime.housekeeping_document_wiring
     note "The single library + arbc-testing + imageseq plugin, installable with package metadata, examples building, quality bars promoted, external-import surface contract complete."
   }
 }

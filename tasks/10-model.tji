@@ -16,7 +16,7 @@ task model "Versioned model" {
   task workspace_backing "Workspace-file-backed DocState arena" {
     effort 3d
     allocate team
-    depends !persistent_state, pool.checkpoints
+    depends !persistent_state, pool.checkpoints, pool.workspace_store_directory
     note "Allocate DocState records in a workspace-file-backed Arena; commit on autosave/publish via Checkpointer::commit; implement the typed reachability walk that Checkpointer::finalize_open (checkpoint.hpp:205) requires to rebuild counts on open — the walk pool.checkpoints left to the model layer. Source: tasks/refinements/model/persistent_state.md (deferred follow-up). Docs 14/15."
   }
   task transactions "Transactions + coalescing" {

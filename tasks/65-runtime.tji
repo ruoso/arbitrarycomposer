@@ -85,7 +85,25 @@ task runtime "Runtime" {
     allocate team
     complete 100
     depends !operator_input_cache_identity
-    note "Wire the compositor delivery seam so an identity-served (w==0/w==1) operator-input child's pixels reach the offline/export frame buffer; unblocks endpoint byte-exact-frame acceptance deferred by runtime.operator_input_cache_identity. Source-of-debt: tasks/refinements/runtime/operator_input_cache_identity.md. Doc 13. Refinement: tasks/refinements/runtime/operator_identity_offline_delivery.md"
+    note "Wire the compositor delivery seam so an identity-served (w equals 0/w equals 1) operator-input child's pixels reach the offline/export frame buffer; unblocks endpoint byte-exact-frame acceptance deferred by runtime.operator_input_cache_identity. Source-of-debt: tasks/refinements/runtime/operator_input_cache_identity.md. Doc 13. Refinement: tasks/refinements/runtime/operator_identity_offline_delivery.md"
+  }
+  task nested_codec "org.arbc.nested codec over the compositions table" {
+    effort 2d
+    allocate team
+    depends !operator_codecs, serialize.compositions_table
+    note "Register the org.arbc.nested serialize/deserialize codec: persist a nested content's in-document child through the doc 08 compositions table (core-owned composition reference), rebuild the child composition + NestedContent binding on load, end-to-end byte-exact goldens incl. a Droste cycle; external params.ref children remain loader territory (doc 05). Source: tasks/parking-lot.md 2026-07-09 (nested serialization format decision); tasks/refinements/runtime/operator_codecs.md Decision 1. Docs 05/08."
+  }
+  task interactive_pull_wiring "Wire PullService into the interactive frame path" {
+    effort 1d
+    allocate team
+    depends !operator_identity_offline_delivery, !interactive
+    note "Pass a PullServiceImpl with a production PullConfig::id_of into render_frame_interactive (interactive.cpp passes a null pulls today), so interactive operator layers get cache-identity-correct input pulls and the identity-delivery endpoint fix (the w-at-0/w-at-1 case) fires on the interactive path instead of rendering blank. Source: tasks/parking-lot.md 2026-07-10 (interactive frame endpoint delivery gap). Docs 02/13."
+  }
+  task housekeeping_document_wiring "Wire Housekeeper onto the live Document arenas" {
+    effort 1d
+    allocate team
+    depends !housekeeping_thread, model.workspace_backing
+    note "Drive the live Document/Model slab arenas with the Housekeeper (reclamation-drain cadence, checkpoint cadence policy over Model::checkpoint, memory observability) — runtime.housekeeping validated the policy against pool fixtures only, before Model was arena-backed with installed sinks and a Checkpointer. Source: tasks/parking-lot.md 2026-07-05 (Document-to-slab-arena rewire). Docs 14/15."
   }
   task housekeeping "Housekeeping" {
     effort 1d
