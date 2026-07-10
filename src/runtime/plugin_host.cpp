@@ -183,7 +183,16 @@ expected<std::monostate, PluginLoadError> PluginHost::load_plugin(std::string_vi
 PluginScanReport PluginHost::scan_plugin_path() {
   PluginScanReport report;
 
+  // MSVC deprecates getenv in favour of _dupenv_s; suppress the warning since
+  // getenv is both correct and portable for a read-only environment lookup.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
   const char* env = std::getenv("ARBC_PLUGIN_PATH");
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
   if (env == nullptr || env[0] == '\0') {
     return report; // genuinely opt-in: unset/empty -> zero loads, zero fs access
   }

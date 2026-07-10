@@ -13,6 +13,12 @@
 #include <fstream>
 #include <utility>
 
+// The MSVC fallback for 128-bit integers must be included before opening any
+// namespace, mirroring the pattern in base/rational_time.hpp.
+#ifndef __SIZEOF_INT128__
+#include <arbc/base/detail/int128_msvc.hpp>
+#endif
+
 namespace arbc::imageseq {
 
 namespace {
@@ -21,7 +27,11 @@ namespace {
 // once behind `__extension__` so the pedantic build stays clean, mirroring
 // `base/rational_time.hpp`'s `rational_i128` (the frame-instant math is the same
 // exact-rational, single-ties-to-even-rounding shape).
+#ifdef __SIZEOF_INT128__
 __extension__ typedef __int128 i128;
+#else
+using i128 = arbc::rational_i128;
+#endif
 
 // Bounded decoded-frame cache size. Larger than any fixture sequence, so the
 // tests exercise the miss-then-hit path without eviction; a real large sequence

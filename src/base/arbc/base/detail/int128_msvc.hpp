@@ -267,10 +267,22 @@ struct rational_i128 {
     return static_cast<std::int64_t>(lo) & mask;
   }
 
+  // Pre-increment / pre-decrement
+  constexpr rational_i128& operator++() noexcept {
+    *this += rational_i128(std::int64_t{1});
+    return *this;
+  }
+  constexpr rational_i128& operator--() noexcept {
+    *this -= std::int64_t{1};
+    return *this;
+  }
+
   // Cast to int64 (caller ensures value fits after final bounds check)
   explicit constexpr operator std::int64_t() const noexcept {
     return static_cast<std::int64_t>(lo);
   }
+  // Cast to int (caller ensures value fits; narrowing from int64)
+  explicit constexpr operator int() const noexcept { return static_cast<int>(lo); }
 };
 
 // Free operator* so `2 * r` (int literal on the left) compiles.
