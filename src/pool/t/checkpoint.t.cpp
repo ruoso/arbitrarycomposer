@@ -12,25 +12,32 @@
 #include <string>
 #include <vector>
 
-// The checkpoint protocol rides the file-backed workspace. Its ordered-commit
-// validation (signal/setjmp crash points) is POSIX-specific; the Windows port is
-// the separate pool.checkpoints_win32 leaf, so this stays gated off `_WIN32` even
-// though Windows now has workspace files. On platforms without workspace files (or
-// on Windows) it compiles out with just the runtime-query check.
+// The checkpoint protocol rides the file-backed workspace and is validated on both
+// POSIX (mmap/msync/mprotect + signal/setjmp) and Windows (MapViewOfFile/
+// FlushViewOfFile/VirtualProtect + SEH). The platform leaves branch on `_WIN32`;
+// everything above the capability gate runs unconditionally. On platforms without
+// workspace files the body compiles out with just the runtime-query check.
 TEST_CASE("checkpoint support tracks workspace-file support") {
   REQUIRE(arbc::workspace_files_supported() == (ARBC_HAS_WORKSPACE_FILES != 0));
 }
 
-#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
+#if ARBC_HAS_WORKSPACE_FILES
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <atomic>
 #include <csetjmp>
 #include <csignal>
+#endif
+
+#include <atomic>
 #include <thread>
 
 namespace {
@@ -40,14 +47,30 @@ namespace {
 class TempPath {
 public:
   TempPath() {
+#if defined(_WIN32)
+    char dir[MAX_PATH];
+    const DWORD n = ::GetTempPathA(MAX_PATH, dir);
+    char buf[MAX_PATH];
+    // GetTempFileNameA creates the file; create()/open() reopen with CREATE_ALWAYS.
+    if (n != 0 && n < static_cast<DWORD>(MAX_PATH) && ::GetTempFileNameA(dir, "ckp", 0, buf) != 0) {
+      d_path = buf;
+    }
+#else
     char tmpl[] = "/tmp/arbc_ckpt_XXXXXX";
     const int fd = ::mkstemp(tmpl);
     if (fd >= 0) {
       ::close(fd);
     }
     d_path = tmpl;
+#endif
   }
-  ~TempPath() { ::unlink(d_path.c_str()); }
+  ~TempPath() {
+#if defined(_WIN32)
+    ::DeleteFileA(d_path.c_str());
+#else
+    ::unlink(d_path.c_str());
+#endif
+  }
   TempPath(const TempPath&) = delete;
   TempPath& operator=(const TempPath&) = delete;
   const std::string& str() const { return d_path; }
@@ -141,10 +164,20 @@ WalkResult walk(arbc::RefStore<GraphNode>& store, arbc::SlotIndex root_index) {
   return result;
 }
 
-blkcnt_t block_count(const std::string& path) {
+// On-disk allocated size in bytes: st_blocks*512 on POSIX, GetCompressedFileSize on
+// Windows (both drop when a sparse chunk is hole-punched). Mirrors the sibling
+// workspace_file.t.cpp helper.
+std::uint64_t allocated_size(const std::string& path) {
+#if defined(_WIN32)
+  DWORD high = 0;
+  const DWORD low = ::GetCompressedFileSizeA(path.c_str(), &high);
+  REQUIRE(low != INVALID_FILE_SIZE);
+  return (static_cast<std::uint64_t>(high) << 32) | low;
+#else
   struct stat st{};
   REQUIRE(::stat(path.c_str(), &st) == 0);
-  return st.st_blocks;
+  return static_cast<std::uint64_t>(st.st_blocks) * 512u;
+#endif
 }
 
 // Byte-copy the workspace file so recovery runs against an INDEPENDENT file, as
@@ -153,6 +186,11 @@ blkcnt_t block_count(const std::string& path) {
 // arena's teardown (which hole-punches its chunks) never touches the writer's
 // live file. Copying the msync'd bytes is exactly what a post-crash reopen sees.
 void copy_file(const std::string& src, const std::string& dst) {
+#if defined(_WIN32)
+  // A single-call independent-file copy: recovery runs against its own file with
+  // its own handle + mappings, exactly as the POSIX byte-copy arm below.
+  REQUIRE(::CopyFileA(src.c_str(), dst.c_str(), FALSE) != 0);
+#else
   const int in = ::open(src.c_str(), O_RDONLY);
   REQUIRE(in >= 0);
   const int out = ::open(dst.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
@@ -170,6 +208,7 @@ void copy_file(const std::string& src, const std::string& dst) {
   REQUIRE(n == 0); // clean EOF
   ::close(in);
   ::close(out);
+#endif
 }
 
 } // namespace
@@ -438,7 +477,10 @@ TEST_CASE("a freed slot is quarantined until a commit makes the freeing durable"
 
 // enforces: 15-memory-model#freed-slot-quarantined-until-durable
 TEST_CASE("an emptied chunk is not hole-punched until the emptying is durable") {
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
+  // Deferred hole-punch on a sparse-capable volume: Linux `fallocate(PUNCH_HOLE)`
+  // and Windows `FSCTL_SET_ZERO_DATA` on an NTFS sparse file. Guarded to those
+  // sparse-capable volumes, as macOS / non-NTFS keeps the logical bytes.
   TempPath path;
   auto source = arbc::WorkspaceFileChunkSource::create(path.str());
   REQUIRE(source.has_value());
@@ -451,19 +493,23 @@ TEST_CASE("an emptied chunk is not hole-punched until the emptying is durable") 
   auto span = ws.acquire(chunk, alignof(std::max_align_t));
   REQUIRE(span.has_value());
   std::memset(span->base, 0xCD, span->size);
+#if defined(_WIN32)
+  REQUIRE(::FlushViewOfFile(span->base, span->size) != 0);
+#else
   REQUIRE(::msync(span->base, span->size, MS_SYNC) == 0);
-  const blkcnt_t allocated = block_count(path.str());
+#endif
+  const std::uint64_t allocated = allocated_size(path.str());
 
   // Release it: with the chunk fence installed the punch is DEFERRED, so the
-  // block count is unchanged (the chunk may still back the on-disk root).
+  // allocated size is unchanged (the chunk may still back the on-disk root).
   ws.release(*span);
-  REQUIRE(block_count(path.str()) == allocated);
+  REQUIRE(allocated_size(path.str()) == allocated);
 
   // A commit makes the emptying durable and drains the deferred punch.
   REQUIRE(ckpt.commit(0).has_value());
-  REQUIRE(block_count(path.str()) < allocated);
+  REQUIRE(allocated_size(path.str()) < allocated);
 #else
-  SUCCEED("hole-punch storage return is a Linux-only guarantee");
+  SUCCEED("hole-punch storage return is a sparse-file (Linux/Windows) guarantee");
 #endif
 }
 
@@ -530,6 +576,25 @@ TEST_CASE("behavioral counters: msyncs, fence releases, and epoch advance as spe
 
 #ifndef NDEBUG
 
+#if defined(_WIN32)
+namespace {
+// The faulting store is isolated in its own frame: MSVC forbids __try/__except in a
+// function that also requires C++ object unwinding (error C2712), so this helper
+// carries no unwind-requiring locals -- just the raw record pointer and a bool.
+// Windows delivers the write to a VirtualProtect(PAGE_READONLY) page as a structured
+// exception (EXCEPTION_ACCESS_VIOLATION), the native analog of the POSIX SIGSEGV.
+bool published_store_faults(GraphNode* record) {
+  bool faulted = false;
+  __try {
+    record->value = 999; // write into the published (sealed) chunk
+  } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                               : EXCEPTION_CONTINUE_SEARCH) {
+    faulted = true;
+  }
+  return faulted;
+}
+} // namespace
+#else
 namespace {
 sigjmp_buf g_jump;
 volatile sig_atomic_t g_faulted = 0;
@@ -538,6 +603,7 @@ void segv_handler(int) {
   siglongjmp(g_jump, 1);
 }
 } // namespace
+#endif
 
 // enforces: 15-memory-model#checkpoint-published-chunks-read-only
 TEST_CASE("a write into a published data chunk faults after commit (debug)") {
@@ -559,6 +625,11 @@ TEST_CASE("a write into a published data chunk faults after commit (debug)") {
   GraphNode* sealed_record = store.peek_index(sealed_index);
   REQUIRE(ckpt.commit(root.index()).has_value()); // seals chunk 0 read-only
 
+#if defined(_WIN32)
+  // The write is caught by an SEH __try/__except on EXCEPTION_ACCESS_VIOLATION,
+  // isolated in a no-unwind helper (C2712).
+  REQUIRE(published_store_faults(sealed_record));
+#else
   struct sigaction old_action{};
   struct sigaction action{};
   action.sa_handler = segv_handler;
@@ -572,6 +643,7 @@ TEST_CASE("a write into a published data chunk faults after commit (debug)") {
   REQUIRE(g_faulted == 1);
 
   REQUIRE(::sigaction(SIGSEGV, &old_action, nullptr) == 0);
+#endif
 
   // Un-seal so teardown (munmap / directory writes) proceeds normally.
   REQUIRE((*source)->protect_data(false).has_value());

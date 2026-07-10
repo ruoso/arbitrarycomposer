@@ -71,8 +71,9 @@ task pool "Memory pool" {
   task checkpoints_win32 "Checkpoint protocol — Windows port" {
     effort 1d
     allocate team
+    complete 100
     depends !checkpoints, !mmap_backing_win32
-    note "FlushViewOfFile+FlushFileBuffers in place of msync, VirtualProtect in place of mprotect for debug read-only publish, behind ARBC_HAS_WORKSPACE_FILES. Source-of-debt: tasks/refinements/pool/checkpoints.md. Doc 15."
+    note "FlushViewOfFile+FlushFileBuffers in place of msync, VirtualProtect in place of mprotect for debug read-only publish, behind ARBC_HAS_WORKSPACE_FILES. Source-of-debt: tasks/refinements/pool/checkpoints.md. Doc 15. Refinement: tasks/refinements/pool/checkpoints_win32.md"
   }
   task crash_tests "Crash-recovery test sweep" {
     effort 2d
