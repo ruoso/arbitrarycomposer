@@ -61,7 +61,8 @@ spills to a HAMT-backed chain of order-chunk objects — ordinary records in
 the same `DocState` map, keyed by their own `ObjectId` and named from the
 composition by a plain `ObjectId` spill-root value (never an owning edge, so
 the composition record stays fixed-size and trivially destructible like every
-other record). Crossing the cap migrates inline → chunks; dropping back to
+other *object* record — the persistent map's interior nodes are the one
+deliberate exception, doc 15). Crossing the cap migrates inline → chunks; dropping back to
 the cap collapses chunks → inline, so a given membership has one canonical
 record. Because chunks are ordinary map objects, the persistent map owns,
 path-copies, and reclaims them with no bespoke ownership machinery, and a
@@ -91,6 +92,8 @@ All mutation flows through a transaction on the writer thread:
   auto txn = doc.transact("Trim clip");
   txn.set_span(layer_id, TimeSpan{in2, out2});
   txn.set_transform(other_layer, m);
+  txn.set_opacity(other_layer, 0.5);   // placement mutators (span, transform,
+                                       // opacity, ...) all auto-damage
   txn.commit();          // builds next DocState, publishes atomically,
                          // appends ONE journal entry, flushes damage once
 }

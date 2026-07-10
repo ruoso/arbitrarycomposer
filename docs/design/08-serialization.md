@@ -87,8 +87,15 @@ These are core-owned placement, not `params`.
    the doc-05 shared-content semantics survive persistence.
 4. **Versioning is boring on purpose.** `arbc.format` is a major version;
    readers reject majors they don't know. Within a major, unknown *fields*
-   are preserved-and-ignored (same discipline as unknown kinds). Kind-level
-   evolution is the plugin's business via `kind_version`.
+   are preserved-and-ignored (same discipline as unknown kinds) — and that
+   holds at **every tier** of the document: envelope, composition, layer,
+   content-body siblings, and `params` interiors alike. The reader carries
+   unknown sibling fields through verbatim (an opaque stash beside the
+   known fields; the JSON type still never crosses out of
+   `arbc::serialize`, Principle 1) and the writer re-emits them merged
+   into canonical key order (Principle 5); a preserved unknown never
+   shadows a known field. Kind-level evolution is the plugin's business
+   via `kind_version`.
 5. **Determinism.** Serialization output is canonical (sorted keys, fixed
    number formatting) so documents diff cleanly under version control —
    these files are source artifacts, and VCS-friendliness is a feature.
@@ -127,8 +134,26 @@ These are core-owned placement, not `params`.
    load. v1 `$ref` graphs are **acyclic** (the v1 operators `org.arbc.fade`
    / `org.arbc.crossfade` are; doc 13): operator *feedback* cycles
    (doc 13) are a render-time concern bounded by the compositor's depth
-   budget, and composition cycles (Droste, doc 05) ride the nested kind's
-   `params` URI (Principle 3) — neither is a `contents`/`$ref` edge.
+   budget, and composition cycles (Droste, doc 05) ride the `compositions`
+   table (Principle 7) or an external `params.ref` URI (Principle 3) —
+   neither is a `contents`/`$ref` edge.
+7. **Child compositions are document-local by default.** A document holds
+   exactly one root `composition`; every *other* composition reachable
+   from it — the child a nested content (doc 05) embeds — lives in an
+   optional document-level `compositions` table, keyed like `contents` by
+   core-owned, non-semantic ids re-derived deterministically on every save
+   (first-encounter order over the canonical traversal, Principle 6's
+   discipline). A nested content body names its child through a core-owned
+   `"composition": id` field beside `kind`/`inputs`/`params` — core-owned
+   because the reference is graph structure, exactly like `inputs`; the
+   kind's `params` never carries it. `compositions` references may form
+   cycles (A embeds B embeds A): a Droste scene serializes directly — the
+   depth budget that bounds its *rendering* (doc 05) has no bearing on its
+   *representation*. The kind-owned `params.ref` URI form remains the
+   reference to an **external** project file (Principle 3, doc 05); the
+   table is for in-document children. On load, a `composition` id absent
+   from the table is a serialization error surfaced as a value, like a
+   dangling `$ref`.
 
 ## Deliberately not in the format
 

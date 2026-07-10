@@ -107,7 +107,9 @@ Initially-open questions, now decided in their own docs:
   RGBA16F; format-templated kernels behind a type-erased plugin boundary.
   Decided in doc 07.
 - **Serialization**: v1 deliverable. Canonical JSON documents, kind-owned
-  `params`, lossless round-trip of unknown kinds, external references by
+  `params`, lossless round-trip of unknown kinds *and* of unknown fields at
+  every document tier, in-document child compositions in a core-owned
+  `compositions` table (Droste cycles serialize), external references by
   URI. Decided in doc 08.
 - **Content-provided surfaces / texture adoption**: `RenderResult` may carry
   the content's own surface (3D engine framebuffer) instead of filling the

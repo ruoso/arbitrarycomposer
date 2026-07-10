@@ -51,6 +51,12 @@ an external one. External loading is async by nature, and the nested kind's
 async render path plus placeholder policy already cover the not-yet-loaded
 state.
 
+Persistence follows the same split (doc 08): an in-document child
+serializes into the document-level `compositions` table, the nested
+content naming it by a core-owned id — cycles included, so a Droste scene
+round-trips as data — while an external child stays a kind-owned
+`params.ref` URI resolved through the loader.
+
 ## Cycles
 
 Composition references form a graph; cycles are representable (A embeds B

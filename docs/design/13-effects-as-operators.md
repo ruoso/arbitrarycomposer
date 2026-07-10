@@ -121,7 +121,11 @@ actions, and its `renderScale` discipline is the precedent for ours):
   inflated by its radius (and declares radius units — content-local or
   output-pixel — resolving them against `scale`); a warp pulls through its
   inverse mapping. `map_input_damage` is the same mapping in reverse, so
-  declaring it is not extra design work.
+  declaring it is not extra design work. Its contract is a **covering**
+  one: the mapped output damage must cover every output pixel the input
+  change can affect — over-approximation is sound (extra pixels merely
+  re-render), under-approximation is a correctness bug (stale pixels
+  survive an edit).
 - **Scale**: passes through by default. An operator that is resolution-
   bounded (a stylize working at a fixed grain) reports `achieved_scale`
   honestly like any raster. Downsample-then-upsample tricks (cheap heavy

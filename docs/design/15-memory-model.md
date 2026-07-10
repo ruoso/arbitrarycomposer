@@ -138,7 +138,17 @@ question, which is the goal:
   writer thread between transactions, or a low-priority thread — pops,
   runs destructors (fixing cpioo gap 1), whose child-release enqueues
   continue the cascade *iteratively*: bounded stack, bounded latency,
-  amortized cost, and free slots return to the pools warm.
+  amortized cost, and free slots return to the pools warm. Record types
+  split in two here: **object records** (composition, layer, content,
+  order chunk) are trivially destructible — pure index-and-value bytes,
+  which is what lets the workspace file (below) carry them as raw slots —
+  while the persistent map's **interior nodes** deliberately are not: a
+  map node owns its counted child-edge references and releases them in
+  its destructor as the cascade drains (reaching its stores through the
+  drainer-published reclaim context). The split costs file backing
+  nothing: recovery walks node *bytes* and constructs/destructs no
+  object, so the non-trivial destructor is purely a live-editing-time
+  concern.
 - **Thread rules** (sharpening doc 02/12): the audio *callback* touches no
   allocator, no refcount, ever (it consumes prepared blocks — doc 12
   already guarantees this). Render and audio-engine threads may pin/unpin
