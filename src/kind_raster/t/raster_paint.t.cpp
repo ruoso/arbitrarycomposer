@@ -71,8 +71,8 @@ TEST_CASE("raster decodes each input pixel format to the working space") {
     const WorkingPixel b{0.9F, 0.4F, 0.2F, 1.0F};
     PixelTraits<PixelFormat::Rgba16fLinearPremul>::encode(a, &px[0]);
     PixelTraits<PixelFormat::Rgba16fLinearPremul>::encode(b, &px[4]);
-    img.bytes.resize(px.size() * sizeof(std::uint16_t));
-    std::memcpy(img.bytes.data(), px.data(), img.bytes.size());
+    const auto* src = reinterpret_cast<const std::byte*>(px.data());
+    img.bytes.assign(src, src + px.size() * sizeof(std::uint16_t));
     RasterContent content(img, /*tile_edge=*/2);
     const TileTablePtr t = content.store().base_table();
     REQUIRE(t->pixel(0, 0, 0) == PixelTraits<PixelFormat::Rgba16fLinearPremul>::decode(&px[0]));

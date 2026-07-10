@@ -141,7 +141,8 @@ std::vector<std::byte> render_audio_reference() {
   const std::optional<AudioResult> r = af->render_audio(req, done);
   REQUIRE(r.has_value());
   std::vector<std::byte> bytes(samples.size() * sizeof(float));
-  std::memcpy(bytes.data(), samples.data(), bytes.size());
+  const auto* src = reinterpret_cast<const std::byte*>(samples.data());
+  bytes.assign(src, src + bytes.size());
   return bytes;
 }
 

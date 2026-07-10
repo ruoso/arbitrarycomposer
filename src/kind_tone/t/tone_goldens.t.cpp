@@ -55,7 +55,8 @@ std::vector<std::byte> render_tone_bytes(std::uint32_t rate) {
   REQUIRE(result.has_value());
 
   std::vector<std::byte> bytes(samples.size() * sizeof(float));
-  std::memcpy(bytes.data(), samples.data(), bytes.size());
+  const auto* src = reinterpret_cast<const std::byte*>(samples.data());
+  bytes.assign(src, src + bytes.size());
   return bytes;
 }
 

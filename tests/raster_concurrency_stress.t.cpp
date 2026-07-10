@@ -51,8 +51,8 @@ DecodedImage gradient_16x16() {
   for (std::size_t i = 0; i < f.size(); ++i) {
     f[i] = static_cast<float>(i % 97) / 97.0F;
   }
-  img.bytes.resize(f.size() * sizeof(float));
-  std::memcpy(img.bytes.data(), f.data(), img.bytes.size());
+  const auto* src = reinterpret_cast<const std::byte*>(f.data());
+  img.bytes.assign(src, src + f.size() * sizeof(float));
   return img;
 }
 

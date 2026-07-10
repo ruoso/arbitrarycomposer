@@ -144,7 +144,8 @@ std::vector<std::byte> render_fade_audio_bytes(FadeContent& fade) {
   const std::optional<AudioResult> r = af->render_audio(req, done);
   REQUIRE(r.has_value());
   std::vector<std::byte> bytes(samples.size() * sizeof(float));
-  std::memcpy(bytes.data(), samples.data(), bytes.size());
+  const auto* src = reinterpret_cast<const std::byte*>(samples.data());
+  bytes.assign(src, src + bytes.size());
   return bytes;
 }
 
@@ -341,7 +342,8 @@ TEST_CASE("org.arbc.fade fully-open envelope is a byte-identical no-op") {
   auto tdone = std::make_shared<AudioCompletion>();
   REQUIRE(tone.audio()->render_audio(treq, tdone).has_value());
   std::vector<std::byte> tbytes(tsamples.size() * sizeof(float));
-  std::memcpy(tbytes.data(), tsamples.data(), tbytes.size());
+  const auto* tsrc = reinterpret_cast<const std::byte*>(tsamples.data());
+  tbytes.assign(tsrc, tsrc + tbytes.size());
   CHECK(afaded == tbytes);
 }
 

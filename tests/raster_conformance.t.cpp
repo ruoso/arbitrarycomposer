@@ -45,8 +45,8 @@ DecodedImage raster_image() {
       f[o + 3] = a;
     }
   }
-  img.bytes.resize(f.size() * sizeof(float));
-  std::memcpy(img.bytes.data(), f.data(), img.bytes.size());
+  const auto* src = reinterpret_cast<const std::byte*>(f.data());
+  img.bytes.assign(src, src + f.size() * sizeof(float));
   return img;
 }
 
