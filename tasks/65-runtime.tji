@@ -104,7 +104,8 @@ task runtime "Runtime" {
   task housekeeping_win32 "Housekeeping test suites — Windows port" {
     effort 1d
     allocate team
+    complete 100
     depends !housekeeping_thread, pool.checkpoints_win32
-    note "Port housekeeping.t.cpp and housekeeping_thread.t.cpp to the msvc-debug lane (remove the !defined(_WIN32) guard); they exercise the checkpoint durability protocol so they gate behind pool.checkpoints_win32. Source-of-debt: tasks/refinements/pool/mmap_backing_win32.md. Docs 14/15."
+    note "Port housekeeping.t.cpp and housekeeping_thread.t.cpp to the msvc-debug lane (remove the !defined(_WIN32) guard); they exercise the checkpoint durability protocol so they gate behind pool.checkpoints_win32. Source-of-debt: tasks/refinements/pool/mmap_backing_win32.md. Docs 14/15. Refinement: tasks/refinements/runtime/housekeeping_win32.md"
   }
 }

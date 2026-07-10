@@ -16,10 +16,17 @@
 #include <utility>
 #include <vector>
 
-// POSIX temp-file recipe (housekeeping.t.cpp); stays gated off `_WIN32` even though
-// Windows now has workspace files — a Windows housekeeping port is future work.
-#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
+// Workspace temp-file recipe (housekeeping.t.cpp): mkstemp/unlink on POSIX,
+// GetTempFileNameA/DeleteFileA on Windows. The Windows housekeeping port landed with
+// runtime.housekeeping_win32.
+#if ARBC_HAS_WORKSPACE_FILES
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <cstdlib>
@@ -147,20 +154,37 @@ TEST_CASE("the writer's after_commit drains through the wrapper mutex") {
   REQUIRE(arena.total_slots_live() == baseline);
 }
 
-#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
+#if ARBC_HAS_WORKSPACE_FILES
 
-// A temp workspace-file path, unlinked on teardown (housekeeping.t.cpp recipe).
+// A temp workspace-file path, cleaned up on teardown (housekeeping.t.cpp recipe):
+// GetTempFileNameA/DeleteFileA on Windows, mkstemp/unlink on POSIX.
 class TempPath {
 public:
   TempPath() {
+#if defined(_WIN32)
+    char dir[MAX_PATH];
+    const DWORD n = ::GetTempPathA(MAX_PATH, dir);
+    char buf[MAX_PATH];
+    // GetTempFileNameA creates the file; create() reopens it with CREATE_ALWAYS.
+    if (n != 0 && n < static_cast<DWORD>(MAX_PATH) && ::GetTempFileNameA(dir, "hkt", 0, buf) != 0) {
+      d_path = buf;
+    }
+#else
     char tmpl[] = "/tmp/arbc_hkt_XXXXXX";
     const int fd = ::mkstemp(tmpl);
     if (fd >= 0) {
       ::close(fd);
     }
     d_path = tmpl;
+#endif
   }
-  ~TempPath() { ::unlink(d_path.c_str()); }
+  ~TempPath() {
+#if defined(_WIN32)
+    ::DeleteFileA(d_path.c_str());
+#else
+    ::unlink(d_path.c_str());
+#endif
+  }
   TempPath(const TempPath&) = delete;
   TempPath& operator=(const TempPath&) = delete;
   const std::string& str() const noexcept { return d_path; }

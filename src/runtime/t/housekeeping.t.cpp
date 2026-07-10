@@ -12,11 +12,18 @@
 #include <utility>
 #include <vector>
 
-// The housekeeping suite drives the file-backed workspace with a POSIX temp-file
-// recipe (mkstemp/unlink). It stays gated off `_WIN32` even though Windows now has
-// workspace files; a Windows housekeeping port is future work.
-#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
+// The housekeeping suite drives the file-backed workspace on both POSIX (mkstemp/
+// unlink) and Windows (GetTempFileNameA/DeleteFileA). The platform leaf branches on
+// `_WIN32`; everything above the capability gate runs unconditionally. The Windows
+// housekeeping port landed with runtime.housekeeping_win32.
+#if ARBC_HAS_WORKSPACE_FILES
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <cstdlib>
@@ -133,20 +140,37 @@ TEST_CASE("housekeeper checkpoint triggers are inert on an anonymous arena") {
   REQUIRE(stats.durable_epoch == 0);
 }
 
-#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
+#if ARBC_HAS_WORKSPACE_FILES
 
-// A temp workspace-file path, unlinked on teardown.
+// A temp workspace-file path, cleaned up on teardown. The platform leaf mirrors
+// checkpoint.t.cpp: GetTempFileNameA/DeleteFileA on Windows, mkstemp/unlink on POSIX.
 class TempPath {
 public:
   TempPath() {
+#if defined(_WIN32)
+    char dir[MAX_PATH];
+    const DWORD n = ::GetTempPathA(MAX_PATH, dir);
+    char buf[MAX_PATH];
+    // GetTempFileNameA creates the file; create() reopens it with CREATE_ALWAYS.
+    if (n != 0 && n < static_cast<DWORD>(MAX_PATH) && ::GetTempFileNameA(dir, "hk", 0, buf) != 0) {
+      d_path = buf;
+    }
+#else
     char tmpl[] = "/tmp/arbc_hk_XXXXXX";
     const int fd = ::mkstemp(tmpl);
     if (fd >= 0) {
       ::close(fd);
     }
     d_path = tmpl;
+#endif
   }
-  ~TempPath() { ::unlink(d_path.c_str()); }
+  ~TempPath() {
+#if defined(_WIN32)
+    ::DeleteFileA(d_path.c_str());
+#else
+    ::unlink(d_path.c_str());
+#endif
+  }
   TempPath(const TempPath&) = delete;
   TempPath& operator=(const TempPath&) = delete;
   const std::string& str() const noexcept { return d_path; }
