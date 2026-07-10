@@ -2,10 +2,15 @@
 #include <arbc/compositor/refinement.hpp>    // RefinementQueue, poll_refinements
 #include <arbc/compositor/tile_planning.hpp> // render_frame_interactive
 #include <arbc/contract/content.hpp>         // Deadline, Exactness
+#include <arbc/model/records.hpp>            // LayerRecord (reverse-map walk)
 #include <arbc/runtime/offline_sequence.hpp>
-#include <arbc/surface/surface.hpp> // Surface
+#include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
+#include <arbc/surface/surface.hpp>          // Surface
 
+#include <cstdint>
+#include <memory>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 
 namespace arbc {
@@ -50,7 +55,13 @@ SequenceRenderer::SequenceRenderer(const Document& document, Viewport viewport, 
       // Pin ONCE for the whole export (Decision 2): this snapshot outlives every
       // frame and every later commit, so the sequence is revision-consistent.
       d_pinned(document.pin()), d_surfaces(backend), d_cache(cache_budget_bytes),
-      d_parallel(pool_config.worker_count != 0), d_pool(std::move(pool_config)) {}
+      d_parallel(pool_config.worker_count != 0), d_pool(std::move(pool_config)) {
+  // Populate the operator-binder registry once (thread-safe, idempotent) so
+  // `render_frame_at` can bind each `org.arbc.fade` (and any sibling operator kind)
+  // to this driver's live services before the compositor renders it
+  // (operators.fade_runtime_binding, doc 13:69-71).
+  register_builtin_operator_binders();
+}
 
 expected<std::unique_ptr<Surface>, SurfaceError>
 SequenceRenderer::render_frame_at(Time composition_time) {
@@ -68,6 +79,30 @@ SequenceRenderer::render_frame_at(Time composition_time) {
 
   const ContentResolver resolve = [this](ObjectId id) { return d_document.resolve(id); };
 
+  // The live-service config the fade (and any operator kind) pulls its input through
+  // once bound (operators.fade_runtime_binding, Constraint 5): a reverse
+  // `Content* -> ObjectId` map keys each input's tiles under its identity
+  // (doc 13:126), and every node contributes the one pinned revision (doc 05:82-91).
+  // Built off the frozen revision, mirroring `export_monitor.cpp`.
+  auto ids = std::make_shared<std::unordered_map<const Content*, ObjectId>>();
+  state.for_each_layer([&](const LayerRecord& layer) {
+    if (Content* c = d_document.resolve(layer.content)) {
+      ids->emplace(c, layer.content);
+    }
+  });
+  const std::uint64_t revision = state.revision();
+  const auto make_config = [&](RefinementQueue* pending_queue) {
+    PullConfig config;
+    config.counters = &d_counters;
+    config.pending = pending_queue;
+    config.id_of = [ids](const Content* c) {
+      const auto it = ids->find(c);
+      return it != ids->end() ? it->second : ObjectId{};
+    };
+    config.contribution = [revision](const Content*) { return revision; };
+    return config;
+  };
+
   // Exact / no-degrade discipline (doc 02:73-85): `Exactness::Exact` requests carry
   // `Deadline::none()` (no deadline; every miss rendered to completion), and
   // `prior_revision == nullopt` disables the stale probe -- so a miss is never
@@ -79,7 +114,14 @@ SequenceRenderer::render_frame_at(Time composition_time) {
     // Inline exact: one pass, every miss rendered to completion before composite,
     // so every tile is a fresh exact source -- the byte-deterministic path
     // (Decision 4). No `pending`/`pulls`: the compositor's inline fill drives each
-    // miss's `render` to completion synchronously.
+    // miss's `render` to completion synchronously. A fade still needs a live service
+    // to pull its OWN input, so bind every operator to a synchronous direct-dispatch
+    // service on this thread before the fill drives their render (Constraint 2). The
+    // scope tears the binding down on return (Constraint 3); `inline_pull` (declared
+    // first) destructs after it, so the borrowed service outlives the binding
+    // (Constraint 4).
+    PullServiceImpl inline_pull(d_cache, d_backend, direct_dispatch(), make_config(nullptr));
+    const OperatorBindingScope binding = bind_operators(d_document, inline_pull, d_backend);
     render_frame_interactive(state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame,
                              Deadline::none(), /*prior_revision=*/std::nullopt,
                              /*pending=*/nullptr, &d_counters, /*dirty=*/nullptr, composition_time,
@@ -98,8 +140,13 @@ SequenceRenderer::render_frame_at(Time composition_time) {
                                    std::shared_ptr<RenderCompletion> done) {
     d_pool.submit(RenderTask{content, request, std::move(done)});
   };
-  PullServiceImpl pulls(d_cache, d_backend, std::move(dispatch), PullConfig{});
   RefinementQueue pending;
+  PullServiceImpl pulls(d_cache, d_backend, std::move(dispatch), make_config(&pending));
+  // Bind every operator content to the live service on the DRIVER thread, before any
+  // worker dispatch (Constraint 8): its borrowed pointers are read-only on workers
+  // during render. The fade's own nested input pull rides `pulls` (async-dispatched
+  // and reaped through `pending` below). `pulls` (declared first) outlives `binding`.
+  const OperatorBindingScope binding = bind_operators(d_document, pulls, d_backend);
   render_frame_interactive(state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame,
                            Deadline::none(), /*prior_revision=*/std::nullopt, &pending, &d_counters,
                            /*dirty=*/nullptr, composition_time, /*visible_plans=*/nullptr,

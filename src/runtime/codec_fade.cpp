@@ -10,6 +10,7 @@
 #include <arbc/base/time.hpp>
 #include <arbc/kind_fade/fade_content.hpp>
 #include <arbc/runtime/builtin_codecs.hpp>
+#include <arbc/runtime/operator_binding.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -121,5 +122,22 @@ deserialize_fade(const json& params, std::span<const ContentRef> inputs, LoadCon
 } // namespace
 
 Codec fade_codec() { return Codec{serialize_fade, deserialize_fade}; }
+
+void register_fade_binder() {
+  // The typed match lives here, the one runtime TU that names `FadeContent`
+  // (doc 17:60), so the render drivers stay kind-agnostic (Decision 2). `try_attach`
+  // dynamic-casts exactly as `serialize_fade` above; `detach` runs only after a
+  // matched attach, so a `static_cast` is sound.
+  register_operator_binder(
+      FadeContent::kind_id,
+      OperatorBinder{[](Content& c, PullService& pull, Backend& backend) -> bool {
+                       if (auto* fade = dynamic_cast<FadeContent*>(&c)) {
+                         fade->attach(pull, backend);
+                         return true;
+                       }
+                       return false;
+                     },
+                     [](Content& c) noexcept { static_cast<FadeContent&>(c).detach(); }});
+}
 
 } // namespace arbc

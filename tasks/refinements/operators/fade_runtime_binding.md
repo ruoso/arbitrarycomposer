@@ -361,13 +361,16 @@ loading tasks, not deferred here.
 
 ## Status
 
-**Re-deferred** — 2026-07-09.
+**Done** — 2026-07-09.
 
-- Implementation was attempted; all changes were reverted — no source or test files landed.
-- **Blocking finding:** `PullServiceImpl::pull` (visual) never delivers pulled pixels to the caller's `request.target`. The service renders the input into a private cache tile and settles with metadata only (`pull_service.cpp:182-218`). `FadeContent::render` pulls into a `temp` surface that remains unfilled under the live service → visual output is transparent, making the byte-exact golden acceptance criterion (Constraint 6) unachievable by wiring alone.
-- **Parallel path crash:** fade's nested input pull is async-dispatched with `pending=nullptr`, freeing the cache surface while a worker still renders `SolidContent` into it (`worker_pool.cpp:139` → `typed_span.hpp:34`), causing a use-after-free / SIGSEGV.
-- **Audio path works** (mix→fade→tone delivers samples via `pull_audio`) — only the visual `pull` contract is broken.
-- **Why out of scope here:** the fix is a compositor-contract change — visual `pull` must deliver pulled pixels to the caller target (mirroring `pull_audio`), with a safe reap path for nested async operator pulls. That change affects every visual operator (`FadeContent`, `NestedContent`, `CrossfadeContent`), not just fade wiring.
-- New predecessor task registered: `compositor.operator_pull_delivers_target` (`tasks/35-compositor.tji`, end of compositor block).
-- `operators.fade_runtime_binding` `depends` list in `tasks/50-operators.tji` updated to include `compositor.operator_pull_delivers_target`.
-- Parking-lot entry appended (`tasks/parking-lot.md`) with re-pick trigger.
+- Teardown/observability seam added to `FadeContent`: `detach()` and `attached()` in `src/kind_fade/arbc/kind_fade/fade_content.hpp` and `src/kind_fade/fade_content.cpp`.
+- Kind-agnostic operator binder registry added at `src/runtime/arbc/runtime/operator_binding.hpp` and `src/runtime/operator_binding.cpp` — typed `try_attach`/`detach` thunks, `bind_operators()` graph-walk, RAII `OperatorBindingScope`.
+- `register_fade_binder()` typed thunk added in `src/runtime/codec_fade.cpp` and declared in `src/runtime/arbc/runtime/builtin_codecs.hpp` (uses `dynamic_cast` inside the codec TU, per Decision 2 deviation).
+- `Document::for_each_content()` enumeration surface added in `src/runtime/arbc/runtime/document.hpp` and `src/runtime/document.cpp`.
+- Both inline and parallel offline paths in `src/runtime/offline_sequence.cpp` bind fades to a live `PullServiceImpl` before render, with RAII teardown; inline path now constructs its own `PullServiceImpl` (previously `nullptr`).
+- Export-monitor path wired in `src/runtime/arbc/runtime/export_monitor.hpp` and `src/runtime/export_monitor.cpp` — `d_binding` member, bind in ctor, RAII teardown.
+- End-to-end test at `tests/fade_runtime_binding.t.cpp` — 6 cases: byte-exact inline offline, byte-exact parallel (TSan stress), byte-exact audio export, identity counter (0/1), timed-over-static, teardown.
+- New claim `13-effects-as-operators#operator-bound-to-live-services-at-instantiation` registered in `tests/claims/registry.tsv` and enforced by the new test.
+- Build/test registration in `src/runtime/CMakeLists.txt` and `tests/CMakeLists.txt`.
+- **Deviation 1:** test lives in `tests/` (not `src/runtime/t/`) — requires `backend_cpu` for byte-exact acceptance, which would violate levelization under `src/runtime/t/`.
+- **Deviation 2:** dispatch uses `dynamic_cast` inside the codec-registered thunk; the driver itself remains kind-agnostic per Decision 2's core intent.

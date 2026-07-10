@@ -48,9 +48,21 @@ public:
   FadeContent(ContentRef input, FadeParams params);
 
   // Attach seam (mirrors NestedContent::attach): fade borrows the pull service
-  // and backend, owning neither. Production wiring is the deferred follow-up
-  // operators.fade_runtime_binding; tests inject inline doubles.
+  // and backend, owning neither. Production wiring is `operators.fade_runtime_binding`
+  // (the runtime binds a live `PullServiceImpl`/`Backend` here at instantiation);
+  // tests inject inline doubles.
   void attach(PullService& pull, Backend& backend);
+
+  // Teardown twin of `attach` (Constraint 3): clear the borrowed pointers so no
+  // render after the binding scope ends dereferences a released service. Called by
+  // the runtime binder on scope exit; a subsequent `render`/`render_audio` asserts
+  // (unattached) rather than touching a dangling service.
+  void detach() noexcept;
+
+  // Whether a live service is currently borrowed (both pointers set). Observability
+  // for the runtime binding's teardown assertion; adds no dependency, changes no
+  // behavior.
+  bool attached() const noexcept;
 
   // Spatial/temporal identity: bounds() and time_extent() pass the input's
   // through unchanged. stability() is `Timed` regardless of the input.

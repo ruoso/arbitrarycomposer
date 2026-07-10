@@ -15,6 +15,7 @@ task operators "Operators" {
   task fade_runtime_binding "org.arbc.fade runtime injection wiring" {
     effort 0.5d
     allocate team
+    complete 100
     depends !fade, model.content_binding, compositor.operator_pull_delivers_target
     note "Wire FadeContent attach injection (PullService, Backend) onto live services at runtime instantiation, tear down on release. Source of debt: tasks/refinements/operators/fade.md. Doc 13. Refinement: tasks/refinements/operators/fade_runtime_binding.md"
   }

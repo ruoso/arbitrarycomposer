@@ -86,4 +86,10 @@ Content* Document::resolve(ObjectId content) const {
   return found == d_contents.end() ? nullptr : found->second.get();
 }
 
+void Document::for_each_content(const std::function<void(Content*)>& fn) const {
+  for (const auto& entry : d_contents) {
+    fn(entry.second.get());
+  }
+}
+
 } // namespace arbc

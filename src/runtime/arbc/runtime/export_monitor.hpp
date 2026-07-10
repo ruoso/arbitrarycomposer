@@ -10,6 +10,7 @@
 #include <arbc/media/audio_format.hpp>      // AudioFormat, k_working_audio
 #include <arbc/media/streaming_resampler.hpp> // StreamingResampler (export-edge working -> container SRC)
 #include <arbc/runtime/document.hpp>          // Document, DocStatePtr, DocRoot
+#include <arbc/runtime/operator_binding.hpp> // OperatorBindingScope (fade/operator attach)
 #include <arbc/surface/backend.hpp> // Backend (the null backend the audio path never composites through)
 
 #include <cstdint>
@@ -185,6 +186,12 @@ private:
   // (Constraint 5); the matched-rate 1:1 pass never touches it (Constraint 2). Mirrors
   // `DeviceMonitor::d_resampler` minus the RT flush atomic (offline, no callback).
   StreamingResampler d_resampler;
+  // The operator attach scope (operators.fade_runtime_binding, Constraint 3/4): binds
+  // every operator content (`org.arbc.fade`, ...) in the pinned document to `*d_pull`
+  // / `*d_backend` for the whole export, and detaches every one on teardown. Declared
+  // LAST so it destructs FIRST -- before `d_pull`/`d_backend`, so the borrowed
+  // services outlive every binding (Constraint 4).
+  OperatorBindingScope d_binding;
 };
 
 } // namespace arbc

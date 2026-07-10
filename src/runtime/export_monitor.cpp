@@ -133,6 +133,16 @@ ExportMonitor::ExportMonitor(const Document& document, ObjectId composition,
   config.audio_dispatch = direct_audio_dispatch();
   config.blocks = &d_blocks;
   d_pull = std::make_unique<PullServiceImpl>(d_cache, *d_backend, direct_dispatch(), config);
+
+  // Bind every operator content (`org.arbc.fade`, ...) in the pinned document to this
+  // export's live audio pull + null backend for the whole export
+  // (operators.fade_runtime_binding, Constraint 2): a fade layer's
+  // `render_audio` pulls its input through `*d_pull` and would otherwise assert
+  // (`fade_content.cpp:209`). The scope (member `d_binding`) tears every binding down
+  // on destruction, before `d_pull`/`d_backend` die (Constraint 3/4). The audio path
+  // never dereferences the backend, so the `NullBackend` is a faithful borrow.
+  register_builtin_operator_binders();
+  d_binding = bind_operators(d_document, *d_pull, *d_backend);
 }
 
 AudioResult ExportMonitor::render_block_at(const TimeRange& window, AudioBlock& target) {

@@ -22,6 +22,13 @@ void FadeContent::attach(PullService& pull, Backend& backend) {
   d_backend = &backend;
 }
 
+void FadeContent::detach() noexcept {
+  d_pull = nullptr;
+  d_backend = nullptr;
+}
+
+bool FadeContent::attached() const noexcept { return d_pull != nullptr && d_backend != nullptr; }
+
 // Spatial/temporal identity (constraint 8): the fade neither moves nor scales
 // pixels nor shifts time, so bounds() and time_extent() pass the input's
 // through unchanged.

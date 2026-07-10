@@ -230,6 +230,18 @@ target_link_libraries(arbc_fade_identity_counter_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_fade_identity_counter_t)
 
+# operators.fade_runtime_binding end-to-end: builds a Document with a fade layer and
+# drives it through the real offline (SequenceRenderer, inline + parallel) and export
+# (ExportMonitor) drivers with the PRODUCTION attach injection, asserting it renders
+# to completion (would abort without the wiring), byte-exact to the manually-attached
+# golden, with the identity/pull counters and RAII teardown. Cross-component (drives
+# CpuBackend + kind_fade + runtime drivers), so like fade_goldens it lives here and
+# links the umbrella `arbc`.
+add_executable(arbc_fade_runtime_binding_t fade_runtime_binding.t.cpp)
+target_link_libraries(arbc_fade_runtime_binding_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_fade_runtime_binding_t)
+
 # Canonical operator conformance driver (pulls kind_fade + kind_solid +
 # arbc-testing). The operator-agnostic collection point: over each reference
 # operator factory it runs identity honesty + damage-mapping honesty (the shipped

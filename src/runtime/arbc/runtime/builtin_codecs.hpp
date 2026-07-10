@@ -43,6 +43,13 @@ Codec tone_codec();
 // a `ReaderError` value (runtime.operator_codecs Constraint 2).
 Codec fade_codec();
 
+// Register the runtime binder for `org.arbc.fade` (a typed attach/detach thunk over
+// the concrete `FadeContent`, `operators.fade_runtime_binding`). Defined in the same
+// TU as `fade_codec()` -- the only runtime TU that legally names `FadeContent`
+// (doc 17:60). Reached once via `register_builtin_operator_binders()`
+// (`operator_binding.hpp`); a sibling operator kind adds its own `register_*_binder`.
+void register_fade_binder();
+
 // org.arbc.crossfade: a two-input operator codec. Serializes `CrossfadeContent`'s
 // immutable `CrossfadeParams` as `{"shape": "linear", "start": <int>, "duration":
 // <int>}`; deserializes it back and adopts the two already-built input edges (from =

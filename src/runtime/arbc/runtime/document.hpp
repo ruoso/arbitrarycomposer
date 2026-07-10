@@ -10,6 +10,7 @@
 #include <arbc/model/model.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 
@@ -72,6 +73,12 @@ public:
   // Pin the current version for rendering (doc 14).
   DocStatePtr pin() const;
   Content* resolve(ObjectId content) const;
+
+  // Visit every minted top-level content (the runtime operator binder walks these
+  // plus each content's `inputs()` to reach operator input children,
+  // `operator_binding.cpp`). Read-only over the side-map; `fn` receives the borrowed
+  // `Content*` (never null). The `Content` vtable stays in `runtime`, doc 17:66-72.
+  void for_each_content(const std::function<void(Content*)>& fn) const;
 
 private:
   // The runtime load façade (`runtime.document_serialize`) installs a reconstructed
