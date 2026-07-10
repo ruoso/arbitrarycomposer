@@ -439,8 +439,7 @@ std::uint32_t RasterStore::version_refcount(StateHandle handle) const {
 // --- RasterContent ----------------------------------------------------------
 
 RasterContent::RasterContent(DecodedImage image, int tile_edge)
-    : d_bounds{0.0, 0.0, static_cast<double>(image.width), static_cast<double>(image.height)},
-      d_edge(tile_edge) {
+    : d_bounds{0.0, 0.0, static_cast<double>(image.width), static_cast<double>(image.height)} {
   d_base = d_store.build(image, tile_edge);
 }
 

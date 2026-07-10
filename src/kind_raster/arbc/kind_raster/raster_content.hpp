@@ -214,7 +214,6 @@ private:
   RasterStore d_store;
   Rect d_bounds;
   StateHandle d_base;
-  int d_edge;
 };
 
 // The model-side sinks raster registers onto a live Model/Journal (refinement
