@@ -24,8 +24,8 @@ DecodedImage white_4x4() {
   img.height = 4;
   img.format = k_working_rgba32f;
   std::vector<float> f(64, 1.0F);
-  img.bytes.resize(f.size() * sizeof(float));
-  std::memcpy(img.bytes.data(), f.data(), img.bytes.size());
+  const auto* src = reinterpret_cast<const std::byte*>(f.data());
+  img.bytes.assign(src, src + f.size() * sizeof(float));
   return img;
 }
 
