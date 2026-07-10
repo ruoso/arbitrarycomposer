@@ -91,7 +91,8 @@ task compositor "Compositor" {
   task pull_multi_tile_region "Widen pull to full multi-tile region coverage" {
     effort 1d
     allocate team
+    complete 100
     depends !operator_pull_delivers_target
-    note "Widen PullServiceImpl::pull from the single covering tile (coords.front()) to the full set of tiles covering request.region, so an operator pulling a region larger than one tile receives a fully-filled target. Pre-existing single-tile limitation surfaced (not introduced) by delivery. Source of debt: tasks/refinements/compositor/operator_pull_delivers_target.md. Doc 13."
+    note "Widen PullServiceImpl::pull from the single covering tile (coords.front()) to the full set of tiles covering request.region, so an operator pulling a region larger than one tile receives a fully-filled target. Pre-existing single-tile limitation surfaced (not introduced) by delivery. Source of debt: tasks/refinements/compositor/operator_pull_delivers_target.md. Doc 13. Refinement: tasks/refinements/compositor/pull_multi_tile_region.md"
   }
 }

@@ -93,12 +93,17 @@ input's pixels into the request's `target` surface — the visual analog of
 `pull_audio` writing samples into `AudioRequest.target` — on every path
 where the pixels are available synchronously: a resident cache hit
 composites the input's tile(s) into `target`, and a miss that settles
-inline composites the freshly-rendered tile into `target`, honoring the
+inline composites the freshly-rendered tile(s) into `target`, honoring the
 request's region and scale (doc 09's `provided`-surface contract, same
-reasoning). The operator then composites a `target` that actually holds its
-input's pixels. A pull whose input answers *asynchronously* delivers
-nothing this pass — the operator degrades for this frame and the async
-arrival re-drives it (below).
+reasoning). A request whose region spans more than one tile is served
+across every covering tile of `tiles_covering(rung, region)` — each
+independently cache-probed and delivered into its own sub-rect of `target`;
+the caller's completion settles once from the aggregate, exact iff every
+covering tile is exact at the selected rung. The operator then composites a
+`target` that actually holds its input's pixels. A pull whose input answers
+*asynchronously* — any covering tile — delivers nothing usable this pass:
+the completion is left unsettled, the operator degrades for this frame, and
+each async tile's arrival re-drives it (below).
 
 Metadata composes synchronously: an operator computes `bounds()`,
 `time_extent()`, `scale_range()`, `stability()` by querying its inputs and

@@ -166,9 +166,14 @@ public:
   // later `poll_refinements`. An operator input resolves its `identity()` chain
   // first: a pass-through serves the terminal input's tiles (no operator render,
   // no operator-output cache entry); a descent exceeding the recursion budget
-  // selects the placeholder (`done->fail`) and reports one diagnostic. This is
-  // the single-tile pull seam -- a caller pulling a multi-tile region decomposes
-  // it per tile exactly as the driver plans per tile.
+  // selects the placeholder (`done->fail`) and reports one diagnostic. A request
+  // whose `region` spans more than one tile is served across EVERY covering tile
+  // of `tiles_covering(rung, region)` -- each independently keyed, probed,
+  // rendered, and delivered into its own sub-rect of `target` -- and `done`
+  // settles once from the aggregate: exact iff every covering tile is exact, with
+  // the uniform rung scale and achieved_time; any covering tile answering
+  // asynchronously leaves `done` unsettled so the operator degrades this frame
+  // (`pull-fills-multi-tile-region`, doc 13:91-101).
   void pull(ContentRef input, const RenderRequest& request,
             std::shared_ptr<RenderCompletion> done) override;
 

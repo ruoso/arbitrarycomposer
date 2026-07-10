@@ -25,6 +25,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -33,6 +34,7 @@
 #include <optional>
 #include <span>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Unit / behavioral tests for `compositor.pull_service`: the concrete L4
@@ -122,6 +124,7 @@ public:
   };
   int composites{0};
   Composite last{};
+  std::vector<Composite> all{}; // every composite, in order (multi-tile delivery)
 
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -136,6 +139,7 @@ public:
                  double opacity) override {
     ++composites;
     last = Composite{&dst, &src, m, opacity};
+    all.push_back(last);
     const auto mark = static_cast<unsigned>(opacity * 251.0) + 1u;
     for (std::byte& b : dst.cpu_bytes()) {
       b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);
@@ -248,6 +252,24 @@ id_map(const std::unordered_map<const Content*, arbc::ObjectId>& ids) {
 // The single rung-0 tile a `Rect::from_size(256, 256)` region at scale 1.0 covers.
 TileKey tile_key(arbc::ObjectId id, std::uint64_t revision) {
   return TileKey{id, revision, ScaleRung{0}, TileCoord{0, 0}, std::nullopt};
+}
+
+// A rung-0 tile key at an explicit grid coordinate (the multi-tile covering set).
+TileKey tile_key_at(arbc::ObjectId id, std::uint64_t revision, int col, int row) {
+  return TileKey{id, revision, ScaleRung{0}, TileCoord{col, row}, std::nullopt};
+}
+
+// A 2x2-tile request over `from_size(512, 512)` at native scale: at rung 0 the
+// grid cell is `k_tile_size` (256) local units, so this region covers coords
+// (0,0),(1,0),(0,1),(1,1) -- exactly four tiles (Constraint 1/6).
+RenderRequest four_tile_request(arbc::Surface& target) {
+  return RenderRequest{arbc::Rect::from_size(512.0, 512.0),
+                       1.0,
+                       arbc::Time::zero(),
+                       StateHandle{},
+                       target,
+                       arbc::Exactness::BestEffort,
+                       Deadline::none()};
 }
 
 // A one-tile request over that footprint at native scale, carrying `snapshot` and
@@ -481,6 +503,169 @@ TEST_CASE("pull_service: a synchronous miss delivers the freshly-rendered tile i
   for (const std::byte b : caller_target.cpu_bytes()) {
     CHECK(std::to_integer<unsigned>(b) == 252u);
   }
+}
+
+// enforces: 13-effects-as-operators#pull-fills-multi-tile-region
+// enforces: 13-effects-as-operators#pull-delivers-to-caller-target
+// enforces: 13-effects-as-operators#pull-is-cache-first
+TEST_CASE("pull_service: a pull over a 2x2-tile region fills the caller's target across every "
+          "covering tile, dispatching one render per missing tile") {
+  CaptureBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  auto rec = std::make_shared<DispatchRecorder>(); // runs render inline (synchronous driver)
+  BufferSurface caller_target(512, 512);           // holds the 2x2-tile region
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{51};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+
+  CompositorCounters counters;
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  PullServiceImpl service(cache, backend, recording_dispatch(rec), config);
+
+  // The four covering-tile keys of the `from_size(512,512)` region at rung 0.
+  const TileKey k00 = tile_key_at(leaf_id, k_rev, 0, 0);
+  const TileKey k10 = tile_key_at(leaf_id, k_rev, 1, 0);
+  const TileKey k01 = tile_key_at(leaf_id, k_rev, 0, 1);
+  const TileKey k11 = tile_key_at(leaf_id, k_rev, 1, 1);
+
+  // The per-coord delivery affine `deliver_tile` uses for this region at scale 1.0
+  // is a pure translation to the tile's origin (col*256, row*256): the four tiles
+  // land in four disjoint sub-rects, no seam, no double-cover (Constraint 1/6).
+  const auto delivered_translations = [&]() {
+    std::vector<std::pair<double, double>> out;
+    for (const CaptureBackend::Composite& c : backend.all) {
+      CHECK(c.dst == static_cast<const arbc::Surface*>(&caller_target));
+      CHECK(c.opacity == 1.0);
+      CHECK(c.affine.a == 1.0);
+      CHECK(c.affine.d == 1.0);
+      CHECK(c.affine.b == 0.0);
+      CHECK(c.affine.c == 0.0);
+      out.emplace_back(c.affine.tx, c.affine.ty);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+  };
+  const std::vector<std::pair<double, double>> expected_translations{
+      {0.0, 0.0}, {0.0, 256.0}, {256.0, 0.0}, {256.0, 256.0}};
+
+  auto seed = [&](const TileKey& key) {
+    auto surf = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+    REQUIRE(surf.has_value());
+    const std::size_t bytes = arbc::tile_byte_cost(**surf);
+    cache.insert(key, TileValue{std::move(*surf), {1.0, true}}, bytes,
+                 arbc::PriorityClass::Visible);
+  };
+
+  SECTION("a partially-warm region dispatches exactly one render per MISSING tile") {
+    // Two of four tiles resident; the diagonal pair (1,0) and (0,1) miss.
+    seed(k00);
+    seed(k11);
+
+    auto done = std::make_shared<RenderCompletion>();
+    service.pull(&leaf, four_tile_request(caller_target), done);
+
+    // Exactly N - M == 2 dispatches (one per missing tile); every covering tile is
+    // delivered into its own sub-rect (4 composites), and the two missing tiles are
+    // now cached.
+    CHECK(rec->calls == 2);
+    CHECK(counters.requests_issued() == 2);
+    CHECK(backend.composites == 4);
+    CHECK(delivered_translations() == expected_translations);
+    CHECK(cache.lookup(k10).has_value());
+    CHECK(cache.lookup(k01).has_value());
+    // The aggregate settled once: exact (every covering tile exact) at the rung
+    // scale.
+    REQUIRE(done->settled());
+    const auto settled = done->take();
+    REQUIRE(settled.has_value());
+    REQUIRE(settled->has_value());
+    CHECK((*settled)->achieved_scale == 1.0);
+    CHECK((*settled)->exact);
+  }
+
+  SECTION("a fully-warm region issues zero dispatch and inserts no tile (cache-first, per tile)") {
+    seed(k00);
+    seed(k10);
+    seed(k01);
+    seed(k11);
+
+    auto done = std::make_shared<RenderCompletion>();
+    service.pull(&leaf, four_tile_request(caller_target), done);
+
+    CHECK(rec->calls == 0);                 // zero dispatch: every tile hit
+    CHECK(counters.requests_issued() == 0); // requests_issued delta 0
+    CHECK(backend.composites == 4);         // four deliveries, no render composite
+    CHECK(delivered_translations() == expected_translations);
+    REQUIRE(done->settled());
+    const auto settled = done->take();
+    REQUIRE(settled.has_value());
+    REQUIRE(settled->has_value());
+    CHECK((*settled)->exact);
+  }
+
+  SECTION("a fully-cold region dispatches exactly N renders, delivering all in one pass") {
+    auto done = std::make_shared<RenderCompletion>();
+    service.pull(&leaf, four_tile_request(caller_target), done);
+
+    CHECK(rec->calls == 4); // one render per covering tile
+    CHECK(counters.requests_issued() == 4);
+    CHECK(backend.composites == 4); // each freshly-rendered tile delivered once
+    CHECK(delivered_translations() == expected_translations);
+    CHECK(cache.lookup(k00).has_value());
+    CHECK(cache.lookup(k10).has_value());
+    CHECK(cache.lookup(k01).has_value());
+    CHECK(cache.lookup(k11).has_value());
+    REQUIRE(done->settled());
+  }
+}
+
+// enforces: 13-effects-as-operators#pull-fills-multi-tile-region
+TEST_CASE("pull_service: an empty/degenerate region covers no tile, delivers nothing, and settles "
+          "exact with no dispatch") {
+  CaptureBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  auto rec = std::make_shared<DispatchRecorder>();
+  BufferSurface caller_target(256, 256);
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{53};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+
+  CompositorCounters counters;
+  PullConfig config;
+  config.counters = &counters;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  PullServiceImpl service(cache, backend, recording_dispatch(rec), config);
+
+  // A zero-extent region covers no tile (`tiles_covering` yields no cells), so the
+  // loop runs zero times: no probe, no dispatch, no delivery, and `done` settles
+  // exact from the (empty) aggregate at the rung scale (Constraint 7) -- never the
+  // old degenerate `{}`-coord probe.
+  const RenderRequest req{arbc::Rect::from_size(0.0, 0.0),
+                          1.0,
+                          arbc::Time::zero(),
+                          StateHandle{},
+                          caller_target,
+                          arbc::Exactness::BestEffort,
+                          Deadline::none()};
+
+  auto done = std::make_shared<RenderCompletion>();
+  service.pull(&leaf, req, done);
+
+  CHECK(rec->calls == 0);
+  CHECK(counters.requests_issued() == 0);
+  CHECK(backend.composites == 0); // nothing delivered
+  REQUIRE(done->settled());
+  const auto settled = done->take();
+  REQUIRE(settled.has_value());
+  REQUIRE(settled->has_value());
+  CHECK((*settled)->achieved_scale == 1.0);
+  CHECK((*settled)->exact);
 }
 
 // enforces: 13-effects-as-operators#pull-retains-render-surface-until-settle

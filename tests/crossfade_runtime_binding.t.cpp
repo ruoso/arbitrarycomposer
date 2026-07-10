@@ -112,15 +112,14 @@ std::vector<std::byte> render_audio_reference() {
   REQUIRE(af != nullptr);
   std::vector<float> samples(static_cast<std::size_t>(k_frames) * 2U, 0.0F);
   AudioBlock block{samples.data(), k_frames, ChannelLayout::Stereo, k_rate};
-  const AudioRequest req{
-      TimeRange{Time{Time::flicks_per_second},
-                Time{Time::flicks_per_second +
-                     static_cast<std::int64_t>(k_frames) * flicks_per_frame()}},
-      k_rate,
-      ChannelLayout::Stereo,
-      block,
-      Exactness::Exact,
-      StateHandle{}};
+  const AudioRequest req{TimeRange{Time{Time::flicks_per_second},
+                                   Time{Time::flicks_per_second +
+                                        static_cast<std::int64_t>(k_frames) * flicks_per_frame()}},
+                         k_rate,
+                         ChannelLayout::Stereo,
+                         block,
+                         Exactness::Exact,
+                         StateHandle{}};
   auto done = std::make_shared<AudioCompletion>();
   const std::optional<AudioResult> r = af->render_audio(req, done);
   REQUIRE(r.has_value());
@@ -172,9 +171,9 @@ TEST_CASE("org.arbc.crossfade audio renders byte-exact through the export monito
   std::vector<float> samples(static_cast<std::size_t>(k_frames) * 2U, 0.0F);
   AudioBlock block{samples.data(), k_frames, ChannelLayout::Stereo, k_rate};
   (void)monitor.render_block_at(
-      TimeRange{Time{Time::flicks_per_second},
-                Time{Time::flicks_per_second +
-                     static_cast<std::int64_t>(k_frames) * flicks_per_frame()}},
+      TimeRange{
+          Time{Time::flicks_per_second},
+          Time{Time::flicks_per_second + static_cast<std::int64_t>(k_frames) * flicks_per_frame()}},
       block);
   std::vector<std::byte> got(samples.size() * sizeof(float));
   std::memcpy(got.data(), samples.data(), got.size());

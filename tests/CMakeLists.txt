@@ -221,6 +221,17 @@ target_link_libraries(arbc_fade_goldens_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_fade_goldens_t)
 
+# compositor.pull_service "tiled == whole" byte-exact golden: a region spanning a
+# 2x2 block of k_tile_size tiles, pulled through the live PullServiceImpl, equals
+# the same position-dependent leaf (kind_raster gradient) rendered whole into a
+# region-sized surface -- pinning the multi-tile deliver's seam-freedom
+# (Constraint 6). Cross-component (CpuBackend + kind_raster + compositor), so like
+# nested_goldens it lives here and links the umbrella `arbc`.
+add_executable(arbc_pull_multitile_golden_t pull_multitile_golden.t.cpp)
+target_link_libraries(arbc_pull_multitile_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_pull_multitile_golden_t)
+
 # org.arbc.fade identity behavioral counter: a real fade driven through the
 # compositor's PullServiceImpl records operator_renders delta 0 when its envelope
 # is exactly 1 at the request time (identity short-circuit) and delta 1 otherwise.

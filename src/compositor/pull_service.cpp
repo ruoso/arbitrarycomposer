@@ -185,158 +185,198 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
   const RungSelection selection = select_rung(request.scale);
   const double rung_px = rung_scale(selection.rung);
   const std::vector<TileCoord> coords = tiles_covering(selection.rung, request.region);
-  const TileCoord coord = coords.empty() ? TileCoord{} : coords.front();
 
   const Stability stability = input->stability();
   const Time key_time = input->quantize_time(request.time).value_or(request.time);
   const std::optional<Time> achieved_time =
       (stability == Stability::Static) ? std::nullopt : std::optional<Time>(key_time);
-  const TileKey key{id, revision, selection.rung, coord, achieved_time};
 
-  // Cache lookup first (doc 13:76-77, `pull-is-cache-first`). A resident exact
-  // fresh hit -- exact at this rung, the planner's qualification -- completes
-  // `done` synchronously from the cached metadata and dispatches NO render: a
-  // warm pull issues zero work.
-  if (std::optional<CacheHold<TileValue>> hit = d_cache.lookup(key);
-      hit.has_value() && hit->get().meta.exact && hit->get().meta.achieved_scale == rung_px) {
-    // Deliver the resident tile's pixels into the caller's `request.target`
-    // (`pull-delivers-to-caller-target`) before settling -- the visual analog of
-    // `pull_audio`'s hit copy-loop (`:317-319`). One composite, no dispatch: a
-    // warm operator-input pull's `requests_issued` delta stays 0 (Constraint 2).
-    deliver_tile(d_backend, *hit->get().surface, coord, rung_px, request);
-    if (done) {
-      done->complete(
-          RenderResult{hit->get().meta.achieved_scale, hit->get().meta.exact, achieved_time});
+  // Serve EVERY covering tile of `request.region`, not just the first
+  // (`pull-fills-multi-tile-region`, Decision 1). `coords` is the full covering
+  // set at the selected rung; each tile is independently keyed / probed / rendered
+  // / delivered -- the exact per-tile sequence `render_frame_interactive` runs
+  // (`tile_planning.cpp:344`), with delivery into the caller's `target` added. The
+  // tiles are walked SEQUENTIALLY on this frame/drain thread (Decision 5): the
+  // cache stays single-writer, only each leaf `render` runs on a worker.
+  //
+  // The caller's `done` settles EXACTLY ONCE from the aggregate after the loop
+  // (Decision 2): a region is exact only if every covering tile is exact at this
+  // rung (`region_exact`, the AND fold matching doc 09's honest-exactness
+  // folding); any tile answering asynchronously leaves the whole region unsettled
+  // (`any_async`) so the operator degrades this frame and each async arrival
+  // re-drives (doc 13's "async composes"); any tile failing inline degrades the
+  // whole region to the placeholder immediately (a partially filled region is not
+  // a correct operator input).
+  bool region_exact = true;
+  bool any_async = false;
+
+  for (const TileCoord coord : coords) {
+    // The input's fresh tile key for this covering tile (doc 13:124-126): identical
+    // `{id, revision, rung, achieved_time}` across the region, differing only in
+    // `coord`.
+    const TileKey key{id, revision, selection.rung, coord, achieved_time};
+
+    // Cache lookup first (doc 13:76-77, `pull-is-cache-first`), per tile. A
+    // resident exact fresh hit -- exact at this rung -- delivers the resident tile
+    // into the caller's `request.target` (`pull-delivers-to-caller-target`) and
+    // dispatches NO render: a warm tile contributes zero work (Constraint 2/3).
+    if (std::optional<CacheHold<TileValue>> hit = d_cache.lookup(key);
+        hit.has_value() && hit->get().meta.exact && hit->get().meta.achieved_scale == rung_px) {
+      deliver_tile(d_backend, *hit->get().surface, coord, rung_px, request);
+      region_exact = region_exact && hit->get().meta.exact;
+      continue;
     }
-    return;
-  }
 
-  // Miss: build the render descriptor and dispatch it. The tile pixels are owned
-  // by the cache (`TileValue` owns its `Surface`), so the render targets a
-  // freshly-allocated cache-destined surface -- not the caller's `request.target`
-  // -- which travels into the cache (inline) or the pending queue (async). If the
-  // allocation fails this pass, degrade to the placeholder.
-  arbc::expected<std::unique_ptr<Surface>, SurfaceError> owned =
-      d_backend.make_surface(k_tile_size, k_tile_size, request.target.format());
-  if (!owned.has_value()) {
-    settle_placeholder(done);
-    return;
-  }
-  Surface& tile_surface = **owned;
-  d_backend.clear(tile_surface, 0.0F, 0.0F, 0.0F, 0.0F);
-
-  // Snapshot and deadline carried verbatim (doc 05:96-100,
-  // `pull-inherits-snapshot-and-deadline`): the dispatched render's `snapshot`
-  // `StateHandle` and `deadline` value EQUAL the pull request's -- neither reset
-  // nor recomputed, no per-pull sub-budget. Only the target is swapped to the
-  // cache surface.
-  const RenderRequest render_request{request.region,   request.scale, request.time,
-                                     request.snapshot, tile_surface,  request.exactness,
-                                     request.deadline};
-
-  // A dispatched render is counted whether it answers inline or defers (both
-  // issued the render, Decision 5); an operator render also bumps
-  // `operator_renders` (the counter `operator_graph` established).
-  if (d_config.counters != nullptr) {
-    d_config.counters->note_request_issued();
-    if (op) {
-      d_config.counters->note_operator_render();
+    // Miss: build the render descriptor and dispatch it. The tile pixels are owned
+    // by the cache (`TileValue` owns its `Surface`), so the render targets a
+    // freshly-allocated cache-destined surface -- not the caller's `request.target`
+    // -- which travels into the cache (inline) or the pending queue (async). A
+    // per-tile allocation failure fails the WHOLE region to the placeholder
+    // (Constraint 2): a partially filled region is not a correct operator input.
+    arbc::expected<std::unique_ptr<Surface>, SurfaceError> owned =
+        d_backend.make_surface(k_tile_size, k_tile_size, request.target.format());
+    if (!owned.has_value()) {
+      settle_placeholder(done);
+      return;
     }
-  }
+    Surface& tile_surface = **owned;
+    d_backend.clear(tile_surface, 0.0F, 0.0F, 0.0F, 0.0F);
 
-  // Dispatch into an INTERNAL completion so the caller's `done` is never consumed
-  // by the render. An operator owns the `done` it passed and observes its input's
-  // result through it (`FadeContent::render` pulls into `temp` then reads `done`);
-  // if `pull` drained the caller's `done` here -- as it did before this task -- the
-  // operator's own read saw nothing and it cleared to transparent, which is why a
-  // delivered `temp` alone was not enough. `pull` now settles the caller's `done`
-  // itself: it `complete`s it from the render's result on an inline answer
-  // (symmetric with the cache-hit path, which also completes rather than takes),
-  // and leaves it unsettled on an async answer (the operator degrades to its
-  // placeholder this frame; the async arrival's damage re-drives a later frame that
-  // hits and delivers -- doc 13's "async composes").
-  auto inner = std::make_shared<RenderCompletion>();
+    // Render THIS tile's footprint at the rung scale into the cache surface --
+    // exactly the per-tile descriptor `render_frame_interactive` builds
+    // (`tile_planning.cpp:370`: `{tile.local_rect, rung_px, ...}`), not the whole
+    // `request.region`/`request.scale`. A tile is cached over `tile_local_rect` at
+    // `rung_px`, and `deliver_tile`'s affine assumes exactly that (its tile->local
+    // map is `translate(coord origin) . scale(1/rung_px)`), so each covering tile
+    // holds its own disjoint slice of the region and delivers seam-free (the
+    // "tiled == whole" identity, Constraint 6). Using `request.region` for every
+    // tile -- the pre-existing single-tile shortcut this task removes -- would fill
+    // every tile with the region's top-left corner. Snapshot and deadline are
+    // carried verbatim (doc 05:96-100, `pull-inherits-snapshot-and-deadline`):
+    // neither reset nor recomputed, no per-pull sub-budget; only the target and the
+    // per-tile region/scale differ.
+    const Rect tile_region = tile_local_rect(selection.rung, coord);
+    const RenderRequest render_request{tile_region,      rung_px,      request.time,
+                                       request.snapshot, tile_surface, request.exactness,
+                                       request.deadline};
 
-  // The descent depth is in effect across the dispatch so an operator whose
-  // `render` recursively pulls its own input re-enters `pull` at `d_depth + 1`.
-  ++d_depth;
-  d_dispatch(input, render_request, inner);
-  --d_depth;
-
-  if (inner->settled()) {
-    const std::optional<expected<RenderResult, RenderError>> settled = inner->take();
-    if (settled.has_value() && settled->has_value()) {
-      RenderResult result = **settled;
-      // Insert-key temporal linkage (doc 11:134-137): the pull keyed this tile at
-      // `quantize_time(request.time)` before dispatching; assert the render landed
-      // on that same instant so the cached tile serves the frame it is keyed under
-      // (a no-op for conformant content, fires only on a doc-11 MUST violation).
-      assert(timed_insert_key_consistent(key, result, stability));
-      // Honor a content-provided surface (doc 09:87-100): copy it into the
-      // cache-owned `tile_surface` (cleared to transparent above, so a source-over
-      // copy is exact) and release it -- the cache never learns the surface was
-      // provided (doc 09:109-112,328-340). Absent, the content filled
-      // `tile_surface` and there is nothing to copy.
-      consume_render_result(result, tile_surface, [&](const Surface& src) {
-        if (&src != &tile_surface) {
-          d_backend.composite(tile_surface, src, Affine::identity(), 1.0);
-        }
-      });
-      // Deliver the freshly-rendered tile into the caller's `request.target`
-      // (`pull-delivers-to-caller-target`): the synchronous-miss analog of the
-      // hit delivery above, and of `pull_audio`'s miss writing the caller's
-      // block. One composite; the render was already dispatched (Constraint 2).
-      deliver_tile(d_backend, tile_surface, coord, rung_px, request);
-      const std::size_t bytes = tile_byte_cost(tile_surface);
-      d_cache.insert(key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
-                     bytes, PriorityClass::Visible);
-      // Settle the caller's completion from the render's result (its `provided`
-      // surface already consumed + released above), so the operator that owns
-      // `done` reads a clean result exactly as it would on a warm hit.
-      if (done) {
-        done->complete(result);
+    // A dispatched render is counted per covering tile (Decision 3): whether it
+    // answers inline or defers (both issued the render); an operator render also
+    // bumps `operator_renders`. A warm N-tile region issues zero; a cold N-tile
+    // region issues exactly N.
+    if (d_config.counters != nullptr) {
+      d_config.counters->note_request_issued();
+      if (op) {
+        d_config.counters->note_operator_render();
       }
-    } else if (done) {
-      // A settled-via-fail inline render: no insert, no pending. Propagate the
-      // failure onto the caller's completion so it degrades to the placeholder.
-      done->fail(RenderError::ResourceUnavailable);
     }
-  } else if (d_config.pending != nullptr) {
-    // Async (doc 02:69-71 step 6, doc 13:128-130): the render answered
-    // asynchronously (`inner` is still live). Record it -- the cache-owned surface
-    // and the render's completion `inner` travel with it -- so a later
-    // `poll_refinements` inserts it under `Visible` and emits damage; the render
-    // occupies no worker while pending. The cache stays single-writer on the
-    // draining frame thread (Decision 4): only `content->render` into the
-    // thread-confined target ran on a worker. The caller's `done` is left unsettled
-    // -- the operator sees `!done->settled()` and degrades this frame -- and the
-    // reap sink, not the caller, owns the surface + `inner` until the worker
-    // settles, so a caller `cancel()` never frees a surface an in-flight worker is
-    // still writing (`pull-retains-render-surface-until-settle`).
-    const std::size_t bytes = tile_byte_cost(tile_surface);
-    d_config.pending->tiles.push_back(PendingTile{key, request.region, id, stability, bytes,
-                                                  std::move(*owned), std::move(inner)});
-  } else {
-    // Async dispatch with no reap sink (Decision 3, `pull-retains-render-surface-
-    // until-settle`): the injected `d_dispatch` answered asynchronously (`inner`
-    // unsettled) against a service configured without a `pending` sink -- a
-    // driver-precondition violation. There is nowhere to retain `owned` (the
-    // surface a worker may still be writing) + `inner` until the render settles, so
-    // we cannot proceed as the top-level async path does. Assert the precondition
-    // in debug (a sink-less path MUST be given a synchronous dispatch, which settles
-    // inline above); in release, degrade to the placeholder plus exactly one
-    // diagnostic naming the offending input rather than the silent use-after-free
-    // this branch used to fall through to (`owned` freed at scope exit while a
-    // worker wrote it). The runtime binds a synchronous dispatch for every sink-less
-    // path (offline goldens use `direct_dispatch`), so this fires only on a
-    // misconfiguration -- never on a conformant caller.
-    assert(inner->settled() &&
-           "PullServiceImpl::pull: an async-capable dispatch requires a `pending` reap sink; a "
-           "service configured without one must be given a synchronous dispatch (Decision 3)");
-    if (d_config.diagnostics != nullptr) {
-      d_config.diagnostics->entries.push_back(GraphDiagnostic{input, d_depth, {input}});
+
+    // Dispatch into an INTERNAL completion so the caller's `done` is never consumed
+    // by the render -- the caller's `done` settles once from the aggregate after
+    // the loop. An operator owns the `done` it passed and observes its input's
+    // result through it (`FadeContent::render` pulls into `temp` then reads `done`).
+    auto inner = std::make_shared<RenderCompletion>();
+
+    // The descent depth is in effect across the dispatch so an operator whose
+    // `render` recursively pulls its own input re-enters `pull` at `d_depth + 1`.
+    ++d_depth;
+    d_dispatch(input, render_request, inner);
+    --d_depth;
+
+    if (inner->settled()) {
+      const std::optional<expected<RenderResult, RenderError>> settled = inner->take();
+      if (settled.has_value() && settled->has_value()) {
+        RenderResult result = **settled;
+        // Insert-key temporal linkage (doc 11:134-137): the pull keyed this tile at
+        // `quantize_time(request.time)` before dispatching; assert the render landed
+        // on that same instant so the cached tile serves the frame it is keyed under
+        // (a no-op for conformant content, fires only on a doc-11 MUST violation).
+        assert(timed_insert_key_consistent(key, result, stability));
+        // Honor a content-provided surface (doc 09:87-100): copy it into the
+        // cache-owned `tile_surface` (cleared to transparent above, so a source-over
+        // copy is exact) and release it -- the cache never learns the surface was
+        // provided (doc 09:109-112,328-340). Absent, the content filled
+        // `tile_surface` and there is nothing to copy.
+        consume_render_result(result, tile_surface, [&](const Surface& src) {
+          if (&src != &tile_surface) {
+            d_backend.composite(tile_surface, src, Affine::identity(), 1.0);
+          }
+        });
+        // Deliver the freshly-rendered tile into the caller's `request.target`
+        // (`pull-delivers-to-caller-target`): the synchronous-miss analog of the
+        // hit delivery above. One composite into this tile's disjoint sub-rect; the
+        // render was already dispatched (Constraint 2).
+        deliver_tile(d_backend, tile_surface, coord, rung_px, request);
+        const std::size_t bytes = tile_byte_cost(tile_surface);
+        d_cache.insert(key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
+                       bytes, PriorityClass::Visible);
+        region_exact = region_exact && result.exact;
+      } else {
+        // A settled-via-fail inline render: no insert, no pending. Fail the WHOLE
+        // region to the placeholder and stop -- a partially filled region is not a
+        // correct operator input.
+        settle_placeholder(done);
+        return;
+      }
+    } else if (d_config.pending != nullptr) {
+      // Async (doc 02:69-71 step 6, doc 13:128-130): the render answered
+      // asynchronously (`inner` is still live). Record it -- the cache-owned surface
+      // and the render's completion `inner` travel with it -- so a later
+      // `poll_refinements` inserts it under `Visible` and emits damage; the render
+      // occupies no worker while pending. The cache stays single-writer on the
+      // draining frame thread (Decision 4/5): only `content->render` into the
+      // thread-confined target ran on a worker. The reap sink, not the caller, owns
+      // the surface + `inner` until the worker settles, so a caller `cancel()` never
+      // frees a surface an in-flight worker is still writing
+      // (`pull-retains-render-surface-until-settle`). The caller's `done` is left
+      // unsettled because THIS tile is async -- flagged so the aggregate settle
+      // below leaves the whole region unsettled and the operator degrades this
+      // frame; each async tile re-drives independently.
+      const std::size_t bytes = tile_byte_cost(tile_surface);
+      d_config.pending->tiles.push_back(PendingTile{key, request.region, id, stability, bytes,
+                                                    std::move(*owned), std::move(inner)});
+      any_async = true;
+    } else {
+      // Async dispatch with no reap sink (Decision 3, `pull-retains-render-surface-
+      // until-settle`): the injected `d_dispatch` answered asynchronously (`inner`
+      // unsettled) against a service configured without a `pending` sink -- a
+      // driver-precondition violation. There is nowhere to retain `owned` (the
+      // surface a worker may still be writing) + `inner` until the render settles, so
+      // we cannot proceed as the top-level async path does. Assert the precondition
+      // in debug (a sink-less path MUST be given a synchronous dispatch, which settles
+      // inline above); in release, degrade the WHOLE region to the placeholder plus
+      // exactly one diagnostic naming the offending input rather than the silent
+      // use-after-free this branch used to fall through to. The runtime binds a
+      // synchronous dispatch for every sink-less path (offline goldens use
+      // `direct_dispatch`), so this fires only on a misconfiguration.
+      assert(inner->settled() &&
+             "PullServiceImpl::pull: an async-capable dispatch requires a `pending` reap sink; a "
+             "service configured without one must be given a synchronous dispatch (Decision 3)");
+      if (d_config.diagnostics != nullptr) {
+        d_config.diagnostics->entries.push_back(GraphDiagnostic{input, d_depth, {input}});
+      }
+      settle_placeholder(done);
+      return;
     }
-    settle_placeholder(done);
+  }
+
+  // Settle the caller's completion once from the aggregate across all covering
+  // tiles (Decision 2). Any tile answering asynchronously leaves `done` unsettled
+  // -- the operator sees `!done->settled()`, degrades to its placeholder this
+  // frame, and ignores `target`; tiles already delivered are harmless (an
+  // unsettled `done` means `target` is never read), and each async tile's arrival
+  // re-drives a later frame that hits and delivers (doc 13's "async composes").
+  // Otherwise every covering tile resolved synchronously (hit or inline-settle):
+  // complete with the uniform rung scale, the region's folded exactness
+  // (`region_exact = AND(tile.exact)`), and the uniform per-input achieved_time.
+  // An empty region (no covering tiles) runs the loop zero times, delivers
+  // nothing, and completes exact -- replacing the old degenerate `{}`-coord probe
+  // (Constraint 7).
+  if (any_async) {
+    return;
+  }
+  if (done) {
+    done->complete(RenderResult{rung_px, region_exact, achieved_time});
   }
 }
 
