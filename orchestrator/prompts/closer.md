@@ -17,10 +17,14 @@ invoking you, and every step passed:
 
 - `scripts/gate` — configure + build + ctest + clang-format check +
   levelization + claims register.
-- `ARBC_GATE_PRESET=asan scripts/gate` — the same under ASan/UBSan.
+- A local containerized replay of the per-push CI
+  (`.github/workflows/ci.yml` via `act`): the `lint` job, every
+  `build-test` matrix leg except `msvc-debug` (gcc/clang ×
+  debug/release/asan/tsan/rtsan), and the `coverage` job with its
+  diff-coverage gate.
 
 The exact results are listed below under §Verification results. You do NOT
-need to re-run either step. Trust the block — that's what it's for. Paste
+need to re-run any step. Trust the block — that's what it's for. Paste
 those results directly into the commit message's Verification block. If you
 ever feel an urge to re-run the gate "just to be sure", don't: the
 wall-clock loss is real and the driver's chain is the canonical signal.
@@ -188,7 +192,8 @@ the governing design doc(s)>
 
 Verification (driver-run, deterministic chain — see $test_results):
   - `scripts/gate` — green (build, ctest, format, levelization, claims).
-  - `ARBC_GATE_PRESET=asan scripts/gate` — green.
+  - Local CI replay (`ci.yml` via act) — lint, gcc/clang ×
+    debug/release/asan/tsan/rtsan, coverage + diff-coverage gate: green.
   - <task-specific verification if any>.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

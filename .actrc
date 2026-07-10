@@ -1,0 +1,8 @@
+# Defaults for running .github/workflows/ci.yml locally with `act`.
+# Build the runner image first:
+#   docker build -t arbitrarycomposer/act-runner:latest -f .github/act/runner.Dockerfile .github/act
+# The orchestrator driver passes these flags explicitly (plus a ccache
+# volume and a synthesized push event); this file covers manual runs.
+-P ubuntu-latest=arbitrarycomposer/act-runner:latest
+--pull=false
+--action-offline-mode

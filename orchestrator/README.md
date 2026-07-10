@@ -19,13 +19,28 @@ that the driver owns:
    skipped by the driver — the orchestrator gets a `(driver notice)` return
    telling it to dispatch the implementer next, and no sub-agent runs.
 3. **(implementer only) deterministic tail** — the driver runs
-   `clang-format -i` (auto-fixup), then `scripts/gate`, then
-   `ARBC_GATE_PRESET=asan scripts/gate` (each output tee'd to
-   `logs/iter-NNNN-verify-<step>.log`). On any failure it dispatches the
+   `clang-format -i` (auto-fixup), then `scripts/gate` (fast host-side
+   pre-check), then replays the real per-push CI
+   (`.github/workflows/ci.yml`) locally with `act` in docker containers:
+   the `lint` job, every `build-test` matrix leg except `msvc-debug` (no
+   local Windows container runtime), and the `coverage` job including its
+   diff-coverage gate (each output tee'd to
+   `logs/iter-NNNN-verify-<step>.log`). `ci.yml` is the single source of
+   truth for what runs — the driver only selects jobs/legs, so local
+   verification cannot drift from CI. On any failure it dispatches the
    `fixer` sub-agent against the failing log and loops (cap:
    `MAX_FIXER_ATTEMPTS`). Once green, the driver dispatches the `closer`
    sub-agent with the pass-block as `$test_results`. The closer's return is
    what feeds back into the next orchestrator turn.
+
+   The act steps run against a repo-local runner image
+   (`arbitrarycomposer/act-runner`, built automatically by the chain from
+   `.github/act/runner.Dockerfile`) and a synthesized push event
+   (`state/act-event.json`, `before` = pre-closer HEAD) so the coverage
+   job's diff-coverage gate measures exactly the uncommitted change under
+   verification. A shared ccache docker volume keeps the fresh-container
+   builds incremental across iterations. Repo-root `.actrc` carries the
+   same image mapping for manual `act -j <job>` runs.
 
 All invocations stream JSON so the driver prints live event summaries as
 they arrive. Full event streams are tee'd to `logs/iter-NNNN-<phase>.log`.
@@ -57,8 +72,8 @@ The default CLI is Claude Code. Use Codex CLI with:
 AGENT_CLI=codex python3 driver.py
 ```
 
-No dependencies beyond stdlib (plus `tj3` and the C++ toolchain the gate
-needs). Stop with Ctrl-C; in-flight sub-agent processes get SIGTERM'd
+No dependencies beyond stdlib (plus `tj3`, the C++ toolchain the gate
+needs, and `docker` + `act` for the CI-replay verification steps). Stop with Ctrl-C; in-flight sub-agent processes get SIGTERM'd
 cleanly. Prompt files are loaded immediately before each dispatch, so edits
 under `prompts/` take effect on the next agent turn without restarting the
 driver.

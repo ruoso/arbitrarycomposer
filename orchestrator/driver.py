@@ -80,14 +80,109 @@ AUTO_FORMAT_STEP: tuple[str, list[str]] = (
 # tees output to a per-iteration log file and short-circuits to the
 # fixer the moment any step fails.
 #
-# `scripts/gate` covers configure + build + ctest + format check +
-# levelization + claims register (design doc 16); the second entry repeats
-# it under the ASan/UBSan preset so sanitizer findings surface on every
-# iteration rather than only nightly.
-VERIFICATION_STEPS: list[tuple[str, list[str]]] = [
-    ("gate", ["scripts/gate"]),
-    ("gate-asan", ["bash", "-c", "ARBC_GATE_PRESET=asan scripts/gate"]),
+# After the fast host-side `scripts/gate` pre-check, the chain replays the
+# real per-push CI (.github/workflows/ci.yml) locally with `act` inside
+# docker containers, so every check GitHub runs also gates each iteration
+# here. ci.yml stays the single source of truth for the steps — the lane
+# list below only selects which matrix legs to run. The `msvc-debug` leg is
+# excluded: there is no local Windows container runtime.
+ACT_RUNNER_IMAGE = "arbitrarycomposer/act-runner:latest"
+ACT_RUNNER_DOCKERFILE = REPO_ROOT / ".github" / "act" / "runner.Dockerfile"
+ACT_EVENT_FILE = STATE_DIR / "act-event.json"
+ACT_CCACHE_VOLUME = "arbitrarycomposer-act-ccache"
+
+# ci.yml `build-test` matrix legs runnable locally (all but msvc-debug).
+CI_BUILD_LANES: list[str] = [
+    "gcc-debug",
+    "gcc-release",
+    "clang-debug",
+    "clang-asan",
+    "gcc-tsan",
+    "clang-rtsan",
 ]
+
+
+def act_argv(*args: str) -> list[str]:
+    """argv for one `act` invocation replaying a ci.yml job locally.
+
+    The event file (written by `write_act_event`) pins `ref` to main so the
+    workflow's push-branch filter matches regardless of the local branch,
+    and sets `before` to the pre-closer HEAD so the coverage job's
+    diff-coverage gate diffs exactly the uncommitted work under test. The
+    shared ccache volume + CMAKE_CXX_COMPILER_LAUNCHER keeps builds
+    incremental across iterations even though each run gets a fresh
+    container and workspace copy."""
+    return [
+        "act",
+        "push",
+        "-W",
+        ".github/workflows/ci.yml",
+        "-e",
+        str(ACT_EVENT_FILE),
+        "-P",
+        f"ubuntu-latest={ACT_RUNNER_IMAGE}",
+        "--pull=false",
+        "--action-offline-mode",
+        # Remove job containers even when the job fails — the chain tees all
+        # output to the per-step log, and without this every red step in the
+        # fixer loop would leak a stopped container + workspace volume.
+        "--rm",
+        "--container-options",
+        f"-v {ACT_CCACHE_VOLUME}:/ccache",
+        "--env",
+        "CCACHE_DIR=/ccache",
+        "--env",
+        "CMAKE_CXX_COMPILER_LAUNCHER=ccache",
+        *args,
+    ]
+
+
+VERIFICATION_STEPS: list[tuple[str, list[str]]] = [
+    # Fast host-side pre-check (dev preset, incremental build) so the
+    # common failure modes short-circuit before any container spins up.
+    ("gate", ["scripts/gate"]),
+    # Ensure the runner image exists / picks up Dockerfile edits. Cached
+    # docker layers make this near-instant when nothing changed.
+    (
+        "ci-image",
+        [
+            "docker",
+            "build",
+            "-t",
+            ACT_RUNNER_IMAGE,
+            "-f",
+            str(ACT_RUNNER_DOCKERFILE),
+            str(ACT_RUNNER_DOCKERFILE.parent),
+        ],
+    ),
+    ("ci-lint", act_argv("-j", "lint")),
+    *[
+        (f"ci-{lane}", act_argv("-j", "build-test", "--matrix", f"name:{lane}"))
+        for lane in CI_BUILD_LANES
+    ],
+    ("ci-coverage", act_argv("-j", "coverage")),
+]
+
+
+def write_act_event() -> None:
+    """Synthesize the push-event payload the act steps replay ci.yml with.
+
+    `before` is the current HEAD: the implementer/fixer work under
+    verification is still uncommitted (the closer commits only after the
+    chain is green), so diffing against HEAD covers exactly the change this
+    iteration is trying to land — the same contract the diff-coverage
+    gate has on GitHub, where `before` is the pre-push tip."""
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(REPO_ROOT),
+        stdout=subprocess.PIPE,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    ACT_EVENT_FILE.write_text(
+        json.dumps({"ref": "refs/heads/main", "before": head}, indent=2) + "\n"
+    )
 
 # Max chars of a single assistant text block printed inline. Longer text is
 # truncated with a "(+N more)" tail. The full text is always in the log file.
@@ -1563,6 +1658,11 @@ def run_post_implementer_chain(
     combined_summary = implementer_summary
     fixer_attempts = 0
     fix_history: list[str] = []
+
+    # Synthesized push event consumed by the chain's act steps. Written once
+    # per chain: HEAD is stable until the closer commits, which happens only
+    # after the chain is green.
+    write_act_event()
 
     while True:
         # --- deterministic auto-format ---------------------------------------

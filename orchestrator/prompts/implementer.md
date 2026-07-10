@@ -17,11 +17,18 @@ Read the refinement in full first, and the design-doc sections it cites.
 ## Verification is the driver's job, not yours
 
 The orchestrator driver runs `clang-format -i` as a deterministic
-auto-fixup, then runs the canonical verification chain (`scripts/gate`,
-then `ARBC_GATE_PRESET=asan scripts/gate`) the moment you return. If any
-chain step fails, the driver dispatches a `fixer` sub-agent against the
-failing log; you do not see that loop. If everything passes, the driver
-dispatches the `closer` sub-agent which commits the result.
+auto-fixup, then runs the canonical verification chain the moment you
+return: `scripts/gate`, then a local containerized replay of the per-push
+CI (`.github/workflows/ci.yml` via `act`) — lint, every `build-test`
+matrix leg except `msvc-debug` (gcc/clang × debug/release/asan/tsan/
+rtsan), and the coverage job with its 90% diff-coverage gate on changed
+lines. If any chain step fails, the driver dispatches a `fixer` sub-agent
+against the failing log; you do not see that loop. If everything passes,
+the driver dispatches the `closer` sub-agent which commits the result.
+
+Because of the diff-coverage gate, changed lines you leave untested will
+bounce back as a fixer round — write the tests alongside the code, not as
+an afterthought.
 
 You do NOT need to run clang-format yourself — the driver normalizes
 formatting before checking it.

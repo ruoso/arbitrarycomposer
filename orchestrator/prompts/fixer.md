@@ -7,10 +7,20 @@ failing step for **`$task_id`**.
 The implementer has already landed code changes against the refinement at
 **`$refinement_path`**. The driver ran `clang-format -i` (pure formatting
 fixup) and then the verification chain — `scripts/gate` (configure + build
-+ ctest + format check + levelization + claims register), then
-`ARBC_GATE_PRESET=asan scripts/gate` — stopping at the first failure. Your
-job is to diagnose that failure and make a fix so the next driver-run of
-the chain passes.
++ ctest + format check + levelization + claims register), then a local
+replay of the per-push CI (`.github/workflows/ci.yml`) via `act` in docker
+containers: the `lint` job, every `build-test` matrix leg except
+`msvc-debug` (gcc/clang × debug/release/asan/tsan/rtsan), and the
+`coverage` job with its diff-coverage gate — stopping at the first
+failure. Your job is to diagnose that failure and make a fix so the next
+driver-run of the chain passes.
+
+A failing `ci-*` step's log is `act` output: the workflow step that failed
+is marked with `❌  Failure` and the interesting compiler/test output is on
+the `| `-prefixed lines just above it. The containerized lanes build with
+the toolchain pinned in `.github/act/runner.Dockerfile` (gcc 13,
+clang 20), which may differ from the host toolchain — a lane can fail on a
+warning/error the host gate accepted.
 
 You do NOT need to run clang-format yourself — the driver re-runs it
 before re-verifying after your return.
@@ -72,8 +82,11 @@ before editing.
   its enforcing test or an `enforces:` tag names an unregistered claim —
   restore the test or fix the registry entry per doc 16, whichever encodes
   the truth.
-- A **sanitizer failure** in the asan step is a real bug even when the
-  plain gate passed — fix the root cause, never suppress.
+- A **sanitizer failure** in an asan/tsan/rtsan lane is a real bug even
+  when the plain gate passed — fix the root cause, never suppress.
+- A **diff-coverage failure** (`ci-coverage`) means the changed lines are
+  under-tested (the gate requires 90% of changed lines covered) — add
+  tests for the uncovered branches; do not pad with trivial code motion.
 - If the failure is in test infrastructure (a fixture, a CMake test
   wiring), fix that infrastructure. Report this clearly in your return
   summary.
@@ -91,7 +104,8 @@ before editing.
 - **DO NOT weaken tests** to make them pass.
 - **DO NOT edit the gate or the checkers** (`scripts/gate`,
   `scripts/check_levels.py`, `scripts/check_claims.py`, `.clang-format`,
-  `.clang-tidy`, `.github/workflows/`) — fix the code, not the bar.
+  `.clang-tidy`, `.github/workflows/`, `.github/act/`, `.actrc`) — fix the
+  code, not the bar.
 
 ## Don't pre-run the verification chain
 

@@ -81,8 +81,11 @@ deterministic chain (not visible to you as separate orchestrator turns):
 
 - Run `clang-format -i` over the tree (pure formatting fixup), then the
   verification chain: `scripts/gate` (configure + build + ctest + format
-  check + levelization + claims register), then
-  `ARBC_GATE_PRESET=asan scripts/gate` (the same under ASan/UBSan).
+  check + levelization + claims register), then a local containerized
+  replay of the per-push CI (`.github/workflows/ci.yml` via `act`): the
+  `lint` job, every `build-test` matrix leg except `msvc-debug`
+  (gcc/clang × debug/release/asan/tsan/rtsan), and the `coverage` job
+  including its 90% diff-coverage gate.
 - If any step fails, dispatch a `fixer` sub-agent against the failing log
   and loop back to verification, up to a hard cap. If the cap is exhausted
   the driver appends a failure block to its persistent context-summary file
