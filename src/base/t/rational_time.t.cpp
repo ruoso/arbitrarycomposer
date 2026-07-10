@@ -250,8 +250,8 @@ u128 gcd_u(u128 a, u128 b) {
 // nullopt marks the overflow the implementation reports as a TimeError.
 std::optional<RefRat> ref_reduce(i128 n, i128 d) {
   const bool neg = (n < 0) != (d < 0);
-  u128 an = n < 0 ? u128(0) - static_cast<u128>(n) : static_cast<u128>(n);
-  u128 ad = d < 0 ? u128(0) - static_cast<u128>(d) : static_cast<u128>(d);
+  u128 an = n < 0 ? u128{} - static_cast<u128>(n) : static_cast<u128>(n);
+  u128 ad = d < 0 ? u128{} - static_cast<u128>(d) : static_cast<u128>(d);
   const u128 g = gcd_u(an, ad);
   an /= g;
   ad /= g;
@@ -354,8 +354,14 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
     const std::int64_t p = parent_dist(rng);
     i128 term = A->n * static_cast<i128>(p);
     i128 nn = 0;
+#ifdef _MSC_VER
+    const bool eval_overflow =
+        arbc::arbc_mul_overflow_i128(term, B->d, term) ||
+        arbc::arbc_add_overflow_i128(term, B->n * A->d, nn);
+#else
     const bool eval_overflow =
         __builtin_mul_overflow(term, B->d, &term) || __builtin_add_overflow(term, B->n * A->d, &nn);
+#endif
     if (!eval_overflow) {
       const i128 dd = A->d * B->d;
       i128 q = nn / dd;
