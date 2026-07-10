@@ -120,6 +120,7 @@ TEST_CASE("host_viewport zoom-out re-anchor preserves the composed probe to with
 
   // Round-trip identity: zoom-in then zoom-out of the same descent edge restores
   // the original (anchor, matrix) image of the probe to within one double rounding.
-  const Vec2 round_trip = arbc::reanchor_camera(arbc::reanchor_camera(c0, level_edge()), *inv).apply(probe);
+  const Vec2 round_trip =
+      arbc::reanchor_camera(arbc::reanchor_camera(c0, level_edge()), *inv).apply(probe);
   CHECK(within_one_rounding(round_trip, c0.apply(probe)));
 }

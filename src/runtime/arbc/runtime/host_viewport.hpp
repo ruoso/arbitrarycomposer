@@ -1,15 +1,16 @@
 #pragma once
 
-#include <arbc/base/ids.hpp>                        // ObjectId
-#include <arbc/base/time.hpp>                        // Time
-#include <arbc/base/transform.hpp>                   // Affine
-#include <arbc/compositor/anchored_viewports.hpp>    // rebase, Reanchor, RebaseNeed, reanchor_camera
-#include <arbc/compositor/compositor.hpp>            // Viewport, ContentResolver, Backend, SurfacePool, Surface
-#include <arbc/compositor/counters.hpp>              // TileCache
-#include <arbc/model/damage.hpp>                     // DamageSink, Damage, damage_add
-#include <arbc/model/model.hpp>                      // Model, DocRoot, DocStatePtr
-#include <arbc/runtime/interactive.hpp>              // InteractiveRenderer
-#include <arbc/runtime/transport.hpp>                // Transport
+#include <arbc/base/ids.hpp>                      // ObjectId
+#include <arbc/base/time.hpp>                     // Time
+#include <arbc/base/transform.hpp>                // Affine
+#include <arbc/compositor/anchored_viewports.hpp> // rebase, Reanchor, RebaseNeed, reanchor_camera
+#include <arbc/compositor/compositor.hpp> // Viewport, ContentResolver, Backend, SurfacePool, Surface
+#include <arbc/compositor/counters.hpp>   // TileCache
+#include <arbc/model/damage.hpp>          // DamageSink, Damage, damage_add
+#include <arbc/model/model.hpp>           // Model, DocRoot, DocStatePtr
+#include <arbc/runtime/damage_router.hpp> // DamageRouter (optional fan-out attach)
+#include <arbc/runtime/interactive.hpp>   // InteractiveRenderer
+#include <arbc/runtime/transport.hpp>     // Transport
 
 #include <chrono>
 #include <cstddef>
@@ -63,9 +64,17 @@ public:
 
   // Initial per-viewport state.
   struct Config {
-    Viewport viewport{};                  // initial device rect + camera + anchor
-    Time transport_start{Time::zero()};   // the owned transport's starting instant
-    std::chrono::steady_clock::duration budget{std::chrono::milliseconds(16)}; // per-frame compute budget
+    Viewport viewport{};                // initial device rect + camera + anchor
+    Time transport_start{Time::zero()}; // the owned transport's starting instant
+    std::chrono::steady_clock::duration budget{
+        std::chrono::milliseconds(16)}; // per-frame compute budget
+    // Optional fan-out attach (refinement Decision 2, Constraint 4). When set, the
+    // viewport registers its `DamageAccumulator` with the router (holding the RAII
+    // `Registration`) and does NOT touch `Model::set_damage_sink`; when null, it
+    // keeps today's direct single-slot install. The two paths are mutually
+    // exclusive by construction -- the router must outlive every viewport that
+    // registers with it.
+    DamageRouter* router{nullptr};
   };
 
   // What one `step()` reports back to the host (Decision 3, poll-style value): the
@@ -83,8 +92,8 @@ public:
   // surfaces) and installs the damage sink on `model` for this object's lifetime.
   // `resolve` serves `render_frame`'s content-vtable binding (`document.hpp`).
   HostViewport(InteractiveRenderer& renderer, Model& model, ContentResolver resolve,
-               Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target,
-               Clock clock, Config config);
+               Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target, Clock clock,
+               Config config);
   ~HostViewport();
 
   HostViewport(const HostViewport&) = delete;
@@ -181,10 +190,13 @@ private:
   Clock d_clock;
   std::chrono::steady_clock::duration d_budget;
 
-  Viewport d_viewport;                     // the persistent `(anchor, camera)` pair
-  Transport d_transport;                   // the owned per-viewport playback clock
-  std::vector<AnchorFrame> d_anchor_path;  // the re-anchor stack (zoom-out pops)
-  DamageAccumulator d_sink;                // installed on d_model for this object's lifetime
+  Viewport d_viewport;                    // the persistent `(anchor, camera)` pair
+  Transport d_transport;                  // the owned per-viewport playback clock
+  std::vector<AnchorFrame> d_anchor_path; // the re-anchor stack (zoom-out pops)
+  DamageAccumulator d_sink;        // installed on d_model / d_router for this object's lifetime
+  DamageRouter* d_router{nullptr}; // set => registered via router; null => direct model slot
+  DamageRouter::Registration
+      d_registration; // the RAII fan-out registration (inert when d_router null)
   std::function<Time()> d_playhead_source; // set => audio-mastered chase; empty => free-run
 
   std::optional<std::chrono::steady_clock::time_point> d_prev_instant; // last free-run clock sample

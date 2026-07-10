@@ -14,6 +14,7 @@
 #include <arbc/model/damage.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/audio_worker_pool.hpp>
+#include <arbc/runtime/damage_router.hpp>
 #include <arbc/runtime/device_monitor.hpp>
 #include <arbc/runtime/device_sink.hpp>
 #include <arbc/runtime/host_viewport.hpp>
@@ -352,7 +353,8 @@ TEST_CASE("host_viewport: a free-running step advances the transport and drives 
   clk += std::chrono::seconds(1);
   viewport.step();
   CHECK(viewport.transport_advances() == 3);
-  CHECK(viewport.transport().position() == Time{Time::flicks_per_second + Time::flicks_per_second / 2});
+  CHECK(viewport.transport().position() ==
+        Time{Time::flicks_per_second + Time::flicks_per_second / 2});
   CHECK(*viewport.last_frame_time() == viewport.transport().position());
 }
 
@@ -543,4 +545,120 @@ TEST_CASE("host_viewport: an idle viewport issues no frames, a still scene costs
   bump_damage(model, scene.layer);
   viewport.step();
   CHECK(viewport.frames_issued() == 1);
+}
+
+// enforces: 01-core-concepts#multiple-viewports-observe-one-composition
+TEST_CASE("host_viewport: one DamageRouter fans a commit out to two viewports, each independent") {
+  MarkBackend backend;
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024);
+  auto target_a = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  auto target_b = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_a.has_value());
+  REQUIRE(target_b.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  // One router occupies the model's single damage slot; both viewports register
+  // with it (never with the model directly).
+  arbc::DamageRouter router(model);
+
+  arbc::HostViewport::Config cfg_a;
+  cfg_a.viewport = Viewport{256, 256, Affine::identity()};
+  cfg_a.budget = k_budget;
+  cfg_a.router = &router;
+  arbc::HostViewport vp_a(renderer, model, resolve, backend, pool, cache, **target_a, epoch_clock(),
+                          cfg_a);
+
+  std::optional<arbc::HostViewport> vp_b;
+  arbc::HostViewport::Config cfg_b = cfg_a;
+  vp_b.emplace(renderer, model, resolve, backend, pool, cache, **target_b, epoch_clock(), cfg_b);
+  CHECK(router.registered() == 2);
+
+  // A single committed edit fans out to BOTH viewports' accumulators: one flush,
+  // once per registrant (deliveries == registrants).
+  bump_damage(model, scene.layer);
+  CHECK(router.deliveries() == 2);
+
+  // Each viewport drains that batch into its own frame.
+  vp_a.step();
+  vp_b->step();
+  CHECK(vp_a.frames_issued() == 1);
+  CHECK(vp_b->frames_issued() == 1);
+
+  // Destroying one viewport's registration (RAII) stops delivery to it; the other
+  // keeps receiving subsequent commits.
+  vp_b.reset();
+  CHECK(router.registered() == 1);
+
+  bump_damage(model, scene.layer);
+  CHECK(router.deliveries() == 3); // one more delivery, to the surviving viewport only
+  vp_a.step();
+  CHECK(vp_a.frames_issued() == 2);
+}
+
+// enforces: 11-time-and-video#transports-observe-composition-independently
+TEST_CASE("host_viewport: two viewports over one document observe it at independent instants") {
+  MarkBackend backend;
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024);
+  auto target_a = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  auto target_b = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_a.has_value());
+  REQUIRE(target_b.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  arbc::DamageRouter router(model);
+
+  arbc::HostViewport::Config cfg;
+  cfg.viewport = Viewport{256, 256, Affine::identity()};
+  cfg.budget = k_budget;
+  cfg.router = &router;
+  arbc::HostViewport vp_a(renderer, model, resolve, backend, pool, cache, **target_a, epoch_clock(),
+                          cfg);
+  arbc::HostViewport vp_b(renderer, model, resolve, backend, pool, cache, **target_b, epoch_clock(),
+                          cfg);
+
+  // Each viewport owns its own transport (per-viewport value state, doc 11:88-93);
+  // seek them to distinct instants on the shared composition axis.
+  const Time ta{7 * Time::flicks_per_second};
+  const Time tb{3 * Time::flicks_per_second};
+  vp_a.transport().seek(ta);
+  vp_b.transport().seek(tb);
+
+  // With fan-out damage in play, a single commit reaches both, and each samples the
+  // shared current() document at ITS OWN transport instant.
+  bump_damage(model, scene.layer);
+  vp_a.step();
+  vp_b.step();
+  CHECK(vp_a.frames_issued() == 1);
+  CHECK(vp_b.frames_issued() == 1);
+  REQUIRE(vp_a.last_frame_time().has_value());
+  REQUIRE(vp_b.last_frame_time().has_value());
+  CHECK(*vp_a.last_frame_time() == ta);
+  CHECK(*vp_b.last_frame_time() == tb);
+
+  // Seeking one viewport's transport leaves the other's playhead unchanged.
+  const Time ta2{11 * Time::flicks_per_second};
+  vp_a.transport().seek(ta2);
+  CHECK(vp_a.transport().position() == ta2);
+  CHECK(vp_b.transport().position() == tb); // untouched
+
+  // The moved viewport re-renders at its new instant; the other stays put.
+  bump_damage(model, scene.layer);
+  vp_a.step();
+  vp_b.step();
+  CHECK(*vp_a.last_frame_time() == ta2);
+  CHECK(*vp_b.last_frame_time() == tb);
 }

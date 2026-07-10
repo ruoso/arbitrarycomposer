@@ -35,8 +35,9 @@ task runtime "Runtime" {
   task damage_router "Fan-out DamageSink for multi-viewport dispatch" {
     effort 1d
     allocate team
+    complete 100
     depends !host_objects
-    note "Fan-out DamageSink installed once on DocState that dispatches each flushed model-damage batch to N registered per-viewport HostViewport sinks (RAII register/unregister); enables multiple viewports observing one composition. Lands 11-time-and-video#transports-observe-composition-independently end-to-end and 01-core-concepts#multiple-viewports-observe-one-composition claim. Docs 01/14. Source-of-debt: tasks/refinements/runtime/host_objects.md."
+    note "Fan-out DamageSink installed once on DocState that dispatches each flushed model-damage batch to N registered per-viewport HostViewport sinks (RAII register/unregister); enables multiple viewports observing one composition. Lands 11-time-and-video#transports-observe-composition-independently end-to-end and 01-core-concepts#multiple-viewports-observe-one-composition claim. Docs 01/14. Source-of-debt: tasks/refinements/runtime/host_objects.md. Refinement: tasks/refinements/runtime/damage_router.md"
   }
   task plugin_loading "dlopen plugin loading" {
     effort 2d

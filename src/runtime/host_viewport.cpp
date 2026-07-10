@@ -14,7 +14,8 @@ namespace {
 // duration cast is the exact, wall-clock-free conversion of a monotonic-clock
 // delta the free-run transport advance consumes (Constraint 4/8).
 Time elapsed_flicks(std::chrono::steady_clock::duration delta) {
-  using flick_duration = std::chrono::duration<std::int64_t, std::ratio<1, Time::flicks_per_second>>;
+  using flick_duration =
+      std::chrono::duration<std::int64_t, std::ratio<1, Time::flicks_per_second>>;
   return Time{std::chrono::duration_cast<flick_duration>(delta).count()};
 }
 
@@ -25,18 +26,29 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Model& model, ContentR
                            Clock clock, Config config)
     : d_renderer(renderer), d_model(model), d_resolve(std::move(resolve)), d_backend(backend),
       d_pool(pool), d_cache(cache), d_target(target),
-      d_clock(clock ? std::move(clock)
-                    : Clock{[] { return std::chrono::steady_clock::now(); }}),
-      d_budget(config.budget), d_viewport(config.viewport),
-      d_transport(config.transport_start) {
-  // Subscribe to model damage for this object's lifetime (Constraint 5, RAII): the
-  // single `set_damage_sink` slot is where the viewport-side consumer installs
-  // (`damage.hpp:74-78`); a future fan-out router (`runtime.damage_router`,
-  // Decision 6) sits in front of this sink unchanged.
-  d_model.set_damage_sink(&d_sink);
+      d_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}),
+      d_budget(config.budget), d_viewport(config.viewport), d_transport(config.transport_start) {
+  // Subscribe to model damage for this object's lifetime (Constraint 5, RAII). Two
+  // mutually exclusive attach paths (`runtime.damage_router` Constraint 4): with a
+  // router supplied, register `&d_sink` with it and hold the move-only
+  // `Registration` (the router owns the single `set_damage_sink` slot and fans out
+  // to this sink unchanged, `damage.hpp:74-78`); without one, keep the direct
+  // single-slot install this object has always used.
+  if (config.router != nullptr) {
+    d_router = config.router;
+    d_registration = d_router->register_sink(d_sink);
+  } else {
+    d_model.set_damage_sink(&d_sink);
+  }
 }
 
-HostViewport::~HostViewport() { d_model.set_damage_sink(nullptr); }
+HostViewport::~HostViewport() {
+  // Router path: `d_registration`'s destructor unregisters from the router (which
+  // outlives this viewport). Direct path: release the model's single slot.
+  if (d_router == nullptr) {
+    d_model.set_damage_sink(nullptr);
+  }
+}
 
 HostViewport::StepOutcome HostViewport::step() {
   // 1. Sample `composition_time` from the playhead policy (Decision 5). Audio-
@@ -89,10 +101,9 @@ HostViewport::StepOutcome HostViewport::step() {
   //    pending damage, no owed follow-up, and a still scene issues zero
   //    `render_frame` invocations (Constraint 7, doc 01:140).
   std::vector<Damage> damage = d_sink.drain();
-  const bool scene_moved = d_rendered_once &&
-                           (d_viewport.camera != d_last_render_camera ||
-                            d_viewport.anchor != d_last_render_anchor ||
-                            composition_time != d_last_render_time);
+  const bool scene_moved = d_rendered_once && (d_viewport.camera != d_last_render_camera ||
+                                               d_viewport.anchor != d_last_render_anchor ||
+                                               composition_time != d_last_render_time);
   if (damage.empty() && !d_follow_up_owed && !scene_moved) {
     return outcome; // idle: a still scene costs nothing
   }
