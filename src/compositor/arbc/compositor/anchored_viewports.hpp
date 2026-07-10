@@ -80,6 +80,14 @@ struct RebaseResult {
   Viewport viewport;
   Reanchor event;
   RebaseNeed need{RebaseNeed::none};
+  // The descent edge applied on a zoom-in re-anchor (`runtime.host_objects`
+  // Decision 4): the child layer's transform mapping NEW-anchor-local ->
+  // old-anchor-local, i.e. the exact matrix this step composed into the camera.
+  // The runtime-held anchor path stores it so zoom-out inverts THAT matrix
+  // (`reanchor_camera(camera, edge.inverse())`, doc 04:62-69), making the
+  // round-trip appearance-preserving to within one double rounding. Identity
+  // when no re-anchor occurred (`event.occurred == false`).
+  Affine edge{};
 };
 
 // Rebuild the camera when re-anchoring across `edge`, where `edge` maps

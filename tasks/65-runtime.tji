@@ -28,8 +28,15 @@ task runtime "Runtime" {
   task host_objects "Viewport/transport/monitor API" {
     effort 2d
     allocate team
+    complete 100
     depends !interactive, model.content_binding
-    note "The host-facing object model: anchored cameras as (anchor, matrix) pairs with re-anchor events surfaced, transports, monitor attachment. Docs 01/04."
+    note "The host-facing object model: anchored cameras as (anchor, matrix) pairs with re-anchor events surfaced, transports, monitor attachment. Docs 01/04. Refinement: tasks/refinements/runtime/host_objects.md"
+  }
+  task damage_router "Fan-out DamageSink for multi-viewport dispatch" {
+    effort 1d
+    allocate team
+    depends !host_objects
+    note "Fan-out DamageSink installed once on DocState that dispatches each flushed model-damage batch to N registered per-viewport HostViewport sinks (RAII register/unregister); enables multiple viewports observing one composition. Lands 11-time-and-video#transports-observe-composition-independently end-to-end and 01-core-concepts#multiple-viewports-observe-one-composition claim. Docs 01/14. Source-of-debt: tasks/refinements/runtime/host_objects.md."
   }
   task plugin_loading "dlopen plugin loading" {
     effort 2d

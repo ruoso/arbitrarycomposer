@@ -104,6 +104,7 @@ RebaseResult rebase(const DocRoot& state, const Viewport& viewport) {
   // pin to, so the reachable structure bounds how deep rebasing can go.
   ObjectId best{};
   Affine best_camera{};
+  Affine best_edge{};
   double best_scale = -1.0;
   state.for_each_layer_in(viewport.anchor, [&](ObjectId member) {
     const LayerRecord* layer = state.find_layer(member);
@@ -123,6 +124,7 @@ RebaseResult rebase(const DocRoot& state, const Viewport& viewport) {
       best_scale = child_scale;
       best = layer->content;
       best_camera = composed;
+      best_edge = layer->transform; // the descent edge the anchor path stores (Decision 4)
     }
   });
 
@@ -131,6 +133,7 @@ RebaseResult rebase(const DocRoot& state, const Viewport& viewport) {
   }
   result.viewport.camera = best_camera; // == reanchor_camera(camera, child edge)
   result.viewport.anchor = best;
+  result.edge = best_edge; // NEW-anchor-local -> old-anchor-local; zoom-out inverts it
   result.event = Reanchor{true, viewport.anchor, best};
   return result;
 }
