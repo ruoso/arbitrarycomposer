@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 
 namespace {
@@ -79,7 +80,8 @@ TEST_CASE("software f16 conversion is exact on the edge cases and round-trips") 
     REQUIRE(f16_to_float(0x03FFU) == 1023.0F * std::ldexp(1.0F, -24));
     REQUIRE(f16_to_float(0x0400U) == std::ldexp(1.0F, -14)); // smallest normal
 
-    for (const std::uint16_t h : {0x0001U, 0x0002U, 0x0100U, 0x0200U, 0x03FFU, 0x8001U, 0x83FFU}) {
+    for (const std::uint16_t h :
+         std::initializer_list<std::uint16_t>{0x0001U, 0x0002U, 0x0100U, 0x0200U, 0x03FFU, 0x8001U, 0x83FFU}) {
       CAPTURE(h);
       REQUIRE(f16_from_float(f16_to_float(h)) == h);
     }
