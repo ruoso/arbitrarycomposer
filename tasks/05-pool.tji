@@ -91,8 +91,9 @@ task pool "Memory pool" {
   task crash_tests_win32 "Crash-recovery test sweep — Windows port" {
     effort 1d
     allocate team
+    complete 100
     depends !crash_tests, !checkpoints_win32
-    note "Port the in-process durable-snapshot sweep + disk-full/short-file cases to the Win32 workspace backing (VirtualProtect/MapViewOfFile fault injection; CreateProcess/TerminateProcess for the kill sweep), behind ARBC_HAS_WORKSPACE_FILES. Source-of-debt: tasks/refinements/pool/crash_tests.md. Doc 16."
+    note "Port the in-process durable-snapshot sweep + disk-full/short-file cases to the Win32 workspace backing (VirtualProtect/MapViewOfFile fault injection; CreateProcess/TerminateProcess for the kill sweep), behind ARBC_HAS_WORKSPACE_FILES. Source-of-debt: tasks/refinements/pool/crash_tests.md. Doc 16. Refinement: tasks/refinements/pool/crash_tests_win32.md"
   }
   task benchmarks "Allocator benchmarks" {
     effort 1d

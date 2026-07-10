@@ -7,27 +7,39 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
 
-// The crash-recovery sweep rides the file-backed workspace. Its body (fork/kill
-// injection, RLIMIT disk-full) is POSIX-specific; the Windows port is the separate
-// pool.crash_tests_win32 leaf, so this stays gated off `_WIN32` even though Windows
-// now has workspace files. On platforms without workspace files (or on Windows)
-// this compiles to just the runtime-query sanity check.
+// The crash-recovery sweep rides the file-backed workspace. Its body drives the
+// platform-neutral fault-injection seam on both platforms, with two death models:
+// an in-process durable-snapshot sweep and a real process-kill sweep. The
+// process-kill sweep uses fork/_exit on POSIX and a CreateProcess re-exec child
+// that ExitProcess-es mid-syscall on Windows (pool.crash_tests_win32). The
+// platform surgery lives in-file behind `_WIN32`, matching every sibling port. On
+// platforms without workspace files this compiles to just the runtime-query
+// sanity check.
 TEST_CASE("crash-test harness tracks workspace-file support") {
   REQUIRE(arbc::workspace_files_supported() == (ARBC_HAS_WORKSPACE_FILES != 0));
 }
 
-#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
+#if ARBC_HAS_WORKSPACE_FILES
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <cerrno>
+#endif
 
 namespace {
 
@@ -36,16 +48,30 @@ namespace {
 class TempPath {
 public:
   TempPath() {
+#if defined(_WIN32)
+    char dir[MAX_PATH];
+    const DWORD n = ::GetTempPathA(MAX_PATH, dir);
+    char buf[MAX_PATH];
+    // GetTempFileNameA creates the file; create()/open() reopen with CREATE_ALWAYS.
+    if (n != 0 && n < static_cast<DWORD>(MAX_PATH) && ::GetTempFileNameA(dir, "crs", 0, buf) != 0) {
+      d_path = buf;
+    }
+#else
     char tmpl[] = "/tmp/arbc_crash_XXXXXX";
     const int fd = ::mkstemp(tmpl);
     if (fd >= 0) {
       ::close(fd);
     }
     d_path = tmpl;
+#endif
   }
   ~TempPath() {
     if (!d_path.empty()) {
+#if defined(_WIN32)
+      ::DeleteFileA(d_path.c_str());
+#else
       ::unlink(d_path.c_str());
+#endif
     }
   }
   TempPath(const TempPath&) = delete;
@@ -138,6 +164,9 @@ WalkResult walk(arbc::RefStore<GraphNode>& store, arbc::SlotIndex root_index) {
 // Byte-copy the workspace file so recovery runs against an INDEPENDENT file (its
 // own fd + mappings), mirroring the landed checkpoint.t.cpp idiom.
 void copy_file(const std::string& src, const std::string& dst) {
+#if defined(_WIN32)
+  REQUIRE(::CopyFileA(src.c_str(), dst.c_str(), FALSE) != 0);
+#else
   const int in = ::open(src.c_str(), O_RDONLY);
   REQUIRE(in >= 0);
   const int out = ::open(dst.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
@@ -155,6 +184,49 @@ void copy_file(const std::string& src, const std::string& dst) {
   REQUIRE(n == 0);
   ::close(in);
   ::close(out);
+#endif
+}
+
+// Overwrite `size` bytes at `offset` in an existing file -- the corruption/short-
+// file surgery primitive (POSIX pwrite / Windows SetFilePointerEx+WriteFile).
+// Runs in test-body context (REQUIRE is safe here, unlike inside the injector).
+void write_at(const std::string& path, std::size_t offset, const void* data, std::size_t size) {
+#if defined(_WIN32)
+  HANDLE h = ::CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  REQUIRE(h != INVALID_HANDLE_VALUE);
+  LARGE_INTEGER li;
+  li.QuadPart = static_cast<LONGLONG>(offset);
+  const BOOL sought = ::SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+  DWORD wrote = 0;
+  const BOOL ok = sought != 0 && ::WriteFile(h, data, static_cast<DWORD>(size), &wrote, nullptr);
+  ::CloseHandle(h);
+  REQUIRE(ok != 0);
+  REQUIRE(wrote == size);
+#else
+  const int fd = ::open(path.c_str(), O_RDWR);
+  REQUIRE(fd >= 0);
+  const ssize_t wrote = ::pwrite(fd, data, size, static_cast<off_t>(offset));
+  ::close(fd);
+  REQUIRE(wrote == static_cast<ssize_t>(size));
+#endif
+}
+
+// Truncate `path` to `length` bytes (POSIX truncate / Windows SetEndOfFile).
+void truncate_file(const std::string& path, std::uint64_t length) {
+#if defined(_WIN32)
+  HANDLE h = ::CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  REQUIRE(h != INVALID_HANDLE_VALUE);
+  LARGE_INTEGER li;
+  li.QuadPart = static_cast<LONGLONG>(length);
+  const BOOL sought = ::SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+  const BOOL ok = sought != 0 && ::SetEndOfFile(h);
+  ::CloseHandle(h);
+  REQUIRE(ok != 0);
+#else
+  REQUIRE(::truncate(path.c_str(), static_cast<off_t>(length)) == 0);
+#endif
 }
 
 // --- in-process durable-snapshot injector (decision (a)) ---------------------
@@ -226,11 +298,37 @@ private:
     d_pending_after = false;
   }
 
+#if defined(_WIN32)
+  // No-throw slot patch (runs inside the noexcept injector callback, so it cannot
+  // use REQUIRE): seek + write one root slot, reporting success as a bool.
+  static bool patch_slot(HANDLE h, std::size_t offset, std::uint64_t value) noexcept {
+    LARGE_INTEGER li;
+    li.QuadPart = static_cast<LONGLONG>(offset);
+    if (!::SetFilePointerEx(h, li, nullptr, FILE_BEGIN)) {
+      return false;
+    }
+    DWORD wrote = 0;
+    return ::WriteFile(h, &value, sizeof(value), &wrote, nullptr) && wrote == sizeof(value);
+  }
+#endif
+
   void capture() {
     if (d_snapshot.empty()) {
       return;
     }
     copy_file(d_path, d_snapshot);
+#if defined(_WIN32)
+    HANDLE h = ::CreateFileA(d_snapshot.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+      const bool ok = patch_slot(h, offsetof(arbc::WorkspaceHeader, root_slot_a), d_durable_a) &&
+                      patch_slot(h, offsetof(arbc::WorkspaceHeader, root_slot_b), d_durable_b);
+      ::CloseHandle(h);
+      if (!ok) {
+        return;
+      }
+    }
+#else
     const int fd = ::open(d_snapshot.c_str(), O_RDWR);
     if (fd >= 0) {
       const ssize_t wrote_a = ::pwrite(fd, &d_durable_a, sizeof(d_durable_a),
@@ -244,6 +342,7 @@ private:
       }
       ::close(fd);
     }
+#endif
     d_captured = true;
   }
 
@@ -260,8 +359,10 @@ private:
   bool d_captured{false};
 };
 
-// Injects `err` (an errno) on the `nth` (0-based) occurrence of `target`,
-// passing every other syscall through -- the disk-full model.
+// Injects `err` on the `nth` (0-based) occurrence of `target`, passing every
+// other syscall through -- the disk-full model. `err` is an errno on POSIX and a
+// Win32 error code on Windows (the shim feeds it to SetLastError, so it round-
+// trips into `last_error().sys_errno` via GetLastError).
 class ErrnoInjector final : public arbc::SyscallInjector {
 public:
   ErrnoInjector(arbc::WorkspaceSyscall target, int err, long nth = 0)
@@ -460,8 +561,22 @@ TEST_CASE("disk-full syscall failures surface as values and stay recoverable", "
 
   constexpr std::size_t chunk = 64 * 1024;
 
-  SECTION("ftruncate ENOSPC on chunk growth") {
-    ErrnoInjector inj(arbc::WorkspaceSyscall::Ftruncate, ENOSPC);
+  // The injected fault constant IS the value that round-trips into
+  // `last_error().sys_errno`: an errno on POSIX, a Win32 error code on Windows
+  // (the shim feeds `before()`'s return to SetLastError). Assert the exact code
+  // both places by injecting and checking the same local constant.
+#if defined(_WIN32)
+  const int grow_err = ERROR_DISK_FULL;
+  const int grow_err2 = ERROR_HANDLE_DISK_FULL;
+  const int io_err = ERROR_IO_DEVICE;
+#else
+  const int grow_err = ENOSPC;
+  const int grow_err2 = EFBIG;
+  const int io_err = EIO;
+#endif
+
+  SECTION("ftruncate disk-full on chunk growth -> GrowFailed") {
+    ErrnoInjector inj(arbc::WorkspaceSyscall::Ftruncate, grow_err);
     ws.set_syscall_injector(&inj);
     auto span = ws.acquire(chunk, alignof(std::max_align_t));
     ws.set_syscall_injector(nullptr);
@@ -469,48 +584,52 @@ TEST_CASE("disk-full syscall failures surface as values and stay recoverable", "
     REQUIRE_FALSE(span.has_value());
     REQUIRE(span.error() == arbc::PoolError::OutOfMemory);
     REQUIRE(ws.last_error().code == arbc::WorkspaceFileErrc::GrowFailed);
-    REQUIRE(ws.last_error().sys_errno == ENOSPC);
+    REQUIRE(ws.last_error().sys_errno == grow_err);
   }
 
-  SECTION("mmap EFBIG on chunk growth") {
-    ErrnoInjector inj(arbc::WorkspaceSyscall::Mmap, EFBIG);
+  SECTION("mmap disk-full on chunk growth -> GrowFailed") {
+    ErrnoInjector inj(arbc::WorkspaceSyscall::Mmap, grow_err2);
     ws.set_syscall_injector(&inj);
     auto span = ws.acquire(chunk, alignof(std::max_align_t));
     ws.set_syscall_injector(nullptr);
     REQUIRE(inj.fired());
     REQUIRE_FALSE(span.has_value());
     REQUIRE(ws.last_error().code == arbc::WorkspaceFileErrc::GrowFailed);
-    REQUIRE(ws.last_error().sys_errno == EFBIG);
+    REQUIRE(ws.last_error().sys_errno == grow_err2);
   }
 
-  SECTION("EIO on the commit data msync") {
+  SECTION("I/O error on the commit data msync -> HeaderIoFailed") {
     arbc::Ref<GraphNode> more = build_graph(store); // dirty the scene
     more->value = 200;
-    ErrnoInjector inj(arbc::WorkspaceSyscall::Msync, EIO); // first msync == data msync
+    ErrnoInjector inj(arbc::WorkspaceSyscall::Msync, io_err); // first msync == data msync
     ws.set_syscall_injector(&inj);
     auto result = ckpt.commit(more.index());
     ws.set_syscall_injector(nullptr);
     REQUIRE(inj.fired());
     REQUIRE_FALSE(result.has_value());
     REQUIRE(result.error().code == arbc::WorkspaceFileErrc::HeaderIoFailed);
-    REQUIRE(result.error().sys_errno == EIO);
+    REQUIRE(result.error().sys_errno == io_err);
   }
 
-#if defined(__linux__)
-  SECTION("ENOSPC on the deferred hole-punch drain") {
+#if defined(__linux__) || defined(_WIN32)
+  SECTION("disk-full on the deferred hole-punch drain -> GrowFailed") {
     // The Checkpointer installs a chunk release fence, so `release` defers the
-    // punch to the next commit's drain (punch_now -> fallocate).
+    // punch to the next commit's drain (punch_now -> fallocate on Linux,
+    // FSCTL_SET_ZERO_DATA on Windows). The injector short-circuits BEFORE the real
+    // call, so there is no NTFS/sparse-volume dependency (mmap_backing_win32
+    // Decision 4's best-effort punch never runs). The punch failure is best-effort
+    // -- it lands in `last_error()`, not the commit's return value.
     auto span = ws.acquire(chunk, alignof(std::max_align_t));
     REQUIRE(span.has_value());
     std::memset(span->base, 0xCD, span->size);
     ws.release(*span); // deferred to the durability fence
-    ErrnoInjector inj(arbc::WorkspaceSyscall::Fallocate, ENOSPC);
+    ErrnoInjector inj(arbc::WorkspaceSyscall::Fallocate, grow_err);
     ws.set_syscall_injector(&inj);
     REQUIRE(ckpt.commit(root_index).has_value()); // drain -> punch_now -> fallocate injected
     ws.set_syscall_injector(nullptr);
     REQUIRE(inj.fired());
     REQUIRE(ws.last_error().code == arbc::WorkspaceFileErrc::GrowFailed);
-    REQUIRE(ws.last_error().sys_errno == ENOSPC);
+    REQUIRE(ws.last_error().sys_errno == grow_err);
   }
 #endif
 
@@ -547,15 +666,15 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
   REQUIRE(header.has_value());
   const std::uint64_t data_offset = header->data_offset; // == header_bytes (one page)
 
-  const auto truncate_copy = [&](off_t length) {
+  const auto truncate_copy = [&](std::uint64_t length) {
     TempPath dst;
     copy_file(path.str(), dst.str());
-    REQUIRE(::truncate(dst.str().c_str(), length) == 0);
+    truncate_file(dst.str(), length);
     return dst;
   };
 
   SECTION("mid-header truncation -> HeaderIoFailed, never OOB read") {
-    TempPath dst = truncate_copy(static_cast<off_t>(sizeof(arbc::WorkspaceHeader)) / 2);
+    TempPath dst = truncate_copy(sizeof(arbc::WorkspaceHeader) / 2);
     auto hdr = arbc::WorkspaceFileChunkSource::read_header(dst.str());
     REQUIRE_FALSE(hdr.has_value());
     REQUIRE(hdr.error().code == arbc::WorkspaceFileErrc::HeaderIoFailed);
@@ -565,9 +684,9 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
   }
 
   SECTION("mid-directory truncation -> HeaderIoFailed, never mapped past EOF") {
-    // File large enough for the fixed header pread but shorter than the mapped
+    // File large enough for the fixed header read but shorter than the mapped
     // header/directory region.
-    TempPath dst = truncate_copy(static_cast<off_t>(sizeof(arbc::WorkspaceHeader)) + 32);
+    TempPath dst = truncate_copy(sizeof(arbc::WorkspaceHeader) + 32);
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
     REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::HeaderIoFailed);
@@ -575,7 +694,7 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
 
   SECTION("mid-data-chunk truncation -> HeaderIoFailed, never mapped past EOF") {
     // Keep the whole header + directory but cut the live data chunk in half.
-    TempPath dst = truncate_copy(static_cast<off_t>(data_offset) + 128);
+    TempPath dst = truncate_copy(data_offset + 128);
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
     REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::HeaderIoFailed);
@@ -584,12 +703,8 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
   SECTION("clobbered magic -> BadMagic") {
     TempPath dst;
     copy_file(path.str(), dst.str());
-    const int fd = ::open(dst.str().c_str(), O_RDWR);
-    REQUIRE(fd >= 0);
     const std::uint64_t garbage = 0xDEAD'BEEF'DEAD'BEEFull;
-    REQUIRE(::pwrite(fd, &garbage, sizeof(garbage), offsetof(arbc::WorkspaceHeader, magic)) ==
-            sizeof(garbage));
-    ::close(fd);
+    write_at(dst.str(), offsetof(arbc::WorkspaceHeader, magic), &garbage, sizeof(garbage));
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
     REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::BadMagic);
@@ -598,12 +713,9 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
   SECTION("clobbered format-major -> UnsupportedFormat") {
     TempPath dst;
     copy_file(path.str(), dst.str());
-    const int fd = ::open(dst.str().c_str(), O_RDWR);
-    REQUIRE(fd >= 0);
     const std::uint32_t bad_major = arbc::k_workspace_format_major + 99;
-    REQUIRE(::pwrite(fd, &bad_major, sizeof(bad_major),
-                     offsetof(arbc::WorkspaceHeader, format_major)) == sizeof(bad_major));
-    ::close(fd);
+    write_at(dst.str(), offsetof(arbc::WorkspaceHeader, format_major), &bad_major,
+             sizeof(bad_major));
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
     REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::UnsupportedFormat);
@@ -617,23 +729,35 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
     // active slot, and confirm recovery still lands on the durable root.
     TempPath dst;
     copy_file(path.str(), dst.str());
-    const int fd = ::open(dst.str().c_str(), O_RDWR);
-    REQUIRE(fd >= 0);
     const std::uint64_t torn = arbc::encode_root(arbc::WorkspaceRoot{0, 0xFFFF'FFFFu});
-    REQUIRE(::pwrite(fd, &torn, sizeof(torn), offsetof(arbc::WorkspaceHeader, root_slot_b)) ==
-            sizeof(torn));
-    ::close(fd);
+    write_at(dst.str(), offsetof(arbc::WorkspaceHeader, root_slot_b), &torn, sizeof(torn));
     assert_recovers(dst.str(), 1u, 100u, high_water);
   }
 }
 
-// --- fork-and-kill faithful sweep (decision (b)) -----------------------------
+// --- faithful process-kill sweep (decision (b) / Decision 3) -----------------
 
 namespace {
 
-// _exit(0)s the child at the `target`-th (0-based) intercepted syscall, in the
-// given phase (before / after the real call). Counts every intercepted syscall
-// kind -- the exhaustive faithful model.
+// Terminate the current process at exactly the injected syscall, running no C++
+// destructors -- the faithful mid-syscall death. POSIX: _exit(2). Windows:
+// ExitProcess, the direct analog (likewise skipping atexit / stack unwinding), so
+// the OS keeps the mapped-file page cache written up to the kill point.
+// GCOV_EXCL_START -- runs only in the crash child (fork on POSIX, re-exec on
+// Windows), which terminates without flushing gcov; the coverage lane cannot
+// observe it even though every kill-and-recover case drives it.
+[[noreturn]] void exit_child(int code) noexcept {
+#if defined(_WIN32)
+  ::ExitProcess(static_cast<UINT>(code));
+#else
+  ::_exit(code);
+#endif
+}
+// GCOV_EXCL_STOP
+
+// Kills the child at the `target`-th (0-based) intercepted syscall, in the given
+// phase (before / after the real call). Counts every intercepted syscall kind --
+// the exhaustive faithful model.
 class KillInjector final : public arbc::SyscallInjector {
 public:
   KillInjector(long target, bool after) : d_target(target), d_after(after) {}
@@ -641,14 +765,14 @@ public:
   int before(arbc::WorkspaceSyscall, std::uint64_t, std::size_t) noexcept override {
     const long idx = d_point++;
     if (idx == d_target && !d_after) {
-      ::_exit(0);
+      exit_child(0); // GCOV_EXCL_LINE: crash-child only (see exit_child)
     }
     d_hit_after = (idx == d_target && d_after);
     return 0;
   }
   void after(arbc::WorkspaceSyscall, std::uint64_t, std::size_t) noexcept override {
     if (d_hit_after) {
-      ::_exit(0);
+      exit_child(0); // GCOV_EXCL_LINE: crash-child only (see exit_child)
     }
   }
 
@@ -660,12 +784,16 @@ private:
 };
 
 // The child's deterministic workload: G1 (root value 100, 3 slots) committed,
-// then G2 (root value 200, 3 slots) committed. Errors _exit with a nonzero code;
-// the parent's reopen is the real assertion.
+// then G2 (root value 200, 3 slots) committed. Errors exit with a nonzero code;
+// the parent's reopen is the real assertion. Runs no C++ destructors on the kill
+// path (exit_child), so the crash is faithful.
+// GCOV_EXCL_START -- executes only inside the crash child (see exit_child); its
+// exit points self-kill without flushing gcov, so the coverage lane never sees
+// them though the [pool] kill-and-recover sweep drives this workload.
 [[noreturn]] void child_workload(const std::string& path, arbc::SyscallInjector& inj) {
   auto src = arbc::WorkspaceFileChunkSource::create(path);
   if (!src) {
-    ::_exit(10);
+    exit_child(10);
   }
   arbc::WorkspaceFileChunkSource& ws = **src;
   ws.set_syscall_injector(&inj);
@@ -676,26 +804,74 @@ private:
 
   arbc::Ref<GraphNode> root1 = build_graph(store);
   if (!ckpt.commit(root1.index())) {
-    ::_exit(11);
+    exit_child(11);
   }
   arbc::Ref<GraphNode> root2 = build_graph(store);
   root2->value = 200;
   if (!ckpt.commit(root2.index())) {
-    ::_exit(12);
+    exit_child(12);
   }
   ws.set_syscall_injector(nullptr);
-  ::_exit(0);
+  exit_child(0);
 }
+// GCOV_EXCL_STOP
 
-// Fork a child that dies at syscall (target, phase); reap it; reopen the real
-// file in the parent and assert recovery lands on a consistent root -- never a
-// crash or OOB read. Killing the writer mid-syscall leaves the shared page cache
-// holding its writes up to that point (doc 15's "editor crash" model), so
-// recovery lands on whichever root the ordered protocol had published: the OLD
-// root (gen 1, value 100) until the second commit's flip, the NEW root (gen 2,
-// value 200) after it -- both consistent.
-void fork_kill_and_check(long target, bool after) {
+#if defined(_WIN32)
+// Re-exec this test binary in crash-child mode (Decision 3): run the hidden
+// [.crashchild] test with (path,target,phase) passed through the environment, and
+// wait for it to self-kill (or run to completion when N overshoots the syscall
+// count). Windows has no fork, so the child cannot inherit the parent's in-memory
+// workload -- it rebuilds it deterministically from scratch. The child's exit code
+// is unused; the parent's reopen is the real assertion.
+void spawn_crash_child(const std::string& path, long target, bool after) {
+  char exe[MAX_PATH];
+  const DWORD n = ::GetModuleFileNameA(nullptr, exe, static_cast<DWORD>(sizeof(exe)));
+  REQUIRE(n > 0);
+  REQUIRE(n < static_cast<DWORD>(sizeof(exe)));
+
+  REQUIRE(::SetEnvironmentVariableA("CRASH_TESTS_CHILD", "1") != 0);
+  REQUIRE(::SetEnvironmentVariableA("CRASH_TESTS_CHILD_PATH", path.c_str()) != 0);
+  REQUIRE(::SetEnvironmentVariableA("CRASH_TESTS_CHILD_TARGET", std::to_string(target).c_str()) !=
+          0);
+  REQUIRE(::SetEnvironmentVariableA("CRASH_TESTS_CHILD_PHASE", after ? "1" : "0") != 0);
+
+  // argv: "<exe>" "[.crashchild]" -- Catch2 runs only the hidden re-exec child.
+  std::string cmd = "\"";
+  cmd += exe;
+  cmd += "\" \"[.crashchild]\"";
+  std::vector<char> mutable_cmd(cmd.begin(), cmd.end());
+  mutable_cmd.push_back('\0');
+
+  STARTUPINFOA si;
+  std::memset(&si, 0, sizeof(si));
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi;
+  std::memset(&pi, 0, sizeof(pi));
+  const BOOL ok = ::CreateProcessA(exe, mutable_cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                                   nullptr, &si, &pi);
+  REQUIRE(ok != 0);
+  ::WaitForSingleObject(pi.hProcess, INFINITE);
+  ::CloseHandle(pi.hProcess);
+  ::CloseHandle(pi.hThread);
+
+  ::SetEnvironmentVariableA("CRASH_TESTS_CHILD", nullptr);
+}
+#endif
+
+// Kill a child that dies at syscall (target, phase); reap it; reopen the real file
+// in the parent and assert recovery lands on a consistent root -- never a crash or
+// OOB read. POSIX forks the child in-process; Windows -- which has no fork --
+// CreateProcess-es this binary in re-exec child mode (Decision 3). Either way,
+// killing the writer mid-syscall leaves the OS page cache holding its writes up to
+// that point (doc 15's "editor crash" model), so recovery lands on whichever root
+// the ordered protocol had published: the OLD root (gen 1, value 100) until the
+// second commit's flip, the NEW root (gen 2, value 200) after it -- both
+// consistent.
+void kill_and_check(long target, bool after) {
   TempPath path;
+#if defined(_WIN32)
+  spawn_crash_child(path.str(), target, after);
+#else
   const pid_t pid = ::fork();
   REQUIRE(pid >= 0);
   if (pid == 0) {
@@ -704,6 +880,7 @@ void fork_kill_and_check(long target, bool after) {
   }
   int status = 0;
   REQUIRE(::waitpid(pid, &status, 0) == pid);
+#endif
 
   auto opened = arbc::Checkpointer::open(path.str());
   if (!opened.has_value()) {
@@ -725,27 +902,55 @@ void fork_kill_and_check(long target, bool after) {
 
 } // namespace
 
+#if defined(_WIN32)
+// The re-exec crash child (Decision 3). Selected by the [.crashchild] tag when the
+// CreateProcess parent spawns this binary; hidden from every normal run. It reads
+// (path,target,phase) from the environment and runs the deterministic workload
+// under a KillInjector that ExitProcess-es at syscall N -- the faithful mid-
+// syscall death (no C++ unwinding), the direct analog of the POSIX fork child's
+// _exit. Guards on the environment so an accidental direct invocation is a no-op.
+TEST_CASE("crash-recovery re-exec child self-kills at a syscall boundary", "[.crashchild]") {
+  const char* path = std::getenv("CRASH_TESTS_CHILD_PATH");
+  if (path == nullptr) {
+    return; // not a re-exec child invocation -- nothing to do
+  }
+  const char* target = std::getenv("CRASH_TESTS_CHILD_TARGET");
+  const char* phase = std::getenv("CRASH_TESTS_CHILD_PHASE");
+  REQUIRE(target != nullptr);
+  REQUIRE(phase != nullptr);
+  KillInjector inj(std::strtol(target, nullptr, 10), std::strcmp(phase, "1") == 0);
+  child_workload(path, inj); // [[noreturn]]: exit_child at syscall N or on completion
+}
+#endif
+
 // enforces: 15-memory-model#checkpoint-recovers-consistent-root
-TEST_CASE("fork-and-kill: a bounded per-push subset recovers a consistent root", "[pool]") {
+TEST_CASE("kill-and-recover: a bounded per-push subset recovers a consistent root", "[pool]") {
   // A handful of early syscall boundaries (chunk growth + the first commit's
   // ordering). The exhaustive sweep is the nightly job below.
   for (long target = 0; target < 8; ++target) {
     for (bool after : {false, true}) {
-      fork_kill_and_check(target, after);
+      kill_and_check(target, after);
     }
   }
 }
 
+// GCOV_EXCL_START -- [.nightly] hidden case, not selected by the fast coverage
+// lane (ctest runs the default set only); the [pool] bounded subset above is the
+// per-push coverage.
 // enforces: 15-memory-model#checkpoint-recovers-consistent-root
-TEST_CASE("fork-and-kill: exhaustive syscall sweep recovers a consistent root", "[.nightly]") {
+TEST_CASE("kill-and-recover: exhaustive syscall sweep recovers a consistent root", "[.nightly]") {
   // Exhaustive over the syscall index N: overshooting the actual syscall count
   // simply lets the child run to completion (full recovery), so a generous fixed
   // upper bound needs no separate counting pass. Long-form job (doc 16:102-105).
+  // Windows spawns one re-exec process per index (deliberately: no fork), so the
+  // full breadth is nightly-only -- the bounded per-push subset above is the
+  // fast-lane coverage.
   for (long target = 0; target < 40; ++target) {
     for (bool after : {false, true}) {
-      fork_kill_and_check(target, after);
+      kill_and_check(target, after);
     }
   }
 }
+// GCOV_EXCL_STOP
 
 #endif // ARBC_HAS_WORKSPACE_FILES
