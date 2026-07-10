@@ -12,13 +12,16 @@
 #include <string>
 #include <vector>
 
-// The checkpoint protocol rides the file-backed workspace, which is POSIX-only.
-// On other platforms it compiles out with just the runtime-query check.
+// The checkpoint protocol rides the file-backed workspace. Its ordered-commit
+// validation (signal/setjmp crash points) is POSIX-specific; the Windows port is
+// the separate pool.checkpoints_win32 leaf, so this stays gated off `_WIN32` even
+// though Windows now has workspace files. On platforms without workspace files (or
+// on Windows) it compiles out with just the runtime-query check.
 TEST_CASE("checkpoint support tracks workspace-file support") {
   REQUIRE(arbc::workspace_files_supported() == (ARBC_HAS_WORKSPACE_FILES != 0));
 }
 
-#if ARBC_HAS_WORKSPACE_FILES
+#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
 
 #include <fcntl.h>
 #include <sys/mman.h>

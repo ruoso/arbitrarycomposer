@@ -11,13 +11,13 @@
 #include <variant>
 #include <vector>
 
-// Capability macro for file-backed workspace arenas (doc 15). File backing
-// needs POSIX `mmap`/`ftruncate`/`munmap`; hole-punch reclamation additionally
-// needs Linux `fallocate(FALLOC_FL_PUNCH_HOLE)`. On platforms without them the
-// source compiles out and callers fall back to `AnonymousChunkSource` — the
-// universal backing. The Windows (`MapViewOfFile`) port is tracked as
-// `pool.mmap_backing_win32` (doc 15).
-#if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
+// Capability macro for file-backed workspace arenas (doc 15). POSIX backs it with
+// `mmap`/`ftruncate`/`munmap` (hole-punch reclamation additionally needs Linux
+// `fallocate(FALLOC_FL_PUNCH_HOLE)`); Windows backs it with `CreateFileMapping`/
+// `MapViewOfFile` and `FSCTL_SET_ZERO_DATA` hole-punch (pool.mmap_backing_win32).
+// On any other platform the source compiles out and callers fall back to
+// `AnonymousChunkSource` — the universal backing.
+#if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__)) || defined(_WIN32)
 #define ARBC_HAS_WORKSPACE_FILES 1
 #else
 #define ARBC_HAS_WORKSPACE_FILES 0
@@ -98,6 +98,15 @@ static_assert(sizeof(WorkspaceChunkEntry) == 24, "on-disk directory entry layout
 struct WorkspaceLayout {
   std::uint32_t max_chunks{k_workspace_default_max_chunks};
 };
+
+// Platform file handle for the workspace file's private state: a POSIX fd or a
+// Win32 `HANDLE`. Kept as `void*` on Windows so this public header needs no
+// `<windows.h>` (the syscall leaves that use it live behind the seam in the .cpp).
+#if defined(_WIN32)
+using WorkspaceFileHandle = void*; // Win32 HANDLE
+#else
+using WorkspaceFileHandle = int; // POSIX fd
+#endif
 
 class WorkspaceFileChunkSource;
 
@@ -285,7 +294,12 @@ private:
   };
 
   std::string d_path;
-  int d_fd{-1};
+#if defined(_WIN32)
+  WorkspaceFileHandle d_fd{nullptr};
+  void* d_mapping{nullptr}; // Win32 file-mapping HANDLE, recreated on each grow
+#else
+  WorkspaceFileHandle d_fd{-1};
+#endif
   std::size_t d_page{0};
   std::uint32_t d_max_chunks{0};
   std::uint64_t d_data_offset{0};

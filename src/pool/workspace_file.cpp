@@ -7,6 +7,7 @@
 #include <arbc/pool/slot_store.hpp> // align_up
 #include <arbc/pool/workspace_file.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cstddef>
@@ -14,6 +15,14 @@
 #include <cstring>
 
 #if ARBC_HAS_WORKSPACE_FILES
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+// FSCTL_SET_SPARSE / FSCTL_SET_ZERO_DATA / FILE_ZERO_DATA_INFORMATION live here and
+// are NOT pulled in by <windows.h> under WIN32_LEAN_AND_MEAN.
+#include <winioctl.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -22,6 +31,7 @@
 #include <cerrno>
 #if defined(__linux__)
 #include <linux/falloc.h>
+#endif
 #endif
 #endif
 
@@ -59,7 +69,36 @@ WorkspaceChunkEntry* WorkspaceFileChunkSource::directory() noexcept {
 
 namespace {
 
+#if defined(_WIN32)
+// On Windows the syscall-level diagnostic is `GetLastError()` (a Win32 error
+// code), captured into `sys_errno`. Both are same-machine diagnostics with no
+// portability promise (doc 15:204-206).
+WorkspaceFileError sys_error(WorkspaceFileErrc code) {
+  return WorkspaceFileError{code, static_cast<int>(::GetLastError())};
+}
+#else
 WorkspaceFileError sys_error(WorkspaceFileErrc code) { return WorkspaceFileError{code, errno}; }
+#endif
+
+// Portable aliases so the shared orchestration (acquire/sync/protect) never names
+// a POSIX-only mmap/msync macro. The values that reach the `io_*` shims mirror the
+// POSIX `PROT_*` bits so the write-bit test in `io_mprotect` is identical on both
+// platforms; the map/msync-flag aliases are ignored by the Windows shims.
+// `k_prot_read` is used only in the debug-only protect helpers, so it is
+// [[maybe_unused]] to stay warning-clean in NDEBUG builds.
+#if defined(_WIN32)
+[[maybe_unused]] constexpr int k_prot_read = 0x1;
+constexpr int k_prot_readwrite = 0x1 | 0x2;
+constexpr int k_map_shared = 0;
+constexpr int k_msync_sync = 0;
+void* const k_map_failed = nullptr;
+#else
+[[maybe_unused]] constexpr int k_prot_read = PROT_READ;
+constexpr int k_prot_readwrite = PROT_READ | PROT_WRITE;
+constexpr int k_map_shared = MAP_SHARED;
+constexpr int k_msync_sync = MS_SYNC;
+void* const k_map_failed = MAP_FAILED;
+#endif
 
 } // namespace
 
@@ -67,6 +106,166 @@ WorkspaceFileError sys_error(WorkspaceFileErrc code) { return WorkspaceFileError
 // When no injector is installed every shim is a single predictable branch over
 // the real syscall. When installed, `before` may inject an errno (skipping the
 // real call) or snapshot/kill the process; `after` observes the durable effect.
+
+#if defined(_WIN32)
+
+// On Windows an injected failure sets `GetLastError()` (via SetLastError) so the
+// caller's `sys_error()` captures it exactly as the POSIX shims set `errno`.
+
+int WorkspaceFileChunkSource::io_ftruncate(std::int64_t length) noexcept {
+  auto do_call = [this](std::int64_t len) -> int {
+    LARGE_INTEGER li;
+    li.QuadPart = len;
+    HANDLE h = static_cast<HANDLE>(d_fd);
+    if (!::SetFilePointerEx(h, li, nullptr, FILE_BEGIN) || !::SetEndOfFile(h)) {
+      return -1;
+    }
+    return 0;
+  };
+  if (d_injector != nullptr) {
+    const int inj =
+        d_injector->before(WorkspaceSyscall::Ftruncate, static_cast<std::uint64_t>(length), 0);
+    if (inj != 0) {
+      ::SetLastError(static_cast<DWORD>(inj));
+      return -1;
+    }
+    const int rc = do_call(length);
+    d_injector->after(WorkspaceSyscall::Ftruncate, static_cast<std::uint64_t>(length), 0);
+    return rc;
+  }
+  return do_call(length);
+}
+
+void* WorkspaceFileChunkSource::io_mmap(std::size_t len, int prot, int flags,
+                                        std::int64_t offset) noexcept {
+  (void)prot;
+  (void)flags;
+  // Recreate the file-mapping object at the new file end (the file was already
+  // extended by io_ftruncate), then map the new chunk. Existing views keep their
+  // own reference, so closing the old mapping handle does not move them
+  // (address stability, Decision 3).
+  auto do_call = [this](std::size_t l, std::int64_t off) -> void* {
+    const std::uint64_t max_size = static_cast<std::uint64_t>(off) + l;
+    HANDLE file = static_cast<HANDLE>(d_fd);
+    HANDLE mapping =
+        ::CreateFileMappingW(file, nullptr, PAGE_READWRITE, static_cast<DWORD>(max_size >> 32),
+                             static_cast<DWORD>(max_size & 0xFFFFFFFFu), nullptr);
+    if (mapping == nullptr) {
+      return nullptr;
+    }
+    void* view = ::MapViewOfFile(
+        mapping, FILE_MAP_ALL_ACCESS, static_cast<DWORD>(static_cast<std::uint64_t>(off) >> 32),
+        static_cast<DWORD>(static_cast<std::uint64_t>(off) & 0xFFFFFFFFu), l);
+    if (view == nullptr) {
+      const DWORD err = ::GetLastError();
+      ::CloseHandle(mapping);
+      ::SetLastError(err);
+      return nullptr;
+    }
+    if (d_mapping != nullptr) {
+      ::CloseHandle(static_cast<HANDLE>(d_mapping));
+    }
+    d_mapping = mapping;
+    return view;
+  };
+  if (d_injector != nullptr) {
+    const int inj =
+        d_injector->before(WorkspaceSyscall::Mmap, static_cast<std::uint64_t>(offset), len);
+    if (inj != 0) {
+      ::SetLastError(static_cast<DWORD>(inj));
+      return k_map_failed;
+    }
+    void* p = do_call(len, offset);
+    d_injector->after(WorkspaceSyscall::Mmap, static_cast<std::uint64_t>(offset), len);
+    return p;
+  }
+  return do_call(len, offset);
+}
+
+int WorkspaceFileChunkSource::io_fallocate(int mode, std::int64_t offset,
+                                           std::int64_t len) noexcept {
+  (void)mode;
+  // Deallocate the range on a sparse NTFS file (the hole-punch). Best-effort:
+  // a non-sparse volume fails here and punch_now degrades to directory-clear.
+  auto do_call = [this](std::int64_t off, std::int64_t l) -> int {
+    FILE_ZERO_DATA_INFORMATION zero;
+    zero.FileOffset.QuadPart = off;
+    zero.BeyondFinalZero.QuadPart = off + l;
+    DWORD returned = 0;
+    HANDLE h = static_cast<HANDLE>(d_fd);
+    if (!::DeviceIoControl(h, FSCTL_SET_ZERO_DATA, &zero, sizeof(zero), nullptr, 0, &returned,
+                           nullptr)) {
+      return -1;
+    }
+    return 0;
+  };
+  if (d_injector != nullptr) {
+    const int inj =
+        d_injector->before(WorkspaceSyscall::Fallocate, static_cast<std::uint64_t>(offset),
+                           static_cast<std::size_t>(len));
+    if (inj != 0) {
+      ::SetLastError(static_cast<DWORD>(inj));
+      return -1;
+    }
+    const int rc = do_call(offset, len);
+    d_injector->after(WorkspaceSyscall::Fallocate, static_cast<std::uint64_t>(offset),
+                      static_cast<std::size_t>(len));
+    return rc;
+  }
+  return do_call(offset, len);
+}
+
+int WorkspaceFileChunkSource::io_msync(void* addr, std::size_t len, int flags,
+                                       std::uint64_t file_offset) noexcept {
+  (void)flags;
+  // Mechanical body only (Decision 5): FlushViewOfFile pushes the dirty pages to
+  // the file cache, FlushFileBuffers forces them to disk. Ordered-commit
+  // correctness is pool.checkpoints_win32.
+  auto do_call = [this](void* a, std::size_t l) -> int {
+    if (!::FlushViewOfFile(a, l) || !::FlushFileBuffers(static_cast<HANDLE>(d_fd))) {
+      return -1;
+    }
+    return 0;
+  };
+  if (d_injector != nullptr) {
+    const int inj = d_injector->before(WorkspaceSyscall::Msync, file_offset, len);
+    if (inj != 0) {
+      ::SetLastError(static_cast<DWORD>(inj));
+      return -1;
+    }
+    const int rc = do_call(addr, len);
+    d_injector->after(WorkspaceSyscall::Msync, file_offset, len);
+    return rc;
+  }
+  return do_call(addr, len);
+}
+
+int WorkspaceFileChunkSource::io_mprotect(void* addr, std::size_t len, int prot) noexcept {
+  // Mechanical body only (Decision 5): map the POSIX-mirrored prot bits to a
+  // Win32 page protection. Debug read-only-publish semantics are
+  // pool.checkpoints_win32.
+  auto do_call = [](void* a, std::size_t l, int p) -> int {
+    const DWORD page_prot = (p & 0x2) != 0 ? PAGE_READWRITE : PAGE_READONLY;
+    DWORD old = 0;
+    if (!::VirtualProtect(a, l, page_prot, &old)) {
+      return -1;
+    }
+    return 0;
+  };
+  if (d_injector != nullptr) {
+    const int inj = d_injector->before(WorkspaceSyscall::Mprotect, 0, len);
+    if (inj != 0) {
+      ::SetLastError(static_cast<DWORD>(inj));
+      return -1;
+    }
+    const int rc = do_call(addr, len, prot);
+    d_injector->after(WorkspaceSyscall::Mprotect, 0, len);
+    return rc;
+  }
+  return do_call(addr, len, prot);
+}
+
+#else // POSIX io_* shims
 
 int WorkspaceFileChunkSource::io_ftruncate(std::int64_t length) noexcept {
   if (d_injector != nullptr) {
@@ -148,10 +347,20 @@ int WorkspaceFileChunkSource::io_mprotect(void* addr, std::size_t len, int prot)
   return ::mprotect(addr, len, prot);
 }
 
+#endif // _WIN32 / POSIX io_* shims
+
 expected<std::unique_ptr<WorkspaceFileChunkSource>, WorkspaceFileError>
 WorkspaceFileChunkSource::create(const std::string& path, const WorkspaceLayout& layout) {
+#if defined(_WIN32)
+  SYSTEM_INFO si;
+  ::GetSystemInfo(&si);
+  // MapViewOfFile requires the view offset be a multiple of the allocation
+  // granularity (Decision 2), so the quantum is max(page, granularity).
+  const std::size_t page = std::max<std::size_t>(si.dwPageSize, si.dwAllocationGranularity);
+#else
   const long page_query = ::sysconf(_SC_PAGESIZE);
   const std::size_t page = page_query > 0 ? static_cast<std::size_t>(page_query) : 4096;
+#endif
 
   const std::uint32_t max_chunks =
       layout.max_chunks == 0 ? k_workspace_default_max_chunks : layout.max_chunks;
@@ -159,6 +368,44 @@ WorkspaceFileChunkSource::create(const std::string& path, const WorkspaceLayout&
       static_cast<std::size_t>(max_chunks) * sizeof(WorkspaceChunkEntry);
   const std::size_t header_bytes = align_up(sizeof(WorkspaceHeader) + directory_bytes, page);
 
+#if defined(_WIN32)
+  HANDLE fd = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (fd == INVALID_HANDLE_VALUE) {
+    return unexpected(sys_error(WorkspaceFileErrc::OpenFailed));
+  }
+  // Mark sparse so FSCTL_SET_ZERO_DATA can reclaim disk on hole-punch; a
+  // non-sparse volume simply fails this and punch degrades to directory-clear.
+  {
+    DWORD returned = 0;
+    ::DeviceIoControl(fd, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &returned, nullptr);
+  }
+  {
+    LARGE_INTEGER li;
+    li.QuadPart = static_cast<LONGLONG>(header_bytes);
+    if (!::SetFilePointerEx(fd, li, nullptr, FILE_BEGIN) || !::SetEndOfFile(fd)) {
+      WorkspaceFileError err = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+      ::CloseHandle(fd);
+      return unexpected(err);
+    }
+  }
+  HANDLE mapping =
+      ::CreateFileMappingW(fd, nullptr, PAGE_READWRITE,
+                           static_cast<DWORD>(static_cast<std::uint64_t>(header_bytes) >> 32),
+                           static_cast<DWORD>(header_bytes & 0xFFFFFFFFu), nullptr);
+  if (mapping == nullptr) {
+    WorkspaceFileError err = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+    ::CloseHandle(fd);
+    return unexpected(err);
+  }
+  void* map = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, header_bytes);
+  if (map == nullptr) {
+    WorkspaceFileError err = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+    ::CloseHandle(mapping);
+    ::CloseHandle(fd);
+    return unexpected(err);
+  }
+#else
   const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
   if (fd < 0) {
     return unexpected(sys_error(WorkspaceFileErrc::OpenFailed));
@@ -174,6 +421,7 @@ WorkspaceFileChunkSource::create(const std::string& path, const WorkspaceLayout&
     ::close(fd);
     return unexpected(err);
   }
+#endif
 
   // Zero only the fixed header; the directory region reads as zeros from the
   // ftruncate hole until acquire() writes entries, keeping the file sparse.
@@ -192,6 +440,9 @@ WorkspaceFileChunkSource::create(const std::string& path, const WorkspaceLayout&
   auto source = std::unique_ptr<WorkspaceFileChunkSource>(new WorkspaceFileChunkSource());
   source->d_path = path;
   source->d_fd = fd;
+#if defined(_WIN32)
+  source->d_mapping = mapping;
+#endif
   source->d_page = page;
   source->d_max_chunks = max_chunks;
   source->d_data_offset = header_bytes;
@@ -203,6 +454,24 @@ WorkspaceFileChunkSource::create(const std::string& path, const WorkspaceLayout&
 }
 
 WorkspaceFileChunkSource::~WorkspaceFileChunkSource() {
+#if defined(_WIN32)
+  for (const auto& entry : d_live) {
+    ::UnmapViewOfFile(entry.first);
+  }
+  // Remapped-on-open chunks never pulled back through acquire.
+  for (std::size_t i = d_reopened_cursor; i < d_reopened.size(); ++i) {
+    ::UnmapViewOfFile(d_reopened[i].base);
+  }
+  if (d_header_map != nullptr) {
+    ::UnmapViewOfFile(d_header_map);
+  }
+  if (d_mapping != nullptr) {
+    ::CloseHandle(static_cast<HANDLE>(d_mapping));
+  }
+  if (d_fd != nullptr) {
+    ::CloseHandle(static_cast<HANDLE>(d_fd));
+  }
+#else
   for (const auto& entry : d_live) {
     ::munmap(entry.first, entry.second.size);
   }
@@ -216,6 +485,7 @@ WorkspaceFileChunkSource::~WorkspaceFileChunkSource() {
   if (d_fd >= 0) {
     ::close(d_fd);
   }
+#endif
 }
 
 expected<ChunkSpan, PoolError> WorkspaceFileChunkSource::acquire(std::size_t size,
@@ -249,9 +519,8 @@ expected<ChunkSpan, PoolError> WorkspaceFileChunkSource::acquire(std::size_t siz
     d_last_error = sys_error(WorkspaceFileErrc::GrowFailed);
     return unexpected(PoolError::OutOfMemory);
   }
-  void* base =
-      io_mmap(rounded, PROT_READ | PROT_WRITE, MAP_SHARED, static_cast<std::int64_t>(offset));
-  if (base == MAP_FAILED) {
+  void* base = io_mmap(rounded, k_prot_readwrite, k_map_shared, static_cast<std::int64_t>(offset));
+  if (base == k_map_failed) {
     d_last_error = sys_error(WorkspaceFileErrc::GrowFailed);
     return unexpected(PoolError::OutOfMemory);
   }
@@ -278,7 +547,11 @@ void WorkspaceFileChunkSource::release(ChunkSpan span) noexcept {
   }
   const LiveChunk chunk = it->second;
 
+#if defined(_WIN32)
+  ::UnmapViewOfFile(span.base);
+#else
   ::munmap(span.base, chunk.size);
+#endif
   d_live.erase(it);
 
   if (d_release_fence != nullptr) {
@@ -293,7 +566,14 @@ void WorkspaceFileChunkSource::release(ChunkSpan span) noexcept {
 
 void WorkspaceFileChunkSource::punch_now(std::uint64_t offset, std::uint64_t size,
                                          std::uint32_t index) noexcept {
-#if defined(__linux__)
+#if defined(_WIN32)
+  // Return storage: FSCTL_SET_ZERO_DATA deallocates the chunk's range on a sparse
+  // NTFS file, so both memory (unmapped in release) and disk come back. Best-effort:
+  // on a non-sparse volume it fails and this degrades to directory-clear only.
+  if (io_fallocate(0, static_cast<std::int64_t>(offset), static_cast<std::int64_t>(size)) != 0) {
+    d_last_error = sys_error(WorkspaceFileErrc::GrowFailed);
+  }
+#elif defined(__linux__)
   // Return storage: hole-punch the chunk's file range while keeping the logical
   // size, so both memory and disk come back (fixing the grow-forever high-water
   // mark). Non-fatal if the filesystem lacks punch support.
@@ -310,16 +590,32 @@ void WorkspaceFileChunkSource::punch_now(std::uint64_t offset, std::uint64_t siz
 
 expected<WorkspaceHeader, WorkspaceFileError>
 WorkspaceFileChunkSource::read_header(const std::string& path) {
+  WorkspaceHeader hdr{};
+#if defined(_WIN32)
+  HANDLE fd = ::CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (fd == INVALID_HANDLE_VALUE) {
+    return unexpected(sys_error(WorkspaceFileErrc::OpenFailed));
+  }
+  DWORD got = 0;
+  const BOOL ok = ::ReadFile(fd, &hdr, sizeof(hdr), &got, nullptr);
+  const DWORD read_err = ::GetLastError();
+  ::CloseHandle(fd);
+  if (ok == FALSE || got != sizeof(hdr)) {
+    return unexpected(WorkspaceFileError{WorkspaceFileErrc::HeaderIoFailed,
+                                         ok == FALSE ? static_cast<int>(read_err) : 0});
+  }
+#else
   const int fd = ::open(path.c_str(), O_RDONLY);
   if (fd < 0) {
     return unexpected(sys_error(WorkspaceFileErrc::OpenFailed));
   }
-  WorkspaceHeader hdr{};
   const ssize_t got = ::pread(fd, &hdr, sizeof(hdr), 0);
   ::close(fd);
   if (got != static_cast<ssize_t>(sizeof(hdr))) {
     return unexpected(WorkspaceFileError{WorkspaceFileErrc::HeaderIoFailed, got < 0 ? errno : 0});
   }
+#endif
   if (hdr.magic != k_workspace_magic) {
     return unexpected(WorkspaceFileError{WorkspaceFileErrc::BadMagic, 0});
   }
@@ -331,26 +627,58 @@ WorkspaceFileChunkSource::read_header(const std::string& path) {
 
 expected<std::unique_ptr<WorkspaceFileChunkSource>, WorkspaceFileError>
 WorkspaceFileChunkSource::open(const std::string& path) {
+#if defined(_WIN32)
+  HANDLE fd = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (fd == INVALID_HANDLE_VALUE) {
+    return unexpected(sys_error(WorkspaceFileErrc::OpenFailed));
+  }
+#else
   const int fd = ::open(path.c_str(), O_RDWR);
   if (fd < 0) {
     return unexpected(sys_error(WorkspaceFileErrc::OpenFailed));
   }
+#endif
+  // Close the raw handle on any pre-source failure path (platform leaf).
+  auto close_fd = [&]() noexcept {
+#if defined(_WIN32)
+    ::CloseHandle(fd);
+#else
+    ::close(fd);
+#endif
+  };
 
   // Read the fixed header first to learn page size / directory capacity, then
   // map the whole header+directory region.
   WorkspaceHeader fixed{};
-  const ssize_t got = ::pread(fd, &fixed, sizeof(fixed), 0);
-  if (got != static_cast<ssize_t>(sizeof(fixed))) {
-    WorkspaceFileError err{WorkspaceFileErrc::HeaderIoFailed, got < 0 ? errno : 0};
-    ::close(fd);
-    return unexpected(err);
+#if defined(_WIN32)
+  {
+    DWORD got = 0;
+    const BOOL ok = ::ReadFile(fd, &fixed, sizeof(fixed), &got, nullptr);
+    const DWORD read_err = ::GetLastError();
+    if (ok == FALSE || got != sizeof(fixed)) {
+      WorkspaceFileError err{WorkspaceFileErrc::HeaderIoFailed,
+                             ok == FALSE ? static_cast<int>(read_err) : 0};
+      close_fd();
+      return unexpected(err);
+    }
   }
+#else
+  {
+    const ssize_t got = ::pread(fd, &fixed, sizeof(fixed), 0);
+    if (got != static_cast<ssize_t>(sizeof(fixed))) {
+      WorkspaceFileError err{WorkspaceFileErrc::HeaderIoFailed, got < 0 ? errno : 0};
+      close_fd();
+      return unexpected(err);
+    }
+  }
+#endif
   if (fixed.magic != k_workspace_magic) {
-    ::close(fd);
+    close_fd();
     return unexpected(WorkspaceFileError{WorkspaceFileErrc::BadMagic, 0});
   }
   if (fixed.format_major != k_workspace_format_major) {
-    ::close(fd);
+    close_fd();
     return unexpected(WorkspaceFileError{WorkspaceFileErrc::UnsupportedFormat, 0});
   }
 
@@ -359,28 +687,61 @@ WorkspaceFileChunkSource::open(const std::string& path) {
   // A truncated (short) workspace file must surface as a value, never map past
   // EOF and SIGBUS on first access (pool.crash_tests short-file paths). Refuse
   // any file too small for its own header/directory region up front.
+#if defined(_WIN32)
+  LARGE_INTEGER fsz{};
+  if (::GetFileSizeEx(fd, &fsz) == FALSE) {
+    WorkspaceFileError err = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+    close_fd();
+    return unexpected(err);
+  }
+  const std::uint64_t file_size = static_cast<std::uint64_t>(fsz.QuadPart);
+#else
   struct stat st{};
   if (::fstat(fd, &st) != 0) {
     WorkspaceFileError err = sys_error(WorkspaceFileErrc::HeaderIoFailed);
-    ::close(fd);
+    close_fd();
     return unexpected(err); // GCOV_EXCL_LINE: fstat on a freshly-opened fd does not fail
   }
   const std::uint64_t file_size = static_cast<std::uint64_t>(st.st_size);
+#endif
   if (file_size < header_bytes) {
-    ::close(fd);
+    close_fd();
     return unexpected(WorkspaceFileError{WorkspaceFileErrc::HeaderIoFailed, 0});
   }
 
+#if defined(_WIN32)
+  // One mapping object over the whole file backs the header view and every
+  // remapped chunk view; a post-reopen grow recreates it larger (io_mmap).
+  HANDLE mapping =
+      ::CreateFileMappingW(fd, nullptr, PAGE_READWRITE, static_cast<DWORD>(file_size >> 32),
+                           static_cast<DWORD>(file_size & 0xFFFFFFFFu), nullptr);
+  if (mapping == nullptr) {
+    WorkspaceFileError err = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+    close_fd();
+    return unexpected(err);
+  }
+  void* map = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, header_bytes);
+  if (map == nullptr) {
+    WorkspaceFileError err = sys_error(WorkspaceFileErrc::HeaderIoFailed);
+    ::CloseHandle(mapping);
+    close_fd();
+    return unexpected(err);
+  }
+#else
   void* map = ::mmap(nullptr, header_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (map == MAP_FAILED) {
     WorkspaceFileError err = sys_error(WorkspaceFileErrc::HeaderIoFailed);
-    ::close(fd);
+    close_fd();
     return unexpected(err);
   }
+#endif
 
   auto source = std::unique_ptr<WorkspaceFileChunkSource>(new WorkspaceFileChunkSource());
   source->d_path = path;
   source->d_fd = fd;
+#if defined(_WIN32)
+  source->d_mapping = mapping;
+#endif
   source->d_page = fixed.page_size != 0 ? fixed.page_size : 4096;
   source->d_max_chunks = fixed.max_chunks;
   source->d_data_offset = fixed.data_offset;
@@ -405,11 +766,20 @@ WorkspaceFileChunkSource::open(const std::string& path) {
       // the header map, the chunks mapped so far, and the fd.
       return unexpected(WorkspaceFileError{WorkspaceFileErrc::HeaderIoFailed, 0});
     }
+#if defined(_WIN32)
+    void* base = ::MapViewOfFile(static_cast<HANDLE>(source->d_mapping), FILE_MAP_ALL_ACCESS,
+                                 static_cast<DWORD>(entry.offset >> 32),
+                                 static_cast<DWORD>(entry.offset & 0xFFFFFFFFu), entry.size);
+    if (base == nullptr) {
+      return unexpected(sys_error(WorkspaceFileErrc::HeaderIoFailed));
+    }
+#else
     void* base = ::mmap(nullptr, entry.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
                         static_cast<off_t>(entry.offset));
     if (base == MAP_FAILED) {
       return unexpected(sys_error(WorkspaceFileErrc::HeaderIoFailed));
     }
+#endif
     source->d_reopened.push_back(ReopenedChunk{base, entry.offset, entry.size, i});
   }
   source->d_next_offset = next_offset;
@@ -419,7 +789,7 @@ WorkspaceFileChunkSource::open(const std::string& path) {
 expected<std::size_t, WorkspaceFileError> WorkspaceFileChunkSource::sync_data() noexcept {
   std::size_t synced = 0;
   for (const auto& entry : d_live) {
-    if (io_msync(entry.first, entry.second.size, MS_SYNC, entry.second.offset) != 0) {
+    if (io_msync(entry.first, entry.second.size, k_msync_sync, entry.second.offset) != 0) {
       d_last_error = sys_error(WorkspaceFileErrc::HeaderIoFailed);
       return unexpected(d_last_error);
     }
@@ -429,7 +799,7 @@ expected<std::size_t, WorkspaceFileError> WorkspaceFileChunkSource::sync_data() 
 }
 
 expected<std::monostate, WorkspaceFileError> WorkspaceFileChunkSource::sync_header() noexcept {
-  if (d_header_map != nullptr && io_msync(d_header_map, d_header_bytes, MS_SYNC, 0) != 0) {
+  if (d_header_map != nullptr && io_msync(d_header_map, d_header_bytes, k_msync_sync, 0) != 0) {
     d_last_error = sys_error(WorkspaceFileErrc::HeaderIoFailed);
     return unexpected(d_last_error);
   }
@@ -460,7 +830,7 @@ void WorkspaceFileChunkSource::publish_root_slot(int ab, std::uint64_t value) no
 expected<std::monostate, WorkspaceFileError>
 WorkspaceFileChunkSource::protect_data(bool read_only) noexcept {
 #ifndef NDEBUG
-  const int prot = read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
+  const int prot = read_only ? k_prot_read : k_prot_readwrite;
   for (const auto& entry : d_live) {
     if (io_mprotect(entry.first, entry.second.size, prot) != 0) {
       d_last_error = sys_error(WorkspaceFileErrc::HeaderIoFailed);
@@ -479,7 +849,7 @@ WorkspaceFileChunkSource::protect_range(void* addr, std::size_t size, bool read_
   const auto raw = reinterpret_cast<std::uintptr_t>(addr);
   const std::uintptr_t page_base = raw & ~(static_cast<std::uintptr_t>(d_page) - 1);
   const std::size_t len = align_up((raw - page_base) + size, d_page);
-  const int prot = read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
+  const int prot = read_only ? k_prot_read : k_prot_readwrite;
   if (io_mprotect(reinterpret_cast<void*>(page_base), len, prot) != 0) {
     d_last_error = sys_error(WorkspaceFileErrc::HeaderIoFailed);
     return unexpected(d_last_error);

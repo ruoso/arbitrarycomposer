@@ -1,7 +1,6 @@
 #include <arbc/pool/chunk_source.hpp>
 #include <arbc/pool/slab_directory.hpp>
 #include <arbc/pool/slot_store.hpp>
-#include <arbc/pool/workspace_file.hpp> // ARBC_HAS_WORKSPACE_FILES
 
 #include <algorithm>
 #include <atomic>
@@ -12,7 +11,17 @@
 #include <new>
 #include <unordered_map>
 
-#if ARBC_HAS_WORKSPACE_FILES
+// The anonymous fast path uses POSIX `mmap`/`munmap` where available; every other
+// platform (Windows included) falls back to aligned `operator new`. This is keyed
+// on "has POSIX mmap", NOT on ARBC_HAS_WORKSPACE_FILES: Windows HAS workspace files
+// (via MapViewOfFile in workspace_file.cpp) but has no POSIX `::mmap` (Constraint 6).
+#if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
+#define ARBC_ANON_USES_POSIX_MMAP 1
+#else
+#define ARBC_ANON_USES_POSIX_MMAP 0
+#endif
+
+#if ARBC_ANON_USES_POSIX_MMAP
 #include <sys/mman.h>
 #endif
 
@@ -50,7 +59,7 @@ expected<ChunkSpan, PoolError> AnonymousChunkSource::acquire(std::size_t size,
   assert(alignment <= k_page_alignment);
   (void)alignment;
   const std::size_t rounded = align_up(size, k_page_alignment);
-#if ARBC_HAS_WORKSPACE_FILES
+#if ARBC_ANON_USES_POSIX_MMAP
   // Real anonymous mapping, not heap: MAP_NORESERVE keeps larger-than-RAM
   // reservations from pre-committing swap (doc 15's demand-paging framing), and
   // pages return to the OS on munmap — the universal fallback that mirrors the
@@ -71,7 +80,7 @@ expected<ChunkSpan, PoolError> AnonymousChunkSource::acquire(std::size_t size,
 }
 
 void AnonymousChunkSource::release(ChunkSpan span) noexcept {
-#if ARBC_HAS_WORKSPACE_FILES
+#if ARBC_ANON_USES_POSIX_MMAP
   // munmap rounds the length up to a page multiple, so passing the store's
   // chunk bytes (which acquire rounded up) unmaps the whole region.
   ::munmap(span.base, span.size);

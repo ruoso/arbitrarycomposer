@@ -12,7 +12,10 @@
 #include <utility>
 #include <vector>
 
-#if ARBC_HAS_WORKSPACE_FILES
+// The housekeeping suite drives the file-backed workspace with a POSIX temp-file
+// recipe (mkstemp/unlink). It stays gated off `_WIN32` even though Windows now has
+// workspace files; a Windows housekeeping port is future work.
+#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
 #include <unistd.h>
 
 #include <cerrno>
@@ -130,7 +133,7 @@ TEST_CASE("housekeeper checkpoint triggers are inert on an anonymous arena") {
   REQUIRE(stats.durable_epoch == 0);
 }
 
-#if ARBC_HAS_WORKSPACE_FILES
+#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
 
 // A temp workspace-file path, unlinked on teardown.
 class TempPath {

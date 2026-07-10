@@ -12,14 +12,16 @@
 #include <utility>
 #include <vector>
 
-// The crash-recovery sweep rides the file-backed workspace, which is POSIX-only.
-// On other platforms this compiles to just the runtime-query sanity check, the
-// same shape workspace_file.t.cpp / checkpoint.t.cpp use.
+// The crash-recovery sweep rides the file-backed workspace. Its body (fork/kill
+// injection, RLIMIT disk-full) is POSIX-specific; the Windows port is the separate
+// pool.crash_tests_win32 leaf, so this stays gated off `_WIN32` even though Windows
+// now has workspace files. On platforms without workspace files (or on Windows)
+// this compiles to just the runtime-query sanity check.
 TEST_CASE("crash-test harness tracks workspace-file support") {
   REQUIRE(arbc::workspace_files_supported() == (ARBC_HAS_WORKSPACE_FILES != 0));
 }
 
-#if ARBC_HAS_WORKSPACE_FILES
+#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
 
 #include <fcntl.h>
 #include <sys/mman.h>

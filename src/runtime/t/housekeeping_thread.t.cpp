@@ -16,7 +16,9 @@
 #include <utility>
 #include <vector>
 
-#if ARBC_HAS_WORKSPACE_FILES
+// POSIX temp-file recipe (housekeeping.t.cpp); stays gated off `_WIN32` even though
+// Windows now has workspace files — a Windows housekeeping port is future work.
+#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
 #include <unistd.h>
 
 #include <cerrno>
@@ -145,7 +147,7 @@ TEST_CASE("the writer's after_commit drains through the wrapper mutex") {
   REQUIRE(arena.total_slots_live() == baseline);
 }
 
-#if ARBC_HAS_WORKSPACE_FILES
+#if ARBC_HAS_WORKSPACE_FILES && !defined(_WIN32)
 
 // A temp workspace-file path, unlinked on teardown (housekeeping.t.cpp recipe).
 class TempPath {

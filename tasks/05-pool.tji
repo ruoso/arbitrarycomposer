@@ -57,8 +57,9 @@ task pool "Memory pool" {
   task mmap_backing_win32 "mmap workspace backing — Windows port" {
     effort 2d
     allocate team
+    complete 100
     depends !mmap_backing
-    note "MapViewOfFile port of WorkspaceFileChunkSource for MSVC/Windows builds; enables ARBC_HAS_WORKSPACE_FILES on non-POSIX. Source-of-debt: tasks/refinements/pool/mmap_backing.md. Doc 15."
+    note "MapViewOfFile port of WorkspaceFileChunkSource for MSVC/Windows builds; enables ARBC_HAS_WORKSPACE_FILES on non-POSIX. Source-of-debt: tasks/refinements/pool/mmap_backing.md. Doc 15. Refinement: tasks/refinements/pool/mmap_backing_win32.md"
   }
   task checkpoints "Checkpoint protocol" {
     effort 3d

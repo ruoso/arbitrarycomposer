@@ -101,4 +101,10 @@ task runtime "Runtime" {
     depends !housekeeping
     note "Low-priority background housekeeping thread: a std::thread that parks/wakes on a condition variable and periodically calls Housekeeper::tick(), serializing as the single drainer against writer-thread drains, with graceful stop/join; stress + TSan coverage of RT-thread enqueue-while-draining. Docs 14/15. Refinement: tasks/refinements/runtime/housekeeping_thread.md"
   }
+  task housekeeping_win32 "Housekeeping test suites — Windows port" {
+    effort 1d
+    allocate team
+    depends !housekeeping_thread, pool.checkpoints_win32
+    note "Port housekeeping.t.cpp and housekeeping_thread.t.cpp to the msvc-debug lane (remove the !defined(_WIN32) guard); they exercise the checkpoint durability protocol so they gate behind pool.checkpoints_win32. Source-of-debt: tasks/refinements/pool/mmap_backing_win32.md. Docs 14/15."
+  }
 }
