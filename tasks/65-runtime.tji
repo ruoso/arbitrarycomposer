@@ -67,8 +67,15 @@ task runtime "Runtime" {
   task operator_input_cache_identity "Distinct cache identity for operator input children" {
     effort 1d
     allocate team
+    complete 100
     depends operators.crossfade_runtime_binding
-    note "Give operator input children distinct, stable cache identities in the offline/export PullConfig (id_of) so multi-input operators render byte-exact; fixes ObjectId collision where both same-stability inputs key on ObjectId{} and receive identical tiles. Carries deferred crossfade visual byte-exact + parallel/TSan acceptance from operators.crossfade_runtime_binding. Source: tasks/refinements/operators/crossfade_runtime_binding.md. Doc 13/17."
+    note "Give operator input children distinct, stable cache identities in the offline/export PullConfig (id_of) so multi-input operators render byte-exact; fixes ObjectId collision where both same-stability inputs key on ObjectId{} and receive identical tiles. Carries deferred crossfade visual byte-exact + parallel/TSan acceptance from operators.crossfade_runtime_binding. Source: tasks/refinements/operators/crossfade_runtime_binding.md. Doc 13/17. Refinement: tasks/refinements/runtime/operator_input_cache_identity.md"
+  }
+  task operator_identity_offline_delivery "Deliver identity-served operator input pixels to offline/export frame" {
+    effort 1d
+    allocate team
+    depends !operator_input_cache_identity
+    note "Wire the compositor delivery seam so an identity-served (w==0/w==1) operator-input child's pixels reach the offline/export frame buffer; unblocks endpoint byte-exact-frame acceptance deferred by runtime.operator_input_cache_identity. Source-of-debt: tasks/refinements/runtime/operator_input_cache_identity.md. Doc 13."
   }
   task housekeeping "Housekeeping" {
     effort 1d

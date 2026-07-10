@@ -2,15 +2,14 @@
 #include <arbc/compositor/refinement.hpp>    // RefinementQueue, poll_refinements
 #include <arbc/compositor/tile_planning.hpp> // render_frame_interactive
 #include <arbc/contract/content.hpp>         // Deadline, Exactness
-#include <arbc/model/records.hpp>            // LayerRecord (reverse-map walk)
 #include <arbc/runtime/offline_sequence.hpp>
 #include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
+#include <arbc/runtime/pull_identity.hpp>    // make_pull_identity_of (child-distinct id_of)
 #include <arbc/surface/surface.hpp>          // Surface
 
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <unordered_map>
 #include <utility>
 
 namespace arbc {
@@ -82,23 +81,20 @@ SequenceRenderer::render_frame_at(Time composition_time) {
   // The live-service config the fade (and any operator kind) pulls its input through
   // once bound (operators.fade_runtime_binding, Constraint 5): a reverse
   // `Content* -> ObjectId` map keys each input's tiles under its identity
-  // (doc 13:126), and every node contributes the one pinned revision (doc 05:82-91).
-  // Built off the frozen revision, mirroring `export_monitor.cpp`.
-  auto ids = std::make_shared<std::unordered_map<const Content*, ObjectId>>();
-  state.for_each_layer([&](const LayerRecord& layer) {
-    if (Content* c = d_document.resolve(layer.content)) {
-      ids->emplace(c, layer.content);
-    }
-  });
+  // (doc 13:141-154), and every node contributes the one pinned revision
+  // (doc 05:82-91). Built off the frozen revision. The map seeds from the layer
+  // roots AND assigns every operator input child a distinct synthesized id
+  // (runtime.operator_input_cache_identity) so two same-stability inputs of one
+  // operator no longer collide on `ObjectId{}` and alias one cache key. The walk is
+  // deterministic over the immutable pinned graph, so a child's id is stable across
+  // the frames of this sequence (Constraint 3); shared read-only on parallel workers.
+  auto id_of = make_pull_identity_of(state, resolve);
   const std::uint64_t revision = state.revision();
   const auto make_config = [&](RefinementQueue* pending_queue) {
     PullConfig config;
     config.counters = &d_counters;
     config.pending = pending_queue;
-    config.id_of = [ids](const Content* c) {
-      const auto it = ids->find(c);
-      return it != ids->end() ? it->second : ObjectId{};
-    };
+    config.id_of = id_of;
     config.contribution = [revision](const Content*) { return revision; };
     return config;
   };

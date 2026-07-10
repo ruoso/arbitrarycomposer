@@ -1,0 +1,75 @@
+#include <arbc/runtime/pull_identity.hpp>
+
+#include <arbc/contract/content.hpp> // Content, ContentRef, inputs()
+#include <arbc/model/model.hpp>      // DocRoot::for_each_layer
+#include <arbc/model/records.hpp>    // LayerRecord
+
+#include <cstdint>
+#include <unordered_set>
+#include <vector>
+
+namespace arbc {
+
+std::shared_ptr<const PullIdentityMap>
+build_pull_identity_map(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve) {
+  auto ids = std::make_shared<PullIdentityMap>();
+
+  // Seed the layer roots (each bound to a model `ObjectId`) in `for_each_layer`
+  // order -- captured into a vector so the child walk below runs in a deterministic
+  // order (Constraint 3), not the process-dependent hash order of the map. Track the
+  // maximum seeded id value so synthesized child ids can start strictly above it
+  // (Decision 4).
+  std::uint64_t max_seeded = 0;
+  std::vector<const Content*> roots;
+  state.for_each_layer([&](const LayerRecord& layer) {
+    if (Content* c = resolve(layer.content)) {
+      if (ids->emplace(c, layer.content).second) {
+        roots.push_back(c);
+      }
+      if (layer.content.value > max_seeded) {
+        max_seeded = layer.content.value;
+      }
+    }
+  });
+
+  // Transitive `Content::inputs()` walk over the pinned graph, mirroring the
+  // serializer's frontier walk (`document_serialize.cpp:174-202`): a `walked` guard
+  // stops cycles and shared re-encounters, and every newly-reached, un-mapped child
+  // gets the next synthesized id. `1 + max_seeded` is provably disjoint from every
+  // seeded layer id (all synthetics exceed the max), never `ObjectId{}` (max_seeded
+  // is a valid id >= its own value, and even an all-empty document starts at 1),
+  // and injective across children because `next` increments per emplace. The walk
+  // order is deterministic (layer order, then a LIFO frontier over the immutable
+  // graph), so the same child yields the same id on every frame of one render
+  // sequence (Constraint 3, cross-frame stability).
+  std::uint64_t next = max_seeded + 1;
+  std::vector<const Content*> frontier = roots;
+  std::unordered_set<const Content*> walked(roots.begin(), roots.end());
+  while (!frontier.empty()) {
+    const Content* const c = frontier.back();
+    frontier.pop_back();
+    for (const ContentRef child : c->inputs()) {
+      if (child == nullptr || !walked.insert(child).second) {
+        continue; // null slot, or a shared child already reached (keyed once)
+      }
+      frontier.push_back(child);
+      // A child already carrying a layer-root identity (shared root+input) keeps it.
+      if (ids->find(child) == ids->end()) {
+        ids->emplace(child, ObjectId{next++});
+      }
+    }
+  }
+
+  return ids;
+}
+
+std::function<ObjectId(const Content*)>
+make_pull_identity_of(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve) {
+  std::shared_ptr<const PullIdentityMap> ids = build_pull_identity_map(state, resolve);
+  return [ids](const Content* c) {
+    const auto it = ids->find(c);
+    return it != ids->end() ? it->second : ObjectId{};
+  };
+}
+
+} // namespace arbc

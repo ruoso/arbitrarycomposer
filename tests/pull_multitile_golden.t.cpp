@@ -58,9 +58,9 @@ DecodedImage gradient_image(int dim) {
   const float span = static_cast<float>(dim - 1);
   for (int y = 0; y < dim; ++y) {
     for (int x = 0; x < dim; ++x) {
-      const std::size_t o =
-          (static_cast<std::size_t>(y) * static_cast<std::size_t>(dim) + static_cast<std::size_t>(x)) *
-          4U;
+      const std::size_t o = (static_cast<std::size_t>(y) * static_cast<std::size_t>(dim) +
+                             static_cast<std::size_t>(x)) *
+                            4U;
       const float a = 0.5F + 0.5F * static_cast<float>(x) / span;
       f[o] = a * static_cast<float>(x) / span;
       f[o + 1] = a * static_cast<float>(y) / span;

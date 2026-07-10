@@ -310,6 +310,18 @@ target_link_libraries(arbc_crossfade_runtime_binding_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_crossfade_runtime_binding_t)
 
+# runtime.operator_input_cache_identity: the visual byte-exact + parallel/TSan +
+# distinct-input audio acceptance crossfade_runtime_binding deferred. Drives the real
+# offline (SequenceRenderer, inline + parallel) and export (ExportMonitor) drivers over
+# two DISTINCT inputs and pins the interior dissolve / distinct-tone mix byte-exact,
+# now that the driver's id_of gives operator input children distinct cache ids.
+# Cross-component (CpuBackend + kind_crossfade + runtime drivers), so like
+# crossfade_goldens it lives here and links the umbrella `arbc`.
+add_executable(arbc_crossfade_offline_dissolve_t crossfade_offline_dissolve.t.cpp)
+target_link_libraries(arbc_crossfade_offline_dissolve_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_crossfade_offline_dissolve_t)
+
 # org.arbc.nested byte-exact goldens: nested's output vs the compositor's own
 # per-layer loop over the same layers (the rendering-is-recursion identity), plus
 # snapshot consistency, budget flow-through, and Droste-cycle termination.

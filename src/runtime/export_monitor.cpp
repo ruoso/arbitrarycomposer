@@ -2,8 +2,8 @@
 #include <arbc/base/transform.hpp>          // Affine
 #include <arbc/compositor/pull_service.hpp> // direct_dispatch, direct_audio_dispatch, PullConfig
 #include <arbc/contract/content.hpp>        // Content, AudioRequest, Exactness, StateHandle
-#include <arbc/model/records.hpp>           // LayerRecord (reverse-map walk)
 #include <arbc/runtime/export_monitor.hpp>
+#include <arbc/runtime/pull_identity.hpp> // make_pull_identity_of (child-distinct id_of)
 #include <arbc/surface/backend.hpp>       // Backend, BackendCaps
 #include <arbc/surface/surface.hpp>       // Surface
 #include <arbc/surface/surface_error.hpp> // SurfaceError
@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
-#include <unordered_map>
 
 namespace arbc {
 
@@ -104,25 +103,15 @@ ExportMonitor::ExportMonitor(const Document& document, ObjectId composition,
   d_resolve = [this](ObjectId id) -> Content* { return d_document.resolve(id); };
 
   // A reverse `Content* -> ObjectId` map over the pinned revision so the block cache
-  // keys each block under its content's identity (doc 13:126). Walked once here from
-  // the frozen revision (`for_each_layer` visits every layer record, so nested-
-  // composition contributors are covered too). In a pure offline export nothing
-  // fills the block cache, so these keys never serve a hit -- wiring the substrate
-  // faithfully keeps the pull path identical to the one the mix core runs under when
-  // a lookahead pump does fill the cache.
-  auto ids = std::make_shared<std::unordered_map<const Content*, ObjectId>>();
-  d_pinned->for_each_layer([&](const LayerRecord& layer) {
-    if (Content* c = d_document.resolve(layer.content)) {
-      ids->emplace(c, layer.content);
-    }
-  });
-
+  // keys each block under its content's identity (doc 13:141-154). Built once here
+  // from the frozen revision: it seeds from every layer record (so nested-composition
+  // contributors are covered too) AND assigns every operator input child a distinct
+  // synthesized id (runtime.operator_input_cache_identity), so two same-stability
+  // audio inputs of one operator key under different `BlockKey`s instead of aliasing
+  // on `ObjectId{}` -- the audio twin of the visual collision fix.
   PullConfig config;
   config.counters = &d_counters;
-  config.id_of = [ids](const Content* c) {
-    const auto it = ids->find(c);
-    return it != ids->end() ? it->second : ObjectId{};
-  };
+  config.id_of = make_pull_identity_of(*d_pinned, d_resolve);
   // Every node contributes the one pinned revision (doc 05:82-91): the whole export
   // keys at `DocRoot::revision() == R`.
   const std::uint64_t revision = d_pinned->revision();
