@@ -25,6 +25,15 @@ The `org.arbc.nested` content kind wraps a reference to a child composition:
   surface, camera = the request's region-to-surface mapping — and the same
   exactness/deadline/snapshot. Rendering *is* recursion.
 
+A frame therefore renders **exactly one composition's layers**: the compositor
+walks the membership of the composition it was asked for, and a nested layer's
+child is reached only by recursing through that layer's content. A child
+composition's layers are never also drawn by the enclosing walk — they are not
+the enclosing composition's members, and drawing them there would both
+double-draw them and do it with child-local transforms, outside the nesting
+layer's embedding. The audio mix already reads this way (it takes the
+composition to mix); the visual frame walk must too.
+
 Because the nested kind is implemented purely against public interfaces
 (the layer contract downward, the compositor API inward), it doubles as the
 proof that third-party plugins have enough API surface to do anything the

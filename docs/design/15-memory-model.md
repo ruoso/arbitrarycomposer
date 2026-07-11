@@ -179,7 +179,12 @@ is the default for document arenas, because it buys four things at once:
 1. **Crash recovery.** The workspace file always contains the records of
    every checkpointed version. Recovery is: map the file, read the last
    valid root, resume. An editor crash costs at-most-since-last-checkpoint,
-   not the document.
+   not the document. A **clean** close is the same story, not a special one:
+   reopening the file a document closed normally resumes it at its last
+   durable root, with the reachability walk rebuilding the counts exactly as
+   after a crash. Teardown must therefore not hole-punch the live chunks it
+   is releasing — the file is a cache that survives an ordinary quit, and a
+   close that emptied it would make the workspace useless across restarts.
 2. **Larger-than-RAM documents.** Residency is the kernel's problem:
    file-backed pages are demand-paged in and — unlike anonymous memory,
    which needs swap — *clean pages evict for free* under pressure. This is

@@ -63,6 +63,17 @@ against this table:
 "(+ below)" means the transitive closure of the listed components' own
 dependencies — listing is explicit in CMake, the table shows the news.
 
+Concretely: a component's CMake `DEPENDS` names its **direct** edges (this
+column), and an include is legal if it resolves anywhere in the transitive
+closure of those edges. A component may therefore include a header from a
+component it does not name, so long as one it *does* name pulls it in —
+`contract` reaches `pool` through `model` and does not list it; `kind-*`
+reach `pool` through `contract` and do not list it. That is the design, not
+a gap: the closure is what the level rule constrains, and this table is the
+only place a *direct* edge is granted. Do not widen an entry to make an
+existing transitive include explicit — widen it only when the component
+genuinely needs a direct edge the table does not yet grant.
+
 Notes on placements that were genuinely contested:
 
 - **`contract` sits above `model`** because requests carry snapshot pins
