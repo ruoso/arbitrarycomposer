@@ -42,26 +42,76 @@ NestedContent::NestedContent(ObjectId child) : d_child(child) {}
 void NestedContent::attach(PullService& pull, Backend& backend, NestedResolver resolver,
                            const DocRoot& doc) {
   const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  // A NEW pin re-keys the metadata (doc 05:15-16); re-injecting the very snapshot
+  // the memo already holds does not (Decision 3). The comparison reads the MEMO's
+  // recorded snapshot, not `d_doc`: the runtime binder detaches at the end of every
+  // frame (which nulls `d_doc`) and re-attaches the same pin on the next one, so
+  // keying off `d_doc` would re-key on every frame of an export and make
+  // `metadata_recomputes()` grow linearly with frame count.
+  const bool repinned = d_memo.doc != &doc || d_memo.revision != doc.revision();
   d_pull = &pull;
   d_backend = &backend;
   d_resolver = std::move(resolver);
   d_doc = &doc;
-  d_memo.valid = false; // a new pin re-keys the metadata (doc 05:15-16)
+  if (repinned) {
+    d_memo.valid = false;
+  }
+}
+
+void NestedContent::detach() noexcept {
+  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  d_pull = nullptr;
+  d_backend = nullptr;
+  d_resolver = nullptr;
+  d_doc = nullptr;
+  // The memo is deliberately left intact: it is a pure function of the child's
+  // aggregate revision, so re-attaching the same pin reuses it (Decision 3/4).
+}
+
+bool NestedContent::attached() const noexcept {
+  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  return d_pull != nullptr && d_backend != nullptr && d_doc != nullptr &&
+         static_cast<bool>(d_resolver);
 }
 
 // --- metadata (composed + memoized on the pinned aggregate revision) ----------
 
 void NestedContent::ensure_memo() const {
   // Caller holds d_mutex.
-  assert(d_doc != nullptr && "NestedContent metadata queried before attach");
+  if (d_doc == nullptr) {
+    // No live snapshot to key against, and a released one must NOT be dereferenced.
+    // Two ways to be here, both answered from the memo:
+    //
+    // DETACHED (the binding scope was released): the memo survives `detach` precisely
+    // so a metadata query after teardown is still honest (Constraint 7).
+    //
+    // NEVER ATTACHED: describing an unbound nested content is NOT a programming error,
+    // it is the runtime's normal order of operations. The drivers build their
+    // `PullService`'s identity map by walking `inputs()` over the pinned graph
+    // (`pull_identity.cpp`), and that service is an INPUT to `bind_operators` -- so the
+    // very content the binder is about to attach is necessarily described once while
+    // still unattached. With no snapshot there is no child membership to read, so the
+    // honest answer is the empty placeholder an unresolved child already gets (doc
+    // 05:50-52): nothing to show, no child edges. It is keyed to NO snapshot
+    // (`doc == nullptr`), so the binder's `attach` re-keys it as a matter of course,
+    // and it is not counted as a recompute -- it memoizes no revision.
+    if (!d_memo.valid) {
+      d_memo = Memo{};
+      d_memo.bounds = Rect{0.0, 0.0, 0.0, 0.0};
+      d_memo.stability = Stability::Static;
+      d_memo.valid = true;
+    }
+    return;
+  }
   const std::uint64_t revision = d_doc->revision();
-  if (d_memo.valid && d_memo.revision == revision) {
+  if (d_memo.valid && d_memo.doc == d_doc && d_memo.revision == revision) {
     return; // a stable aggregate revision returns the cached values (doc 05:14)
   }
 
   ++d_metadata_recomputes;
   d_memo = Memo{};
   d_memo.revision = revision;
+  d_memo.doc = d_doc;
   d_memo.valid = true;
 
   const CompositionRecord* comp = d_doc->find_composition(d_child);
@@ -235,15 +285,20 @@ std::uint64_t NestedContent::metadata_recomputes() const noexcept {
 
 // --- rendering (the synthetic viewport; "rendering is recursion", doc 05:24) --
 
-void NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& camera,
+bool NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& camera,
                                         const Rect& device_rect, const RenderRequest& request,
                                         Backend& backend, Surface& target) const {
+  // Every early return below is a layer that contributes NOTHING and is DONE
+  // contributing nothing -- culled, unresolved, or unstorable. Each is a final
+  // answer no later pass improves on, so each is exact (`true`), matching the
+  // exact-placeholder posture `render` already takes for an unresolved child
+  // composition. Only a DEFERRED pull (below) is transient and answers `false`.
   if (!layer.visible() || layer.opacity <= 0.0) {
-    return;
+    return true;
   }
   Content* content = d_resolver ? d_resolver(layer.content) : nullptr;
   if (content == nullptr) {
-    return; // unresolved layer: placeholder (nothing) for this layer (doc 05:50)
+    return true; // unresolved layer: placeholder (nothing) for this layer (doc 05:50)
   }
 
   // Compose the synthetic camera (child-local -> device) with the layer's
@@ -252,7 +307,7 @@ void NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   const Affine composed = compose(camera, layer.transform);
   const std::optional<Affine> inv = composed.inverse();
   if (!inv.has_value()) {
-    return; // degenerate placement: cull (doc 04)
+    return true; // degenerate placement: cull (doc 04)
   }
 
   Rect region = inv->map_rect(device_rect);
@@ -260,7 +315,7 @@ void NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
     region = region.intersect(*b);
   }
   if (region.empty()) {
-    return;
+    return true;
   }
   // Re-project the bounds-clipped region forward to device and clip to the
   // visible device rect: a floating-point sliver at the half-open bounds edge
@@ -268,25 +323,25 @@ void NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   // maps to zero device area and is culled here, so bounds honesty holds exactly
   // -- the doc 04 visibility/sub-pixel cull expressed robustly.
   if (composed.map_rect(region).intersect(device_rect).empty()) {
-    return;
+    return true;
   }
 
   const double scale = composed.max_scale();
   if (!(scale > 0.0) || !std::isfinite(scale)) {
-    return;
+    return true;
   }
   const int temp_width = static_cast<int>(std::ceil(region.width() * scale));
   const int temp_height = static_cast<int>(std::ceil(region.height() * scale));
   if (temp_width <= 0 || temp_height <= 0) {
     // Sub-pixel cull (doc 04) -- also the guaranteed termination of a <1x Droste
     // cycle, which bottoms out here after finitely many turns (doc 05:61-65).
-    return;
+    return true;
   }
 
   expected<std::unique_ptr<Surface>, SurfaceError> temp_result =
       backend.make_surface(temp_width, temp_height, target.format());
   if (!temp_result.has_value()) {
-    return; // backend cannot store the working format: cull (doc 09)
+    return true; // backend cannot store the working format: cull (doc 09)
   }
   Surface& temp = **temp_result;
   backend.clear(temp, 0.0F, 0.0F, 0.0F, 0.0F);
@@ -308,12 +363,19 @@ void NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
     // descent is synchronous on the frame thread, so this pass shows the
     // placeholder for this layer (doc 05:50-52), exactly as `render_frame` skips
     // an async layer. Cancel the completion we will not drain.
+    //
+    // NOT exact: unlike every cull above, this placeholder is TRANSIENT -- the
+    // dispatched render lands in the cache and a later pass composes the real
+    // pixels. Reporting `true` here would let the caller cache this pass's
+    // missing-layer tile as a fresh exact hit, which the offline driver's
+    // `Exactness::Exact` second pass would then serve instead of re-rendering --
+    // permanently freezing the deferred layer out of the frame.
     done->cancel();
-    return;
+    return false;
   }
   const std::optional<expected<RenderResult, RenderError>> settled = done->take();
   if (!settled.has_value() || !settled->has_value()) {
-    return; // budget-exceeded / failed pull: placeholder for this layer
+    return true; // budget-exceeded / failed pull: final placeholder for this layer
   }
   const RenderResult result = **settled;
 
@@ -323,6 +385,10 @@ void NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
       composed, compose(Affine::translation(region.x0, region.y0),
                         Affine::scaling(1.0 / result.achieved_scale, 1.0 / result.achieved_scale)));
   backend.composite(target, temp, temp_to_dst, layer.opacity);
+
+  // Fold the pulled layer's OWN exactness (doc 09): a child served from a coarse
+  // rung composites its pixels but leaves the composition inexact.
+  return result.exact;
 }
 
 std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
@@ -392,12 +458,22 @@ std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
   // Bottom-to-top over the child's members at the pinned version (doc 02/05:71-75)
   // -- membership read from the frozen `DocRoot`, so a Droste scene sees the same
   // revisions on every visit within the frame.
+  // The composed output is exact only if EVERY child layer contributed exactly --
+  // doc 09's honest-exactness AND fold, the same one `PullServiceImpl::pull` runs
+  // across a region's covering tiles (`region_exact`). A layer whose pull deferred
+  // to a worker leaves this render a transient placeholder, so the tile it produces
+  // must NOT be cached as fresh-exact.
+  bool exact = true;
   d_doc->for_each_layer_in(d_child, [&](ObjectId layer_id) {
     const LayerRecord* layer = d_doc->find_layer(layer_id);
     if (layer == nullptr) {
       return;
     }
-    compose_child_layer(*layer, camera, device_rect, request, backend, *composed_into);
+    // Composite FIRST, fold second: every layer must be composed regardless of an
+    // already-false `exact`, so the call can never sit on the right of a `&&`.
+    const bool layer_exact =
+        compose_child_layer(*layer, camera, device_rect, request, backend, *composed_into);
+    exact = exact && layer_exact;
   });
 
   // The composed output converts ONCE into the parent's working space (doc 07
@@ -409,7 +485,7 @@ std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
     backend.convert(target, *intermediate);
   }
 
-  return RenderResult{request.scale, true};
+  return RenderResult{request.scale, exact};
 }
 
 // --- audio (the synthetic monitor; "the aggregate revision covers audio", 12:208)

@@ -237,7 +237,7 @@ TEST_CASE("the runtime binder clears a crossfade's borrowed services on release"
 
   CHECK_FALSE(xf->attached());
   {
-    const OperatorBindingScope scope = bind_operators(doc, service, backend);
+    const OperatorBindingScope scope = bind_operators(doc, service, backend, doc.pin());
     CHECK(scope.size() == 1U);
     CHECK(xf->attached());
   }
@@ -246,7 +246,7 @@ TEST_CASE("the runtime binder clears a crossfade's borrowed services on release"
   CHECK_FALSE(xf->attached());
   // Re-bindable through the same seam after release (Constraint 4).
   {
-    const OperatorBindingScope scope = bind_operators(doc, service, backend);
+    const OperatorBindingScope scope = bind_operators(doc, service, backend, doc.pin());
     CHECK(xf->attached());
   }
   CHECK_FALSE(xf->attached());

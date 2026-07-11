@@ -128,11 +128,13 @@ void register_fade_binder() {
   // (doc 17:60), so the render drivers stay kind-agnostic (Decision 2). `try_attach`
   // dynamic-casts exactly as `serialize_fade` above; `detach` runs only after a
   // matched attach, so a `static_cast` is sound.
+  // Fade needs only the two services its `attach` declares; the `BindContext`'s
+  // resolver and pin are for the kinds that read document membership (nested).
   register_operator_binder(
       FadeContent::kind_id,
-      OperatorBinder{[](Content& c, PullService& pull, Backend& backend) -> bool {
+      OperatorBinder{[](Content& c, const BindContext& ctx) -> bool {
                        if (auto* fade = dynamic_cast<FadeContent*>(&c)) {
-                         fade->attach(pull, backend);
+                         fade->attach(ctx.pull, ctx.backend);
                          return true;
                        }
                        return false;

@@ -65,4 +65,13 @@ Codec crossfade_codec();
 // (`operator_binding.hpp`), beside `register_fade_binder()`.
 void register_crossfade_binder();
 
+// Register the runtime binder for `org.arbc.nested` (a typed attach/detach thunk over
+// the concrete `NestedContent`, `kinds.nested_runtime_binding`). Unlike the two above
+// it has no codec TU to ride -- `runtime.nested_codec` is unlanded -- so it is defined
+// in `binder_nested.cpp`, the only runtime TU that names `NestedContent` (doc 17:60,
+// Decision 5). Reached once via `register_builtin_operator_binders()`
+// (`operator_binding.hpp`), beside the two operator binders. Nested is the kind that
+// consumes the `BindContext`'s resolver and pinned `DocRoot` as well as the services.
+void register_nested_binder();
+
 } // namespace arbc

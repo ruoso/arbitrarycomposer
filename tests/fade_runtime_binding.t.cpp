@@ -297,7 +297,7 @@ TEST_CASE("the runtime binder clears a fade's borrowed services on release") {
 
   CHECK_FALSE(fade->attached());
   {
-    const OperatorBindingScope scope = bind_operators(doc, service, backend);
+    const OperatorBindingScope scope = bind_operators(doc, service, backend, doc.pin());
     CHECK(scope.size() == 1U);
     CHECK(fade->attached());
   }
@@ -306,7 +306,7 @@ TEST_CASE("the runtime binder clears a fade's borrowed services on release") {
   CHECK_FALSE(fade->attached());
   // Re-bindable through the same seam after release (Constraint 4).
   {
-    const OperatorBindingScope scope = bind_operators(doc, service, backend);
+    const OperatorBindingScope scope = bind_operators(doc, service, backend, doc.pin());
     CHECK(fade->attached());
   }
   CHECK_FALSE(fade->attached());

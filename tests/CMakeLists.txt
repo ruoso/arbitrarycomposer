@@ -339,6 +339,20 @@ target_link_libraries(arbc_nested_audio_goldens_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_nested_audio_goldens_t)
 
+# kinds.nested_runtime_binding end-to-end: builds Documents holding an org.arbc.nested
+# content and drives them through the real offline (SequenceRenderer, inline + parallel)
+# and export (ExportMonitor) drivers with the PRODUCTION attach injection -- the live
+# PullService/Backend, the id->Content resolver, and the driver's pinned DocRoot -- with
+# no manual attach call. Asserts byte-exactness against the hand-attached oracle,
+# transitive binding through the nested boundary, the metadata-memo counter the
+# per-frame re-bind must not disturb, and RAII teardown. Cross-component (drives
+# CpuBackend + kind_nested + kind_fade + runtime drivers), so like nested_goldens it
+# lives here and links the umbrella `arbc`.
+add_executable(arbc_nested_runtime_binding_t nested_runtime_binding.t.cpp)
+target_link_libraries(arbc_nested_runtime_binding_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_runtime_binding_t)
+
 # org.arbc.nested BELOW-RATE cross-rate reconstruction goldens
 # (kinds.nested_audio_resampling): a below-rate child is band-limit-reconstructed
 # by the shared arbc::media windowed-sinc kernel byte-identically to applying that

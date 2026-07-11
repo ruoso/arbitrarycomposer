@@ -96,11 +96,13 @@ void register_crossfade_binder() {
   // (doc 17:60), so the render drivers stay kind-agnostic (Decision 2). `try_attach`
   // dynamic-casts exactly as `serialize_crossfade` above; `detach` runs only after a
   // matched attach, so a `static_cast` is sound.
+  // Crossfade needs only the two services its `attach` declares; the `BindContext`'s
+  // resolver and pin are for the kinds that read document membership (nested).
   register_operator_binder(
       CrossfadeContent::kind_id,
-      OperatorBinder{[](Content& c, PullService& pull, Backend& backend) -> bool {
+      OperatorBinder{[](Content& c, const BindContext& ctx) -> bool {
                        if (auto* cf = dynamic_cast<CrossfadeContent*>(&c)) {
-                         cf->attach(pull, backend);
+                         cf->attach(ctx.pull, ctx.backend);
                          return true;
                        }
                        return false;

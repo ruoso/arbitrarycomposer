@@ -124,15 +124,19 @@ ExportMonitor::ExportMonitor(const Document& document, ObjectId composition,
   config.blocks = &d_blocks;
   d_pull = std::make_unique<PullServiceImpl>(d_cache, *d_backend, direct_dispatch(), config);
 
-  // Bind every operator content (`org.arbc.fade`, ...) in the pinned document to this
-  // export's live audio pull + null backend for the whole export
-  // (operators.fade_runtime_binding, Constraint 2): a fade layer's
-  // `render_audio` pulls its input through `*d_pull` and would otherwise assert
-  // (`fade_content.cpp:209`). The scope (member `d_binding`) tears every binding down
-  // on destruction, before `d_pull`/`d_backend` die (Constraint 3/4). The audio path
-  // never dereferences the backend, so the `NullBackend` is a faithful borrow.
+  // Bind every service-needing content (`org.arbc.fade`, `org.arbc.nested`, ...) in
+  // the pinned document to this export's live audio pull + null backend for the whole
+  // export (operators.fade_runtime_binding Constraint 2,
+  // kinds.nested_runtime_binding): a fade layer's `render_audio` pulls its input
+  // through `*d_pull` and would otherwise assert (`fade_content.cpp:209`), and a
+  // nested layer would mix silence through a null `PullService`. Nested additionally
+  // takes the resolver and `d_pinned` -- THIS export's one snapshot, so every block
+  // reads the same membership the rest of the export does. The scope (member
+  // `d_binding`) tears every binding down on destruction, before `d_pull`/`d_backend`
+  // die (Constraint 3/4), and holds the pin until it does. The audio path never
+  // dereferences the backend, so the `NullBackend` is a faithful borrow.
   register_builtin_operator_binders();
-  d_binding = bind_operators(d_document, *d_pull, *d_backend);
+  d_binding = bind_operators(d_document, *d_pull, *d_backend, d_pinned);
 }
 
 AudioResult ExportMonitor::render_block_at(const TimeRange& window, AudioBlock& target) {

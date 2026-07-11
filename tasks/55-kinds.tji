@@ -69,8 +69,9 @@ task kinds "Reference kinds" {
   task nested_runtime_binding "org.arbc.nested runtime injection wiring" {
     effort 1d
     allocate team
+    complete 100
     depends !nested, model.content_binding
-    note "When the runtime instantiates an org.arbc.nested content, wire its attach injection (PullService, Backend, id-to-Content resolver, pinned DocRoot) onto live services and tear down on release — closing the production wiring nested's tests drive manually. Docs 05/17. Source-of-debt: tasks/refinements/kinds/nested.md"
+    note "When the runtime instantiates an org.arbc.nested content, wire its attach injection (PullService, Backend, id-to-Content resolver, pinned DocRoot) onto live services and tear down on release — closing the production wiring nested's tests drive manually. Docs 05/17. Source-of-debt: tasks/refinements/kinds/nested.md Refinement: tasks/refinements/kinds/nested_runtime_binding.md"
   }
   task imageseq_plugin "arbc-plugin-imageseq" {
     effort 2d

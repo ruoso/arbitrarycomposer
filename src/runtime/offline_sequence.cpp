@@ -1,7 +1,8 @@
-#include <arbc/compositor/pull_service.hpp>  // PullServiceImpl, RenderDispatch, PullConfig
-#include <arbc/compositor/refinement.hpp>    // RefinementQueue, poll_refinements
-#include <arbc/compositor/tile_planning.hpp> // render_frame_interactive
-#include <arbc/contract/content.hpp>         // Deadline, Exactness
+#include <arbc/compositor/operator_graph.hpp> // is_operator (leaf-vs-operator dispatch split)
+#include <arbc/compositor/pull_service.hpp>   // PullServiceImpl, RenderDispatch, PullConfig
+#include <arbc/compositor/refinement.hpp>     // RefinementQueue, poll_refinements
+#include <arbc/compositor/tile_planning.hpp>  // render_frame_interactive
+#include <arbc/contract/content.hpp>          // Deadline, Exactness
 #include <arbc/runtime/offline_sequence.hpp>
 #include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
 #include <arbc/runtime/pull_identity.hpp>    // make_pull_identity_of (child-distinct id_of)
@@ -117,7 +118,13 @@ SequenceRenderer::render_frame_at(Time composition_time) {
     // first) destructs after it, so the borrowed service outlives the binding
     // (Constraint 4).
     PullServiceImpl inline_pull(d_cache, d_backend, direct_dispatch(), make_config(nullptr));
-    const OperatorBindingScope binding = bind_operators(d_document, inline_pull, d_backend);
+    // `d_pinned` -- the export's ONE snapshot -- not a fresh pin: a nested content
+    // reads its child's membership from the version this frame renders against
+    // (doc 05:71-75). Re-binding the same pin each frame is free: nested re-keys its
+    // metadata memo only on an actually-new snapshot
+    // (`kinds.nested_runtime_binding` Decision 3).
+    const OperatorBindingScope binding =
+        bind_operators(d_document, inline_pull, d_backend, d_pinned);
     // Pass the already-built `inline_pull` (not `nullptr`) so the frame driver can
     // SERVE an operator layer's identity short-circuit -- deliver input N's tiles
     // into the layer footprint through `pull` (runtime.operator_identity_offline_
@@ -132,23 +139,42 @@ SequenceRenderer::render_frame_at(Time composition_time) {
     return std::move(*target);
   }
 
-  // Parallel exact (opt-in): dispatch misses onto the worker pool, then -- because
-  // offline has NO deadline -- genuinely block-and-fan-out, reaping every dispatched
-  // completion via `wait_completions(nullopt)` until all settle, inserting each on
-  // the DRIVER thread (workers never touch the cache, `runtime.threading`'s rule).
-  // A final all-fresh pass composites the exact result. Exactness is order-
+  // Parallel exact (opt-in): dispatch LEAF misses onto the worker pool, then --
+  // because offline has NO deadline -- genuinely block-and-fan-out, reaping every
+  // dispatched completion via `wait_completions(nullopt)` until all settle, inserting
+  // each on the DRIVER thread (workers never touch the cache, `runtime.threading`'s
+  // rule). A final all-fresh pass composites the exact result. Exactness is order-
   // independent, so this yields identical pixels to the inline path.
-  RenderDispatch dispatch = [this](Content* content, const RenderRequest& request,
-                                   std::shared_ptr<RenderCompletion> done) {
-    d_pool.submit(RenderTask{content, request, std::move(done)});
-  };
+  //
+  // A NON-LEAF content (`is_operator`: a fade, a crossfade, a nested composition)
+  // renders INLINE on this driver thread instead of going to the pool. Its `render`
+  // re-enters the `PullService` to fetch its own inputs (doc 13:69-71) -- and `pull`
+  // does a `TileCache` lookup/insert (`pull_service.cpp:223,311`) and walks the
+  // service's own descent depth (`pull_service.hpp:208-213`), both of which are
+  // frame-thread-confined. Handing such a render to a worker would have that worker
+  // read and write `KeyedStore` concurrently with this thread's own probes and
+  // `poll_refinements` -- exactly the single-writer invariant `worker_pool.hpp:37-40`
+  // states the pool relies on ("workers never touch the cache"), and a TSan-flagged
+  // data race. So the operator descent stays here, byte-for-byte as the inline path
+  // walks it, and only the LEAF renders -- which touch nothing but their own
+  // thread-confined target surface -- fan out. The parallelism that matters is
+  // unaffected: the leaves are where the pixels are made.
+  RenderDispatch dispatch =
+      [this, inline_render = direct_dispatch()](Content* content, const RenderRequest& request,
+                                                std::shared_ptr<RenderCompletion> done) {
+        if (is_operator(content)) {
+          inline_render(content, request, std::move(done));
+          return;
+        }
+        d_pool.submit(RenderTask{content, request, std::move(done)});
+      };
   RefinementQueue pending;
   PullServiceImpl pulls(d_cache, d_backend, std::move(dispatch), make_config(&pending));
   // Bind every operator content to the live service on the DRIVER thread, before any
   // worker dispatch (Constraint 8): its borrowed pointers are read-only on workers
   // during render. The fade's own nested input pull rides `pulls` (async-dispatched
   // and reaped through `pending` below). `pulls` (declared first) outlives `binding`.
-  const OperatorBindingScope binding = bind_operators(d_document, pulls, d_backend);
+  const OperatorBindingScope binding = bind_operators(d_document, pulls, d_backend, d_pinned);
   render_frame_interactive(state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame,
                            Deadline::none(), /*prior_revision=*/std::nullopt, &pending, &d_counters,
                            /*dirty=*/nullptr, composition_time, /*visible_plans=*/nullptr,

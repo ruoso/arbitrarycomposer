@@ -99,6 +99,18 @@ task runtime "Runtime" {
     depends !operator_identity_offline_delivery, !interactive
     note "Pass a PullServiceImpl with a production PullConfig::id_of into render_frame_interactive (interactive.cpp passes a null pulls today), so interactive operator layers get cache-identity-correct input pulls and the identity-delivery endpoint fix (the w-at-0/w-at-1 case) fires on the interactive path instead of rendering blank. Source: tasks/parking-lot.md 2026-07-10 (interactive frame endpoint delivery gap). Docs 02/13."
   }
+  task interactive_binder_wiring "Wire bind_operators into the interactive frame path" {
+    effort 1d
+    allocate team
+    depends !interactive_pull_wiring, kinds.nested_runtime_binding
+    note "Call bind_operators per interactive frame on the interactive path (host_viewport.cpp pins a DocStatePtr but never calls bind_operators, and interactive.cpp passes null pulls), so fade, crossfade, and nested all render attached interactively. Blocked on interactive_pull_wiring supplying the PullService. Source-of-debt: tasks/refinements/kinds/nested_runtime_binding.md. Docs 02/13/17."
+  }
+  task worker_dispatch_leaf_only "Hoist leaf-only worker-dispatch rule into a shared helper" {
+    effort 1d
+    allocate team
+    depends !interactive_pull_wiring
+    note "Extract a worker_backed_dispatch(pool) helper in runtime that enforces the leaf-only worker-dispatch invariant (operator contents render inline on the driver thread), so runtime.interactive_pull_wiring and any future driver cannot reintroduce the TileCache/KeyedStore data race that TSan confirmed was latent for fade, crossfade, and nested in SequenceRenderer. Source-of-debt: tasks/refinements/kinds/nested_runtime_binding.md. Docs 02/13."
+  }
   task editable_sink_multiplex "Multiplex many editable contents onto the single-slot Model/Journal seams" {
     effort 2d
     allocate team

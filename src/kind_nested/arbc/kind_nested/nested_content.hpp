@@ -55,9 +55,12 @@ using NestedResolver = std::function<Content*(ObjectId)>;
 // interface for the heavy machinery.
 class NestedContent final : public Content {
 public:
-  // Wrap a reference to child composition `child`. Unattached until `attach`;
-  // metadata and render assert attachment (the injected services are the whole
-  // engine).
+  // Wrap a reference to child composition `child`. Unattached until `attach`, which
+  // injects the whole engine: `render` asserts attachment. The DESCRIPTION methods do
+  // not -- an unattached content has no snapshot to read child membership from, so it
+  // describes as the empty placeholder (no bounds, Static, no inputs). The runtime
+  // relies on that: it builds the `PullService`'s identity map by walking `inputs()`
+  // over the pinned graph, and that service is an input to `bind_operators`.
   explicit NestedContent(ObjectId child);
 
   // Inject the render-time services (mirrors the raster attach seam):
@@ -68,8 +71,36 @@ public:
   //               (`for_each_layer_in`), so a Droste scene is self-consistent
   //               within a frame (doc 05:71-75). Re-attaching a newer pin after
   //               an edit re-keys the memoized metadata (doc 05:15-16).
-  // The `DocRoot` and services must outlive this content.
+  // The `DocRoot` and services must outlive this content (the runtime binder's
+  // scope owns the pin for exactly that reason).
+  //
+  // Re-keying is CONDITIONAL on the snapshot actually being new
+  // (`kinds.nested_runtime_binding` Decision 3): re-injecting the very same
+  // snapshot the memo was computed against leaves the memo valid. The production
+  // drivers bind per frame against a pin taken once per export
+  // (`offline_sequence.cpp`), so an unconditional re-key would make
+  // `metadata_recomputes()` grow linearly with frame count and break
+  // `05-recursive-composition#nested-metadata-memoized-on-aggregate-revision` on
+  // the driver path. A newer pin (a different `DocRoot`, or the same address at a
+  // different revision) still re-keys, so doc 05:15-16 is preserved.
   void attach(PullService& pull, Backend& backend, NestedResolver resolver, const DocRoot& doc);
+
+  // Teardown twin of `attach` (`kinds.nested_runtime_binding` Constraint 7,
+  // mirroring `FadeContent::detach`): clear every borrowed pointer so no render
+  // after the runtime's binding scope ends dereferences a released service or a
+  // dropped snapshot. Safe on a never-attached content and safe to call twice.
+  //
+  // It deliberately does NOT invalidate the memo: the memoized metadata is a pure
+  // function of the child's aggregate revision, so preserving it across a
+  // detach/re-attach cycle at the SAME pin is what makes the per-frame re-bind
+  // free (Decision 3/4). A metadata query while detached answers from that memo
+  // rather than dereferencing the released snapshot.
+  void detach() noexcept;
+
+  // Whether a live binding is currently borrowed (all four services set).
+  // Observability for the runtime binding's teardown assertion; adds no
+  // dependency, changes no behavior.
+  bool attached() const noexcept;
 
   // --- description methods (composed + memoized, doc 05:8-37, doc 13:91-92) ---
   // Memoized on the pinned document's revision (the aggregate-revision proxy
@@ -92,6 +123,16 @@ public:
   // touches only per-call temps, the request's thread-confined target, and the
   // (immutable-after-attach) injected services -- so it is safe to invoke
   // concurrently for distinct requests (doc contract, content.hpp:262-275).
+  //
+  // `true` is about NESTED's own state, and is NOT a licence to render it on a
+  // worker: the descent re-enters `PullService::pull`, which reads and writes the
+  // frame-thread-confined `TileCache` (`worker_pool.hpp:37-40`, "workers never
+  // touch the cache"). Dispatching a nested (or any non-leaf) content to a worker
+  // races the driver's own cache probes -- so the driver keeps the operator
+  // descent on its own thread and fans out only leaves
+  // (`offline_sequence.cpp`'s `RenderDispatch`). Declaring `false` here would NOT
+  // fix that: the pool's serialization gate excludes concurrent renders of the
+  // same content, not concurrent access from the driver thread.
   bool render_thread_safe() const override { return true; }
 
   // --- audio facet (doc 12:202-208, the recursion reference proof) ------------
@@ -132,6 +173,11 @@ private:
   // Composed metadata + input edges, valid for one document revision.
   struct Memo {
     std::uint64_t revision{0};
+    // The snapshot this memo was computed against. Carried by the MEMO, not read
+    // back off `d_doc`, because `detach` clears `d_doc` while the memo survives: a
+    // per-frame detach/re-attach cycle at the same pin must still recognise the
+    // snapshot as unchanged (Decision 3).
+    const DocRoot* doc{nullptr};
     bool valid{false};
     std::optional<Rect> bounds{};
     Stability stability{Stability::Static};
@@ -149,13 +195,24 @@ private:
   };
 
   // Recompute the memo if the pinned revision moved (WRITER for the memo; guarded
-  // by `d_mutex`). Requires attachment.
+  // by `d_mutex`). Unattached, it answers from the memo instead: the surviving one
+  // when detached, else the empty placeholder (keyed to no snapshot, so `attach`
+  // re-keys it).
   void ensure_memo() const;
 
   // One child layer, re-expressing the compositor's per-layer predicate loop
   // (Decision: only the thin loop is duplicated, never the heavy machinery),
   // pulling `content` through the injected service and compositing the result.
-  void compose_child_layer(const LayerRecord& layer, const Affine& camera, const Rect& device_rect,
+  //
+  // Returns whether this layer contributed its EXACT pixels, which `render` folds
+  // across the child's layers into its own `RenderResult::exact` (doc 09's honest-
+  // exactness AND fold, exactly as `PullServiceImpl::pull` folds `region_exact`
+  // across a region's covering tiles). A culled, unresolved, or failed layer
+  // contributes its designed placeholder -- a FINAL answer, so still exact. A
+  // layer whose pull was DEFERRED to a worker is the one transient case: this pass
+  // shows a placeholder that a later pass will replace, so it is NOT exact and the
+  // caller must not cache the composed tile as if it were.
+  bool compose_child_layer(const LayerRecord& layer, const Affine& camera, const Rect& device_rect,
                            const RenderRequest& request, Backend& backend, Surface& target) const;
 
   // One child layer's audio contribution, the audio twin of `compose_child_layer`:
