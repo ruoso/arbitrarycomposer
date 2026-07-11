@@ -31,4 +31,10 @@ task packaging "Packaging and release" {
     depends !install, !version_api, !examples
     note "Tag, release notes, README quickstart reflecting the shipped surface."
   }
+  task shared_library_build "Export-annotate libarbc and verify shared-build plugin loads" {
+    effort 3d
+    allocate team
+    depends kinds.dual_build, kinds.imageseq_plugin
+    note "Export-annotate libarbc's public symbol surface (ARBC_API macro on public headers, per doc 17:135-141), add a BUILD_SHARED_LIBS=ON CMake preset and CI lane, and re-run arbc-plugin-imageseq, arbc-plugin-miniaudio, and the six arbc-ci-plugin-* loads against the shared libarbc — so a plugin resolves core symbols from the host image instead of carrying a private copy. Source-of-debt: tasks/refinements/kinds/dual_build.md (Decision 6). Docs 03/17."
+  }
 }

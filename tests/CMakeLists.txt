@@ -682,3 +682,56 @@ target_compile_definitions(
           ARBC_MINIAUDIO_IMPL_FILE="$<TARGET_FILE:arbc-plugin-miniaudio-impl>"
           ARBC_MINIAUDIO_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-miniaudio>")
 catch_discover_tests(arbc_miniaudio_containment_t)
+
+# --- kinds.dual_build: the CI-only per-kind loadable modules -------------------
+# Each of the six in-lib kinds ALSO builds as a tiny MODULE exposing the doc-03
+# extern "C" arbc_plugin_register entry point, so the runtime plugin path -- which
+# the in-lib kinds otherwise never travel (doc 17:167-174) -- stays honest
+# (doc 17:129-132). Nothing here ships: declared under tests/ (guarded by
+# BUILD_TESTING), never installed, and hand-rolled exactly as plugins/imageseq is
+# (packaging.plugin_helper is scoped to third-party, post-install authors).
+#
+# They link the umbrella `arbc`, NOT the kind-* object libraries: nothing links
+# object libraries except `arbc` (cmake/ArbcComponent.cmake:11-12).
+#
+# They get an output directory of their own so dual_build.t.cpp's ARBC_PLUGIN_PATH
+# scan assertion sweeps exactly these six, and not arbc-plugin-imageseq /
+# arbc-plugin-noentry / arbc-plugin-miniaudio.
+foreach(arbc_ci_kind IN ITEMS solid tone raster nested fade crossfade)
+  add_library(arbc-ci-plugin-${arbc_ci_kind} MODULE
+              ci_plugins/${arbc_ci_kind}_ci_plugin.cpp)
+  target_link_libraries(arbc-ci-plugin-${arbc_ci_kind} PRIVATE arbc arbc_build_flags)
+  set_target_properties(
+    arbc-ci-plugin-${arbc_ci_kind}
+    PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ci_plugins"
+               RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ci_plugins")
+endforeach()
+
+# The dual-build driver. Loads each CI module through the production PluginHost and
+# proves the boundary: sole registration, factory + metadata, errors-as-values, the
+# audio/editable facets, host-side service injection, byte-exact in-lib/plugin render
+# equivalence, and the full arbc-testing conformance suite over a factory obtained
+# across dlopen. It links no plugin -- the kinds are reached only through extern "C"
+# (the byte-equality leg deliberately also builds them in-lib, from `arbc`).
+# arbc-testing precedes arbc on the link line (static-archive link order).
+add_executable(arbc_dual_build_t dual_build.t.cpp)
+target_link_libraries(
+  arbc_dual_build_t
+  PRIVATE arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags ${CMAKE_DL_LIBS})
+target_compile_definitions(
+  arbc_dual_build_t
+  PRIVATE ARBC_CI_PLUGIN_SOLID_FILE="$<TARGET_FILE:arbc-ci-plugin-solid>"
+          ARBC_CI_PLUGIN_TONE_FILE="$<TARGET_FILE:arbc-ci-plugin-tone>"
+          ARBC_CI_PLUGIN_RASTER_FILE="$<TARGET_FILE:arbc-ci-plugin-raster>"
+          ARBC_CI_PLUGIN_NESTED_FILE="$<TARGET_FILE:arbc-ci-plugin-nested>"
+          ARBC_CI_PLUGIN_FADE_FILE="$<TARGET_FILE:arbc-ci-plugin-fade>"
+          ARBC_CI_PLUGIN_CROSSFADE_FILE="$<TARGET_FILE:arbc-ci-plugin-crossfade>"
+          ARBC_CI_PLUGIN_DIR="$<TARGET_FILE_DIR:arbc-ci-plugin-solid>"
+          ARBC_IMAGESEQ_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-imageseq>")
+# $<TARGET_FILE:...> in COMPILE_DEFINITIONS names a path but does NOT make the named
+# target a dependency, so the modules the driver dlopens must be ordered explicitly.
+add_dependencies(
+  arbc_dual_build_t
+  arbc-ci-plugin-solid arbc-ci-plugin-tone arbc-ci-plugin-raster arbc-ci-plugin-nested
+  arbc-ci-plugin-fade arbc-ci-plugin-crossfade arbc-plugin-imageseq)
+catch_discover_tests(arbc_dual_build_t)

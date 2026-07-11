@@ -39,12 +39,12 @@ namespace {
 // goldens (src/media/t/image_resampler.t.cpp and
 // src/kind_raster/t/raster_goldens.t.cpp).
 constexpr std::array<float, k_decimate_taps> k_lanczos3_half_band{{
-    0x1.90b216p-6f,   // child 2x-2  (offset -2.5)  = +0.024456521
-    -0x1.1642c8p-3f,  // child 2x-1  (offset -1.5)  = -0.135869563
-    0x1.390b22p-1f,   // child 2x+0  (offset -0.5)  = +0.611413062
-    0x1.390b22p-1f,   // child 2x+1  (offset +0.5)  = +0.611413062
-    -0x1.1642c8p-3f,  // child 2x+2  (offset +1.5)  = -0.135869563
-    0x1.90b216p-6f,   // child 2x+3  (offset +2.5)  = +0.024456521
+    0x1.90b216p-6f,  // child 2x-2  (offset -2.5)  = +0.024456521
+    -0x1.1642c8p-3f, // child 2x-1  (offset -1.5)  = -0.135869563
+    0x1.390b22p-1f,  // child 2x+0  (offset -0.5)  = +0.611413062
+    0x1.390b22p-1f,  // child 2x+1  (offset +0.5)  = +0.611413062
+    -0x1.1642c8p-3f, // child 2x+2  (offset +1.5)  = -0.135869563
+    0x1.90b216p-6f,  // child 2x+3  (offset +2.5)  = +0.024456521
 }};
 // ===========================================================================
 // END FROZEN LANCZOS-3 HALF-BAND TABLE

@@ -101,8 +101,7 @@ inline WorkingPixel decimate_line(const std::array<WorkingPixel, k_decimate_taps
 // coordinates outside the child level (the support reaches 2 left / 3 right of the
 // footprint), and it is the caller that decides whether those clamp to the border
 // or read a zero surround.
-template <class Fetch>
-WorkingPixel decimate_half_band(int dst_x, int dst_y, Fetch&& fetch) {
+template <class Fetch> WorkingPixel decimate_half_band(int dst_x, int dst_y, Fetch&& fetch) {
   std::array<WorkingPixel, k_decimate_taps> rows{};
   for (int j = 0; j < k_decimate_taps; ++j) {
     const int cy = 2 * dst_y + k_decimate_first_tap + j;

@@ -150,8 +150,11 @@ Initially-open questions, now decided in their own docs:
   CMake object libraries (base → pool/media → surface/model → contract/
   cache/backend-cpu → engines/serialize/kinds → runtime → umbrella), with
   CI-enforced dependency edges; built-in kinds are codec-free and
-  dual-built as dlopen plugins in CI; imageseq ships as a separate plugin
-  artifact carrying the codec dependency, and — by the same "codec line" —
+  dual-built as dlopen plugins in CI (against the *static* `libarbc` — the
+  public surface is not export-annotated yet, so every plugin still carries a
+  private copy of the core objects it references; the shared-`libarbc` link is
+  deferred to `packaging.shared_library_build`); imageseq ships as a separate
+  plugin artifact carrying the codec dependency, and — by the same "codec line" —
   the audio device backend stays off `libarbc`'s link line: the `DeviceSink`
   interface and transport-mastering `DeviceMonitor` are dependency-free
   `runtime` objects, while the concrete OS-audio backend ships as a separate

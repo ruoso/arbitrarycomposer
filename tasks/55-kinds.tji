@@ -81,6 +81,7 @@ task kinds "Reference kinds" {
   task dual_build "Dual-build dlopen proof" {
     effort 1d
     allocate team
-    note "Each in-lib kind also links into a CI-only shared library loaded via the extern C entry point, keeping the plugin path honest. Docs 03/17."
+    complete 100
+    note "Each in-lib kind also links into a CI-only shared library loaded via the extern C entry point, keeping the plugin path honest. Docs 03/17. Refinement: tasks/refinements/kinds/dual_build.md"
   }
 }

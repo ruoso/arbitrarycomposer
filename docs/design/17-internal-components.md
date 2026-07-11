@@ -117,11 +117,16 @@ Notes on placements that were genuinely contested:
 
 ## Why object libraries specifically
 
-1. **Self-registration survives.** Built-in kinds register via static
-   registrars; composing *static* libraries would let the linker drop
-   unreferenced registrar objects, the classic silent failure. Object
-   libraries link every object into `libarbc` unconditionally — the
-   composition is exact, not link-order-dependent.
+1. **Every built-in translation unit is present, unconditionally.** The
+   built-in kinds are named by `runtime`'s explicit tables — `builtin_codecs()`
+   for the serialize path (doc 08), `register_builtin_operator_binders()` for
+   the attach path (doc 13) — and are otherwise reached only through the
+   `Content` vtable. Composing *static* libraries would let the linker drop an
+   archive member nothing on the link line references, the classic silent
+   failure; object libraries link every object into `libarbc` unconditionally,
+   so the composition is exact and not link-order-dependent. The `Registry` +
+   `extern "C" arbc_plugin_register` seam of doc 03 is the **out-of-lib** path:
+   a built-in kind never travels it at runtime, only in the CI dual-build below.
 2. **Physical design without shipping fragmentation.** Users get one
    library, one `find_package(arbc)`; internally every component still has
    its own target, usage requirements, and unit-test binary, so
@@ -130,6 +135,29 @@ Notes on placements that were genuinely contested:
    links into a tiny per-kind shared library in CI, loaded via `dlopen`
    through the doc-03 entry point — proving the plugin path stays honest
    without shipping six .so files nobody wants.
+
+   Concretely (`kinds.dual_build`): six CI-only `MODULE` targets, one per kind,
+   each a single translation unit exposing `arbc_plugin_register` and
+   registering exactly that one kind id; they live under `tests/`, are never
+   installed, and are loaded through the production `runtime::PluginHost`.
+   Because the `Registry` factory is `ContentConfig -> unique_ptr<Content>` and
+   carries no input edges or service handles, a kind that needs render-time
+   services (`kind-nested`, `kind-fade`, `kind-crossfade`) is constructed
+   *unattached* across the boundary and the **host** injects its `PullService`
+   and `Backend` afterwards, exactly as the runtime binders do in-lib — so the
+   proof exercises virtual dispatch in *both* directions across the image
+   boundary, not just host-calls-plugin.
+
+   One honesty limit is recorded rather than hidden. `libarbc` carries no
+   export annotation on its public symbols yet, so under the global
+   `-fvisibility=hidden` a `SHARED` build would export nothing, and every
+   plugin — the CI dual-build modules and the shipped `arbc-plugin-*` artifacts
+   alike — links the **static** `libarbc` and carries a private copy of the core
+   objects it references. The dual-build therefore proves that the entry point,
+   the factory, the facets, and service injection all cross the boundary; it
+   does *not* yet prove that a plugin resolves core symbols **from the host
+   image**. Export-annotating the public surface and adding the
+   `BUILD_SHARED_LIBS` CI lane is `packaging.shared_library_build`.
 
 CMake mechanics (recorded so bootstrap doesn't rediscover them):
 
