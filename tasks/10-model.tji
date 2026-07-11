@@ -62,4 +62,10 @@ task model "Versioned model" {
     depends !persistent_state
     note "Migrate the runtime Document's side-map binding into versioned content records (kind id + state handle), closing the walking-skeleton TODO. Docs 14/17. Refinement: tasks/refinements/model/content_binding.md"
   }
+  task content_removal "Per-content removal path" {
+    effort 3d
+    allocate team
+    depends !editable_facet, !journal, !content_binding
+    note "Surface removal of a single content (Document::remove_content) — today the only teardown is document-wide (~Document). The binding half is already shaped for it: EditableBinding::unbind() was written to accept per-content teardown as soon as a removal API exists. The task's real content is the MODEL-TRANSACTION semantics, which are unsettled and must be decided here: what an undo/redo contract means for a removed content's journal entries (does removal coalesce, is it undoable, what happens to entries that reference the removed content), and what a still-pinned snapshot holding the removed content observes. Carries a doc 14 delta (removal is not in the transaction/journal model today). Source: tasks/parking-lot.md 2026-07-10 (editable-content removal path). Doc 14."
+  }
 }

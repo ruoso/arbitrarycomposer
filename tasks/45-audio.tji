@@ -127,4 +127,16 @@ task audio "Audio" {
     depends !device_monitor
     note "RealtimeSanitizer annotations on the callback chain + debug allocator/refcount hooks asserting nothing forbidden on RT threads; build-failing, not conventional. Docs 12/16. Refinement: tasks/refinements/audio/rt_safety.md"
   }
+  task seek_subblock "Sample-exact sub-block seek phase" {
+    effort 3d
+    allocate team
+    depends !seek_drain_realign, !latency
+    note "Start the post-seek device drain mid-block at the new playhead's exact sample offset instead of flooring to the block boundary. The drain has always been block-granular, so this is not a regression from audio.seek_drain_realign — it reaches into the ring's window model, the block-index compute, and the carry logic, which is why it was never a realignment-sized change. Source: tasks/parking-lot.md 2026-07-08 (sub-block seek phase). Doc 12."
+  }
+  task export_layout_conversion "Container layout conversion at the export edge" {
+    effort 2d
+    allocate team
+    depends !export_edge_resample, !export_monitor
+    note "Let the export edge write a container whose channel layout differs from the working composition's (e.g. a stereo composition to a mono container), wiring the device edge's convert_frames layout remix into the export path — the resample edge already handles the rate axis, so this closes the layout axis beside it. No milestone consumed a differing container layout when this was first raised (a leaf then would have orphaned in scripts/unblocked.py); it is scoped now as deliberate v1 export surface. Source: tasks/parking-lot.md 2026-07-08 (container layout conversion at the export edge). Doc 12."
+  }
 }

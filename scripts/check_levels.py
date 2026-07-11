@@ -14,6 +14,22 @@ from pathlib import Path
 
 # The doc 17 table: component -> allowed *direct* dependencies.
 # (Directory/target names use underscores; prose uses dashes.)
+#
+# This is the doc 17 "Depends on" column verbatim -- the NEWS, not the closure. Doc 17
+# writes a kind's dependency as "contract (+ below)", where "(+ below)" is the transitive
+# closure, and check (2) below enforces exactly that: an include is legal if it lands
+# anywhere in the closure of the declared DEPENDS. So a component may include a header
+# from a component it does not name in DEPENDS, provided a component it DOES name pulls it
+# in. That is by design, and it is already how the table's own entries are written --
+# `contract` omits `pool` from its CMake DEPENDS (src/contract/CMakeLists.txt) even though
+# ALLOWED permits it directly, and reaches it through `model`.
+#
+# Consequence, recorded here because it comes up: do NOT widen an entry just to make an
+# existing transitive include explicit. `kind_raster` includes <arbc/pool/...> for its
+# big-block tile backing and reaches it via contract -> model -> pool; adding "pool" to
+# ALLOWED["kind_raster"] would not be a hygiene improvement, it would be an edit to doc
+# 17's normative table (which lists kinds as depending on contract alone). Widen an entry
+# only when doc 17 itself gains the edge.
 ALLOWED = {
     "base": set(),
     "pool": {"base"},

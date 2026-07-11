@@ -165,4 +165,10 @@ task runtime "Runtime" {
     depends kinds.dual_build, !plugin_loading, serialize.kind_params
     note "Extend the plugin entry-point seam so an out-of-lib kind can register more than a ContentConfig factory: its serialize codec (params + input arity, deserialize(params, span<const ContentRef>, LoadContext&) shape) and its operator binder (attach/detach), so a third-party operator kind is loadable into a Document and not merely constructible. Source-of-debt: tasks/refinements/kinds/dual_build.md (Decision 3) — fade/crossfade modules make the gap concrete. Docs 03/17."
   }
+  task registry_bootstrap "L6 umbrella built-in-kind Registry bootstrap" {
+    effort 2d
+    allocate team
+    depends contract.registry, !plugin_loading, !plugin_operator_registration
+    note "Doc 17:61 assigns 'registry bootstrap; built-in kind registration' to the L6 umbrella `arbc` target, and nothing does it. The target exists (cmake/ArbcComponent.cmake:133, arbc_finalize_library) but carries only version.cpp; the built-in kinds (solid/tone/raster/fade/crossfade/nested) reach the runtime through the serialize CodecTable (builtin_codecs, document_serialize.cpp:149) and register_builtin_operator_binders (operator_binding.cpp:56), while contract::Registry is populated in production only by the plugin host (plugin_host.cpp). So a built-in kind and a plugin kind arrive by two unrelated mechanisms and a host cannot enumerate what it can instantiate. Populate a Registry with the built-in kinds at the umbrella, so built-ins and plugins present one surface. Settle whether the CodecTable/binder tables fold into Registry or stay beside it (doc 03 Registry vs doc 08 codecs) — that choice is the task's design content and may carry a doc 03/17 delta. Source: tasks/parking-lot.md 2026-07-09 (L6 umbrella built-in-kind -> Registry bootstrap). Docs 03/17."
+  }
 }
