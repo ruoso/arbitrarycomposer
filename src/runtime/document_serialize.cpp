@@ -10,6 +10,7 @@
 #include <arbc/kind_nested/nested_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/kind_tone/tone_content.hpp>
+#include <arbc/model/damage.hpp> // Damage, damage_add (the arrival's own damage)
 #include <arbc/model/records.hpp>
 #include <arbc/runtime/builtin_codecs.hpp>
 #include <arbc/runtime/document_serialize.hpp>
@@ -43,6 +44,12 @@ struct DocumentSerializeAccess {
   // serialize reader, which replaces it wholesale on a successful load (doc 08
   // Principle 4). Writer-thread-only, exactly like the content side-map.
   static UnknownFieldStore& unknown(Document& doc) { return doc.d_unknown; }
+  // The load state that outlives one load (runtime.async_external_load Decision 2). The
+  // `shared_ptr` itself is what the loader takes, because the `on_ready` closures it hands
+  // to the `AssetSource` capture a `weak_ptr` into it (Constraint 6).
+  static const std::shared_ptr<PendingExternalLoads>& pending(Document& doc) {
+    return doc.d_pending_loads;
+  }
 };
 
 namespace {
@@ -368,51 +375,134 @@ DeserializeFn recording_deserialize(DeserializeFn base, std::string_view kind_id
   };
 }
 
+// The whole load-scoped assembly, in one place (runtime.async_external_load Decision 2). It
+// used to be four stack locals of `load_document`; a deferring `AssetSource` fires its
+// `on_ready` after all four are destroyed, so a SETTLE has to rebuild them. Rebuilding beats
+// keeping them alive: the `CodecTable` and the `ContentSink` are load-scoped by nature, and
+// parking them on the `Document` would make the loader the mutable, half-initialized shared
+// service its own header says it is not. What is genuinely durable -- the resolved-identity
+// map, the pending entries, the completion queue -- is the `PendingExternalLoads` the
+// `Document` owns, which this borrows.
+//
+// One class, both callers, so the two paths cannot drift: a settle parses a child's bytes
+// through exactly the codecs, exactly the sink, and exactly the loader a load would have.
+class LoadAssembly {
+public:
+  LoadAssembly(Document& doc, KindBridge& bridge, const Registry& registry)
+      : d_sink(make_sink(doc)), d_loader(DocumentSerializeAccess::model(doc), registry, d_codecs,
+                                         d_sink, DocumentSerializeAccess::pending(doc)) {
+    // The codec table and the loader are mutually referential and that is intentional
+    // (nested_external_ref Constraint 3): the loader reads the table when it recurses into a
+    // child document, and the nested codec's closure holds the loader. The table is filled
+    // AFTER the loader is constructed over it -- it is only ever read at call time.
+    Codec solid = solid_codec();
+    d_codecs.add(
+        SolidContent::kind_id,
+        Codec{solid.serialize, recording_deserialize(solid.deserialize, SolidContent::kind_id,
+                                                     k_solid_kind_version, d_session, bridge)});
+    Codec tone = tone_codec();
+    d_codecs.add(
+        ToneContent::kind_id,
+        Codec{tone.serialize, recording_deserialize(tone.deserialize, ToneContent::kind_id,
+                                                    k_tone_kind_version, d_session, bridge)});
+    Codec fade = fade_codec();
+    d_codecs.add(
+        FadeContent::kind_id,
+        Codec{fade.serialize, recording_deserialize(fade.deserialize, FadeContent::kind_id,
+                                                    k_fade_kind_version, d_session, bridge)});
+    Codec crossfade = crossfade_codec();
+    d_codecs.add(CrossfadeContent::kind_id,
+                 Codec{crossfade.serialize,
+                       recording_deserialize(crossfade.deserialize, CrossfadeContent::kind_id,
+                                             k_crossfade_kind_version, d_session, bridge)});
+    // The one codec that takes the loader: nested is the only kind that names a child
+    // composition, so it is the only one with an external reference to resolve.
+    Codec nested = nested_codec(&d_loader);
+    d_codecs.add(
+        NestedContent::kind_id,
+        Codec{nested.serialize, recording_deserialize(nested.deserialize, NestedContent::kind_id,
+                                                      k_nested_kind_version, d_session, bridge)});
+  }
+
+  LoadAssembly(const LoadAssembly&) = delete;
+  LoadAssembly& operator=(const LoadAssembly&) = delete;
+
+  const CodecTable& codecs() const noexcept { return d_codecs; }
+  const ContentSink& sink() const noexcept { return d_sink; }
+  ExternalCompositionLoader& loader() noexcept { return d_loader; }
+
+private:
+  // The sink that binds each reconstructed content into the document. Provisional-root
+  // records are keyed by live pointer: a node is minted as a layer root when first sunk, then
+  // DEMOTED to an owned-only input child (its `ContentRecord` removed, its object kept alive
+  // in `d_contents`) the moment a later-sunk parent operator lists it in `inputs()`
+  // (runtime.operator_codecs Decision 4). The read recursion sinks children bottom-up BEFORE
+  // their parent and binds a layer to the OUTERMOST (last) sunk node, threading inner nodes
+  // only by live `Content*` (their `.id` is discarded, reader.cpp) -- so demoting an inner
+  // node's record is invisible to the graph wiring, and only true layer roots keep a record
+  // (find_content surfaces roots alone). The model stores no input edges (records.hpp), so a
+  // child needs no ObjectId. On the LOAD path every intermediate transaction's revision is
+  // reset by `load_baseline`'s revision-0 publish; on the SETTLE path they are ordinary
+  // forward revisions, exactly as any other structural edit is.
+  ContentSink make_sink(Document& doc) {
+    return [this, &doc](std::unique_ptr<Content> c) -> SunkContent {
+      Content* const live = c.get();
+      // Any input this node adopts is now known to be an input child, not a layer root:
+      // drop its provisional record (the object stays owned by `d_contents`).
+      for (const ContentRef child : live->inputs()) {
+        const auto mit = d_minted.find(child);
+        if (mit == d_minted.end()) {
+          continue;
+        }
+        Model& model = DocumentSerializeAccess::model(doc);
+        Model::Transaction txn = model.transact();
+        txn.remove(mit->second);
+        static_cast<void>(txn.commit());
+        d_minted.erase(mit);
+      }
+      const auto it = d_session.find(live);
+      const std::uint64_t kind = (it != d_session.end()) ? it->second : KindBridge::k_unknown_kind;
+      const ObjectId id = doc.add_content(std::shared_ptr<Content>(std::move(c)), kind);
+      d_minted.emplace(live, id);
+      return SunkContent{id, live};
+    };
+  }
+
+  // DECLARATION ORDER IS THE CONSTRUCTION CONTRACT: the sink closes over the session and the
+  // minted map, and the loader binds the (still-empty) codec table by reference.
+  LoadSession d_session;
+  std::unordered_map<const Content*, ObjectId> d_minted;
+  CodecTable d_codecs;
+  ContentSink d_sink;
+  ExternalCompositionLoader d_loader;
+};
+
+// The damage one arrival owes: whole-object, all-time, on every content EMBEDDING the child
+// that just landed (Decision 3). Kind-agnostic -- it asks `Content::composition_ref()`, the
+// contract-level accessor, so a third-party nesting kind is damaged on the same terms as
+// `org.arbc.nested` -- and it naturally damages BOTH parents when two contents share one
+// external child. `Rect::infinite()` / `TimeRange::all()` are the absorbing shape (damage.hpp
+// :64-73): a child appearing where there was a placeholder changes the parent everywhere, at
+// every instant.
+//
+// Computed BEFORE the install, which is fine and in fact necessary: the embedding contents
+// were sunk by the parent load (or by an earlier settle round) and already hold the
+// pre-allocated child id. It is the composition RECORD under that id that does not exist yet.
+std::vector<Damage> arrival_damage(const Document& doc, ObjectId child) {
+  std::vector<Damage> out;
+  doc.for_each_content([&out, child](ObjectId id, Content* c) {
+    if (c->composition_ref() == child) {
+      damage_add(out, Damage{id, Rect::infinite(), TimeRange::all()});
+    }
+  });
+  return out;
+}
+
 } // namespace
 
 expected<std::monostate, ReaderError> load_document(std::string_view bytes, Document& doc,
                                                     KindBridge& bridge, const Registry& registry,
                                                     std::string base_uri, AssetSource* assets) {
-  LoadSession session;
-
-  // Provisional-root records minted by the sink, keyed by live pointer: a node is
-  // minted as a layer root when first sunk, then DEMOTED to an owned-only input child
-  // (its `ContentRecord` removed, its object kept alive in `d_contents`) the moment a
-  // later-sunk parent operator lists it in `inputs()` (runtime.operator_codecs
-  // Decision 4). The read recursion sinks children bottom-up BEFORE their parent and
-  // binds a layer to the OUTERMOST (last) sunk node, threading inner nodes only by live
-  // `Content*` (their `.id` is discarded, reader.cpp) -- so demoting an inner node's
-  // record is invisible to the graph wiring, and only true layer roots keep a record
-  // (find_content surfaces roots alone). The model stores no input edges (records.hpp),
-  // so a child needs no ObjectId. Every intermediate transaction's revision is reset by
-  // `load_baseline`'s revision-0 publish, so a successful load still lands at revision 0.
-  // (A content that is BOTH a layer root and an operator input -- a shared node at a
-  // layer position AND an inputs slot -- is outside this leaf's fade/crossfade scope;
-  // it would be demoted here. See the parked multi-composition design question.)
-  std::unordered_map<const Content*, ObjectId> minted;
-
-  const ContentSink sink = [&doc, &session, &minted](std::unique_ptr<Content> c) -> SunkContent {
-    Content* const live = c.get();
-    // Any input this node adopts is now known to be an input child, not a layer root:
-    // drop its provisional record (the object stays owned by `d_contents`).
-    for (const ContentRef child : live->inputs()) {
-      const auto mit = minted.find(child);
-      if (mit == minted.end()) {
-        continue;
-      }
-      Model& model = DocumentSerializeAccess::model(doc);
-      Model::Transaction txn = model.transact();
-      txn.remove(mit->second);
-      static_cast<void>(txn.commit());
-      minted.erase(mit);
-    }
-    const auto it = session.find(live);
-    const std::uint64_t kind = (it != session.end()) ? it->second : KindBridge::k_unknown_kind;
-    const ObjectId id = doc.add_content(std::shared_ptr<Content>(std::move(c)), kind);
-    minted.emplace(live, id);
-    return SunkContent{id, live};
-  };
-
   const JournalSuspension no_journal(doc);
   Model& into = DocumentSerializeAccess::model(doc);
 
@@ -421,8 +511,13 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
   // Both default to nothing, and both being absent is a supported, benign configuration:
   // every external reference is then simply unavailable, which is what the fuzz lane and
   // every leaf-kind document already are.
+  //
+  // The SOURCE is also recorded on the document's durable load state, because a settle needs it
+  // after this `LoadContext` is long gone: a child that lands late may itself hold external
+  // refs, and its own fetches go through the same source.
   LoadContext ctx{std::move(base_uri)};
   ctx.set_asset_source(assets);
+  DocumentSerializeAccess::pending(doc)->set_source(assets);
 
   // The host document's ROOT composition id, allocated up front so the loader can seed
   // its resolved-identity map with "this document -> this composition" (Constraint 6):
@@ -432,48 +527,44 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
   // still the lowest-id composition, as `find_first_composition` requires.
   const ObjectId root_composition = into.allocate_id();
 
-  // The codec table and the loader are mutually referential and that is intentional
-  // (Constraint 3): the loader reads the table when it recurses into a child document,
-  // and the nested codec's closure holds the loader. The table is filled AFTER the loader
-  // is constructed over it -- it is only ever read at call time, inside a load.
-  CodecTable codecs;
-  ExternalCompositionLoader loader(into, registry, codecs, sink);
-  loader.seed(ctx.base_uri(), root_composition);
-
-  // The per-load codec table: built-in serialize (unused on load) + a
-  // kind-recording deserialize wrapper per built-in kind (Decision 4).
-  {
-    Codec solid = solid_codec();
-    codecs.add(
-        SolidContent::kind_id,
-        Codec{solid.serialize, recording_deserialize(solid.deserialize, SolidContent::kind_id,
-                                                     k_solid_kind_version, session, bridge)});
-    Codec tone = tone_codec();
-    codecs.add(ToneContent::kind_id,
-               Codec{tone.serialize, recording_deserialize(tone.deserialize, ToneContent::kind_id,
-                                                           k_tone_kind_version, session, bridge)});
-    Codec fade = fade_codec();
-    codecs.add(FadeContent::kind_id,
-               Codec{fade.serialize, recording_deserialize(fade.deserialize, FadeContent::kind_id,
-                                                           k_fade_kind_version, session, bridge)});
-    Codec crossfade = crossfade_codec();
-    codecs.add(CrossfadeContent::kind_id,
-               Codec{crossfade.serialize,
-                     recording_deserialize(crossfade.deserialize, CrossfadeContent::kind_id,
-                                           k_crossfade_kind_version, session, bridge)});
-    // The one codec that takes the loader: nested is the only kind that names a child
-    // composition, so it is the only one with an external reference to resolve.
-    Codec nested = nested_codec(&loader);
-    codecs.add(
-        NestedContent::kind_id,
-        Codec{nested.serialize, recording_deserialize(nested.deserialize, NestedContent::kind_id,
-                                                      k_nested_kind_version, session, bridge)});
-  }
+  LoadAssembly assembly(doc, bridge, registry);
+  assembly.loader().seed(ctx.base_uri(), root_composition);
 
   // The document's unknown-field stash is replaced wholesale by a successful load and
   // left untouched on any error, exactly like the model (doc 08 Principle 4).
-  return arbc::load_document(bytes, registry, codecs, ctx, sink, into,
+  return arbc::load_document(bytes, registry, assembly.codecs(), ctx, assembly.sink(), into,
                              &DocumentSerializeAccess::unknown(doc), root_composition);
+}
+
+std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Registry& registry) {
+  const std::shared_ptr<PendingExternalLoads>& state = DocumentSerializeAccess::pending(doc);
+
+  // An arrival is not a user edit, so it is not undoable: an undo taken right after a widget
+  // finally loaded must not "revert" it back to the placeholder. Same reasoning as a load
+  // (doc 14:263-264) -- suspend the COMMIT sink. The DAMAGE sink stays installed: the whole
+  // point of the settle is that its commit flushes damage (`model.cpp`'s commit flushes the
+  // damage union whether or not a commit sink is present).
+  const JournalSuspension no_journal(doc);
+
+  std::size_t installed = 0;
+  // Loop to quiescence (Decision 4): a settled child may itself hold external refs, and a
+  // source that answers inline for THOSE will have queued their bytes during this very loop.
+  // A deferring grandchild instead lands on a later settle -- its request cannot even be
+  // ISSUED until its parent's bytes are parsed.
+  for (;;) {
+    std::vector<PendingExternalLoads::Arrival> ready = state->take_ready();
+    if (ready.empty()) {
+      break;
+    }
+    LoadAssembly assembly(doc, bridge, registry);
+    for (const PendingExternalLoads::Arrival& arrival : ready) {
+      const std::vector<Damage> damage = arrival_damage(doc, arrival.child);
+      if (assembly.loader().settle(arrival.child, arrival.bytes, damage).valid()) {
+        ++installed;
+      }
+    }
+  }
+  return installed;
 }
 
 } // namespace arbc

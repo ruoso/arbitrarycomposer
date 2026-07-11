@@ -4,12 +4,14 @@
 #include <arbc/base/ids.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/contract/registry.hpp>
+#include <arbc/model/damage.hpp> // Damage (load_composition's atomic arrival damage)
 #include <arbc/model/model.hpp>
 #include <arbc/serialize/load_context.hpp>
 #include <arbc/serialize/unknown_fields.hpp>
 
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -141,9 +143,21 @@ expected<std::monostate, ReaderError> load_document(std::string_view json, const
 // composition -- there is nothing to embed, and the caller reports the reference
 // unavailable. Malformed bytes are a `ReaderError` value, which the caller likewise turns
 // into unavailability rather than failing the parent load (doc 08 Principle 3, doc 05).
+//
+// `damage` is unioned into that same transaction before it commits
+// (runtime.async_external_load Decision 3). When the install happens LATE -- an external
+// child whose `AssetSource` deferred, landing on a revision the host is already rendering --
+// the commit must carry the reason to re-render it, or doc 02 step 1's "no damage -> no work"
+// leaves the frame loop asleep and the child sits in the model, invisible. Atomicity is the
+// point: a second transaction after the install would publish an intermediate revision whose
+// damage set is empty despite structurally changing what the parent renders. This is a
+// level-appropriate widening -- serialize is told "install this subtree and publish this
+// damage together", not what the damage MEANS, so it learns nothing about nesting. Empty
+// (the default) is the in-load case, where the whole graph lands in one baseline anyway.
 expected<ObjectId, ReaderError> load_composition(std::string_view json, const Registry& registry,
                                                  const CodecTable& codecs, LoadContext& ctx,
                                                  const ContentSink& sink, Model& into,
-                                                 ObjectId root_composition);
+                                                 ObjectId root_composition,
+                                                 std::span<const Damage> damage = {});
 
 } // namespace arbc

@@ -237,6 +237,28 @@ target_link_libraries(arbc_nested_external_ref_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_nested_external_ref_t)
 
+# runtime.async_external_load loader behaviours, over a DEFERRING AssetSource double whose
+# on_ready fires only when the test says so: the pending child (a VALID id naming no record, at
+# revision 0), the writer-thread settle that installs it on a LATER revision with damage on the
+# embedding content, the deferring cycle and grandchild chain, the depth cap counting
+# PRE-deferral depth, and a callback outliving its Document. Arrival is a thing the test
+# SCHEDULES, so nothing is timing-dependent -- counters only (doc 16:54-62). Drives a live
+# binding for the render-does-not-fault proofs, so it is cross-component.
+add_executable(arbc_async_external_load_t async_external_load.t.cpp)
+target_link_libraries(arbc_async_external_load_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_async_external_load_t)
+
+# runtime.async_external_load end-to-end: the placeholder REPLACED BY THE REAL PIXELS, live. The
+# golden is an ORACLE -- a deferred external child must render byte-identically to the same
+# scene loaded through an INLINE source -- plus the metadata memo's re-key across the arrival
+# and the save-while-pending fixed point (the one place a valid-id-with-absent-record could have
+# leaked into the format). Needs a real Backend and a real OperatorBindingScope.
+add_executable(arbc_async_external_load_golden_t async_external_load_golden.t.cpp)
+target_link_libraries(arbc_async_external_load_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_async_external_load_golden_t)
+
 add_executable(arbc_contract_conformance_t contract_conformance.t.cpp)
 target_link_libraries(
   arbc_contract_conformance_t

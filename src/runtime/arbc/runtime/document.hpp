@@ -7,11 +7,14 @@
 #include <arbc/contract/content.hpp>
 #include <arbc/media/audio_format.hpp>
 #include <arbc/media/surface_format.hpp>
+#include <arbc/model/damage.hpp> // DamageSink (the host's frame-waking seam)
 #include <arbc/model/journal.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/editable_binding.hpp>
-#include <arbc/serialize/unknown_fields.hpp> // names no JSON type (doc 08:61-63)
+#include <arbc/runtime/pending_external_loads.hpp> // names no JSON type
+#include <arbc/serialize/unknown_fields.hpp>       // names no JSON type (doc 08:61-63)
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -103,6 +106,18 @@ public:
   Journal& journal() noexcept { return d_journal; }
   const Journal& journal() const noexcept { return d_journal; }
 
+  // Install the writer-owned damage seam on this document's model (doc 02:51-52 -- damage is
+  // what wakes the frame). A commit flushes its damage union here exactly once; null clears.
+  // WRITER-THREAD ONLY, and a SINGLE sink -- a host driving several viewports installs a
+  // `DamageRouter` (`damage_router.hpp`) and fans out through it.
+  //
+  // A `Document` had no damage seam at all until `runtime.async_external_load`, because every
+  // commit it published came from a host edit the host already knew it had made. An external
+  // child arriving LATE is the first change a document publishes that the host did not ask
+  // for, and doc 02 step 1's "no damage -> no work" means it is invisible unless its damage
+  // can reach a frame loop. This is how it does.
+  void set_damage_sink(DamageSink* sink) noexcept { d_model.set_damage_sink(sink); }
+
   // Run deferred reclamation to quiescence (the model's drain, doc 15:129-136):
   // superseded records whose last reference is gone are reclaimed, releasing any
   // content state they pinned. WRITER-ONLY / single-drainer.
@@ -132,6 +147,15 @@ public:
   // empty for a document built programmatically, which is why an unknown-free document
   // serializes byte-identically to before.
   const UnknownFieldStore& unknown_fields() const noexcept { return d_unknown; }
+
+  // How many external references have been fetched but not yet installed -- a nested
+  // content holding a VALID child id that names no `CompositionRecord` yet, which renders
+  // as the doc-05 placeholder (runtime.async_external_load). Drops to zero as
+  // `settle_external_loads` (`document_serialize.hpp`) installs each arrival on a later
+  // revision. Zero for a document with no external references, and zero for one whose
+  // `AssetSource` answered inline -- so a `FilesystemAssetSource` document never leaves it
+  // non-zero. Writer-thread; a behavioral counter, not a timing (doc 16:54-62).
+  std::size_t pending_external_loads() const noexcept { return d_pending_loads->pending(); }
 
   // The document's editable-state multiplexer, for the behavioral counters doc 16
   // asks the editable tests to assert: `unrouted_state_calls()` (zero in any
@@ -180,6 +204,15 @@ private:
   // edge and no state handle, so its destruction order is immaterial and it perturbs
   // nothing the contract above pins down.
   UnknownFieldStore d_unknown;
+  // The load state that outlives one load (runtime.async_external_load Decision 2): the
+  // resolved-identity dedup map, the not-yet-arrived entries, and the completion queue a
+  // deferring `AssetSource` delivers into. Held by `shared_ptr` and never by value, because
+  // each `on_ready` closure captures a `weak_ptr` into it: a network fetch can fire long
+  // after the user closed the document, and it must then DROP its bytes rather than write
+  // through a dangling pointer (Constraint 6). Like the stash above, it owns no record edge
+  // and no state handle, so its position here perturbs the teardown contract not at all --
+  // the callbacks simply observe the queue's expiry.
+  std::shared_ptr<PendingExternalLoads> d_pending_loads{std::make_shared<PendingExternalLoads>()};
 };
 
 } // namespace arbc

@@ -29,12 +29,16 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 TEST_CASE("a captured snapshot serializes off-thread while the writer thread mutates") {
   using arbc::Affine;
@@ -523,4 +527,223 @@ TEST_CASE("saving an EXTERNALLY-loaded nesting document races a live binding sco
     CHECK(nested->attached());
     CHECK_FALSE(nested->inputs().empty());
   }
+}
+
+// enforces: 05-recursive-composition#deferred-external-child-installs-live
+// enforces: 05-recursive-composition#deferred-external-chain-and-cycle-terminate
+TEST_CASE("N deferring sources fire on_ready from N threads while the writer settles and saves") {
+  // runtime.async_external_load introduces exactly ONE cross-thread channel -- the completion
+  // queue -- so it owes exactly one TSan lane, and says so rather than inheriting
+  // `damage_router`'s "no new concurrency obligation" by silence.
+  //
+  // The contract under test (Constraint 4): `on_ready` may run on ANY thread, and it touches no
+  // `Model`, no `Document`, no `LoadContext` -- it copies the bytes into the mutex-guarded queue
+  // and returns. Every parse, install, damage and commit happens on the WRITER thread, in
+  // `settle_external_loads`, because `Model::Transaction::commit` and the damage seam are
+  // writer-confined by design ("single writer, lock-free pinned reads"). Here N worker threads
+  // deliver N children while the writer settles, renders metadata and saves in a loop.
+  //
+  // Assertions are OUTCOMES, never timings: every child lands exactly once, each URI is fetched
+  // exactly once (no double-fetch under concurrent arrival), the save is byte-stable throughout,
+  // and TSan is clean. Catch2 macros are main-thread-only, so the workers latch into atomics.
+  using arbc::Content;
+  using arbc::Document;
+  using arbc::KindBridge;
+  using arbc::NestedContent;
+  using arbc::ObjectId;
+
+  constexpr int k_children = 8;
+
+  // A source that RECORDS its continuations and hands them to the test, which fires them from N
+  // threads. The per-URI request tally is the dedup witness (doc 08 Principle 3).
+  class ThreadedDeferringSource final : public arbc::AssetSource {
+  public:
+    void put(std::string uri, std::string bytes) {
+      d_files.insert_or_assign(std::move(uri), std::move(bytes));
+    }
+    void request(std::string_view resolved_uri,
+                 std::function<void(std::string_view)> on_ready) override {
+      // Writer-thread only: `request` is issued from inside a load / a settle, both of which
+      // run on the writer. It is `on_ready` that goes off-thread.
+      ++d_requests[std::string(resolved_uri)];
+      d_outstanding.emplace_back(std::string(resolved_uri), std::move(on_ready));
+    }
+    // Hand the outstanding continuations to the caller, which fires them concurrently.
+    std::vector<std::pair<std::string, std::function<void(std::string_view)>>> take() {
+      std::vector<std::pair<std::string, std::function<void(std::string_view)>>> out;
+      out.swap(d_outstanding);
+      return out;
+    }
+    std::string_view bytes_for(const std::string& uri) const {
+      const auto it = d_files.find(uri);
+      return it != d_files.end() ? std::string_view(it->second) : std::string_view{};
+    }
+    std::size_t requests_for(const std::string& uri) const {
+      const auto it = d_requests.find(uri);
+      return it == d_requests.end() ? 0 : it->second;
+    }
+
+  private:
+    std::unordered_map<std::string, std::string> d_files;
+    std::unordered_map<std::string, std::size_t> d_requests;
+    std::vector<std::pair<std::string, std::function<void(std::string_view)>>> d_outstanding;
+  };
+
+  static constexpr const char* k_leaf =
+      R"({"arbc":{"format":1},"composition":{"canvas":[0,0,8,8],"layers":[)"
+      R"({"kind":"org.arbc.solid","kind_version":"1","params":{"color":[0,1,0,1]}}]}})";
+
+  ThreadedDeferringSource source;
+  std::string layers;
+  for (int i = 0; i < k_children; ++i) {
+    const std::string name = "c" + std::to_string(i) + ".arbc";
+    source.put("proj/" + name, k_leaf);
+    if (i > 0) {
+      layers += ",";
+    }
+    layers += R"({"kind":"org.arbc.nested","kind_version":"1","params":{"ref":")" + name + R"("}})";
+  }
+  const std::string parent =
+      R"({"arbc":{"format":1},"composition":{"canvas":[0,0,64,64],"layers":[)" + layers + "]}}";
+
+  Document doc;
+  KindBridge bridge;
+  const arbc::Registry registry;
+  REQUIRE(arbc::load_document(parent, doc, bridge, registry, "proj/parent.arbc", &source));
+
+  // Every child is PENDING: nothing answered inside `request()`, so the parent loaded at
+  // revision 0 with k_children valid-but-recordless child ids.
+  REQUIRE(doc.pending_external_loads() == static_cast<std::size_t>(k_children));
+  const arbc::expected<std::string, arbc::SerializeError> reference =
+      arbc::save_document(doc, bridge);
+  REQUIRE(reference.has_value());
+  const std::string expected_bytes = *reference;
+
+  // Fire the N callbacks from N threads, straight into the completion queue, while the writer
+  // thread settles / saves in a loop. This is the race the queue exists to make safe.
+  auto pending_calls = source.take();
+  REQUIRE(pending_calls.size() == static_cast<std::size_t>(k_children));
+
+  std::atomic<bool> serialize_error{false};
+  std::atomic<bool> mismatch{false};
+  std::atomic<int> fired{0};
+
+  std::vector<std::thread> workers;
+  workers.reserve(pending_calls.size());
+  for (const auto& call : pending_calls) {
+    workers.emplace_back([&source, &call, &fired] {
+      call.second(source.bytes_for(call.first));
+      fired.fetch_add(1);
+    });
+  }
+
+  // The writer thread: settle to quiescence while the arrivals stream in, saving each round.
+  std::size_t installed = 0;
+  for (int round = 0; round < 2000 && installed < static_cast<std::size_t>(k_children); ++round) {
+    installed += arbc::settle_external_loads(doc, bridge, registry);
+    const arbc::expected<std::string, arbc::SerializeError> out = arbc::save_document(doc, bridge);
+    if (!out.has_value()) {
+      serialize_error.store(true);
+    } else if (*out != expected_bytes) {
+      mismatch.store(true); // the save must NOT depend on how many children have landed
+    }
+  }
+  for (std::thread& t : workers) {
+    t.join();
+  }
+  installed += arbc::settle_external_loads(doc, bridge, registry); // sweep any last arrival
+
+  CHECK(fired.load() == k_children);
+  CHECK_FALSE(serialize_error.load());
+  CHECK_FALSE(mismatch.load());
+
+  // Every child landed EXACTLY once, each fetched exactly once, and the model is complete.
+  CHECK(installed == static_cast<std::size_t>(k_children));
+  CHECK(doc.pending_external_loads() == 0);
+  const arbc::DocStatePtr pin = doc.pin();
+  ObjectId root;
+  const arbc::CompositionRecord* rec = nullptr;
+  REQUIRE(pin->find_first_composition(root, rec));
+  int resolved = 0;
+  pin->for_each_layer_in(root, [&](ObjectId lid) {
+    const arbc::LayerRecord* lr = pin->find_layer(lid);
+    REQUIRE(lr != nullptr);
+    const auto* const nested = dynamic_cast<const NestedContent*>(doc.resolve(lr->content));
+    REQUIRE(nested != nullptr);
+    if (nested->child().valid() && pin->find_composition(nested->child()) != nullptr) {
+      ++resolved;
+    }
+  });
+  CHECK(resolved == k_children);
+  for (int i = 0; i < k_children; ++i) {
+    CHECK(source.requests_for("proj/c" + std::to_string(i) + ".arbc") == 1);
+  }
+  // And the bytes STILL do not depend on load state: the settled document saves identically to
+  // the one whose children had not arrived (Constraint 9).
+  const arbc::expected<std::string, arbc::SerializeError> settled =
+      arbc::save_document(doc, bridge);
+  REQUIRE(settled.has_value());
+  CHECK(*settled == expected_bytes);
+}
+
+// enforces: 05-recursive-composition#deferred-external-chain-and-cycle-terminate
+TEST_CASE("an external arrival racing document TEARDOWN installs nothing and faults nothing") {
+  // Constraint 6, under ASan + TSan. A network fetch outlives the document that started it, and
+  // the completion queue is the exact object it would write through -- so the queue is owned by
+  // `shared_ptr` and every `on_ready` captures a `weak_ptr`. A worker firing while the main
+  // thread destroys the `Document` therefore either lands in a live queue (which nobody will
+  // ever settle) or finds an expired one and drops its bytes. Never a use-after-free.
+  using arbc::Document;
+  using arbc::KindBridge;
+
+  class HeldSource final : public arbc::AssetSource {
+  public:
+    void request(std::string_view, std::function<void(std::string_view)> on_ready) override {
+      d_outstanding.push_back(std::move(on_ready));
+    }
+    std::vector<std::function<void(std::string_view)>> take() {
+      std::vector<std::function<void(std::string_view)>> out;
+      out.swap(d_outstanding);
+      return out;
+    }
+
+  private:
+    std::vector<std::function<void(std::string_view)>> d_outstanding;
+  };
+
+  static constexpr const char* k_child =
+      R"({"arbc":{"format":1},"composition":{"canvas":[0,0,8,8],"layers":[)"
+      R"({"kind":"org.arbc.solid","kind_version":"1","params":{"color":[0,1,0,1]}}]}})";
+  static constexpr const char* k_parent =
+      R"({"arbc":{"format":1},"composition":{"canvas":[0,0,16,16],"layers":[)"
+      R"({"kind":"org.arbc.nested","kind_version":"1","params":{"ref":"child.arbc"}}]}})";
+
+  HeldSource source;
+  std::vector<std::function<void(std::string_view)>> callbacks;
+  std::atomic<bool> fired{false};
+
+  auto doc = std::make_unique<Document>();
+  KindBridge bridge;
+  const arbc::Registry registry;
+  REQUIRE(arbc::load_document(k_parent, *doc, bridge, registry, "proj/parent.arbc", &source));
+  REQUIRE(doc->pending_external_loads() == 1);
+  callbacks = source.take();
+  REQUIRE(callbacks.size() == 1);
+
+  // The worker delivers the bytes while the main thread runs the `Document` destructor -- a
+  // genuine race, not a sequence. The callback's `weak_ptr` is the arbiter, and both orderings
+  // are safe by construction: lock FIRST and the queue's strong count is 2, so it outlives the
+  // document's reset; lock SECOND and the count is already 0, so the lock fails and the bytes
+  // are dropped. Neither branch writes through a dangling pointer, which is precisely what an
+  // `AssetSource` that captured a raw `Document*` could not say.
+  std::thread worker([&callbacks, &fired] {
+    callbacks[0](k_child);
+    fired.store(true);
+  });
+  doc.reset(); // <- concurrent with the delivery above
+  worker.join();
+  CHECK(fired.load());
+
+  // And a callback firing long AFTER the document is gone is equally benign.
+  REQUIRE_NOTHROW(callbacks[0](k_child));
 }

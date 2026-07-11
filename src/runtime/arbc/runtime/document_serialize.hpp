@@ -15,6 +15,7 @@
 #include <arbc/serialize/reader.hpp>       // ReaderError
 #include <arbc/serialize/writer.hpp>       // SerializeError
 
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -146,5 +147,36 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
                                                     KindBridge& bridge, const Registry& registry,
                                                     std::string base_uri = {},
                                                     AssetSource* assets = nullptr);
+
+// Install every external child whose bytes have ARRIVED since the last call, and return how
+// many compositions were installed (runtime.async_external_load). WRITER-THREAD ONLY.
+//
+// `load_document` only resolves an external reference if the `AssetSource` answers INSIDE
+// `request()`. `FilesystemAssetSource` does; a network fetch, a content store, or any
+// plugin-supplied source does not -- it returns from `request()` with nothing, and its
+// `on_ready` fires later, on whatever thread it chose, after the load's `LoadContext`,
+// `CodecTable`, loader and sink are all destroyed. Such a reference loads as PENDING: the
+// embedding content binds the VALID child id the loader minted before fetching, which names
+// no `CompositionRecord` yet and therefore renders as the doc-05 placeholder, and the parent
+// load completes at revision 0 without waiting.
+//
+// This is where the late bytes land. `on_ready` did nothing but copy them into the document's
+// completion queue -- it touched no `Model`, because every publish path is writer-confined
+// (doc 14, "single writer, lock-free pinned reads"). Here, on the writer thread, each arrival
+// is parsed and installed under that SAME pre-allocated id through one ordinary transaction,
+// which publishes a new revision and flushes, in that same commit, damage naming the
+// EMBEDDING content. Doc 02's *Refine* step turns that damage into a follow-up frame, and the
+// placeholder is replaced live.
+//
+// It drains to quiescence: a child that lands may itself hold external references, whose
+// bytes an inline-answering source has already queued. A DEFERRING grandchild instead lands
+// on a later call -- its request cannot even be issued until its parent's bytes are parsed --
+// so a host calls this once per frame (`HostViewport::Config::settle_external_loads` wires it
+// into doc 02 step 1) and the chain lands over successive frames.
+//
+// Cheap and safe to call on a document with nothing pending: it is one queue check. Not
+// undoable -- a widget finally loading is not an edit, so an undo taken right after must not
+// revert it (doc 14:263-264).
+std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Registry& registry);
 
 } // namespace arbc

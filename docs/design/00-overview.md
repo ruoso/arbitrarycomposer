@@ -169,6 +169,18 @@ Initially-open questions, now decided in their own docs:
   compositing kernels can share one byte-exact resampling filter instead of
   duplicating its frozen coefficient table across an un-crossable level
   boundary. Decided in doc 17 (`kinds.raster_resampling_quality`).
+- **Async external loading**: a not-yet-loaded external child is a *model*
+  state, not a render-completion state. The loader mints the child
+  composition's id *before* fetching, so the embedding content binds a valid
+  child id immediately and the parent load never blocks; until the bytes land
+  that id names no record, which is already the placeholder state an
+  unavailable reference leaves behind. Arrival installs the child under that
+  same id in one ordinary transaction — a new revision plus damage on the
+  embedding content, which doc 02's *Refine* step turns into a follow-up
+  frame. The fetch may run off-thread; the install is marshalled onto the
+  single model writer. So "async" costs a revision bump and a damage route,
+  not a second placeholder type or a new content state. Decided in doc 05
+  (`runtime.async_external_load`).
 - **Memory model**: inside-out slab arenas (refcounts stored apart from
   immutable data, per the `poc-inside-out-objects` prototype) for document
   records and content state nodes, reimplemented inside arbc core and

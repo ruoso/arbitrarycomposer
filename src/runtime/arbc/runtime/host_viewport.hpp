@@ -75,6 +75,21 @@ public:
     // exclusive by construction -- the router must outlive every viewport that
     // registers with it.
     DamageRouter* router{nullptr};
+
+    // The external-arrival settle hook (`runtime.async_external_load` Decision 7): the bytes
+    // behind a nested content's `params.ref` may arrive from a deferring `AssetSource` long
+    // after the document loaded, and installing them is a WRITER-THREAD publish. `step()`
+    // calls this FIRST, ahead of the pin and the damage drain, because an arrival IS damage
+    // and this is doc 02 step 1 -- the install's own commit flushes damage naming the
+    // embedding content into `d_sink`, which the same step then drains, so the newly-arrived
+    // child is composited by the very frame that settled it.
+    //
+    // A `std::function` rather than a `Document*` because the settle needs the document's
+    // `KindBridge` and `Registry` too, and this object deliberately holds neither a
+    // `Document` nor a codec table (it takes a `Model&` + a `ContentResolver`). The host
+    // wires `[&] { return settle_external_loads(doc, bridge, registry); }`. Empty -- the
+    // default -- means a host with no external references pays nothing at all.
+    std::function<std::size_t()> settle_external_loads;
   };
 
   // What one `step()` reports back to the host (Decision 3, poll-style value): the
@@ -140,6 +155,8 @@ public:
   std::uint64_t frames_issued() const noexcept { return d_frames_issued; }
   std::uint64_t transport_advances() const noexcept { return d_transport_advances; }
   std::uint64_t reanchor_events() const noexcept { return d_reanchor_events; }
+  // External children installed by the settle hook across every step (zero without one).
+  std::uint64_t external_loads_settled() const noexcept { return d_external_loads_settled; }
   // The current anchor-path depth (zoom-in pushes, zoom-out pops); exposed for
   // tests/host observability of the re-anchor stack.
   std::size_t anchor_depth() const noexcept { return d_anchor_path.size(); }
@@ -197,7 +214,8 @@ private:
   DamageRouter* d_router{nullptr}; // set => registered via router; null => direct model slot
   DamageRouter::Registration
       d_registration; // the RAII fan-out registration (inert when d_router null)
-  std::function<Time()> d_playhead_source; // set => audio-mastered chase; empty => free-run
+  std::function<Time()> d_playhead_source;     // set => audio-mastered chase; empty => free-run
+  std::function<std::size_t()> d_settle_loads; // set => drive external arrivals each step
 
   std::optional<std::chrono::steady_clock::time_point> d_prev_instant; // last free-run clock sample
 
@@ -212,6 +230,7 @@ private:
   std::uint64_t d_frames_issued{0};
   std::uint64_t d_transport_advances{0};
   std::uint64_t d_reanchor_events{0};
+  std::uint64_t d_external_loads_settled{0};
 };
 
 } // namespace arbc

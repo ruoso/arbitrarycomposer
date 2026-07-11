@@ -104,8 +104,15 @@ task runtime "Runtime" {
   task async_external_load "Deferring AssetSource for externally-loaded nested child" {
     effort 2d
     allocate team
+    complete 100
     depends !nested_external_ref
-    note "Drive a deferring AssetSource — one whose on_ready fires after load_document returns — installing the child composition on a later model revision and damaging the embedding content so the placeholder is replaced live. Doc 05:47-52 (external loading is async by nature) and doc 03 async render path. Source-of-debt: tasks/refinements/runtime/nested_external_ref.md. Docs 05/03."
+    note "Drive a deferring AssetSource — one whose on_ready fires after load_document returns — installing the child composition on a later model revision and damaging the embedding content so the placeholder is replaced live. Doc 05:47-52 (external loading is async by nature) and doc 03 async render path. Source-of-debt: tasks/refinements/runtime/nested_external_ref.md. Docs 05/03. Refinement: tasks/refinements/runtime/async_external_load.md"
+  }
+  task host_viewport_document_binding "Bind HostViewport directly against a Document" {
+    effort 1d
+    allocate team
+    depends !async_external_load
+    note "HostViewport takes a bare Model& + injected ContentResolver, so a host that owns a Document cannot construct one against it directly and must hand-roll the resolver and the settle hook. Add a HostViewport::Config factory (or constructor overload) that accepts a Document& and wires the resolver, settle hook, and damage sink automatically. Source-of-debt: tasks/refinements/runtime/async_external_load.md (implementer deviation from Decision 7). Docs 02/17."
   }
   task interactive_pull_wiring "Wire PullService into the interactive frame path" {
     effort 1d

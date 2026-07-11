@@ -662,3 +662,86 @@ TEST_CASE("host_viewport: two viewports over one document observe it at independ
   CHECK(*vp_a.last_frame_time() == ta2);
   CHECK(*vp_b.last_frame_time() == tb);
 }
+
+// enforces: 05-recursive-composition#deferred-external-child-installs-live
+TEST_CASE("host_viewport: the settle hook runs at the top of the frame, before pin and drain") {
+  // `runtime.async_external_load` Decision 7: the external-arrival settle belongs in doc 02
+  // step 1 (collect damage), because an arrival IS damage. This pins the ORDERING that makes
+  // "the placeholder is replaced live" true in one frame rather than two: the hook runs BEFORE
+  // the pin (so the frame renders the revision the install published, not the stale one) and
+  // BEFORE the damage drain (so the install's own damage is in the set this very frame plans
+  // from). Get either backwards and the newly-arrived child sits invisible until something
+  // unrelated damages the scene.
+  //
+  // The hook is driven with a stand-in that publishes exactly what a real settle publishes -- a
+  // transaction that damages the embedding layer and returns an install count. The real
+  // `settle_external_loads` over a real deferring `AssetSource` is proven end to end in
+  // tests/async_external_load.t.cpp; what is under test HERE is the call site.
+  MarkBackend backend;
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  int settles = 0;
+  bool arrival_pending = true;
+  std::uint64_t revision_at_settle = 0;
+
+  arbc::HostViewport::Config cfg;
+  cfg.viewport = Viewport{256, 256, Affine::identity()};
+  cfg.budget = k_budget;
+  cfg.settle_external_loads = [&]() -> std::size_t {
+    ++settles;
+    if (!arrival_pending) {
+      return 0; // a settle with nothing ready costs one queue check and publishes nothing
+    }
+    arrival_pending = false;
+    bump_damage(model, scene.layer); // the install's commit: a new revision, carrying damage
+    revision_at_settle = model.current()->revision();
+    return 1;
+  };
+  arbc::HostViewport viewport(renderer, model, resolve, backend, pool, cache, **target,
+                              epoch_clock(), cfg);
+
+  // Frame 1: the arrival settles, and the SAME frame renders it. The hook ran, the damage it
+  // published was drained by this step, and the frame issued.
+  const arbc::HostViewport::StepOutcome first = viewport.step();
+  static_cast<void>(first);
+  CHECK(settles == 1);
+  CHECK(viewport.external_loads_settled() == 1);
+  CHECK(viewport.frames_issued() == 1);
+  // The frame pinned AFTER the settle: the renderer's last-completed revision is the one the
+  // install published, not the one that preceded it.
+  REQUIRE(renderer.prior_revision().has_value());
+  CHECK(*renderer.prior_revision() == revision_at_settle);
+
+  // Frame 2: the hook is still called (arrivals are polled, not predicted), settles nothing,
+  // and -- with no damage, no follow-up owed and a still scene -- issues no frame at all. The
+  // seam costs an idle viewport exactly one queue check per step.
+  const arbc::HostViewport::StepOutcome second = viewport.step();
+  CHECK_FALSE(second.schedule_follow_up);
+  CHECK(settles == 2);
+  CHECK(viewport.external_loads_settled() == 1);
+  CHECK(viewport.frames_issued() == 1);
+
+  // And a viewport with NO hook configured never calls one and behaves exactly as before.
+  arbc::HostViewport::Config bare;
+  bare.viewport = Viewport{256, 256, Affine::identity()};
+  bare.budget = k_budget;
+  arbc::Model other;
+  const Scene other_scene = add_single_layer(other);
+  const auto other_resolve = [&](ObjectId id) -> arbc::Content* {
+    return id == other_scene.content ? &content : nullptr;
+  };
+  arbc::HostViewport plain(renderer, other, other_resolve, backend, pool, cache, **target,
+                           epoch_clock(), bare);
+  plain.step();
+  CHECK(plain.external_loads_settled() == 0);
+}

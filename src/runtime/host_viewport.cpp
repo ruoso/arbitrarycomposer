@@ -27,7 +27,8 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Model& model, ContentR
     : d_renderer(renderer), d_model(model), d_resolve(std::move(resolve)), d_backend(backend),
       d_pool(pool), d_cache(cache), d_target(target),
       d_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}),
-      d_budget(config.budget), d_viewport(config.viewport), d_transport(config.transport_start) {
+      d_budget(config.budget), d_viewport(config.viewport), d_transport(config.transport_start),
+      d_settle_loads(std::move(config.settle_external_loads)) {
   // Subscribe to model damage for this object's lifetime (Constraint 5, RAII). Two
   // mutually exclusive attach paths (`runtime.damage_router` Constraint 4): with a
   // router supplied, register `&d_sink` with it and hold the move-only
@@ -51,6 +52,18 @@ HostViewport::~HostViewport() {
 }
 
 HostViewport::StepOutcome HostViewport::step() {
+  // 0. Settle any external children whose bytes arrived since the last step
+  //    (`runtime.async_external_load` Decision 7). This runs BEFORE the pin and before the
+  //    damage drain, and both orderings are load-bearing: the install publishes a NEW
+  //    revision, so a pin taken first would render the stale one, and it flushes damage
+  //    naming the embedding content into `d_sink`, which step 3 drains -- so the frame that
+  //    settles an arrival is the frame that composites it, and the placeholder is replaced
+  //    live. This IS doc 02 step 1: an arrival is damage, and this is where damage is
+  //    collected.
+  if (d_settle_loads) {
+    d_external_loads_settled += d_settle_loads();
+  }
+
   // 1. Sample `composition_time` from the playhead policy (Decision 5). Audio-
   //    mastered: chase the lock-free snapshot, never advance the transport (the
   //    device monitor is its sole mutator). Free-run: advance the owned transport

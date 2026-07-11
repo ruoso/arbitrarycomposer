@@ -795,7 +795,8 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
 expected<ObjectId, ReaderError> load_composition(std::string_view input, const Registry& registry,
                                                  const CodecTable& codecs, LoadContext& ctx,
                                                  const ContentSink& sink, Model& into,
-                                                 ObjectId root_composition) {
+                                                 ObjectId root_composition,
+                                                 std::span<const Damage> damage) {
   // The same read as `load_document`, with two differences that are the whole point
   // (runtime.nested_external_ref Decision 1): the graph lands in an EXISTING model under
   // a caller-seeded root id, through an ordinary transaction rather than
@@ -823,6 +824,12 @@ expected<ObjectId, ReaderError> load_composition(std::string_view input, const R
   }
   Model::Transaction txn = into.transact("load external composition");
   install_graph(txn, *graph);
+  // The caller's damage rides THIS commit, not a later one (runtime.async_external_load
+  // Decision 3): a structural publish whose damage set is empty is a revision the frame loop
+  // has no reason to wake for.
+  for (const Damage& d : damage) {
+    txn.add_damage(d);
+  }
   if (!txn.commit()) {
     return fail(ReaderError::Kind::MalformedField, "/composition"); // arena exhaustion
   }

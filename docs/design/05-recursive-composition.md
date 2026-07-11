@@ -56,9 +56,31 @@ scale rungs; each embedding's *composed*-result cache is its own.
 "Recursion into an entirely independent compose project" (a child loaded
 from a separate file/project) is the same mechanism plus a loader; from the
 compositor's perspective there is no difference between an inline child and
-an external one. External loading is async by nature, and the nested kind's
-async render path plus placeholder policy already cover the not-yet-loaded
-state.
+an external one.
+
+External loading is async by nature, and the not-yet-loaded state is a
+**model** state, not a render-completion one. The loader mints the child
+composition's `ObjectId` before it fetches a single byte (the
+allocate-before-parse rule below), so the embedding content binds a *valid*
+child id immediately and the parent document finishes loading without waiting
+on the fetch. Until the bytes arrive that id names no composition record — and
+a child id naming no record is exactly the state the nested kind already
+renders as the placeholder. When the bytes do arrive, the loader installs the
+child's composition graph under that same pre-allocated id in one ordinary
+transaction (doc 14), which publishes a **new revision** and flushes damage
+naming the **embedding content**; doc 02's *Refine* step turns that damage
+into a follow-up frame, and the placeholder is replaced live. The arrival edge
+therefore costs a revision bump and a damage route — ordinary model wiring —
+and adds no second placeholder type, no new content state, and no change to
+render, audio, aggregate revision, damage routing or tile caching.
+
+*Pending* and *unavailable* thus differ in exactly one bit, and only for the
+loader: a pending reference holds a valid child id whose record is not there
+*yet*; an unavailable one holds a null child id and never will. Both render
+the placeholder, both keep their `ref`, and both re-save byte-identically as
+the authored URI. The fetch may run on any thread; the install and its damage
+are marshalled onto the single writer thread that owns the model (docs 14,
+15). Loading a file is async — mutating the document is not.
 
 The loaded child is installed as an ordinary composition in the **host
 document's model**, so render, aggregate revision, damage routing and tile
