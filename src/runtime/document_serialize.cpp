@@ -7,6 +7,7 @@
 
 #include <arbc/kind_crossfade/crossfade_content.hpp>
 #include <arbc/kind_fade/fade_content.hpp>
+#include <arbc/kind_nested/nested_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/kind_tone/tone_content.hpp>
 #include <arbc/model/records.hpp>
@@ -99,6 +100,11 @@ bool builtin_kind_of(const Content& c, std::string_view& kind_id, std::string_vi
     kind_version = k_crossfade_kind_version;
     return true;
   }
+  if (dynamic_cast<const NestedContent*>(&c) != nullptr) {
+    kind_id = NestedContent::kind_id;
+    kind_version = k_nested_kind_version;
+    return true;
+  }
   return false;
 }
 
@@ -113,6 +119,7 @@ KindBridge::KindBridge() {
   intern(ToneContent::kind_id, k_tone_kind_version);
   intern(FadeContent::kind_id, k_fade_kind_version);
   intern(CrossfadeContent::kind_id, k_crossfade_kind_version);
+  intern(NestedContent::kind_id, k_nested_kind_version);
 }
 
 std::uint64_t KindBridge::intern(std::string_view kind_id, std::string_view kind_version) {
@@ -145,6 +152,7 @@ CodecTable builtin_codecs() {
   table.add(ToneContent::kind_id, tone_codec());
   table.add(FadeContent::kind_id, fade_codec());
   table.add(CrossfadeContent::kind_id, crossfade_codec());
+  table.add(NestedContent::kind_id, nested_codec());
   return table;
 }
 
@@ -181,17 +189,21 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) 
   // unknown-kind `PlaceholderContent` carries its child reference too, so a missing
   // plugin never orphans the composition it embeds. Writer-thread only, like the rest of
   // this function (Constraint 11): the off-thread emit reads only the finished snapshot.
+  // Returns whether `cid` names a REACHABLE composition -- the same predicate the writer's
+  // `ContentGraph::enqueue_composition` answers, because the two walks must agree on which
+  // contents are nesting contents (below).
   std::vector<ObjectId> comp_queue;
   std::unordered_set<ObjectId> comp_seen;
-  const auto enqueue_composition = [&](ObjectId cid) {
+  const auto enqueue_composition = [&](ObjectId cid) -> bool {
     if (!cid.valid() || snap.state->find_composition(cid) == nullptr) {
-      return;
+      return false;
     }
     if (comp_seen.insert(cid).second) {
       comp_queue.push_back(cid);
     }
+    return true;
   };
-  enqueue_composition(comp_id);
+  static_cast<void>(enqueue_composition(comp_id));
 
   // Extend the reverse map to the operator INPUT CHILDREN (runtime.operator_codecs
   // Decision 5): the layer walk captures only layer-root contents (bound by a
@@ -243,7 +255,16 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) 
     }
     const Content* const c = frontier.back();
     frontier.pop_back();
-    enqueue_composition(c->composition_ref());
+    // A content naming a resolvable child composition has no AUTHORED inputs: its
+    // `inputs()` are a projection of that child's layers, which the composition queue above
+    // already walks in full (doc 08 Principle 7's closing rule). Stop here, exactly as the
+    // writer's `ContentGraph::visit` does -- the reverse map this walk builds feeds that
+    // traversal, so the two must skip the same edges or the map would carry meta entries
+    // for contents the writer never emits. It is also what keeps this walk from reading the
+    // memo `NestedContent::attach` mutates on the render thread (Constraint 6).
+    if (enqueue_composition(c->composition_ref())) {
+      continue;
+    }
     for (const ContentRef child : c->inputs()) {
       if (child == nullptr || !walked.insert(child).second) {
         continue; // null slot, or a shared child already reached
@@ -363,6 +384,11 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
                Codec{crossfade.serialize,
                      recording_deserialize(crossfade.deserialize, CrossfadeContent::kind_id,
                                            k_crossfade_kind_version, session, bridge)});
+    Codec nested = nested_codec();
+    codecs.add(
+        NestedContent::kind_id,
+        Codec{nested.serialize, recording_deserialize(nested.deserialize, NestedContent::kind_id,
+                                                      k_nested_kind_version, session, bridge)});
   }
 
   // Provisional-root records minted by the sink, keyed by live pointer: a node is

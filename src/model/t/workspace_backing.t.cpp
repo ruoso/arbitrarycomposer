@@ -120,8 +120,7 @@ Doc build_doc(arbc::Model& model) {
     doc.composition = txn.add_composition(640.0, 480.0);
     for (int i = 0; i < k_layer_count; ++i) {
       const arbc::ObjectId content = txn.add_content(0x5000u + static_cast<std::uint64_t>(i));
-      const arbc::ObjectId layer =
-          txn.add_layer(content, arbc::Affine::identity(), 0.5 + 0.01 * i);
+      const arbc::ObjectId layer = txn.add_layer(content, arbc::Affine::identity(), 0.5 + 0.01 * i);
       txn.attach_layer(doc.composition, layer);
       doc.contents.push_back(content);
       doc.layers.push_back(layer);
@@ -495,7 +494,7 @@ TEST_CASE("a checkpoint of a still scene skips the data msync but still syncs th
   // Nothing changed since: no slot allocated, none freed, no chunk grown.
   REQUIRE(model.checkpoint().has_value());
 
-  REQUIRE(ckpt.data_msyncs() - data_before == 0);   // nothing to flush
+  REQUIRE(ckpt.data_msyncs() - data_before == 0);     // nothing to flush
   REQUIRE(ckpt.header_msyncs() - header_before == 1); // ... but still flip + sync the root
   REQUIRE(ckpt.commit_count() == 2);
   REQUIRE(ckpt.generation() == 2);
@@ -751,6 +750,5 @@ TEST_CASE("checkpoint kill sweep: every syscall boundary recovers a consistent d
     }
   }
 }
-
 
 #endif // ARBC_HAS_WORKSPACE_FILES

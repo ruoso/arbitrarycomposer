@@ -462,6 +462,15 @@ private:
   // through the codec table with the built inputs in hand (Decision 4), and hand the
   // node to the sink, which owns it and yields its live `Content*`.
   expected<SunkContent, ReaderError> build(const json& body, bool layer_position) {
+    // A kind names its child through `composition_ref()` OR takes authored `inputs`, never
+    // both (doc 08 Principle 7's closing rule): a nesting content's input edges ARE the
+    // child composition's layers, so a body carrying both edge sets asserts something the
+    // format cannot express. Reject it rather than silently dropping one half -- and reject
+    // it HERE, before either edge set is resolved, so no child is sunk and the model is
+    // left unmutated. The writer has never emitted such a body.
+    if (body.is_object() && body.contains("inputs") && body.contains("composition")) {
+      return fail(ReaderError::Kind::MalformedField, "");
+    }
     std::vector<ContentRef> input_ptrs;
     if (const auto iit = body.find("inputs"); iit != body.end()) {
       if (!iit->is_array()) {

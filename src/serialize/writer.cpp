@@ -263,7 +263,20 @@ private:
     // A nesting content's child composition is graph structure exactly like its inputs
     // (doc 08 Principle 7), and the core reads it off the same kind-agnostic accessor an
     // unknown-kind placeholder also carries -- so a missing plugin never orphans it.
-    enqueue_composition(c->composition_ref());
+    //
+    // And a content that names a RESOLVABLE child composition has no authored inputs to
+    // descend: its `inputs()` are a PROJECTION of that child's layers (doc 08 P7's closing
+    // rule), which the BFS above already walks in full. Descending them anyway would count
+    // each of the child's layer contents twice -- pushing them over Principle 6's
+    // shared-two-or-more threshold and hoisting them into `contents` behind `$ref`s that
+    // describe no authored sharing -- so the same scene would emit different bytes
+    // depending on whether a render binding happened to be attached when it was saved. For
+    // a Droste scene it is worse: the content becomes a transitive input of ITSELF and the
+    // `$ref` closes an operator-input cycle, which Principle 6 forbids and the reader
+    // rejects. Nothing is lost by stopping here.
+    if (enqueue_composition(c->composition_ref())) {
+      return;
+    }
     for (const ContentRef child : c->inputs()) {
       if (child == nullptr) {
         continue;
@@ -279,9 +292,10 @@ private:
     }
   }
 
-  // One node's full inline body: its `{kind, kind_version, params}` leaf plus, when
-  // `inputs()` is non-empty, an order-preserving `inputs` array whose slots are each
-  // a `$ref` (shared) or a nested inline body (recursion). Omitted when empty.
+  // One node's full inline body: its `{kind, kind_version, params}` leaf plus EITHER the
+  // core-owned `composition` reference (a nesting content) OR, when `inputs()` is
+  // non-empty, an order-preserving `inputs` array whose slots are each a `$ref` (shared)
+  // or a nested inline body (recursion). Never both, and `inputs` is omitted when empty.
   json emit_definition(const Content* c, Emitter& em) {
     const MetaEntry& m = d_meta_of.at(c);
     expected<json, SerializeError> leaf =
@@ -299,6 +313,21 @@ private:
     if (d_unknown != nullptr) {
       merge_unknown_fields(body, d_unknown->find(UnknownScope::Content, m.id));
     }
+    // The core-owned child-composition reference (doc 08 Principle 7), appended AFTER
+    // the codec returned and after the unknown merge, exactly as `inputs` is: the id is
+    // re-derived from graph structure on every save, so a codec can neither write it nor
+    // fight it (Constraint 1). `"0"` is the root -- that is how a Droste back-edge is
+    // spelled. Absent when the content names no (resolvable) composition.
+    const auto cit = d_comp_ids.find(c->composition_ref());
+    if (cit != d_comp_ids.end()) {
+      body["composition"] = cit->second;
+      // Exclusive with `inputs`, and this is the side that wins: a nesting content's input
+      // edges are a projection of the child composition this key already names, never
+      // authored data (doc 08 P7). A kind names its child OR takes authored inputs, never
+      // both -- the traversal above stopped for the same reason, and the reader rejects a
+      // body carrying both.
+      return body;
+    }
     const std::span<const ContentRef> ins = c->inputs();
     if (!ins.empty()) {
       json arr = json::array();
@@ -306,14 +335,6 @@ private:
         arr.push_back(child != nullptr ? emit_use(child, em) : json());
       }
       body["inputs"] = std::move(arr);
-    }
-    // The core-owned child-composition reference (doc 08 Principle 7), appended AFTER
-    // the codec returned and after the unknown merge, exactly as `inputs` is: the id is
-    // re-derived from graph structure on every save, so a codec can neither write it nor
-    // fight it (Constraint 1). `"0"` is the root -- that is how a Droste back-edge is
-    // spelled. Absent when the content names no (resolvable) composition.
-    if (const auto cit = d_comp_ids.find(c->composition_ref()); cit != d_comp_ids.end()) {
-      body["composition"] = cit->second;
     }
     return body;
   }

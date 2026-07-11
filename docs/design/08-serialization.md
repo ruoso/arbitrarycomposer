@@ -186,8 +186,30 @@ These are core-owned placement, not `params`.
    is a `compositions` entry keyed `"0"`, which would claim the root's
    reserved ordinal (rejecting it beats silently dropping a composition the
    author wrote). A table entry no reference reaches is ignored on load and
-   dropped on save — canonicalization, like a renumbered id (Principle 4),
+   dropped on save — canonicalization, like a renumbered id (Principle 6),
    not data loss.
+
+   A nesting content's **input edges are a projection of its child
+   composition, not authored data, and are never persisted.** A nesting kind
+   reports the child's member layers through `inputs()` so the core can fold
+   aggregate revision, route damage, and build the pull identity map
+   (doc 13) — but those edges *are* the child's layers, which the
+   `compositions` table already carries in full. Persisting them too would
+   emit the same contents twice (hoisting them into `contents` behind
+   `$ref`s that describe no authored sharing), make a document's bytes
+   depend on whether a render binding happened to be attached when it was
+   saved, and turn a legal Droste back-edge into an illegal operator-input
+   `$ref` cycle (Principle 6) — an unloadable file for the scene this
+   principle exists to round-trip. So: a content that answers a non-null,
+   resolvable `composition_ref()` emits **no `inputs` array**, and the write
+   traversal does not descend its `inputs()`; the child's contents are
+   reached through the composition instead. Loading rebuilds the projection
+   from the child composition, so the round-trip is whole. The corollary is a
+   rule on kinds: **a kind names its child through `composition_ref()` or
+   takes authored `inputs`, never both** — a body carrying both `composition`
+   and `inputs` is a serialization error surfaced as a value on load
+   (rejecting it beats silently dropping one of the two edge sets the author
+   wrote).
 
 ## Deliberately not in the format
 

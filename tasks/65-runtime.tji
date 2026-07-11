@@ -90,8 +90,15 @@ task runtime "Runtime" {
   task nested_codec "org.arbc.nested codec over the compositions table" {
     effort 2d
     allocate team
+    complete 100
     depends !operator_codecs, serialize.compositions_table
-    note "Register the org.arbc.nested serialize/deserialize codec: persist a nested content's in-document child through the doc 08 compositions table (core-owned composition reference), rebuild the child composition + NestedContent binding on load, end-to-end byte-exact goldens incl. a Droste cycle; external params.ref children remain loader territory (doc 05). Source: tasks/parking-lot.md 2026-07-09 (nested serialization format decision); tasks/refinements/runtime/operator_codecs.md Decision 1. Docs 05/08."
+    note "Register the org.arbc.nested serialize/deserialize codec: persist a nested content's in-document child through the doc 08 compositions table (core-owned composition reference), rebuild the child composition + NestedContent binding on load, end-to-end byte-exact goldens incl. a Droste cycle; external params.ref children remain loader territory (doc 05). Source: tasks/parking-lot.md 2026-07-09 (nested serialization format decision); tasks/refinements/runtime/operator_codecs.md Decision 1. Docs 05/08. Refinement: tasks/refinements/runtime/nested_codec.md"
+  }
+  task nested_external_ref "Resolve external nested child through LoadContext" {
+    effort 2d
+    allocate team
+    depends !nested_codec
+    note "Resolve a kind-owned params.ref URI in a NestedContent's body through LoadContext's base-URI resolution and async AssetSource hook (load_context.hpp:49-87), loading the referenced .arbc as a child composition and deduping by resolved identity, so nested renders an external project. Source-of-debt: tasks/refinements/runtime/nested_codec.md Acceptance criteria (deferred follow-up). Docs 05/08."
   }
   task interactive_pull_wiring "Wire PullService into the interactive frame path" {
     effort 1d

@@ -62,7 +62,7 @@ task milestones "Milestones" {
 
   task m8_persistence "M8: Documents as files" {
     milestone
-    depends serialize.format_tests, runtime.plugin_loading, model.workspace_backing, runtime.document_serialize, runtime.operator_codecs, serialize.unknown_field_preservation, serialize.compositions_table, runtime.nested_codec
+    depends serialize.format_tests, runtime.plugin_loading, model.workspace_backing, runtime.document_serialize, runtime.operator_codecs, serialize.unknown_field_preservation, serialize.compositions_table, runtime.nested_codec, runtime.nested_external_ref
     note "Canonical .arbc round-trips with unknown-kind and every-tier unknown-field preservation; nested compositions round-trip in-document (compositions table, Droste included); external nested projects load; plugins load by path. Docs 05/08 realized."
   }
 

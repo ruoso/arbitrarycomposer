@@ -6,10 +6,11 @@
 // (kind_params Decision 3, runtime.document_serialize Decision 3).
 //
 // The built-in codecs live in their own TUs (`codec_solid.cpp`, `codec_tone.cpp`,
-// and the operator codecs `codec_fade.cpp`/`codec_crossfade.cpp`) -- the only layer
-// that legally sees both a concrete kind type (L4 `kind_solid`/`kind_tone`/
-// `kind_fade`/`kind_crossfade`) and the JSON library (via L4 `serialize`) is
-// `runtime` (L5). Each factory returns a `Codec{serialize, deserialize}` pair over
+// the operator codecs `codec_fade.cpp`/`codec_crossfade.cpp`, and the nesting codec
+// `codec_nested.cpp`) -- the only layer that legally sees both a concrete kind type
+// (L4 `kind_solid`/`kind_tone`/`kind_fade`/`kind_crossfade`/`kind_nested`) and the JSON
+// library (via L4 `serialize`) is `runtime` (L5). Each factory returns a
+// `Codec{serialize, deserialize}` pair over
 // its kind's `params`; the façade (`document_serialize.cpp`) assembles them into a
 // `CodecTable` for the save path and wraps their `deserialize` with per-load kind
 // recording for the read path (Decision 4). The operator codecs additionally adopt
@@ -27,6 +28,7 @@ inline constexpr const char* k_solid_kind_version = "1";
 inline constexpr const char* k_tone_kind_version = "1";
 inline constexpr const char* k_fade_kind_version = "1";
 inline constexpr const char* k_crossfade_kind_version = "1";
+inline constexpr const char* k_nested_kind_version = "1";
 
 // org.arbc.solid: encodes/decodes `SolidContent`'s premultiplied `Rgba` as a
 // `{"color": [r, g, b, a]}` params object.
@@ -65,13 +67,24 @@ Codec crossfade_codec();
 // (`operator_binding.hpp`), beside `register_fade_binder()`.
 void register_crossfade_binder();
 
+// org.arbc.nested: the nesting codec, and the thinnest in the tree. `NestedContent` has
+// no params at all -- its child `ObjectId` is its whole state, and that reference is
+// core-owned (doc 08 Principle 7): the writer re-derives the `"composition"` id from graph
+// structure after `serialize` returns, and the reader pre-allocates the child id and hands
+// it to `deserialize` as its `composition` argument. So serialize emits an empty `params`
+// object and deserialize is `NestedContent(composition)`; an absent child is a
+// `MissingRequiredField` value at `/composition`. Input edges are NOT consumed: nested's
+// `inputs()` are a projection of the child composition, never authored data.
+Codec nested_codec();
+
 // Register the runtime binder for `org.arbc.nested` (a typed attach/detach thunk over
-// the concrete `NestedContent`, `kinds.nested_runtime_binding`). Unlike the two above
-// it has no codec TU to ride -- `runtime.nested_codec` is unlanded -- so it is defined
-// in `binder_nested.cpp`, the only runtime TU that names `NestedContent` (doc 17:60,
-// Decision 5). Reached once via `register_builtin_operator_binders()`
-// (`operator_binding.hpp`), beside the two operator binders. Nested is the kind that
-// consumes the `BindContext`'s resolver and pinned `DocRoot` as well as the services.
+// the concrete `NestedContent`, `kinds.nested_runtime_binding`). Defined in the same TU as
+// `nested_codec()` -- the only runtime TU that names `NestedContent` (doc 17:60) -- exactly
+// as fade's and crossfade's binders ride theirs; it lived in a standalone `binder_nested.cpp`
+// only until this codec TU existed (that task's Decision 5). Reached once via
+// `register_builtin_operator_binders()` (`operator_binding.hpp`), beside the two operator
+// binders. Nested is the kind that consumes the `BindContext`'s resolver and pinned
+// `DocRoot` as well as the services.
 void register_nested_binder();
 
 } // namespace arbc

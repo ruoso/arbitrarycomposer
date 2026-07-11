@@ -1,7 +1,7 @@
 arbc_add_component(
   NAME runtime
   SOURCES document.cpp editable_binding.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp
-          codec_fade.cpp codec_crossfade.cpp binder_nested.cpp
+          codec_fade.cpp codec_crossfade.cpp codec_nested.cpp
           operator_binding.cpp pull_identity.cpp
           offline.cpp
           offline_sequence.cpp housekeeping.cpp housekeeping_thread.cpp
@@ -48,5 +48,16 @@ arbc_component_test(COMPONENT runtime
                             t/export_monitor.t.cpp t/content_binding.t.cpp
                             t/editable_binding.t.cpp t/editable_sink_multiplex.t.cpp
                             t/document_serialize.t.cpp t/operator_codecs.t.cpp
+                            t/nested_codec.t.cpp
                             t/pull_identity.t.cpp
                             t/plugin_host.t.cpp)
+
+# t/nested_codec.t.cpp drives `nested_codec()`'s two halves directly, so it names
+# `Codec` -- and through it `nlohmann::json`, which is PRIVATE to arbc_runtime. Link it
+# into the component-test binary the same way, the idiom tests/CMakeLists.txt already uses
+# for every target holding a CodecTable. nlohmann is header-only and invisible to
+# check_levels.py (it scans `#include <arbc/...>` only), so this adds no levelization edge
+# and no new dependency (doc 10).
+if(TARGET arbc_runtime_t)
+  target_link_libraries(arbc_runtime_t PRIVATE nlohmann_json::nlohmann_json)
+endif()

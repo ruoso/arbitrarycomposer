@@ -523,20 +523,32 @@ TEST_CASE("a composition cycle round-trips as data, and is not an operator-input
 
   // enforces: 08-serialization#dangling-ref-is-read-error
   SECTION("an operator-INPUT cycle in the same document shape is still unresolvable") {
-    // Same two-composition shape, but the shared body's cycle now runs through `inputs`
-    // rather than `composition`. `$ref` graphs stay acyclic (doc 08 Principle 6): the two
-    // cycle notions do not contaminate each other.
+    // The same two-composition document, carrying BOTH cycle notions at once: the root's
+    // first layer closes a legal COMPOSITION edge into `compositions["1"]`, while the shared
+    // `contents` bodies close an operator-INPUT cycle through `inputs`. `$ref` graphs stay
+    // acyclic (doc 08 Principle 6), so the input cycle is rejected -- and the live
+    // composition edge beside it neither rescues it nor is contaminated by it. The two
+    // notions keep separate state.
+    //
+    // Each edge set rides its OWN body: a single body carrying both is malformed outright
+    // (doc 08 P7's closing rule -- a kind names its child through `composition_ref()` or
+    // takes authored `inputs`, never both), which is a DIFFERENT error, pinned by
+    // `#composition-and-inputs-is-read-error` below. Keeping them apart is what leaves this
+    // section proving the cycle rule rather than the exclusivity rule.
     const char* const doc = R"json({
   "arbc": {"format": 1},
   "composition": {
     "canvas": [0, 0, 16, 16],
-    "layers": [{"$ref": "0"}]
+    "layers": [
+      {"kind": "com.test.nest", "kind_version": "1.0", "params": {}, "composition": "1"},
+      {"$ref": "0"}
+    ]
   },
   "compositions": {
     "1": {"canvas": [0, 0, 8, 8], "layers": [{"$ref": "0"}]}
   },
   "contents": {
-    "0": {"kind": "com.test.nest", "kind_version": "1.0", "params": {}, "composition": "1",
+    "0": {"kind": "com.test.nest", "kind_version": "1.0", "params": {},
           "inputs": [{"$ref": "1"}]},
     "1": {"kind": "com.test.nest", "kind_version": "1.0", "params": {},
           "inputs": [{"$ref": "0"}]}
@@ -552,6 +564,81 @@ TEST_CASE("a composition cycle round-trips as data, and is not an operator-input
     REQUIRE_FALSE(result);
     CHECK(result.error().kind == ReaderError::Kind::UnresolvableReference);
     CHECK(loaded.current()->revision() == 0);
+  }
+}
+
+// enforces: 08-serialization#composition-and-inputs-is-read-error
+// enforces: 08-serialization#load-installs-version-0-baseline
+TEST_CASE("a body carrying BOTH a composition and authored inputs is a read error") {
+  // doc 08 Principle 7's closing rule (runtime.nested_codec Decision 2): a nesting content's
+  // input edges are a PROJECTION of its child composition -- they ARE that child's layers --
+  // so a kind names its child through `composition_ref()` or takes authored `inputs`, never
+  // both. A body carrying both edge sets asserts something the format cannot express, and
+  // rejecting it beats silently dropping one of the two (doc 08 says exactly that, twice, in
+  // the principle this amends). The writer has never emitted such a body; only a hand-authored
+  // (or hostile) file can carry one.
+  const CodecTable codecs = nest_table();
+  Registry registry;
+  LoadContext ctx("mem://doc.arbc");
+
+  SECTION("at a layer's content position") {
+    const char* const doc = R"json({
+  "arbc": {"format": 1},
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      {"kind": "com.test.nest", "kind_version": "1.0", "params": {}, "composition": "1",
+       "inputs": [{"kind": "com.test.clip", "kind_version": "1.0", "params": {"src": "a.png"}}]}
+    ]
+  },
+  "compositions": {
+    "1": {"canvas": [0, 0, 8, 8], "layers": []}
+  }
+})json";
+    RecordingSink sink;
+    Model model;
+    arbc::expected<std::monostate, ReaderError> result{std::monostate{}};
+    REQUIRE_NOTHROW(result =
+                        arbc::load_document(doc, registry, codecs, ctx, sink.as_sink(), model));
+    REQUIRE_FALSE(result);
+    CHECK(result.error().kind == ReaderError::Kind::MalformedField);
+    CHECK(result.error().path.empty()); // the BODY's own path, as codec.cpp spells it
+    // Rejected BEFORE either edge set is resolved, so no child was ever sunk and the model is
+    // untouched: revision 0, no composition record (Constraint 8).
+    CHECK(model.current()->revision() == 0);
+    CHECK(sink.owned.empty());
+    ObjectId first;
+    const CompositionRecord* rec = nullptr;
+    CHECK_FALSE(model.current()->find_first_composition(first, rec));
+  }
+
+  SECTION("in a standalone contents-table body") {
+    // The same rule holds however the body is reached -- a `contents` entry stands alone.
+    const char* const doc = R"json({
+  "arbc": {"format": 1},
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [{"$ref": "0"}]
+  },
+  "compositions": {
+    "1": {"canvas": [0, 0, 8, 8], "layers": []}
+  },
+  "contents": {
+    "0": {"kind": "com.test.nest", "kind_version": "1.0", "params": {}, "composition": "1",
+          "inputs": []}
+  }
+})json";
+    RecordingSink sink;
+    Model model;
+    arbc::expected<std::monostate, ReaderError> result{std::monostate{}};
+    REQUIRE_NOTHROW(result =
+                        arbc::load_document(doc, registry, codecs, ctx, sink.as_sink(), model));
+    REQUIRE_FALSE(result);
+    // An EMPTY `inputs` array is still an authored `inputs` key: the rule is about the two
+    // edge sets being declared at once, not about how many edges each carries. The writer
+    // omits `inputs` entirely when it has none, so an empty array is never something it wrote.
+    CHECK(result.error().kind == ReaderError::Kind::MalformedField);
+    CHECK(model.current()->revision() == 0);
   }
 }
 

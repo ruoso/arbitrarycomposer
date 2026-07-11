@@ -202,6 +202,19 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_operator_codecs_concurrency_t)
 
+# runtime.nested_codec end-to-end byte-exact goldens: a REAL org.arbc.nested content (not the
+# test double serialize.compositions_table proved the format with) round-trips through a live
+# Document -- plain nesting, a Droste self-cycle, a shared child -- and the attach-invariance
+# proof that pins Decision 1: a save taken while a live OperatorBindingScope makes nested's
+# derived inputs() non-empty is byte-identical to the unbound save. Needs a real Backend and a
+# real binding scope, so it is cross-component; holds no CodecTable of its own but names
+# save_document/load_document, and links nlohmann for symmetry with its siblings.
+add_executable(arbc_nested_codec_golden_t nested_codec_golden.t.cpp)
+target_link_libraries(
+  arbc_nested_codec_golden_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_codec_golden_t)
+
 add_executable(arbc_contract_conformance_t contract_conformance.t.cpp)
 target_link_libraries(
   arbc_contract_conformance_t
