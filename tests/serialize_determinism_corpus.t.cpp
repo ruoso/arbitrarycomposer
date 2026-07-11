@@ -331,6 +331,132 @@ constexpr const char* k_authored_ids = R"json({
   }
 })json";
 
+// ---------------------------------------------------------------------------------
+// The CANONICAL two-composition document (serialize.compositions_table, doc 08
+// Principle 7): the root keeps its home at `composition` and holds the reserved ordinal
+// "0"; the one child lands in `compositions` under "1"; the nesting body names it through
+// the core-owned `composition` field. The nesting kind is one this build has NO codec for
+// -- the child reference rides its `PlaceholderContent`, so the child composition stays
+// reachable and a missing plugin never orphans it (Principle 2, Decision 6).
+constexpr const char* k_compositions = R"json({
+  "arbc": {
+    "format": 1
+  },
+  "composition": {
+    "canvas": [
+      0,
+      0,
+      16,
+      16
+    ],
+    "layers": [
+      {
+        "composition": "1",
+        "kind": "com.example.nest",
+        "kind_version": "3.2",
+        "opacity": 1.0,
+        "params": {
+          "blend": "over"
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      }
+    ]
+  },
+  "compositions": {
+    "1": {
+      "canvas": [
+        0,
+        0,
+        8,
+        8
+      ],
+      "layers": [
+        {
+          "kind": "org.arbc.solid",
+          "kind_version": "1",
+          "opacity": 1.0,
+          "params": {
+            "color": [
+              1.0,
+              0.5,
+              0.25,
+              1.0
+            ]
+          },
+          "transform": [
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "visible": true
+        }
+      ]
+    }
+  }
+}
+)json";
+
+// A HAND-AUTHORED variant of k_compositions: arbitrary non-canonical composition keys
+// ("main" for the reachable child, "zzz" for one NOTHING references), unsorted keys
+// throughout, and the nesting body naming its child by the authored key. It carries the
+// same reachable graph, so loading it and re-saving must reproduce k_compositions
+// byte-for-byte: composition ids collapse to first-encounter ordinals over the canonical
+// traversal (Constraint 2/3), and the unreachable entry is ignored on load and dropped on
+// save -- canonicalization, like a renumbered id, not data loss (Principle 4, Decision 3's
+// sibling rule). It also pins that `composition` is a KNOWN body key: were it not, the
+// authored "main" would be stashed as an unknown AND the core would emit its own re-derived
+// "1" beside it (unknown_field_preservation Constraint 7).
+constexpr const char* k_authored_compositions = R"json({
+  "compositions": {
+    "zzz": {
+      "layers": [
+        { "kind": "org.arbc.solid", "kind_version": "1",
+          "params": { "color": [0.0, 0.0, 0.0, 1.0] } }
+      ],
+      "canvas": [0, 0, 4, 4]
+    },
+    "main": {
+      "layers": [
+        {
+          "params": { "color": [1.0, 0.5, 0.25, 1.0] },
+          "kind_version": "1",
+          "kind": "org.arbc.solid",
+          "opacity": 1.0,
+          "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+          "visible": true
+        }
+      ],
+      "canvas": [0, 0, 8, 8]
+    }
+  },
+  "composition": {
+    "layers": [
+      {
+        "visible": true,
+        "composition": "main",
+        "params": { "blend": "over" },
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "kind_version": "3.2",
+        "opacity": 1.0,
+        "kind": "com.example.nest"
+      }
+    ],
+    "canvas": [0, 0, 16, 16]
+  },
+  "arbc": { "format": 1 }
+})json";
+
 // A HAND-AUTHORED unknown-kind document: a plugin the host lacks, carrying params the
 // host understands nothing about (an unknown `scale` field and an unsorted nested
 // object). It must round-trip to a canonical fixed point with every byte of the
@@ -594,4 +720,28 @@ TEST_CASE(
   const std::string normalized = content_roundtrip(k_authored_ids);
   CHECK(normalized == std::string(k_operator));
   CHECK(content_roundtrip(normalized) == std::string(k_operator)); // and it is a fixed point
+}
+
+// enforces: 08-serialization#hand-authored-ids-normalize-deterministically
+// enforces: 08-serialization#child-compositions-round-trip-in-document
+TEST_CASE("canonicalization holds across the composition id space too") {
+  // The canonical two-composition document is a fixed point...
+  CHECK(content_roundtrip(k_compositions) == std::string(k_compositions));
+
+  // ...and a hand-authored file carrying the SAME reachable graph under arbitrary
+  // composition keys ("main"), unsorted keys, and an UNREACHABLE table entry ("zzz")
+  // normalizes to it byte-for-byte: the composition ids collapse to first-encounter
+  // ordinals over the canonical traversal, and the entry no reference reaches is dropped
+  // (doc 08 Principle 4 -- an id-keyed table is not a sibling surface).
+  const std::string normalized = content_roundtrip(k_authored_compositions);
+  CHECK(normalized == std::string(k_compositions));
+  CHECK(content_roundtrip(normalized) == std::string(k_compositions));
+
+  // The authored key is GONE, not stashed-and-re-emitted beside the core's own ordinal:
+  // `composition` is a known body key, so it is never mistaken for an unknown field
+  // (unknown_field_preservation Constraint 7). The unreachable composition's only
+  // distinguishing content is likewise gone.
+  CHECK(normalized.find("\"main\"") == std::string::npos);
+  CHECK(normalized.find("\"zzz\"") == std::string::npos);
+  CHECK(normalized.find("\"composition\": \"1\"") != std::string::npos);
 }

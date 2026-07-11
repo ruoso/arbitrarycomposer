@@ -163,14 +163,31 @@ These are core-owned placement, not `params`.
    discipline). A nested content body names its child through a core-owned
    `"composition": id` field beside `kind`/`inputs`/`params` — core-owned
    because the reference is graph structure, exactly like `inputs`; the
-   kind's `params` never carries it. `compositions` references may form
-   cycles (A embeds B embeds A): a Droste scene serializes directly — the
-   depth budget that bounds its *rendering* (doc 05) has no bearing on its
-   *representation*. The kind-owned `params.ref` URI form remains the
-   reference to an **external** project file (Principle 3, doc 05); the
-   table is for in-document children. On load, a `composition` id absent
-   from the table is a serialization error surfaced as a value, like a
-   dangling `$ref`.
+   kind's `params` never carries it. The core reads that reference off the
+   content's `composition_ref()` accessor (doc 03), the exact mirror of
+   `inputs()`, and re-derives the emitted id from graph structure — so the
+   reference survives even a kind this build cannot load: an unknown-kind
+   placeholder (Principle 2) carries its child reference like any other
+   content, and a missing plugin never orphans the composition it embeds.
+   The id space covers **every** reachable composition, the root included.
+   The root is encountered first, so it always holds ordinal `"0"` — but it
+   keeps its canonical home in the root `composition` object and is never a
+   key in `compositions`, which therefore runs `"1"`…`"N"`. That is what
+   lets a cycle close: `compositions` references may form them (A embeds B
+   embeds A; a composition embeds *itself*), and the back-edge to the root
+   is spelled `"composition": "0"`. A Droste scene serializes directly —
+   the depth budget that bounds its *rendering* (doc 05) has no bearing on
+   its *representation*. A composition cycle is not an operator-input cycle:
+   the `$ref` graph stays acyclic (Principle 6), and the two are checked
+   separately. The kind-owned `params.ref` URI form remains the reference to
+   an **external** project file (Principle 3, doc 05); the table is for
+   in-document children. On load, a `composition` id absent from the table
+   is a serialization error surfaced as a value, like a dangling `$ref`; so
+   is a `compositions` entry keyed `"0"`, which would claim the root's
+   reserved ordinal (rejecting it beats silently dropping a composition the
+   author wrote). A table entry no reference reaches is ignored on load and
+   dropped on save — canonicalization, like a renumbered id (Principle 4),
+   not data loss.
 
 ## Deliberately not in the format
 

@@ -40,7 +40,7 @@ expected<json, SerializeError> serialize_solid(const Content& content) {
 // partial construction. The leaf kind ignores `inputs`/`ctx`.
 expected<std::unique_ptr<Content>, ReaderError>
 deserialize_solid(const json& params, std::span<const ContentRef> /*inputs*/,
-                  LoadContext& /*ctx*/) {
+                  ObjectId /*composition*/, LoadContext& /*ctx*/) {
   const auto cit = params.find("color");
   if (cit == params.end() || !cit->is_array() || cit->size() != 4) {
     return read_fail(ReaderError::Kind::MalformedField, "/params/color");

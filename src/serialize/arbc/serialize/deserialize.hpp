@@ -33,7 +33,18 @@ namespace arbc {
 // known-kind operator adopts its inputs at construction (e.g.
 // `FadeContent(params, inputs[0])`), symmetric with the write side walking
 // `Content::inputs()`. A leaf kind receives an empty span.
+//
+// serialize.compositions_table grows `composition` (Decision 5): the resolved
+// `ObjectId` of the child composition this content's body named through the
+// core-owned `"composition"` field (doc 08 Principle 7), already allocated by the
+// reader BEFORE the composition's own layers are built -- which is what lets a
+// Droste cycle terminate. A nesting kind builds itself around it
+// (`NestedContent(child)`); every other kind receives `ObjectId{}` and ignores it.
+// Asymmetric with `SerializeFn` on purpose: on save the core re-derives the id from
+// `Content::composition_ref()` and appends it after the codec returns, exactly as it
+// re-derives `inputs` -- so a codec neither writes nor reads it.
 using DeserializeFn = std::function<expected<std::unique_ptr<Content>, ReaderError>(
-    const nlohmann::json& params, std::span<const ContentRef> inputs, LoadContext& ctx)>;
+    const nlohmann::json& params, std::span<const ContentRef> inputs, ObjectId composition,
+    LoadContext& ctx)>;
 
 } // namespace arbc

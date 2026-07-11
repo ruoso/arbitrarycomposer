@@ -180,3 +180,105 @@ TEST_CASE("a snapshot's COPIED unknown-field stash emits off-thread against ongo
   CHECK(serialized.load() == k_rounds);
   CHECK(doc.pin()->revision() > snap.state->revision());
 }
+
+// enforces: 08-serialization#writer-serializes-the-pinned-version
+// enforces: 08-serialization#child-compositions-round-trip-in-document
+TEST_CASE("a MULTI-COMPOSITION snapshot emits off-thread against ongoing edits") {
+  // serialize.compositions_table Constraint 11: `capture_snapshot`'s new composition walk
+  // runs on the WRITER thread -- it calls `doc.resolve`, the writer-thread-owned side map
+  // -- and the off-thread `serialize_snapshot` continues to read only immutable snapshot
+  // data plus the pinned `DocRoot`. So a document that is a GRAPH of compositions emits
+  // off-thread with no data race, and the bytes match the pinned revision even while the
+  // writer keeps committing into BOTH compositions.
+  using arbc::Affine;
+  using arbc::Content;
+  using arbc::ContentRef;
+  using arbc::Document;
+  using arbc::KindBridge;
+  using arbc::ObjectId;
+  using arbc::Rgba;
+  using arbc::SolidContent;
+
+  // The nesting content is an UNKNOWN kind here (no codec anywhere in this build): its
+  // PlaceholderContent carries the child reference, which is exactly what makes the
+  // composition walk kind-agnostic (Decision 1/6). Built through the reader, so the
+  // placeholder is a real one.
+  const char* const k_two_comps = R"json({
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 1920, 1080],
+    "layers": [
+      { "kind": "com.example.nest", "kind_version": "1.0", "params": {}, "composition": "1" }
+    ]
+  },
+  "compositions": {
+    "1": { "canvas": [0, 0, 640, 480], "layers": [
+      { "kind": "org.arbc.solid", "kind_version": "1",
+        "params": { "color": [1.0, 0.5, 0.25, 1.0] } }
+    ]}
+  }
+})json";
+
+  const arbc::CodecTable codecs = arbc::builtin_codecs();
+  KindBridge bridge;
+  Document doc;
+  const arbc::Registry registry;
+  REQUIRE(arbc::load_document(k_two_comps, doc, bridge, registry).has_value());
+
+  // Both compositions are live; the root is the lowest-id one.
+  const auto pinned = doc.pin();
+  ObjectId root;
+  const arbc::CompositionRecord* rec = nullptr;
+  REQUIRE(pinned->find_first_composition(root, rec));
+  ObjectId nest_content;
+  pinned->for_each_layer_in(root, [&](ObjectId lid) {
+    const arbc::LayerRecord* lr = pinned->find_layer(lid);
+    REQUIRE(lr != nullptr);
+    nest_content = lr->content;
+  });
+  const Content* const ghost = doc.resolve(nest_content);
+  REQUIRE(ghost != nullptr);
+  const ObjectId child = ghost->composition_ref();
+  REQUIRE(child.valid());
+
+  // Capture on the writer thread (this thread), then compute the reference bytes once.
+  const arbc::ContentSnapshot snap = arbc::capture_snapshot(doc, bridge);
+  const arbc::expected<std::string, arbc::SerializeError> reference =
+      arbc::serialize_snapshot(snap, codecs);
+  REQUIRE(reference.has_value());
+  const std::string expected_bytes = *reference;
+  CHECK(expected_bytes.find("\"compositions\"") != std::string::npos);
+  CHECK(expected_bytes.find("\"composition\": \"1\"") != std::string::npos);
+
+  constexpr int k_iterations = 500;
+  std::atomic<bool> serialize_error{false};
+  std::atomic<bool> mismatch{false};
+  std::atomic<int> serialized{0};
+
+  std::thread reader([&] {
+    for (int i = 0; i < k_iterations; ++i) {
+      const arbc::expected<std::string, arbc::SerializeError> out =
+          arbc::serialize_snapshot(snap, codecs);
+      if (!out.has_value()) {
+        serialize_error.store(true);
+      } else if (*out != expected_bytes) {
+        mismatch.store(true);
+      } else {
+        serialized.fetch_add(1);
+      }
+    }
+  });
+
+  // The single writer churns BOTH compositions while the pinned emit runs.
+  for (int i = 0; i < k_iterations; ++i) {
+    const ObjectId c = doc.add_content(std::make_shared<SolidContent>(Rgba{0.0F, 0.0F, 0.0F, 1.0F}),
+                                       bridge.intern(SolidContent::kind_id, "1"));
+    doc.attach_layer((i % 2 == 0) ? root : child, doc.add_layer(c, Affine::identity(), 1.0));
+  }
+
+  reader.join();
+  CHECK_FALSE(serialize_error.load());
+  CHECK_FALSE(mismatch.load()); // the pinned revision's bytes, unmoved by the edits
+  CHECK(serialized.load() == k_iterations);
+  CHECK(doc.pin()->revision() > snap.state->revision());
+}

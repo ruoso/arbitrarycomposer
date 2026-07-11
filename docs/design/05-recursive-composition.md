@@ -53,9 +53,12 @@ state.
 
 Persistence follows the same split (doc 08): an in-document child
 serializes into the document-level `compositions` table, the nested
-content naming it by a core-owned id — cycles included, so a Droste scene
-round-trips as data — while an external child stays a kind-owned
-`params.ref` URI resolved through the loader.
+content naming it by a core-owned id — the core reads the reference off
+the content's `composition_ref()` accessor (doc 03), the exact mirror of
+`inputs()` — cycles included, so a Droste scene round-trips as data (the
+root's reserved ordinal `"0"` is what a back-edge names), while an
+external child stays a kind-owned `params.ref` URI resolved through the
+loader.
 
 ## Cycles
 

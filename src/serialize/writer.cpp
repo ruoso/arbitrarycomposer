@@ -127,37 +127,64 @@ json time_map_json(const TimeMap& m) {
   return o;
 }
 
-// The write face of doc 08 Principle 6 (serialize.sharing): the operator graph
-// rooted at the document's layer contents, emitted structurally. A single pre-pass
-// counts every `Content*`'s occurrences across the reachable graph (all layer roots
-// bottom-to-top, each depth-first over `inputs()` in declared order) and records its
-// `(kind, kind_version)`; content reached two or more times is *shared* and hoisted
-// once into a document-level `contents` table under a deterministic first-encounter
-// ordinal id, referenced by `{"$ref": id}` at every use site (Constraint 2). The
-// same traversal order that drives counting drives id assignment, so output is
-// byte-stable across runs and re-serializations (doc 08 Principle 5).
+// The write face of doc 08 Principles 6 AND 7 (serialize.sharing +
+// serialize.compositions_table): the document's *graph of compositions* and the
+// operator graph rooted at each one's layer contents, emitted structurally by ONE
+// interleaved pre-pass.
+//
+// The traversal (compositions_table Constraint 3): compositions BREADTH-first from the
+// root, each composition's layers bottom-to-top, each layer's content graph DEPTH-first
+// over `inputs()` in declared order; a content's `composition_ref()` enqueues its child
+// composition on first encounter. It assigns BOTH id spaces -- the composition ordinals
+// (`"0"` == the root, always, since it is encountered first; `"1"`..`"N"` the reachable
+// non-root ones) and the shared-`contents` ordinals -- from that single deterministic
+// order, so output is byte-stable across runs and re-serializations (Principle 5).
+//
+// Content reached two or more times ACROSS THE WHOLE reachable graph -- spanning
+// compositions, not per-composition (Constraint 4) -- is shared: hoisted once into the
+// document-level `contents` table, referenced by `{"$ref": id}` at every use site.
+//
+// Breadth-first, not depth-first, is what makes the walk cycle-safe: a composition is
+// enqueued on first encounter and its layers built only when popped, and the visited set
+// (keyed by composition `ObjectId`) bounds a Droste back-edge. Cycles here are LEGAL --
+// unlike `$ref` input cycles, which stay acyclic (Principle 6).
 class ContentGraph {
 public:
   ContentGraph(const ContentBodyProvider& provider, const ContentMetaProvider& meta,
                const CodecTable& codecs, const UnknownFieldStore* unknown)
       : d_provider(provider), d_meta(meta), d_codecs(codecs), d_unknown(unknown) {}
 
-  // Pre-pass over the document graph: count occurrences, record metadata, assign the
-  // shared-content ids. Must run before any layer or `contents` emission.
-  void build(const DocRoot& doc, ObjectId comp_id) {
-    doc.for_each_layer_in(comp_id, [&](ObjectId lid) {
-      const LayerRecord* lr = doc.find_layer(lid);
-      if (lr == nullptr) {
-        return;
-      }
-      const std::optional<ContentBody> body = d_provider(lr->content);
-      if (!body.has_value()) {
-        return;
-      }
-      // A layer root's ObjectId is the layer record's `content` -- the same id the
-      // reader's sink minted, so it keys this content's unknown-field stash directly.
-      visit(&body->content, body->kind, body->kind_version, lr->content);
-    });
+  // One reachable composition: its model id, its record, and (implicitly, by index) its
+  // ordinal -- index 0 is the root, which keeps its home at `root["composition"]`.
+  struct CompEntry {
+    ObjectId id;
+    const CompositionRecord* record;
+  };
+
+  // Pre-pass over the document graph: discover every reachable composition, count
+  // content occurrences, record metadata, assign both id spaces. Must run before any
+  // layer, `compositions`, or `contents` emission.
+  void build(const DocRoot& doc, ObjectId root_comp) {
+    d_doc = &doc;
+    enqueue_composition(root_comp); // the root: ordinal "0" (Decision 2)
+    // Breadth-first: `d_comps` grows while we walk it, so a composition discovered
+    // through a nesting content's `composition_ref()` has its layers walked in turn --
+    // and a back-edge to an already-seen composition simply re-uses its ordinal.
+    for (std::size_t i = 0; i < d_comps.size(); ++i) {
+      doc.for_each_layer_in(d_comps[i].id, [&](ObjectId lid) {
+        const LayerRecord* lr = doc.find_layer(lid);
+        if (lr == nullptr) {
+          return;
+        }
+        const std::optional<ContentBody> body = d_provider(lr->content);
+        if (!body.has_value()) {
+          return;
+        }
+        // A layer root's ObjectId is the layer record's `content` -- the same id the
+        // reader's sink minted, so it keys this content's unknown-field stash directly.
+        visit(&body->content, body->kind, body->kind_version, lr->content);
+      });
+    }
     std::size_t next = 0;
     for (const Content* c : d_order) {
       if (d_counts[c] >= 2) {
@@ -166,6 +193,10 @@ public:
       }
     }
   }
+
+  // The reachable compositions in first-encounter order; index i holds ordinal `i`, so
+  // index 0 is the root and `[1, size)` is exactly the `compositions` table.
+  const std::vector<CompEntry>& compositions() const { return d_comps; }
 
   // Emit a use site: `{"$ref": id}` for a shared content, else its inline body.
   json emit_use(const Content* c, Emitter& em) {
@@ -198,6 +229,27 @@ private:
     ObjectId id; // this content's stash key (Decision 3)
   };
 
+  // Enqueue a composition on first encounter, assigning it the next ordinal. A null id,
+  // or one naming no `CompositionRecord` in this document, is not a composition
+  // reference: it is silently no reference at all, so the emitted body simply carries no
+  // `composition` key (an id the core cannot resolve is never written out as a dangling
+  // one). Returns true when `cid` names a reachable composition.
+  bool enqueue_composition(ObjectId cid) {
+    if (!cid.valid() || d_doc == nullptr) {
+      return false;
+    }
+    if (d_comp_ids.find(cid) != d_comp_ids.end()) {
+      return true; // already seen -- the Droste back-edge lands here
+    }
+    const CompositionRecord* rec = d_doc->find_composition(cid);
+    if (rec == nullptr) {
+      return false;
+    }
+    d_comp_ids.emplace(cid, std::to_string(d_comps.size()));
+    d_comps.push_back(CompEntry{cid, rec});
+    return true;
+  }
+
   void visit(const Content* c, std::string_view kind, std::string_view kind_version, ObjectId id) {
     const auto [it, inserted] = d_counts.try_emplace(c, 0);
     it->second += 1;
@@ -208,6 +260,10 @@ private:
     if (it->second > 1) {
       return; // already descended into this subtree; count the extra edge, don't recurse
     }
+    // A nesting content's child composition is graph structure exactly like its inputs
+    // (doc 08 Principle 7), and the core reads it off the same kind-agnostic accessor an
+    // unknown-kind placeholder also carries -- so a missing plugin never orphans it.
+    enqueue_composition(c->composition_ref());
     for (const ContentRef child : c->inputs()) {
       if (child == nullptr) {
         continue;
@@ -251,6 +307,14 @@ private:
       }
       body["inputs"] = std::move(arr);
     }
+    // The core-owned child-composition reference (doc 08 Principle 7), appended AFTER
+    // the codec returned and after the unknown merge, exactly as `inputs` is: the id is
+    // re-derived from graph structure on every save, so a codec can neither write it nor
+    // fight it (Constraint 1). `"0"` is the root -- that is how a Droste back-edge is
+    // spelled. Absent when the content names no (resolvable) composition.
+    if (const auto cit = d_comp_ids.find(c->composition_ref()); cit != d_comp_ids.end()) {
+      body["composition"] = cit->second;
+    }
     return body;
   }
 
@@ -258,11 +322,14 @@ private:
   const ContentMetaProvider& d_meta;
   const CodecTable& d_codecs;
   const UnknownFieldStore* d_unknown;                      // content-tier stashes (nullable)
+  const DocRoot* d_doc{nullptr};                           // set by build(); the composition source
   std::unordered_map<const Content*, int> d_counts;        // occurrences across the graph
   std::unordered_map<const Content*, MetaEntry> d_meta_of; // (kind, kind_version) per node
   std::unordered_map<const Content*, std::string> d_ids;   // shared content -> `$ref` id
   std::vector<const Content*> d_order;                     // first-encounter traversal order
   std::vector<const Content*> d_shared;                    // shared contents, in id order
+  std::unordered_map<ObjectId, std::string> d_comp_ids;    // composition -> ordinal (visited set)
+  std::vector<CompEntry> d_comps;                          // reachable compositions, root first
 };
 
 json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em,
@@ -381,8 +448,24 @@ expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
     ContentGraph* graph_ptr = graph.has_value() ? &*graph : nullptr;
     root["composition"] = composition_json(doc, comp_id, *comp, em, provider, graph_ptr, unknown);
     if (graph_ptr != nullptr) {
+      // The non-root compositions the walk reached, keyed by their ordinals `"1"`..`"N"`
+      // (doc 08 Principle 7, Decision 2): the root keeps its canonical home at
+      // `root["composition"]` and holds the reserved ordinal `"0"`, so it is never a key
+      // here. A document with no nesting reaches only the root and emits no
+      // `compositions` key at all. A composition no reference reaches is simply never
+      // enqueued -- dropped on save, the canonicalization Principle 4 blesses.
+      const std::vector<ContentGraph::CompEntry>& comps = graph_ptr->compositions();
+      if (comps.size() > 1) {
+        json table = json::object();
+        for (std::size_t i = 1; i < comps.size(); ++i) {
+          table[std::to_string(i)] = composition_json(doc, comps[i].id, *comps[i].record, em,
+                                                      provider, graph_ptr, unknown);
+        }
+        root["compositions"] = std::move(table);
+      }
       // The shared-content table at document root, beside `composition` (omitted when
-      // nothing is shared -- the canonical key sort places `composition` < `contents`).
+      // nothing is shared -- the canonical key sort places `composition` <
+      // `compositions` < `contents`).
       if (std::optional<json> contents = graph_ptr->emit_contents(em); contents.has_value()) {
         root["contents"] = std::move(*contents);
       }
@@ -391,9 +474,10 @@ expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
 
   // The document tier's preserved siblings, merged after `composition`/`contents` so both
   // win any collision; the `arbc` envelope's own unknowns ride nested under "arbc" and
-  // recurse into the envelope object the core just built. The `contents` table itself is
-  // NOT a sibling surface -- an entry no `$ref` reaches is dropped, the same
-  // canonicalization that renumbers hand-authored ids (Decision 5).
+  // recurse into the envelope object the core just built. The `contents` and
+  // `compositions` tables are NOT sibling surfaces -- an entry no reference reaches is
+  // dropped, the same canonicalization that renumbers hand-authored ids (Decision 5,
+  // doc 08 Principle 4).
   if (unknown != nullptr) {
     merge_unknown_fields(root, unknown->find(UnknownScope::Document, ObjectId{}));
   }

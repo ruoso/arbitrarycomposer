@@ -86,6 +86,16 @@ private:
 // `MissingRequiredField`, a mistyped `kind`/`params` is `MalformedField`, and a
 // codec's own parse failure propagates; no nlohmann exception escapes.
 //
+// `composition` (serialize.compositions_table Decision 5/6) is the resolved child
+// composition the body's core-owned `"composition"` field named (doc 08 Principle 7),
+// already allocated by the reader. It is threaded to a known kind's `DeserializeFn`,
+// and -- crucially -- carried by the `PlaceholderContent` of an UNKNOWN kind too, with
+// `composition` stripped from its stored body exactly as `inputs` is: both are
+// core-owned graph structure the writer re-derives. That is what keeps a missing
+// plugin from orphaning the composition it embeds (doc 08 Principle 2): the core still
+// sees the edge through `composition_ref()`, so the child stays reachable from the
+// writer's walk and re-emits under a freshly-derived id.
+//
 // `params_residual` (serialize.unknown_field_preservation Decision 4) is how a KNOWN
 // kind's unknown `params` interiors are recovered: for a registered codec, the routing
 // runs that codec's OWN `SerializeFn` back over the content it just built and writes
@@ -98,8 +108,8 @@ private:
 // fields", never a `ReaderError`).
 expected<std::unique_ptr<Content>, ReaderError>
 content_body_from_json(const nlohmann::json& body, std::span<const ContentRef> inputs,
-                       const CodecTable& codecs, const Registry& registry, LoadContext& ctx,
-                       nlohmann::json* params_residual = nullptr);
+                       ObjectId composition, const CodecTable& codecs, const Registry& registry,
+                       LoadContext& ctx, nlohmann::json* params_residual = nullptr);
 
 // Write routing (serialize.kind_params): emit ONE node's LEAF content body -- the
 // `{kind, kind_version, params}` frame only, NEVER the `inputs` limb (the

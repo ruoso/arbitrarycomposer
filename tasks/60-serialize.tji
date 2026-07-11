@@ -54,7 +54,8 @@ task serialize "Serialization" {
   task compositions_table "In-document compositions table" {
     effort 3d
     allocate team
+    complete 100
     depends !sharing
-    note "Document-level 'compositions' table (doc 08 Principle 7, analogous to 'contents'), keyed by core-owned non-semantic ids re-derived on save; reader/writer recurse into non-root compositions; nested content bodies name children via the core-owned 'composition' field beside kind/inputs/params; in-document cycles (Droste) round-trip as data; multi-composition model round-trip through the runtime sinks. Settles doc 05 Droste serialization. Source: tasks/parking-lot.md 2026-07-09 (org.arbc.nested codec design, resolution a). Docs 05/08."
+    note "Document-level 'compositions' table (doc 08 Principle 7, analogous to 'contents'), keyed by core-owned non-semantic ids re-derived on save; reader/writer recurse into non-root compositions; nested content bodies name children via the core-owned 'composition' field beside kind/inputs/params; in-document cycles (Droste) round-trip as data; multi-composition model round-trip through the runtime sinks. Settles doc 05 Droste serialization. Source: tasks/parking-lot.md 2026-07-09 (org.arbc.nested codec design, resolution a). Docs 05/08. Refinement: tasks/refinements/serialize/compositions_table.md"
   }
 }

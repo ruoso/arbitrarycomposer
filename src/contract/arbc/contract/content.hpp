@@ -586,6 +586,16 @@ public:
   // Default: an empty span -- leaf content is a graph leaf (doc 13:52).
   virtual std::span<const ContentRef> inputs() const { return {}; }
 
+  // A nested content's child composition (doc 05), the exact mirror of `inputs()`:
+  // core-visible graph structure, but naming an `ObjectId` in the document model
+  // rather than a `ContentRef`, so it rides its own null-default discovery virtual
+  // beside `editable()` / `audio()` / `inputs()`. The serializer reads it to reach
+  // every child composition and to emit the core-owned `"composition"` reference
+  // (doc 08 Principle 7) -- so the reference is re-derived from graph structure on
+  // every save and never rides a kind's `params`. Default: `ObjectId{}`, "not a
+  // composition reference" -- the answer for every kind but nested.
+  virtual ObjectId composition_ref() const { return ObjectId{}; }
+
   // Map damage on input `input`'s given `rect` into damage on this content's
   // output (doc 13:54-57). Default: identity (pass-through-shaped content).
   //

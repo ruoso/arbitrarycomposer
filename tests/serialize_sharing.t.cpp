@@ -29,6 +29,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -106,7 +107,7 @@ private:
 };
 
 arbc::DeserializeFn clip_deserialize() {
-  return [](const json& params, std::span<const ContentRef> /*inputs*/,
+  return [](const json& params, std::span<const ContentRef> /*inputs*/, ObjectId /*composition*/,
             LoadContext&) -> arbc::expected<std::unique_ptr<Content>, ReaderError> {
     std::string src;
     if (const auto it = params.find("src"); it != params.end() && it->is_string()) {
@@ -131,7 +132,7 @@ arbc::SerializeFn clip_serialize() {
 // The operator's read codec adopts its already-reconstructed input edges at
 // construction (Decision 4): the read recursion built the children first.
 arbc::DeserializeFn op_deserialize() {
-  return [](const json& params, std::span<const ContentRef> inputs,
+  return [](const json& params, std::span<const ContentRef> inputs, ObjectId /*composition*/,
             LoadContext&) -> arbc::expected<std::unique_ptr<Content>, ReaderError> {
     std::int64_t amount = 0;
     if (const auto it = params.find("amount"); it != params.end() && it->is_number_integer()) {
@@ -432,6 +433,107 @@ TEST_CASE("shared content is hoisted once into contents and dedups to one live n
   });
   REQUIRE(layer_content.size() == 2);
   CHECK(sink.by_id.at(layer_content[1]) == static_cast<Content*>(the_clip));
+}
+
+// enforces: 08-serialization#shared-content-dedups-via-ref
+TEST_CASE("content shared across TWO compositions hoists into one contents entry") {
+  // serialize.compositions_table Constraint 4: the refcount pre-pass counts across the
+  // WHOLE reachable graph -- every reachable composition, not one at a time -- so a clip
+  // used by a layer in the root AND a layer in the child is referenced twice, hoists into
+  // `contents` under a single `{"$ref": id}`, and reloads to exactly ONE live Content.
+  //
+  // The nesting content that makes the child reachable is an UNKNOWN kind here, so no
+  // nesting codec is needed: its `PlaceholderContent` carries the child reference.
+  const CodecTable codecs = graph_table(); // clip known; com.example.nest -> placeholder
+  const char* const doc = R"json({
+  "arbc": {"format": 1},
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      {"kind": "com.example.nest", "kind_version": "1.0", "params": {}, "composition": "1"},
+      {"$ref": "0"}
+    ]
+  },
+  "compositions": {
+    "1": {"canvas": [0, 0, 8, 8], "layers": [{"$ref": "0"}]}
+  },
+  "contents": {
+    "0": {"kind": "com.test.clip", "kind_version": "1.0", "params": {"src": "shared.png"}}
+  }
+})json";
+
+  Registry registry;
+  LoadContext ctx("mem://doc.arbc");
+  RecordingSink sink;
+  Model loaded;
+  REQUIRE(arbc::load_document(doc, registry, codecs, ctx, sink.as_sink(), loaded));
+
+  // Exactly ONE clip was built for the two use sites straddling the composition boundary.
+  int clips = 0;
+  ClipContent* the_clip = nullptr;
+  PlaceholderContent* ghost = nullptr;
+  for (const auto& owned : sink.owned) {
+    if (auto* cc = dynamic_cast<ClipContent*>(owned.get())) {
+      ++clips;
+      the_clip = cc;
+    }
+    if (auto* pc = dynamic_cast<PlaceholderContent*>(owned.get())) {
+      ghost = pc;
+    }
+  }
+  CHECK(clips == 1);
+  REQUIRE(the_clip != nullptr);
+  REQUIRE(ghost != nullptr);
+
+  // Both layers -- one in the root composition, one in the child -- bind that same node.
+  const auto pin = loaded.current();
+  ObjectId root_comp;
+  const arbc::CompositionRecord* comp = nullptr;
+  REQUIRE(pin->find_first_composition(root_comp, comp));
+  const ObjectId child_comp = ghost->composition_ref();
+  REQUIRE(pin->find_composition(child_comp) != nullptr);
+
+  std::vector<ObjectId> root_layers;
+  pin->for_each_layer_in(root_comp, [&](ObjectId lid) {
+    const arbc::LayerRecord* lr = pin->find_layer(lid);
+    REQUIRE(lr != nullptr);
+    root_layers.push_back(lr->content);
+  });
+  REQUIRE(root_layers.size() == 2);
+  CHECK(sink.by_id.at(root_layers[1]) == static_cast<Content*>(the_clip));
+  pin->for_each_layer_in(child_comp, [&](ObjectId lid) {
+    const arbc::LayerRecord* lr = pin->find_layer(lid);
+    REQUIRE(lr != nullptr);
+    CHECK(sink.by_id.at(lr->content) == static_cast<Content*>(the_clip));
+  });
+
+  // And it re-serializes with the clip still hoisted ONCE into `contents`, referenced by
+  // `$ref` at both sites across the two compositions.
+  const ContentBodyProvider provider = [&sink](ObjectId id) -> std::optional<ContentBody> {
+    const auto it = sink.by_id.find(id);
+    if (it == sink.by_id.end()) {
+      return std::nullopt;
+    }
+    const bool is_clip = dynamic_cast<ClipContent*>(it->second) != nullptr;
+    return ContentBody{is_clip ? ClipContent::kind_id : "com.example.nest", "1.0", *it->second};
+  };
+  const ContentMetaProvider meta = [the_clip](const Content& c) -> std::optional<ContentMeta> {
+    if (&c == static_cast<const Content*>(the_clip)) {
+      return ContentMeta{ClipContent::kind_id, "1.0"};
+    }
+    return std::nullopt;
+  };
+  const std::string out = canonical(arbc::serialize_document(*pin, provider, meta, codecs));
+  CHECK(out.find("\"src\": \"shared.png\"") != std::string::npos);
+  CHECK(out.find("\"contents\"") != std::string::npos);
+  CHECK(out.find("\"compositions\"") != std::string::npos);
+  // ONE definition of the clip, referenced by `$ref` at both use sites.
+  std::size_t refs = 0;
+  for (std::size_t at = out.find("\"$ref\""); at != std::string::npos;
+       at = out.find("\"$ref\"", at + 1)) {
+    ++refs;
+  }
+  CHECK(refs == 2);
 }
 
 // enforces: 08-serialization#dangling-ref-is-read-error

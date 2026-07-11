@@ -173,54 +173,77 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) 
   std::unordered_map<const Content*, ObjectId> ids;
   doc.for_each_content([&ids](ObjectId id, Content* c) { ids.emplace(c, id); });
 
-  snap.state->for_each_layer_in(comp_id, [&](ObjectId lid) {
-    const LayerRecord* lr = snap.state->find_layer(lid);
-    if (lr == nullptr) {
+  // The document is a GRAPH of compositions (doc 08 Principle 7,
+  // serialize.compositions_table): the walk spans every composition reachable from the
+  // root through a nesting content's `composition_ref()`, not just the lowest-id one, so
+  // a multi-composition `Document` round-trips through the L5 sinks. Breadth-first over
+  // compositions, and the visited set makes a Droste cycle terminate. Kind-agnostic: an
+  // unknown-kind `PlaceholderContent` carries its child reference too, so a missing
+  // plugin never orphans the composition it embeds. Writer-thread only, like the rest of
+  // this function (Constraint 11): the off-thread emit reads only the finished snapshot.
+  std::vector<ObjectId> comp_queue;
+  std::unordered_set<ObjectId> comp_seen;
+  const auto enqueue_composition = [&](ObjectId cid) {
+    if (!cid.valid() || snap.state->find_composition(cid) == nullptr) {
       return;
     }
-    const ObjectId cid = lr->content;
-    if (!cid.valid() || snap.by_id.find(cid) != snap.by_id.end()) {
-      return; // placement-only layer, or a shared content already captured
+    if (comp_seen.insert(cid).second) {
+      comp_queue.push_back(cid);
     }
-    const Content* c = doc.resolve(cid);
-    if (c == nullptr) {
-      return;
-    }
-    const ContentRecord* rec = snap.state->find_content(cid);
-    const std::uint64_t kind = (rec != nullptr) ? rec->kind : KindBridge::k_unknown_kind;
-    std::string_view kind_id;
-    std::string_view kind_version;
-    bridge.lookup(kind, kind_id, kind_version); // unknown -> empty views (placeholder body wins)
-    const std::size_t idx = snap.entries.size();
-    snap.entries.push_back(
-        ContentSnapshot::Entry{c, std::string(kind_id), std::string(kind_version), cid});
-    snap.by_id.emplace(cid, idx);
-    snap.by_ptr.emplace(c, idx);
-  });
+  };
+  enqueue_composition(comp_id);
 
   // Extend the reverse map to the operator INPUT CHILDREN (runtime.operator_codecs
-  // Decision 5): the layer walk above captured only layer-root contents (bound by a
+  // Decision 5): the layer walk captures only layer-root contents (bound by a
   // `ContentRecord`, keyed into `by_id`). An operator's input children have no
   // ObjectId, so the writer resolves each child's `(kind, kind_version)` through the
   // `const Content&`-keyed meta provider instead -- backed here by a transitive walk
   // of `Content::inputs()` over the pinned graph, interning each reachable built-in
-  // child into `by_ptr` (a meta entry, no `by_id`/body entry). The walk runs on the
-  // writer thread over the `Document`-owned content graph, so the off-thread emit
-  // reads only immutable snapshot data (Constraint 10). A `PlaceholderContent` (or any
-  // non-built-in) child gets no entry -> meta `nullopt` -> its stored body re-emits
-  // verbatim (doc 08 Principle 2); its own inputs are still descended so deeper
+  // child into `by_ptr` (a meta entry, no `by_id`/body entry). A `PlaceholderContent`
+  // (or any non-built-in) child gets no entry -> meta `nullopt` -> its stored body
+  // re-emits verbatim (doc 08 Principle 2); its own inputs are still descended so deeper
   // built-in nodes are captured. v1 `$ref` graphs are acyclic DAGs, and `walked` guards
-  // shared re-encounters (sharing Decision 8).
+  // shared re-encounters (sharing Decision 8). Every content reached -- layer root or
+  // input child -- also contributes its `composition_ref()` to the composition queue.
   std::vector<const Content*> frontier;
-  frontier.reserve(snap.entries.size());
   std::unordered_set<const Content*> walked;
-  for (const ContentSnapshot::Entry& e : snap.entries) {
-    frontier.push_back(e.content);
-    walked.insert(e.content);
-  }
-  while (!frontier.empty()) {
+  std::size_t next_comp = 0;
+  while (next_comp < comp_queue.size() || !frontier.empty()) {
+    if (next_comp < comp_queue.size()) {
+      const ObjectId walking = comp_queue[next_comp++];
+      snap.state->for_each_layer_in(walking, [&](ObjectId lid) {
+        const LayerRecord* lr = snap.state->find_layer(lid);
+        if (lr == nullptr) {
+          return;
+        }
+        const ObjectId cid = lr->content;
+        if (!cid.valid() || snap.by_id.find(cid) != snap.by_id.end()) {
+          return; // placement-only layer, or a shared content already captured
+        }
+        const Content* c = doc.resolve(cid);
+        if (c == nullptr) {
+          return;
+        }
+        const ContentRecord* rec = snap.state->find_content(cid);
+        const std::uint64_t kind = (rec != nullptr) ? rec->kind : KindBridge::k_unknown_kind;
+        std::string_view kind_id;
+        std::string_view kind_version;
+        // unknown -> empty views (the placeholder's own stored body wins)
+        bridge.lookup(kind, kind_id, kind_version);
+        const std::size_t idx = snap.entries.size();
+        snap.entries.push_back(
+            ContentSnapshot::Entry{c, std::string(kind_id), std::string(kind_version), cid});
+        snap.by_id.emplace(cid, idx);
+        snap.by_ptr.emplace(c, idx);
+        if (walked.insert(c).second) {
+          frontier.push_back(c);
+        }
+      });
+      continue;
+    }
     const Content* const c = frontier.back();
     frontier.pop_back();
+    enqueue_composition(c->composition_ref());
     for (const ContentRef child : c->inputs()) {
       if (child == nullptr || !walked.insert(child).second) {
         continue; // null slot, or a shared child already reached
@@ -301,8 +324,10 @@ DeserializeFn recording_deserialize(DeserializeFn base, std::string_view kind_id
                                     KindBridge& bridge) {
   return [base = std::move(base), kind = std::string(kind_id), version = std::string(kind_version),
           &session, &bridge](const nlohmann::json& params, std::span<const ContentRef> inputs,
+                             ObjectId composition,
                              LoadContext& ctx) -> expected<std::unique_ptr<Content>, ReaderError> {
-    expected<std::unique_ptr<Content>, ReaderError> produced = base(params, inputs, ctx);
+    expected<std::unique_ptr<Content>, ReaderError> produced =
+        base(params, inputs, composition, ctx);
     if (produced) {
       session[(*produced).get()] = bridge.intern(kind, version);
     }

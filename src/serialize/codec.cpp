@@ -31,7 +31,7 @@ unexpected<ReaderError> read_fail(ReaderError::Kind kind, std::string path) {
 } // namespace
 
 expected<std::unique_ptr<Content>, ReaderError>
-content_body_from_json(const json& body, std::span<const ContentRef> inputs,
+content_body_from_json(const json& body, std::span<const ContentRef> inputs, ObjectId composition,
                        const CodecTable& codecs, const Registry& registry, LoadContext& ctx,
                        json* params_residual) {
   // The content body must be an object carrying at least a string `kind` (doc 08:29).
@@ -66,7 +66,7 @@ content_body_from_json(const json& body, std::span<const ContentRef> inputs,
   if (const Codec* codec = codecs.find(kind); codec != nullptr && codec->deserialize) {
     const json params = (pit != body.end()) ? *pit : json::object();
     expected<std::unique_ptr<Content>, ReaderError> produced =
-        codec->deserialize(params, inputs, ctx);
+        codec->deserialize(params, inputs, composition, ctx);
 
     // Decision 4: only the codec can say which `params` keys it consumed, and its own
     // serializer already reveals that -- every built-in serializer emits every key its
@@ -90,15 +90,23 @@ content_body_from_json(const json& body, std::span<const ContentRef> inputs,
   // `inputs` array is stripped from the STORED body: it is graph-structural, not
   // opaque -- the write recursion re-derives it from `inputs()` with fresh, canonical
   // `$ref` ids (Decision 2/7), so re-emitting a stale array here would double it and
-  // pin dead ids. The `Registry` is consulted for the plugin-present witness
-  // (Decision 2): a kind whose factory is registered but whose serialize codec is
-  // absent (an old plugin, or a version-skew placeholder choice) records
-  // `kind_registered() == true`; an entirely-missing plugin records false.
+  // pin dead ids. `composition` is stripped for exactly the same reason and gets
+  // exactly the same treatment (compositions_table Decision 6): the RESOLVED child id
+  // rides the placeholder's `composition_ref()`, so the core still sees the edge --
+  // keeping the child reachable from the writer's walk, which then re-derives its
+  // ordinal. Leaving the load-time string in the body would instead pin a stale
+  // ordinal that renumbering can silently repoint at a different composition. The
+  // `Registry` is consulted for the plugin-present witness (Decision 2): a kind whose
+  // factory is registered but whose serialize codec is absent (an old plugin, or a
+  // version-skew placeholder choice) records `kind_registered() == true`; an
+  // entirely-missing plugin records false.
   json stored = body;
   stored.erase("inputs");
+  stored.erase("composition");
   const bool kind_registered = registry.factory(kind) != nullptr;
   return std::unique_ptr<Content>(std::make_unique<PlaceholderContent>(
-      std::move(stored), kind_registered, std::vector<ContentRef>(inputs.begin(), inputs.end())));
+      std::move(stored), kind_registered, std::vector<ContentRef>(inputs.begin(), inputs.end()),
+      composition));
 }
 
 expected<json, SerializeError> content_body_to_json(std::string_view kind_id,

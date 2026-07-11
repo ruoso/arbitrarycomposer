@@ -1,0 +1,17 @@
+{
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      {
+        "kind": "com.example.nest",
+        "kind_version": "1.0",
+        "params": {},
+        "composition": "0",
+        "opacity": 1.0,
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "visible": true
+      }
+    ]
+  }
+}

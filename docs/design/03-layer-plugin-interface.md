@@ -110,6 +110,15 @@ public:
   virtual std::optional<size_t> identity(const RenderRequest&) const;
                                           // pass-through short-circuit
 
+  // A nested content's child composition (doc 05) is core-visible graph
+  // structure exactly as inputs() is, but it names an ObjectId in the
+  // document model rather than a ContentRef, so it rides its own
+  // null-default accessor. The serializer reads it to reach child
+  // compositions and to emit the core-owned "composition" reference
+  // (doc 08 Principle 7). ObjectId{} means "not a composition reference" —
+  // the default, and the answer for every kind but nested.
+  virtual ObjectId composition_ref() const { return ObjectId{}; }
+
   // --- change notification (outbound) ---
   // The core connects this on attach; content calls damage() when it changes.
   // An editable content's state sinks (doc 14's Editable facet) bind the same

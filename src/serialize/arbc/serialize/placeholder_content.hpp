@@ -42,8 +42,16 @@ public:
   // routing's registry witness). `inputs` are the live edges the pass-through render
   // reads -- the read recursion binds them from the resolved `inputs` array
   // (serialize.sharing); empty for a leaf placeholder.
+  // `composition` is the resolved child composition the body's core-owned
+  // `"composition"` field named -- likewise stripped from the stored body, likewise
+  // re-derived on save from `composition_ref()`. A THIRD-PARTY nesting kind this build
+  // cannot load therefore still holds its edge, so the writer's walk reaches the child
+  // and never drops it: a missing plugin never orphans the composition it embeds
+  // (doc 08 Principle 2, serialize.compositions_table Decision 6). `ObjectId{}` for a
+  // non-nesting placeholder.
   explicit PlaceholderContent(nlohmann::json body, bool kind_registered = false,
-                              std::vector<ContentRef> inputs = {});
+                              std::vector<ContentRef> inputs = {},
+                              ObjectId composition = ObjectId{});
 
   // The verbatim LEAF content body (no `inputs` key) -- what re-serialization emits
   // for this node, canonical on dump; the write recursion appends the `inputs` limb.
@@ -63,6 +71,11 @@ public:
   // for a leaf placeholder.
   std::span<const ContentRef> inputs() const override;
 
+  // The preserved child-composition edge (doc 08 Principle 7): the core reads it here
+  // exactly as it reads a live nesting kind's, so an unknown nesting kind's child stays
+  // reachable from the writer's composition walk.
+  ObjectId composition_ref() const override;
+
   // Input-0 pass-through (doc 08 Principle 6, doc 13; Decision 4): return 0 when a
   // bound input is present so the compositor serves input 0 unchanged -- a missing
   // fade plugin degrades to an unfaded clip, not a hole. `nullopt` (diagnostic fill)
@@ -75,6 +88,7 @@ private:
   nlohmann::json d_body;
   bool d_kind_registered;
   std::vector<ContentRef> d_inputs;
+  ObjectId d_composition;
 };
 
 } // namespace arbc

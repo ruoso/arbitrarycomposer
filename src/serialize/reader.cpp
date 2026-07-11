@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -39,16 +40,16 @@ constexpr std::int64_t k_format_major = 1;
 // does NOT name here is preserved verbatim in the `UnknownFieldStore` and merged back
 // on save (doc 08:88-98 Principle 4).
 //
-// NOTE for `serialize.compositions_table` (Constraint 7): that sibling task introduces
-// `compositions` at the ROOT and `composition` on a content BODY. Whichever of the two
-// lands second must add those names here -- otherwise they would be classified as
-// unknown fields, stashed, AND emitted by the core, i.e. double-emitted.
+// `compositions` (ROOT) and `composition` (content BODY) are core-owned as of
+// `serialize.compositions_table` (doc 08 Principle 7) and named here for exactly that
+// reason: were they absent, the core would classify them as unknown fields, stash them,
+// AND re-emit its own re-derived values -- double-emitting both.
 //
 // `working_space.primaries` is deliberately ABSENT from `k_working_space_keys`: the
 // reader does not read it (it has a single value today and re-supplies the default),
 // while the writer DOES emit it. So it is an unknown at load and a known at save -- the
 // live never-shadow case (doc 08:96, Constraint 4).
-constexpr std::string_view k_root_keys[] = {"arbc", "composition", "contents"};
+constexpr std::string_view k_root_keys[] = {"arbc", "composition", "compositions", "contents"};
 constexpr std::string_view k_envelope_keys[] = {"format"};
 constexpr std::string_view k_composition_keys[] = {"canvas", "layers", "working_audio_format",
                                                    "working_space"};
@@ -57,7 +58,8 @@ constexpr std::string_view k_working_audio_format_keys[] = {"channels", "sample_
 constexpr std::string_view k_layer_keys[] = {"audible",  "gain",      "opacity", "span",
                                              "time_map", "transform", "visible"};
 constexpr std::string_view k_time_map_keys[] = {"in", "offset", "rate"};
-constexpr std::string_view k_body_keys[] = {"$ref", "inputs", "kind", "kind_version", "params"};
+constexpr std::string_view k_body_keys[] = {"$ref", "composition",  "inputs",
+                                            "kind", "kind_version", "params"};
 
 unexpected<ReaderError> fail(ReaderError::Kind kind, std::string path) {
   return unexpected(ReaderError{kind, std::move(path), ObjectId{}});
@@ -320,6 +322,81 @@ void parse_composition(const json& c, CompData& out) {
   }
 }
 
+// The read face of doc 08 Principle 7 (serialize.compositions_table): the document is a
+// GRAPH of compositions -- the root at `root["composition"]` holding the reserved
+// ordinal `"0"`, plus the non-root ones in the `compositions` table under `"1"`..`"N"`
+// -- and a nesting content names its child through the core-owned `"composition"` field
+// on its body.
+//
+// This resolver exists to cut the ordering knot (Decision 4): a nesting `Content` cannot
+// be constructed without its child's `ObjectId`, yet the child's `CompositionRecord`
+// cannot exist before its layers, which cannot exist before their contents. So it
+// ALLOCATES each reachable composition's id up front -- `Model::allocate_id()` is a bare
+// monotonic counter bump that installs no record, so nothing is mutated and a failed load
+// still leaves the model at revision 0 (Constraint 5) -- and merely ENQUEUES the body for
+// the caller's breadth-first loop to build later.
+//
+// Allocate-then-enqueue is also exactly what makes a CYCLE terminate (Constraint 7): a
+// back-edge to an in-flight composition returns its pre-allocated id IMMEDIATELY, without
+// re-entering its layers -- so a legal Droste never trips `RefResolver`'s in-progress set
+// and is never misreported as an (illegal) operator-input cycle. The two cycle notions
+// keep entirely separate state.
+//
+// The root is allocated FIRST, so a loaded document always satisfies the model's
+// lowest-id-is-root rule (Constraint 8, `find_first_composition`).
+class CompResolver {
+public:
+  struct Pending {
+    ObjectId id;
+    const json* body;
+  };
+
+  CompResolver(const json* table, Model& model) : d_table(table), d_model(model) {}
+
+  // Seed the walk with the root composition: ordinal `"0"`, the lowest id in the
+  // document, and never a key in the `compositions` table.
+  ObjectId add_root(const json& body) {
+    const ObjectId id = d_model.allocate_id();
+    d_allocated.emplace("0", id);
+    d_pending.push_back(Pending{id, &body});
+    return id;
+  }
+
+  // The `ObjectId` a body's `"composition": "<key>"` names, allocating + enqueueing the
+  // composition on first encounter. `"0"` resolves to the root (already allocated). A key
+  // absent from the table is a dangling reference; a non-object entry is malformed. Both
+  // are VALUES surfaced before any model mutation (Constraint 6).
+  expected<ObjectId, ReaderError> resolve(const std::string& key) {
+    if (const auto it = d_allocated.find(key); it != d_allocated.end()) {
+      return it->second; // the Droste back-edge lands here, without re-entering the body
+    }
+    if (d_table == nullptr) {
+      return fail(ReaderError::Kind::UnresolvableReference, "/compositions/" + key);
+    }
+    const auto bit = d_table->find(key);
+    if (bit == d_table->end()) {
+      return fail(ReaderError::Kind::UnresolvableReference, "/compositions/" + key);
+    }
+    if (!bit->is_object()) {
+      return fail(ReaderError::Kind::MalformedField, "/compositions/" + key);
+    }
+    const ObjectId id = d_model.allocate_id();
+    d_allocated.emplace(key, id);
+    d_pending.push_back(Pending{id, &*bit});
+    return id;
+  }
+
+  // The breadth-first worklist, growing while the caller walks it by index.
+  std::size_t size() const { return d_pending.size(); }
+  const Pending& at(std::size_t i) const { return d_pending[i]; }
+
+private:
+  const json* d_table;
+  Model& d_model;
+  std::unordered_map<std::string, ObjectId> d_allocated; // table key -> pre-allocated id
+  std::vector<Pending> d_pending;                        // first-encounter order, root first
+};
+
 // The read face of doc 08 Principle 6 (serialize.sharing): resolve a content
 // position -- an inline body or a `{"$ref": id}` into the document `contents` table
 // -- into a live, sunk `Content`, wiring each node's input edges bottom-up and
@@ -330,10 +407,11 @@ void parse_composition(const json& c, CompData& out) {
 // resolution runs BEFORE `load_baseline`, so any failure leaves the model empty.
 class RefResolver {
 public:
-  RefResolver(const json* contents, const CodecTable& codecs, const Registry& registry,
-              LoadContext& ctx, const ContentSink& sink, UnknownFieldStore& unknown)
-      : d_contents(contents), d_codecs(codecs), d_registry(registry), d_ctx(ctx), d_sink(sink),
-        d_unknown(unknown) {}
+  RefResolver(const json* contents, CompResolver* comps, const CodecTable& codecs,
+              const Registry& registry, LoadContext& ctx, const ContentSink& sink,
+              UnknownFieldStore& unknown)
+      : d_contents(contents), d_comps(comps), d_codecs(codecs), d_registry(registry), d_ctx(ctx),
+        d_sink(sink), d_unknown(unknown) {}
 
   // Resolve one content position (inline body OR `{"$ref": id}`) to a sunk node.
   // `layer_position` is true only for a LAYER's content position, where the body shares
@@ -400,14 +478,36 @@ private:
         input_ptrs.push_back(child->live);
       }
     }
+    // The core-owned child-composition reference (doc 08 Principle 7): resolved to a
+    // pre-allocated `ObjectId` HERE, before the node is constructed, because a nesting
+    // kind takes its child at construction. The resolve never recurses into the child's
+    // layers -- so a body that closes a composition cycle costs nothing and, crucially,
+    // never re-enters `d_in_progress` below (Constraint 7). Threaded to a known kind's
+    // codec and, for an unknown kind, onto its placeholder -- a missing plugin never
+    // orphans the composition it embeds (Decision 6).
+    ObjectId child_composition;
+    if (const auto cit = body.find("composition"); cit != body.end()) {
+      if (!cit->is_string()) {
+        return fail(ReaderError::Kind::MalformedField, "/composition");
+      }
+      const std::string key = cit->get<std::string>();
+      if (d_comps == nullptr) {
+        return fail(ReaderError::Kind::UnresolvableReference, "/compositions/" + key);
+      }
+      expected<ObjectId, ReaderError> resolved = d_comps->resolve(key);
+      if (!resolved) {
+        return unexpected(resolved.error());
+      }
+      child_composition = *resolved;
+    }
     // `params_residual` is Decision 4: the routing runs the codec's OWN serializer back
     // over the content it just built and hands us `params_in - params_out` -- exactly the
     // keys the codec did not consume, frozen at load time so a later edit that clears an
     // optional param can never resurrect it. Empty for an unknown kind (the placeholder
     // already holds the whole body verbatim) and for a codec that cannot re-serialize.
     json params_residual;
-    expected<std::unique_ptr<Content>, ReaderError> produced =
-        content_body_from_json(body, input_ptrs, d_codecs, d_registry, d_ctx, &params_residual);
+    expected<std::unique_ptr<Content>, ReaderError> produced = content_body_from_json(
+        body, input_ptrs, child_composition, d_codecs, d_registry, d_ctx, &params_residual);
     if (!produced) {
       return unexpected(produced.error());
     }
@@ -428,6 +528,7 @@ private:
   }
 
   const json* d_contents;
+  CompResolver* d_comps; // the composition id space (nullable: a document with no root)
   const CodecTable& d_codecs;
   const Registry& d_registry;
   LoadContext& d_ctx;
@@ -474,17 +575,32 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
     return fail(ReaderError::Kind::UnknownFormatMajor, "/arbc/format");
   }
 
-  // Parse the whole composition into an intermediate BEFORE touching the model, so
-  // any error leaves the target `Model` unmutated (revision 0, empty).
-  CompData comp;
-  bool has_composition = false;
+  // The ROOT composition (doc 08 Principle 7: "a document holds exactly one root
+  // `composition`"). Parsed into an intermediate BEFORE touching the model, along with
+  // every composition reachable from it, so any error leaves the target `Model`
+  // unmutated (revision 0, empty).
   const auto cit = root.find("composition");
-  if (cit != root.end()) {
-    if (!cit->is_object()) {
-      return fail(ReaderError::Kind::MalformedField, "/composition");
+  if (cit != root.end() && !cit->is_object()) {
+    return fail(ReaderError::Kind::MalformedField, "/composition");
+  }
+  const bool has_composition = cit != root.end();
+
+  // The optional document-level `compositions` table (serialize.compositions_table):
+  // the NON-ROOT compositions, keyed `"1"`..`"N"` (doc 08 Principle 7). A present-but-
+  // non-object `compositions` is malformed. An entry keyed `"0"` claims the root's
+  // reserved ordinal, which always resolves to the root -- so the entry could only ever
+  // be shadowed into oblivion. Rejecting it beats silently deleting a composition its
+  // author meant something by (Decision 3); a table entry that no reference reaches is a
+  // different thing entirely and is simply ignored on load, dropped on save (Principle 4).
+  const json* compositions_table = nullptr;
+  if (const auto mit = root.find("compositions"); mit != root.end()) {
+    if (!mit->is_object()) {
+      return fail(ReaderError::Kind::MalformedField, "/compositions");
     }
-    has_composition = true;
-    parse_composition(*cit, comp);
+    if (mit->contains("0")) {
+      return fail(ReaderError::Kind::MalformedField, "/compositions/0");
+    }
+    compositions_table = &*mit;
   }
 
   // The optional document-level `contents` table (serialize.sharing): shared content
@@ -519,19 +635,45 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
     return to_unknown_fields(root_unknown);
   }());
 
-  if (sink) {
-    RefResolver resolver(contents_table, codecs, registry, ctx, sink, staged);
-    for (LayerData& ld : comp.layers) {
-      if (!ld.has_content) {
-        continue;
+  // One breadth-first pass over the composition graph (compositions_table Constraint 3):
+  // the root is seeded and allocated FIRST -- so it is the lowest-id composition, the
+  // model's root rule, guaranteed rather than assumed (Constraint 8) -- then each
+  // composition's layers are resolved in turn, and a nesting content's `"composition"`
+  // field enqueues its child, which this same loop reaches. `d_pending` grows while we
+  // walk it by index; a cycle simply re-uses an already-allocated id and enqueues
+  // nothing, so the loop terminates. ONE `RefResolver` spans every composition, so a
+  // content shared across two of them dedups into a single `contents` entry and a single
+  // live node (Constraint 4).
+  struct ResolvedComp {
+    ObjectId id;
+    CompData data;
+  };
+  std::vector<ResolvedComp> comps;
+  CompResolver comp_resolver(compositions_table, into);
+  RefResolver resolver(contents_table, &comp_resolver, codecs, registry, ctx, sink, staged);
+  if (has_composition) {
+    comp_resolver.add_root(*cit);
+    for (std::size_t i = 0; i < comp_resolver.size(); ++i) {
+      // BY VALUE: `resolve` below can enqueue and reallocate the pending vector.
+      const CompResolver::Pending pending = comp_resolver.at(i);
+      ResolvedComp rc;
+      rc.id = pending.id;
+      parse_composition(*pending.body, rc.data);
+      if (sink) {
+        for (LayerData& ld : rc.data.layers) {
+          if (!ld.has_content) {
+            continue;
+          }
+          expected<SunkContent, ReaderError> produced =
+              resolver.resolve(ld.content_body, /*layer_position=*/true);
+          if (!produced) {
+            return unexpected(produced.error()); // model unmutated: nothing installed yet
+          }
+          ld.content_id = produced->id;
+          ld.has_content_id = true;
+        }
       }
-      expected<SunkContent, ReaderError> produced =
-          resolver.resolve(ld.content_body, /*layer_position=*/true);
-      if (!produced) {
-        return unexpected(produced.error()); // model unmutated: nothing installed yet
-      }
-      ld.content_id = produced->id;
-      ld.has_content_id = true;
+      comps.push_back(std::move(rc));
     }
   }
 
@@ -539,44 +681,46 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
   // journal (Decision 3). The nodes are already sunk (owned by the caller) in the
   // resolution phase above; a layer root binds its sunk `content_id` (the same id for
   // two layers sharing one content, Constraint 3), a placement-only layer binds the
-  // invalid `ObjectId{}` placeholder exactly as the content-free path does.
+  // invalid `ObjectId{}` placeholder exactly as the content-free path does. Every
+  // reachable composition is materialized here, under the id the resolver pre-allocated
+  // for it -- the same id a nesting content already holds (Decision 4).
   const expected<std::monostate, PoolError> installed =
       into.load_baseline([&](Model::Transaction& txn) {
-        if (!has_composition) {
-          return;
-        }
-        const ObjectId cid = txn.add_composition(comp.canvas_w, comp.canvas_h);
-        // The composition/layer stashes can only be keyed here: their ObjectIds are
-        // minted by this transaction (Decision 3).
-        staged.set(UnknownScope::Composition, cid, to_unknown_fields(comp.unknown));
-        if (comp.has_working_space) {
-          txn.set_working_space(cid, comp.working_space);
-        }
-        if (comp.has_working_audio_format) {
-          txn.set_working_audio_format(cid, comp.working_audio_format);
-        }
-        for (const LayerData& ld : comp.layers) {
-          const ObjectId content_id = ld.has_content_id ? ld.content_id : ObjectId{};
-          const ObjectId lid = txn.add_layer(content_id, ld.transform, ld.opacity);
-          staged.set(UnknownScope::Layer, lid, to_unknown_fields(ld.unknown));
-          // Re-apply exactly the omit-on-default twins the writer would have
-          // emitted; a field left at its default stays diff-clean (Constraint 2).
-          if (ld.gain != 1.0) {
-            txn.set_gain(lid, ld.gain);
+        for (const ResolvedComp& rc : comps) {
+          const ObjectId cid = txn.add_composition(rc.id, rc.data.canvas_w, rc.data.canvas_h);
+          // The composition's own unknown siblings stash under its pre-allocated
+          // ObjectId; the layer stashes can only be keyed here, since their ObjectIds are
+          // minted by this transaction (Decision 3).
+          staged.set(UnknownScope::Composition, cid, to_unknown_fields(rc.data.unknown));
+          if (rc.data.has_working_space) {
+            txn.set_working_space(cid, rc.data.working_space);
           }
-          if (!ld.visible) {
-            txn.set_visible(lid, false);
+          if (rc.data.has_working_audio_format) {
+            txn.set_working_audio_format(cid, rc.data.working_audio_format);
           }
-          if (!ld.audible) {
-            txn.set_audible(lid, false);
+          for (const LayerData& ld : rc.data.layers) {
+            const ObjectId content_id = ld.has_content_id ? ld.content_id : ObjectId{};
+            const ObjectId lid = txn.add_layer(content_id, ld.transform, ld.opacity);
+            staged.set(UnknownScope::Layer, lid, to_unknown_fields(ld.unknown));
+            // Re-apply exactly the omit-on-default twins the writer would have
+            // emitted; a field left at its default stays diff-clean (Constraint 2).
+            if (ld.gain != 1.0) {
+              txn.set_gain(lid, ld.gain);
+            }
+            if (!ld.visible) {
+              txn.set_visible(lid, false);
+            }
+            if (!ld.audible) {
+              txn.set_audible(lid, false);
+            }
+            if (!(ld.span == TimeRange::all())) {
+              txn.set_span(lid, ld.span);
+            }
+            if (!(ld.time_map == TimeMap{})) {
+              txn.set_time_map(lid, ld.time_map);
+            }
+            txn.attach_layer(cid, lid);
           }
-          if (!(ld.span == TimeRange::all())) {
-            txn.set_span(lid, ld.span);
-          }
-          if (!(ld.time_map == TimeMap{})) {
-            txn.set_time_map(lid, ld.time_map);
-          }
-          txn.attach_layer(cid, lid);
         }
       });
   if (!installed) {

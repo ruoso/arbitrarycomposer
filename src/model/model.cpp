@@ -649,7 +649,13 @@ ObjectId Model::Transaction::add_composition(double canvas_w, double canvas_h) {
   if (!d_status) {
     return ObjectId{};
   }
-  const ObjectId id = d_model->allocate_id();
+  return add_composition(d_model->allocate_id(), canvas_w, canvas_h);
+}
+
+ObjectId Model::Transaction::add_composition(ObjectId id, double canvas_w, double canvas_h) {
+  if (!d_status) {
+    return ObjectId{};
+  }
   expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
   if (!rec) {
     d_status = unexpected(rec.error());

@@ -40,8 +40,7 @@ bool names_key(std::span<const std::string_view> known, std::string_view key);
 
 // `obj - known`: the keys present in `obj` that the core does not name at this tier.
 // A non-object `obj` yields an empty object.
-nlohmann::json unknown_residual(const nlohmann::json& obj,
-                                std::span<const std::string_view> known);
+nlohmann::json unknown_residual(const nlohmann::json& obj, std::span<const std::string_view> known);
 
 // The residual of a KNOWN sub-object: `obj[key] - known`, empty when `key` is absent or
 // is not an object. The caller nests it under `key` in the parent tier's stash, so the
@@ -54,8 +53,7 @@ nlohmann::json unknown_residual_at(const nlohmann::json& obj, std::string_view k
 // did not consume. Recurses where BOTH sides are objects; anything else is atomic.
 // Computed at LOAD time, before any edit can touch the content, so clearing an optional
 // param never resurrects it.
-nlohmann::json unknown_residual_diff(const nlohmann::json& input,
-                                     const nlohmann::json& produced);
+nlohmann::json unknown_residual_diff(const nlohmann::json& input, const nlohmann::json& produced);
 
 // The canonical byte carrier for a residual object: its canonical `dump()`, or empty
 // `UnknownFields` when the residual holds nothing. Dumped with the replacing error

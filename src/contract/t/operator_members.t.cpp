@@ -141,6 +141,13 @@ TEST_CASE("a Content overriding none of the operator-graph members is a graph le
   // inputs(): an empty span -- a leaf has no graph edges.
   REQUIRE(leaf.inputs().empty());
 
+  // composition_ref(): the null default -- "not a composition reference", the answer for
+  // every kind but nested (doc 03, doc 08 Principle 7). The exact mirror of `inputs()`
+  // being empty: a content that overrides neither is graph-structurally inert, and the
+  // serializer's composition walk descends nothing into it.
+  REQUIRE(leaf.composition_ref() == arbc::ObjectId{});
+  REQUIRE_FALSE(leaf.composition_ref().valid());
+
   // map_input_damage(): the identity map -- output damage equals input damage.
   const arbc::Rect rect{1.0, 2.0, 5.0, 9.0};
   REQUIRE(leaf.map_input_damage(0, rect) == rect);

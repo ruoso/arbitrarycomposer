@@ -211,6 +211,20 @@ TEST_CASE("org.arbc.nested is a non-leaf operator over its child layers") {
   REQUIRE(nested->inputs().size() == 2);
 }
 
+// enforces: 08-serialization#child-compositions-round-trip-in-document
+TEST_CASE("org.arbc.nested surfaces its child composition on the core-visible accessor") {
+  // The one kind that answers non-null (serialize.compositions_table Decision 1): nested's
+  // child composition is core-visible graph structure exactly as its inputs are, so the
+  // serializer reaches in-document child compositions -- and re-derives the core-owned
+  // `"composition"` reference -- with no `dynamic_cast` to any concrete kind (doc 03,
+  // doc 08 Principle 7).
+  Fixture fx;
+  const auto nested = fx.factory()();
+  REQUIRE(nested->composition_ref().valid());
+  CHECK(nested->composition_ref() == fx.comp);
+  CHECK(nested->composition_ref() == dynamic_cast<NestedContent&>(*nested).child());
+}
+
 // enforces: 05-recursive-composition#operator-damage-routes-through-map-input-damage
 TEST_CASE("org.arbc.nested operator damage routes through map_input_damage") {
   Fixture fx;

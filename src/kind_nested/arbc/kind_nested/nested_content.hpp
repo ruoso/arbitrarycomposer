@@ -146,6 +146,11 @@ public:
   // the core folds them for aggregate revision, cycle detection, and damage
   // routing. Non-empty (nested is a non-leaf operator).
   std::span<const ContentRef> inputs() const override;
+  // The child composition itself, surfaced to the core as graph structure (doc 08
+  // Principle 7): the serializer walks it to reach in-document child compositions and
+  // re-derives the core-owned `"composition"` reference from it on every save. Nested is
+  // the one kind that answers non-null.
+  ObjectId composition_ref() const override { return d_child; }
   // Map an input layer's damage through that layer's embedding transform
   // (covering / over-approximating, content.hpp:293-301).
   Rect map_input_damage(std::size_t input, const Rect& rect) const override;

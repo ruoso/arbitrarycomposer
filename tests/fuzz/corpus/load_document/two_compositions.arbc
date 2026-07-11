@@ -1,0 +1,32 @@
+{
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      {
+        "kind": "com.example.nest",
+        "kind_version": "3.2",
+        "params": { "blend": "over" },
+        "composition": "1",
+        "opacity": 1.0,
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "visible": true
+      }
+    ]
+  },
+  "compositions": {
+    "1": {
+      "canvas": [0, 0, 8, 8],
+      "layers": [
+        {
+          "kind": "org.arbc.solid",
+          "kind_version": "1",
+          "params": { "color": [1.0, 0.5, 0.25, 1.0] },
+          "opacity": 1.0,
+          "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+          "visible": true
+        }
+      ]
+    }
+  }
+}

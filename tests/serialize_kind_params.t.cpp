@@ -90,21 +90,22 @@ private:
 // which also witnesses that the routing threads `ctx` into the codec. A missing or
 // mistyped `gain` is a MalformedField value (Constraint 5), never a throw.
 arbc::DeserializeFn gadget_deserialize() {
-  return [](const json& params, std::span<const ContentRef> /*inputs*/,
-            LoadContext& ctx) -> arbc::expected<std::unique_ptr<Content>, ReaderError> {
-    const auto git = params.find("gain");
-    if (git == params.end() || !git->is_number_integer()) {
-      return arbc::unexpected(
-          ReaderError{ReaderError::Kind::MalformedField, "/params/gain", ObjectId{}});
-    }
-    std::string source;
-    if (const auto sit = params.find("source"); sit != params.end() && sit->is_string()) {
-      source = sit->get<std::string>();
-      ctx.resolve(source); // base-URI resolution: the ctx-consulted witness
-    }
-    return std::unique_ptr<Content>(
-        std::make_unique<GadgetContent>(git->get<std::int64_t>(), source));
-  };
+  return
+      [](const json& params, std::span<const ContentRef> /*inputs*/, arbc::ObjectId /*composition*/,
+         LoadContext& ctx) -> arbc::expected<std::unique_ptr<Content>, ReaderError> {
+        const auto git = params.find("gain");
+        if (git == params.end() || !git->is_number_integer()) {
+          return arbc::unexpected(
+              ReaderError{ReaderError::Kind::MalformedField, "/params/gain", ObjectId{}});
+        }
+        std::string source;
+        if (const auto sit = params.find("source"); sit != params.end() && sit->is_string()) {
+          source = sit->get<std::string>();
+          ctx.resolve(source); // base-URI resolution: the ctx-consulted witness
+        }
+        return std::unique_ptr<Content>(
+            std::make_unique<GadgetContent>(git->get<std::int64_t>(), source));
+      };
 }
 
 // The gadget's write codec: a live GadgetContent -> its `params` JSON. A content of
@@ -164,7 +165,7 @@ TEST_CASE("an unknown kind round-trips verbatim and byte-equivalent under canoni
     "kind_version": "3.0"
   })json");
 
-  auto produced = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
+  auto produced = arbc::content_body_from_json(body, {}, arbc::ObjectId{}, codecs, registry, ctx);
   REQUIRE(produced);
   std::unique_ptr<Content> content = std::move(*produced);
   auto* placeholder = dynamic_cast<PlaceholderContent*>(content.get());
@@ -187,7 +188,7 @@ TEST_CASE("a known kind round-trips its params through a registered codec, not t
   const json body = json::parse(
       R"json({"kind":"com.test.gadget","kind_version":"1.0","params":{"gain":5,"source":"a.png"}})json");
 
-  auto produced = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
+  auto produced = arbc::content_body_from_json(body, {}, arbc::ObjectId{}, codecs, registry, ctx);
   REQUIRE(produced);
   std::unique_ptr<Content> content = std::move(*produced);
   // Dispatch by kind id selected the codec, not the placeholder.
@@ -388,7 +389,7 @@ TEST_CASE("content-body codecs surface malformed params and missing codecs as di
 
   SECTION("a non-object params -> MalformedField (before any codec dispatch)") {
     const json body = json::parse(R"json({"kind":"com.test.gadget","params":7})json");
-    const auto r = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
+    const auto r = arbc::content_body_from_json(body, {}, arbc::ObjectId{}, codecs, registry, ctx);
     REQUIRE_FALSE(r);
     CHECK(r.error().kind == ReaderError::Kind::MalformedField);
     CHECK(r.error().path == "/params");
@@ -397,7 +398,7 @@ TEST_CASE("content-body codecs surface malformed params and missing codecs as di
   SECTION("params the codec rejects -> the codec's MalformedField value") {
     const json body =
         json::parse(R"json({"kind":"com.test.gadget","params":{"gain":"not-an-int"}})json");
-    const auto r = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
+    const auto r = arbc::content_body_from_json(body, {}, arbc::ObjectId{}, codecs, registry, ctx);
     REQUIRE_FALSE(r);
     CHECK(r.error().kind == ReaderError::Kind::MalformedField);
     CHECK(r.error().path == "/params/gain");
@@ -405,7 +406,7 @@ TEST_CASE("content-body codecs surface malformed params and missing codecs as di
 
   SECTION("a body missing kind -> MissingRequiredField") {
     const json body = json::parse(R"json({"params":{"gain":1}})json");
-    const auto r = arbc::content_body_from_json(body, {}, codecs, registry, ctx);
+    const auto r = arbc::content_body_from_json(body, {}, arbc::ObjectId{}, codecs, registry, ctx);
     REQUIRE_FALSE(r);
     CHECK(r.error().kind == ReaderError::Kind::MissingRequiredField);
     CHECK(r.error().path == "/kind");

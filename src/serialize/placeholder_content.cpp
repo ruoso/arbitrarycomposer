@@ -8,8 +8,9 @@
 namespace arbc {
 
 PlaceholderContent::PlaceholderContent(nlohmann::json body, bool kind_registered,
-                                       std::vector<ContentRef> inputs)
-    : d_body(std::move(body)), d_kind_registered(kind_registered), d_inputs(std::move(inputs)) {}
+                                       std::vector<ContentRef> inputs, ObjectId composition)
+    : d_body(std::move(body)), d_kind_registered(kind_registered), d_inputs(std::move(inputs)),
+      d_composition(composition) {}
 
 bool PlaceholderContent::has_passthrough_input() const {
   return !d_inputs.empty() && d_inputs[0] != nullptr;
@@ -33,6 +34,12 @@ Stability PlaceholderContent::stability() const { return Stability::Static; }
 std::optional<TimeRange> PlaceholderContent::time_extent() const { return std::nullopt; }
 
 std::span<const ContentRef> PlaceholderContent::inputs() const { return d_inputs; }
+
+// The child-composition edge of an unknown NESTING kind, surfaced to the core exactly
+// as a live nesting kind surfaces its own (doc 08 Principle 7): the writer's walk
+// reaches the child through this, so it re-emits under a freshly-derived id instead of
+// being dropped as unreachable.
+ObjectId PlaceholderContent::composition_ref() const { return d_composition; }
 
 std::optional<std::size_t> PlaceholderContent::identity(const RenderRequest& /*request*/) const {
   if (has_passthrough_input()) {

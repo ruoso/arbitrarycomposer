@@ -99,8 +99,10 @@ expected<std::monostate, ReaderError> parse_window(const json& params, const cha
 // `params` are validated BEFORE the input-arity check so that a malformed 0-input
 // operator body faults before any child is bound, leaving the model unmutated
 // (Constraint 2; the read recursion binds input children ahead of this call).
-expected<std::unique_ptr<Content>, ReaderError>
-deserialize_fade(const json& params, std::span<const ContentRef> inputs, LoadContext& /*ctx*/) {
+expected<std::unique_ptr<Content>, ReaderError> deserialize_fade(const json& params,
+                                                                 std::span<const ContentRef> inputs,
+                                                                 ObjectId /*composition*/,
+                                                                 LoadContext& /*ctx*/) {
   const auto shit = params.find("shape");
   if (shit == params.end() || !shit->is_string() || shit->get<std::string>() != "linear") {
     return read_fail(ReaderError::Kind::MalformedField, "/params/shape");

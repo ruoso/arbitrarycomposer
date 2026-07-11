@@ -69,6 +69,19 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_serialize_sharing_t)
 
+# serialize.compositions_table: the L4 read/write of the document's GRAPH of compositions
+# -- the document-level `compositions` table beside `contents`, the core-owned
+# `"composition"` field on a content body, the root's reserved ordinal `"0"`, legal Droste
+# cycles (and their separation from illegal operator-input cycles), and the two new read
+# errors (doc 08 Principle 7, doc 05). Names a nesting test kind AND nlohmann::json through
+# the serialize-internal codec/placeholder headers, so it links the umbrella `arbc` plus
+# nlohmann explicitly (nlohmann is PRIVATE to arbc_serialize).
+add_executable(arbc_serialize_compositions_t serialize_compositions.t.cpp)
+target_link_libraries(
+  arbc_serialize_compositions_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_compositions_t)
+
 # serialize.unknown_field_preservation: the every-tier unknown-field rules the corpus can
 # only prove by byte-equality -- the never-shadow collision rule (working_space.primaries),
 # the residual/merge core (recursion, atomicity, a malformed stash degrading to empty), and
@@ -141,6 +154,18 @@ target_link_libraries(
   arbc_document_serialize_golden_t
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_document_serialize_golden_t)
+
+# serialize.compositions_table through the L5 sinks: a live Document holding TWO
+# compositions -- built with a test-double nesting kind interned through the KindBridge and
+# its codec injected into serialize_snapshot's CodecTable (tests/ sits outside the
+# levelization graph, format_tests D4) -- captures BOTH compositions' layer-root contents
+# into the ContentSnapshot and emits them, and the same document round-trips through
+# runtime::load_document -> save_document. Holds a CodecTable, so it links nlohmann.
+add_executable(arbc_document_compositions_golden_t document_compositions_golden.t.cpp)
+target_link_libraries(
+  arbc_document_compositions_golden_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_document_compositions_golden_t)
 
 # runtime.document_serialize concurrency stress (tier-6, tsan lane): a background
 # thread re-emits a pinned ContentSnapshot while the single writer thread churns

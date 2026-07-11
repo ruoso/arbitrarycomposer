@@ -64,7 +64,7 @@ expected<json, SerializeError> serialize_crossfade(const Content& content) {
 // is bound, leaving the model unmutated (Constraint 2).
 expected<std::unique_ptr<Content>, ReaderError>
 deserialize_crossfade(const json& params, std::span<const ContentRef> inputs,
-                      LoadContext& /*ctx*/) {
+                      ObjectId /*composition*/, LoadContext& /*ctx*/) {
   const auto shit = params.find("shape");
   if (shit == params.end() || !shit->is_string() || shit->get<std::string>() != "linear") {
     return read_fail(ReaderError::Kind::MalformedField, "/params/shape");

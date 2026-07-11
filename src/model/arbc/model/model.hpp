@@ -250,6 +250,19 @@ public:
     // (`k_working_rgba32f`); `set_working_space` configures it.
     ObjectId add_composition(double canvas_w, double canvas_h);
 
+    // The same insert, but under a caller-PRE-ALLOCATED id (`Model::allocate_id`).
+    // The serialization read path needs it (doc 08 Principle 7,
+    // serialize.compositions_table Decision 4): a nested content cannot be
+    // constructed without its child composition's `ObjectId`, but the child's
+    // `CompositionRecord` cannot exist before its layers, which cannot exist before
+    // their contents. `allocate_id()` is a bare monotonic counter bump that installs
+    // no record, so the reader mints every reachable composition's id up front --
+    // mutating no `DocState`, so a failed load still leaves the model at revision 0
+    // -- and materializes the records here, inside `load_baseline`. Ids are never
+    // reused, so a pre-allocated id cannot alias. Returns `id` (or `ObjectId{}` after
+    // a sticky failure).
+    ObjectId add_composition(ObjectId id, double canvas_w, double canvas_h);
+
     // Replace a composition's working space (path-copies its record + its map
     // path), the per-composition configuration of doc 07 rule 2. A configuration
     // change that invalidates every rendered pixel of the composition, so it

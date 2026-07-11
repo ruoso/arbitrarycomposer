@@ -28,6 +28,7 @@
 #include <arbc/serialize/unknown_json.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+
 #include <nlohmann/json.hpp>
 
 #include <memory>
@@ -179,11 +180,11 @@ TEST_CASE("the residual/merge core: recursion, atomicity, and a malformed stash"
         json::parse(R"({"keep": 99, "sub": {"known": "stale", "extra": 7}, "arr": [9], "new": 3})");
     arbc::merge_unknown(known, stash);
 
-    CHECK(known["keep"] == 1);            // collision: the known scalar wins
+    CHECK(known["keep"] == 1);                 // collision: the known scalar wins
     CHECK(known["arr"] == json::parse("[1]")); // collision on an array: known wins whole
-    CHECK(known["new"] == 3);             // a fresh key is adopted
-    CHECK(known["sub"]["known"] == "core"); // collision INSIDE a shared sub-object
-    CHECK(known["sub"]["extra"] == 7);      // ... and the unknown sibling beside it lands
+    CHECK(known["new"] == 3);                  // a fresh key is adopted
+    CHECK(known["sub"]["known"] == "core");    // collision INSIDE a shared sub-object
+    CHECK(known["sub"]["extra"] == 7);         // ... and the unknown sibling beside it lands
   }
 
   SECTION("a non-object at any seam degrades to 'nothing preserved', never to a fault") {
@@ -318,4 +319,65 @@ TEST_CASE("clearing a param the codec DID consume does not resurrect it on save"
   REQUIRE(after.has_value());
   CHECK(after->find("\"in\"") == std::string::npos); // the cleared param stays cleared
   CHECK(after->find("\"shape\": \"linear\"") != std::string::npos);
+}
+
+// enforces: 08-serialization#unknown-fields-preserved-at-every-tier
+// enforces: 08-serialization#preserved-unknown-never-shadows-known
+TEST_CASE("unknown fields survive at the tiers serialize.compositions_table adds") {
+  // Two NEW places an unknown sibling can land (doc 08 Principle 7 + Principle 4):
+  //
+  //   * beside `layers` INSIDE a `compositions` entry -- a non-root composition's own
+  //     residual, which stashes under `UnknownScope::Composition` keyed by ITS OWN
+  //     ObjectId (the scope already existed and was already ObjectId-keyed, so this adds
+  //     no tier -- Constraint 9);
+  //   * beside the core-owned `composition` field in a nesting content's body.
+  //
+  // The nesting kind here has no codec anywhere in this build, so the whole thing also
+  // proves the missing-plugin path preserves both.
+  constexpr const char* k_comp_unknowns = R"json({
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      { "kind": "com.example.nest", "kind_version": "1.0", "params": { "blend": "over" },
+        "composition": "1", "note": "an unknown sibling beside composition" }
+    ]
+  },
+  "compositions": {
+    "1": {
+      "author": "a newer tool wrote this",
+      "canvas": [0, 0, 8, 8],
+      "working_space": {
+        "format": "rgba16f-linear-premul",
+        "premultiplied": true,
+        "primaries": "bogus-not-a-real-gamut",
+        "transfer": "linear"
+      },
+      "layers": [
+        { "kind": "org.arbc.solid", "kind_version": "1",
+          "params": { "color": [1.0, 0.0, 0.0, 1.0] } }
+      ]
+    }
+  }
+})json";
+
+  const std::string canonical = roundtrip(k_comp_unknowns);
+  CHECK(roundtrip(canonical) == canonical); // an idempotent canonical fixed point
+
+  // Both new-tier unknowns survive verbatim...
+  CHECK(canonical.find("\"note\": \"an unknown sibling beside composition\"") != std::string::npos);
+  CHECK(canonical.find("\"author\": \"a newer tool wrote this\"") != std::string::npos);
+  // ...beside the core-owned keys they neighbour, which the core still emits itself.
+  CHECK(canonical.find("\"composition\": \"1\"") != std::string::npos);
+  CHECK(canonical.find("\"blend\": \"over\"") != std::string::npos);
+  CHECK(canonical.find("\"src\"") == std::string::npos);
+
+  // And the never-shadow rule bites inside a `compositions` entry exactly as it does in
+  // the root composition: the read-ignored-but-writer-emitted `primaries` round-trips as
+  // exactly ONE key carrying the WRITER's value, never the stashed bogus one (doc 08:96).
+  CHECK(count_of(canonical, "\"primaries\"") == 1);
+  CHECK(canonical.find("\"primaries\": \"srgb\"") != std::string::npos);
+  CHECK(canonical.find("bogus-not-a-real-gamut") == std::string::npos);
+  // The child composition's own working_space really did load (it is not the default).
+  CHECK(canonical.find("\"rgba16f-linear-premul\"") != std::string::npos);
 }
