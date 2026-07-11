@@ -32,6 +32,61 @@ DecodedImage white_4x4() {
 
 const WorkingPixel k_red{1.0F, 0.0F, 0.0F, 1.0F};
 
+// A 16x16 high-frequency fixture at tile edge 4 -> level 0 is a 4x4 tile grid and
+// level 1 a 2x2 one, so a paint's mip propagation genuinely has to reach across
+// parent tiles. The checkerboard matters: a FLAT image decimates to a flat pyramid,
+// in which a stale filtered pixel is indistinguishable from a correct one -- it
+// would hide exactly the bug this fixture exists to catch. All values are exactly
+// representable binary fractions, so the fixture is byte-stable.
+constexpr int k_grid_dim = 16;
+constexpr int k_grid_edge = 4;
+
+DecodedImage checker_16x16() {
+  DecodedImage img;
+  img.width = k_grid_dim;
+  img.height = k_grid_dim;
+  img.format = k_working_rgba32f;
+  std::vector<float> f;
+  for (int y = 0; y < k_grid_dim; ++y) {
+    for (int x = 0; x < k_grid_dim; ++x) {
+      const float chk = ((x + y) % 2 == 0) ? 0.875F : 0.125F;
+      f.insert(f.end(),
+               {chk, static_cast<float>(x) * 0.03125F, static_cast<float>(y) * 0.03125F, 1.0F});
+    }
+  }
+  img.bytes.resize(f.size() * sizeof(float));
+  std::memcpy(img.bytes.data(), f.data(), img.bytes.size());
+  return img;
+}
+
+std::vector<std::byte> bytes_of_floats(const std::vector<float>& f) {
+  std::vector<std::byte> out(f.size() * sizeof(float));
+  std::memcpy(out.data(), f.data(), out.size());
+  return out;
+}
+
+// The oracle: rebuild the ENTIRE pyramid from scratch over a table's level-0 pixels
+// and return every level's bytes. rgba32f decode is the identity, so the rebuilt
+// level 0 is bit-for-bit the painted one and every rung above it is the pyramid the
+// painted level 0 *should* have.
+std::vector<std::vector<std::byte>> rebuilt_levels(const TileTable& painted, int edge) {
+  const std::vector<float> l0 = painted.level_pixels(0);
+  DecodedImage img;
+  img.width = painted.width();
+  img.height = painted.height();
+  img.format = k_working_rgba32f;
+  img.bytes.resize(l0.size() * sizeof(float));
+  std::memcpy(img.bytes.data(), l0.data(), img.bytes.size());
+
+  RasterContent rebuilt(img, edge);
+  const TileTablePtr t = rebuilt.store().base_table();
+  std::vector<std::vector<std::byte>> out;
+  for (std::size_t l = 0; l < t->level_count(); ++l) {
+    out.push_back(bytes_of_floats(t->level_pixels(l)));
+  }
+  return out;
+}
+
 struct NoopDamageSink final : DamageSink {
   void flush(const std::vector<Damage>&) override {}
 };
@@ -172,6 +227,70 @@ TEST_CASE("a raster paint copies only the touched tiles and shares the rest by r
   // The paint actually changed the touched tile and left the rest intact.
   REQUIRE(after_table->pixel(0, 0, 0) == k_red);
   REQUIRE(after_table->pixel(0, 3, 3) == base_table->pixel(0, 3, 3));
+}
+
+// The pyramid-consistency invariant (doc 14). A decimation kernel's support is
+// WIDER than the 2x1 pixels it reduces -- 6 taps, child `2x-2 .. 2x+3` -- so a
+// parent pixel is dirtied by changed child pixels well outside its own 2:1
+// footprint. The incremental recompute therefore dilates the propagated region by
+// the kernel radius at each rung. Left undilated (the exact `touched * 0.5` a box
+// filter allowed), a paint leaves STALE filtered pixels in a band around the touched
+// region: a silent, zoom-dependent corruption that no other test would catch, since
+// every other assertion here reads level 0.
+//
+// Two paints, both of which the undilated footprint gets wrong:
+//   - one straddling a level-0 tile boundary;
+//   - one landing strictly INSIDE a single tile, where the dilation still has to
+//     cross into a parent tile the undilated rect never selects.
+//
+// enforces: 14-data-model-and-editing#paint-mip-recompute-matches-full-rebuild
+// enforces: 14-data-model-and-editing#raster-paint-copies-only-touched-tiles
+TEST_CASE("a raster paint's mip recompute is byte-identical to a full rebuild") {
+  const auto check = [](const Rect& region) {
+    RasterContent content(checker_16x16(), k_grid_edge);
+    RasterStore& store = content.store();
+    const StateHandle base = content.base_handle();
+    const TileTablePtr base_table = store.resolve(base);
+    REQUIRE(base_table);
+    REQUIRE(base_table->level(0).tiles_x == 4); // 16 / 4: a real tile grid
+    REQUIRE(base_table->level(1).tiles_x == 2); // and a real parent tile grid
+
+    Rect touched{};
+    const TileTablePtr after = store.resolve(store.paint(base, region, k_red, touched));
+    REQUIRE(after);
+
+    // EVERY rung -- not just the ones above the touched tiles -- matches a full
+    // rebuild over the painted level-0 pixels, byte for byte.
+    const std::vector<std::vector<std::byte>> oracle = rebuilt_levels(*after, k_grid_edge);
+    REQUIRE(after->level_count() == oracle.size());
+    for (std::size_t l = 0; l < after->level_count(); ++l) {
+      const std::vector<std::byte> got = bytes_of_floats(after->level_pixels(l));
+      REQUIRE(got.size() == oracle[l].size());
+      REQUIRE(std::memcmp(got.data(), oracle[l].data(), got.size()) == 0);
+    }
+
+    // The CoW economy the wider kernel must not cost us: level 0 still copies only
+    // the tiles the region touches, and shares every other one by pool-slot identity.
+    const Level& b0 = base_table->level(0);
+    const Level& a0 = after->level(0);
+    for (int ty = 0; ty < b0.tiles_y; ++ty) {
+      for (int tx = 0; tx < b0.tiles_x; ++tx) {
+        const auto i = static_cast<std::size_t>(ty * b0.tiles_x + tx);
+        const Rect tile{static_cast<double>(tx * k_grid_edge),
+                        static_cast<double>(ty * k_grid_edge),
+                        static_cast<double>((tx + 1) * k_grid_edge),
+                        static_cast<double>((ty + 1) * k_grid_edge)};
+        if (tile.intersect(region).empty()) {
+          REQUIRE(a0.tiles[i] == b0.tiles[i]); // untouched: shared, never copied
+        } else {
+          REQUIRE(a0.tiles[i] != b0.tiles[i]); // touched: a fresh blob
+        }
+      }
+    }
+  };
+
+  SECTION("a paint straddling a level-0 tile boundary") { check(Rect{3.0, 3.0, 6.0, 6.0}); }
+  SECTION("a paint landing strictly inside one tile") { check(Rect{5.0, 5.0, 7.0, 7.0}); }
 }
 
 // paint() rides a real transaction: it assigns the captured handle via

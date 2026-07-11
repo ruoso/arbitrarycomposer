@@ -47,7 +47,7 @@ against this table:
 | --- | --- | --- | --- | --- |
 | `arbc::base` | 0 | `expected`-style errors, `ObjectId`, `Rect`/geometry, affine math + singular values, `Time`/rational rates/time maps, debug counters | 03, 04, 11, 16 | — |
 | `arbc::pool` | 1 | inside-out slab arenas, `arbc::ref`, deferred reclamation, mmap/anonymous backing, checkpoint protocol, generation tags | 15 | base |
-| `arbc::media` | 1 | pixel-format & color-space descriptors, premultiplication tags, channel layouts, typed pixel/sample span views | 07, 12 | base |
+| `arbc::media` | 1 | pixel-format & color-space descriptors, premultiplication tags, channel layouts, typed pixel/sample span views, format-agnostic resampling filters over decoded working samples (audio + image) | 07, 12 | base |
 | `arbc::surface` | 2 | `Surface` handles, the backend contract, external import + sync tokens, format conversion *interfaces* | 09 | base, media |
 | `arbc::model` | 2 | object records, persistent `DocState`, transactions, journal/undo, damage, revisions, pins | 01, 14 | base, pool, media |
 | `arbc::contract` | 3 | `Content` + `AudioFacet` + `Editable`, requests/results, `Stability`, `Registry`, `PullService` *interface*, damage sinks | 03, 11, 12, 13, 14 | base, pool, media, surface, model |
@@ -78,9 +78,24 @@ Notes on placements that were genuinely contested:
   integers interpreted upstairs (`color.working_space`).
 - **`cache` is engine-agnostic** — tiles and blocks are the same machinery
   with different key shapes (doc 12), so both engines share one component.
-- **Kernels are not `media`.** Format/space *descriptors* are vocabulary
-  (L1); the templated kernel bodies are backend implementation (L3,
-  `backend-cpu`), per doc 07's types-at-the-boundary/kernels-inside split.
+- **Format-templated kernels are not `media`.** Format/space *descriptors*
+  are vocabulary (L1); the *format-templated* kernel bodies — the loops
+  parameterised on `(PixelFormat, ColorTransfer)` that read and write
+  surface storage — are backend implementation (L3, `backend-cpu`), per
+  doc 07's types-at-the-boundary/kernels-inside split. The rule is about
+  the format template, not about arithmetic: **format-agnostic DSP over
+  already-decoded working samples** — a filter weight bank and its tap
+  combiner, taking decoded `WorkingPixel`/float samples in and out, naming
+  no `PixelFormat` and touching no surface — *is* `media` (L1). It has to
+  be: the L4 kinds may reach `media` transitively through `contract` but
+  may never reach `backend-cpu`, so a shared floor below both is the only
+  place a resampling filter can serve `backend-cpu`'s compositing kernels
+  and `kind-raster`'s mip pyramid without duplicating a byte-exact
+  coefficient table across an un-crossable level boundary. `media`'s audio
+  resampler (doc 12) already sits here; the image filter bank
+  (`kinds.raster_resampling_quality`) joins it. The split is mechanical:
+  if it needs `PixelTraits<F>` or a `Surface`, it is `backend-cpu`; if it
+  is arithmetic on decoded working values, it is `media`.
 - **The two render drivers live in `runtime`, not the engines.** The
   engines are libraries over pinned versions; deadlines, frame loops, and
   device clocks are runtime policy (doc 02's renderer/compositor split).

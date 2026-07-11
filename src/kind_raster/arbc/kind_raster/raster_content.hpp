@@ -34,7 +34,8 @@ inline constexpr int k_default_tile_edge = 256;
 
 // Every format in the set is 4-channel; tiles hold decoded working-linear
 // premultiplied floats (doc 07), so mip downsample and format-generic render go
-// through `PixelTraits` without a backend-cpu kernel (refinement Decision 3).
+// through `PixelTraits` and media's format-agnostic filter bank
+// (`arbc/media/image_resampler.hpp`) without a backend-cpu kernel.
 inline constexpr std::size_t k_tile_channels = 4;
 
 // An already-decoded pixel buffer handed to a RasterContent (codec-free input,
@@ -50,8 +51,8 @@ struct DecodedImage {
 
 // One mip level: a grid of `tiles_x * tiles_y` tile blobs (row-major) covering a
 // `width x height` logical pixel field. Level 0 is the decoded buffer; each
-// higher level is a 2x box-downsample of the level below (doc 14:219 scale
-// rungs).
+// higher level is a 2:1 Lanczos-3 half-band decimation of the level below
+// (doc 07's resampling-filter policy; doc 14:219 scale rungs).
 //
 // Each tile is an immutable `edge*edge` working-linear premultiplied RGBA-float
 // blob allocated from the content's `BigBlockPool` (doc 15:19-20 "bulk pixel

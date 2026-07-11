@@ -1,4 +1,5 @@
 #include <arbc/kind_raster/raster_content.hpp>
+#include <arbc/media/image_resampler.hpp>
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/pool/big_block_pool.hpp>
 #include <arbc/surface/typed_span.hpp>
@@ -93,10 +94,26 @@ void put(float* px, int edge, int ix, int iy, const WorkingPixel& c) {
   px[o + 3] = c[3];
 }
 
-// Build level 0 from the decoded grid, then a deterministic 2x box-downsample
-// chain down to a single 1x1 pixel (doc 14:219 scale rungs). Fresh blobs are
-// appended to `keep` (owning BlockRefs) so their allocate-counts survive until
-// the TileTable that will own them is constructed.
+// The ONE decimation kernel of the pyramid: parent pixel (cpx, cpy) of the rung
+// above `child`, through media's frozen 6-tap Lanczos-3 half-band bank. Both the
+// full pyramid build and the paint-time incremental recompute go through this --
+// the box kernel they replace was copy-pasted between them, and two divergent
+// copies of a byte-exact filter is the defect this must not recreate.
+//
+// Taps outside the child level CLAMP TO EDGE, matching `TileTable::pixel`'s
+// convention (a zero surround would darken every level border instead).
+WorkingPixel decimate_parent(const Level& child, const BigBlockPool& pool, int edge, int cpx,
+                             int cpy) {
+  return decimate_half_band(cpx, cpy, [&](int x, int y) {
+    return level_pixel(child, pool, edge, std::clamp(x, 0, child.width - 1),
+                       std::clamp(y, 0, child.height - 1));
+  });
+}
+
+// Build level 0 from the decoded grid, then a deterministic 2:1 Lanczos-3
+// half-band decimation chain down to a single 1x1 pixel (doc 14:219 scale rungs).
+// Fresh blobs are appended to `keep` (owning BlockRefs) so their allocate-counts
+// survive until the TileTable that will own them is constructed.
 std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, int h, int edge,
                                 BigBlockPool& pool, std::vector<BlockRef>& keep) {
   std::vector<Level> levels;
@@ -132,7 +149,7 @@ std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, in
     levels.push_back(std::move(l0));
   }
 
-  // Higher levels: 2x2 box average of the level below, clamping at odd edges.
+  // Higher levels: 2:1 half-band decimation of the level below.
   while (levels.back().width > 1 || levels.back().height > 1) {
     const Level& child = levels.back();
     Level up;
@@ -150,18 +167,7 @@ std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, in
             const int cpx = tx * edge + ix;
             const int cpy = ty * edge + iy;
             if (cpx < up.width && cpy < up.height) {
-              const int cx0 = std::min(2 * cpx, child.width - 1);
-              const int cy0 = std::min(2 * cpy, child.height - 1);
-              const int cx1 = std::min(2 * cpx + 1, child.width - 1);
-              const int cy1 = std::min(2 * cpy + 1, child.height - 1);
-              const WorkingPixel a = level_pixel(child, pool, edge, cx0, cy0);
-              const WorkingPixel b = level_pixel(child, pool, edge, cx1, cy0);
-              const WorkingPixel c = level_pixel(child, pool, edge, cx0, cy1);
-              const WorkingPixel d = level_pixel(child, pool, edge, cx1, cy1);
-              const WorkingPixel avg{
-                  (a[0] + b[0] + c[0] + d[0]) * 0.25F, (a[1] + b[1] + c[1] + d[1]) * 0.25F,
-                  (a[2] + b[2] + c[2] + d[2]) * 0.25F, (a[3] + b[3] + c[3] + d[3]) * 0.25F};
-              put(px, edge, ix, iy, avg);
+              put(px, edge, ix, iy, decimate_parent(child, pool, edge, cpx, cpy));
             }
           }
         }
@@ -198,17 +204,6 @@ int level_for_scale(double achieved, int max_level) {
     ++level;
   }
   return level;
-}
-
-WorkingPixel bilerp(const WorkingPixel& a, const WorkingPixel& b, const WorkingPixel& c,
-                    const WorkingPixel& d, float fx, float fy) {
-  WorkingPixel out{};
-  for (std::size_t k = 0; k < k_tile_channels; ++k) {
-    const float top = a[k] + (b[k] - a[k]) * fx;
-    const float bot = c[k] + (d[k] - c[k]) * fx;
-    out[k] = top + (bot - top) * fy;
-  }
-  return out;
 }
 
 } // namespace
@@ -369,47 +364,53 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
 
   // Higher levels: recompute only the parent tiles above the touched region,
   // reading the already-updated child level (geometric sum above the region).
-  Rect propagate = touched;
-  for (std::size_t L = 1; L < levels.size(); ++L) {
-    const Level& child = levels[L - 1];
-    Level& up = levels[L];
-    const Rect parent_rect{propagate.x0 * 0.5, propagate.y0 * 0.5, propagate.x1 * 0.5,
-                           propagate.y1 * 0.5};
-    for (int ty = 0; ty < up.tiles_y; ++ty) {
-      for (int tx = 0; tx < up.tiles_x; ++tx) {
-        if (!tile_overlaps(tx, ty, edge, parent_rect)) {
-          continue;
-        }
-        const std::size_t idx =
-            static_cast<std::size_t>(ty) * static_cast<std::size_t>(up.tiles_x) +
-            static_cast<std::size_t>(tx);
-        BlockRef blob = new_blob(d_pool, edge);
-        auto* px = reinterpret_cast<float*>(blob.data());
-        for (int iy = 0; iy < edge; ++iy) {
-          for (int ix = 0; ix < edge; ++ix) {
-            const int cpx = tx * edge + ix;
-            const int cpy = ty * edge + iy;
-            if (cpx < up.width && cpy < up.height) {
-              const int cx0 = std::min(2 * cpx, child.width - 1);
-              const int cy0 = std::min(2 * cpy, child.height - 1);
-              const int cx1 = std::min(2 * cpx + 1, child.width - 1);
-              const int cy1 = std::min(2 * cpy + 1, child.height - 1);
-              const WorkingPixel a = level_pixel(child, d_pool, edge, cx0, cy0);
-              const WorkingPixel b = level_pixel(child, d_pool, edge, cx1, cy0);
-              const WorkingPixel c = level_pixel(child, d_pool, edge, cx0, cy1);
-              const WorkingPixel d = level_pixel(child, d_pool, edge, cx1, cy1);
-              const WorkingPixel avg{
-                  (a[0] + b[0] + c[0] + d[0]) * 0.25F, (a[1] + b[1] + c[1] + d[1]) * 0.25F,
-                  (a[2] + b[2] + c[2] + d[2]) * 0.25F, (a[3] + b[3] + c[3] + d[3]) * 0.25F};
-              put(px, edge, ix, iy, avg);
+  //
+  // The decimation kernel's support is WIDER than the 2 child pixels it reduces
+  // (6 taps: child `2x-2 .. 2x+3`), so a parent pixel is dirtied by any changed
+  // child pixel within `k_decimate_radius` of its 2:1 footprint. The propagated
+  // region must therefore be DILATED by that radius at each rung before selecting
+  // parent tiles. Left undilated (the exact `touched * 0.5` a box filter allowed),
+  // a paint leaves a stale filtered band around the touched region -- a silent,
+  // zoom-dependent corruption. Dilating keeps the incremental recompute
+  // indistinguishable from a full rebuild (doc 14); over-covering is free, since a
+  // recomputed parent pixel whose support saw no change recomputes to itself.
+  //
+  // An empty touch propagates nothing: dilating an empty rect would manufacture a
+  // non-empty one and rebuild rungs no paint dirtied.
+  if (!touched.empty()) {
+    constexpr double k_dilate = static_cast<double>(k_decimate_radius);
+    Rect propagate = touched;
+    for (std::size_t L = 1; L < levels.size(); ++L) {
+      const Level& child = levels[L - 1];
+      Level& up = levels[L];
+      const Rect parent_rect{
+          std::floor((propagate.x0 - k_dilate) * 0.5), std::floor((propagate.y0 - k_dilate) * 0.5),
+          std::ceil((propagate.x1 + k_dilate) * 0.5), std::ceil((propagate.y1 + k_dilate) * 0.5)};
+      for (int ty = 0; ty < up.tiles_y; ++ty) {
+        for (int tx = 0; tx < up.tiles_x; ++tx) {
+          if (!tile_overlaps(tx, ty, edge, parent_rect)) {
+            continue;
+          }
+          const std::size_t idx =
+              static_cast<std::size_t>(ty) * static_cast<std::size_t>(up.tiles_x) +
+              static_cast<std::size_t>(tx);
+          BlockRef blob = new_blob(d_pool, edge);
+          auto* px = reinterpret_cast<float*>(blob.data());
+          for (int iy = 0; iy < edge; ++iy) {
+            for (int ix = 0; ix < edge; ++ix) {
+              const int cpx = tx * edge + ix;
+              const int cpy = ty * edge + iy;
+              if (cpx < up.width && cpy < up.height) {
+                put(px, edge, ix, iy, decimate_parent(child, d_pool, edge, cpx, cpy));
+              }
             }
           }
+          up.tiles[idx] = blob.slot();
+          keep.push_back(std::move(blob));
         }
-        up.tiles[idx] = blob.slot();
-        keep.push_back(std::move(blob));
       }
+      propagate = parent_rect;
     }
-    propagate = parent_rect;
   }
 
   auto table = std::make_shared<const TileTable>(w, h, edge, std::move(levels), &d_pool);
@@ -504,7 +505,7 @@ std::optional<RenderResult> RasterContent::render(const RenderRequest& request,
   const int h = table->height();
 
   // Bounded scale: an Exact request renders faithfully at the requested scale
-  // (bilinear-upsampling past native); a BestEffort request clamps at native and
+  // (bicubic-upsampling past native); a BestEffort request clamps at native and
   // reports achieved_scale < request.scale honestly (doc 03:53-55,142-145,
   // refinement Constraint 5 reconciled with the enforced #render-scale-honest
   // claim: achieved < request is never exact).
@@ -532,8 +533,13 @@ std::optional<RenderResult> RasterContent::render(const RenderRequest& request,
         const auto fx = static_cast<float>(u - static_cast<double>(x0));
         const auto fy = static_cast<float>(v - static_cast<double>(y0));
         const std::size_t l = static_cast<std::size_t>(level);
-        sample = bilerp(table->pixel(l, x0, y0), table->pixel(l, x0 + 1, y0),
-                        table->pixel(l, x0, y0 + 1), table->pixel(l, x0 + 1, y0 + 1), fx, fy);
+        // Interpolating Catmull-Rom: at integer phase its weights are exactly
+        // (0, 1, 0, 0), so an on-rung or native-scale fetch reproduces the level
+        // pixel bit-for-bit (the guard the surviving goldens encode).
+        // `TileTable::pixel` clamps, so the wider tap footprint reads the border,
+        // never tile padding.
+        sample =
+            sample_bicubic(x0, y0, fx, fy, [&](int sx, int sy) { return table->pixel(l, sx, sy); });
       }
       Traits::encode(sample, &typed.data[i]);
     }

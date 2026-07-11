@@ -34,6 +34,18 @@ Rules:
    composed output converts into the parent's working space). Homogeneous
    trees pay nothing.
 
+**Resampling filters.** Minification uses a windowed-sinc low-pass
+(Lanczos-3); magnification uses an interpolating cubic (Catmull–Rom). Both
+operate on decoded premultiplied linear working values (rule 3), with
+tabulated float32 weights, a fixed tap order, and no runtime `libm` — so
+every resample is byte-exact and portable (doc 16). Both kernels' negative
+lobes may ring below zero; the result is clamped to non-negative per channel
+before use, which removes the unphysical undershoot (and the negative alpha
+that would break unpremultiplication) while leaving the float working space's
+HDR headroom above alpha intact. The filters live in `arbc::media` (doc 17)
+and are shared by the kinds' mip pyramids and the backend's compositing
+kernels.
+
 Out of scope for v1 but kept structurally possible: full OCIO-style
 management, HDR output transforms/tone mapping, CMYK. These all slot in as
 "more color spaces + better edge conversions" without touching the model.

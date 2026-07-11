@@ -1,12 +1,12 @@
-#include "fake_editable.hpp"
-
 #include <arbc/base/ids.hpp>
 #include <arbc/model/records.hpp>
 #include <arbc/runtime/document.hpp>
 
-#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 
+#include "fake_editable.hpp"
+
+#include <atomic>
 #include <memory>
 #include <thread>
 #include <vector>

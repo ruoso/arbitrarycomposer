@@ -20,8 +20,9 @@ task kinds "Reference kinds" {
   task raster_resampling_quality "org.arbc.raster resampling quality" {
     effort 2d
     allocate team
+    complete 100
     depends !raster
-    note "Replace baseline box-downsample/bilinear resampling with higher-order filters (e.g. Lanczos-3 downsample, bicubic upsample), each pinned by byte-exact per-filter goldens; keeps the mip-generation seam, swaps the kernel. Docs 03/14. Source-of-debt: tasks/refinements/kinds/raster.md"
+    note "Replace baseline box-downsample/bilinear resampling with higher-order filters (e.g. Lanczos-3 downsample, bicubic upsample), each pinned by byte-exact per-filter goldens; keeps the mip-generation seam, swaps the kernel. Docs 03/14. Source-of-debt: tasks/refinements/kinds/raster.md Refinement: tasks/refinements/kinds/raster_resampling_quality.md"
   }
   task raster_runtime_binding "org.arbc.raster runtime sink wiring" {
     effort 1d

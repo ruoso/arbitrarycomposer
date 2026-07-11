@@ -156,6 +156,16 @@ Initially-open questions, now decided in their own docs:
   interface and transport-mastering `DeviceMonitor` are dependency-free
   `runtime` objects, while the concrete OS-audio backend ships as a separate
   `arbc-plugin-<device>` artifact. Decided in doc 17.
+- **Where a kernel lives**: split by *format templating*, not by "is it
+  arithmetic". A loop parameterised on `(PixelFormat, ColorTransfer)` that
+  reads or writes surface storage is `backend-cpu` (L3); format-agnostic
+  DSP over already-decoded working samples — a filter's coefficient bank
+  and tap combiner, taking `WorkingPixel`/float in and out — is `media`
+  (L1). The L4 kinds can reach `media` but never `backend-cpu`, so `media`
+  is the only floor where `kind-raster`'s mip pyramid and `backend-cpu`'s
+  compositing kernels can share one byte-exact resampling filter instead of
+  duplicating its frozen coefficient table across an un-crossable level
+  boundary. Decided in doc 17 (`kinds.raster_resampling_quality`).
 - **Memory model**: inside-out slab arenas (refcounts stored apart from
   immutable data, per the `poc-inside-out-objects` prototype) for document
   records and content state nodes, reimplemented inside arbc core and

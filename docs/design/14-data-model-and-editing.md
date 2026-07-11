@@ -181,6 +181,13 @@ the stroke's tile set. A vector kind shares unchanged subtrees. This is a
 deep copy), documented as such for plugin authors; the contract tests
 (doc 10) enforce capture/restore round-trips and damage honesty.
 
+A paint transaction's incremental mip recompute is **indistinguishable from a
+full rebuild**: because a decimation kernel's support is wider than the 2×1
+pixels it reduces, the propagated region is dilated by the kernel's radius at
+each rung, so no stale filtered pixel survives near a painted tile's boundary.
+Copy-on-write economy applies to level 0's touched tiles (only those are
+copied); the rungs above necessarily touch a slightly wider set.
+
 **Live content opts out.** A camera feed, a capture source, a 3D engine
 view (the OBS-style sources) have no meaningful document state — they are
 `Live` (doc 11) and simply don't implement `Editable`: never journaled,
