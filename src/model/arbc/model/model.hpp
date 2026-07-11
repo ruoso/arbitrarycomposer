@@ -8,15 +8,18 @@
 #include <arbc/model/hamt.hpp>
 #include <arbc/model/journal_entry.hpp>
 #include <arbc/model/records.hpp>
+#include <arbc/pool/checkpoint.hpp>
 #include <arbc/pool/reclamation.hpp>
 #include <arbc/pool/refs.hpp>
 #include <arbc/pool/slot_store.hpp>
+#include <arbc/pool/workspace_file.hpp>
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -174,6 +177,15 @@ private:
 // fixed-size slabs on a document-owned arena; a commit builds the next version by
 // copying only the touched path and publishes it by an atomic swap of the
 // current-version handle.
+//
+// Backing is a CONSTRUCTION-TIME arena policy (doc 15:158-160). `Model()` is the
+// anonymous document: process memory, no file, no checkpointer, no slot fence --
+// byte-for-byte the pre-durability model, which is what a live-only (OBS-style)
+// host wants. `Model::create(path)` / `Model::open(path)` mint the WORKSPACE-BACKED
+// document: records live in an mmapped per-document workspace file, `checkpoint()`
+// makes the current version crash-recoverable (msync data, flip the A/B root, msync
+// the header), and `open` rebuilds the whole document from the last durable root --
+// counts and free lists included -- by the typed reachability walk below.
 class Model {
 public:
   Model();
@@ -181,6 +193,68 @@ public:
 
   Model(const Model&) = delete;
   Model& operator=(const Model&) = delete;
+
+  // The root index a checkpoint publishes for an EMPTY document. Slot 0 is a
+  // perfectly good HamtNode, so "no root" needs a value outside the index space;
+  // the max `SlotIndex` is never a real slot (refs.hpp reserves it as the reclaim
+  // sentinel for exactly this reason).
+  static constexpr SlotIndex k_no_root = 0xFFFFFFFFu;
+
+  // Mint a FRESH workspace-backed document over a newly created file at `path`
+  // (doc 15:156-160): both document stores are minted from the file's per-store
+  // chunk views, a `Checkpointer` is bound to the file + arena, and the
+  // durability-epoch slot fence is installed on BOTH stores. The document starts
+  // empty at revision 0, exactly as `Model()` does; nothing is durable until the
+  // first `checkpoint()`. Errors -- including a platform with no workspace-file
+  // support -- surface as values (doc 10), never as a throw or an abort.
+  static expected<std::unique_ptr<Model>, WorkspaceFileError> create(const std::string& path);
+
+  // RECOVERY (doc 15:163-166, "map the file, read the last valid root, resume").
+  // Selects the highest-generation durable root, re-binds every store to exactly
+  // the chunks the file's arena directory tags as its own at exactly the high-water
+  // that root published, then runs the model's typed reachability walk over the
+  // `DocState` HAMT to rebuild every reached slot's refcount from its in-degree --
+  // no count is ever read from disk (doc 15:184-190) -- and derives each store's
+  // free list as the below-high-water complement of the walk's live set. Publishes
+  // the recovered version at revision 0: the durable root is the document, and the
+  // in-memory journal is not reconstructed across a close/open (Decision 2 -- an
+  // editor crash costs at-most-since-last-checkpoint, not the document). A file
+  // that was created but never checkpointed has no durable root and recovers as an
+  // empty document. A file whose store table disagrees with this build's slot
+  // geometry, a truncated file, and an I/O fault all surface as `WorkspaceFileError`
+  // values. WRITER-ONLY, and single-threaded: `open` runs before any reader pins
+  // the recovered version.
+  static expected<std::unique_ptr<Model>, WorkspaceFileError> open(const std::string& path);
+
+  // Make the currently published version durable (doc 15:205-216): `Checkpointer::
+  // commit` msyncs the live data chunks, publishes this version's root into the
+  // inactive header slot with a bumped generation and flips, then msyncs the header
+  // -- so a crash lands on the old root or the new one, both consistent. On success
+  // the durability fences drain: the slots and chunks freed since the last
+  // checkpoint, which the on-disk root may still have referenced, become reusable.
+  //
+  // A DECOUPLED PRIMITIVE, not a hook on the version publish: the per-transaction
+  // `commit()` swap stays lock-free and msync-free, and checkpoint CADENCE (timer,
+  // transaction count, explicit host call) is the host's / `runtime.housekeeping`'s
+  // policy, not this layer's (doc 15:213-216). Mutates no live record -- records are
+  // immutable -- so a reader pinned across a checkpoint observes an unchanged,
+  // consistent version. WRITER-THREAD ONLY. On an anonymous `Model` there is no file
+  // and nothing to make durable: returns `WorkspaceFileErrc::Unsupported`.
+  expected<std::monostate, WorkspaceFileError> checkpoint();
+
+  // Whether this document is workspace-file-backed (and so checkpointable).
+  bool workspace_backed() const noexcept { return d_source != nullptr; }
+
+  // The document's checkpointer, or null when anonymous. The seam
+  // `runtime.housekeeping` drives for cadence, and the behavioral counters
+  // (`commit_count`, `data_msyncs`, `header_msyncs`, `slots_freed_to_list`,
+  // `generation`) a test asserts over instead of wall-clock (doc 16:54-62).
+  Checkpointer* checkpointer() noexcept { return d_checkpointer ? &*d_checkpointer : nullptr; }
+
+  // The document's workspace-file chunk source, or null when anonymous. The seam a
+  // host queries for file-level accounting, and the one a crash-recovery harness
+  // installs its `SyscallInjector` fault shim on (doc 16:74-78).
+  WorkspaceFileChunkSource* workspace_source() noexcept { return d_source.get(); }
 
   // Pin the current version; the returned handle is immutable and outlives any
   // later transaction (until the pin is dropped). Any thread.
@@ -441,9 +515,51 @@ public:
 private:
   friend class Transaction;
 
+  // The two factories construct through this; a workspace `Model` is not
+  // default-constructible, because a file open can fail and a constructor cannot
+  // return a value.
+  struct WorkspaceTag {};
+  Model(WorkspaceTag, std::unique_ptr<WorkspaceFileChunkSource> source);
+
+  // The construction tail both constructors share: register the deferred sinks and
+  // publish the empty version-0 root.
+  void wire_stores();
+
+  // The workspace-only construction tail: bind the checkpointer to the file + arena
+  // and install the durability-epoch slot fence on BOTH document stores.
+  void install_durability();
+
+  // The typed reachability walk `Checkpointer::finalize_open` requires -- the
+  // deliverable `pool.checkpoints` left to the model, because `pool` (L1) must not
+  // learn about `DocState` (L2, doc 17:41-43). The ENTIRE ownership graph is the
+  // HAMT: every `ObjectRecord` arm (composition / layer / content / spill chunk) is
+  // a HAMT leaf keyed by its own `ObjectId`, and records name each other only by
+  // `ObjectId` VALUE, never an owning edge (records.hpp:104-105, doc 14:58-64). So
+  // the walk follows exactly the counted `SlotRef` edges -- `HamtNode` -> child
+  // `HamtNode` and `HamtNode` -> leaf `ObjectRecord` -- and there is nothing else to
+  // follow. It reads records by raw storage index and asserts no `SlotRef`
+  // generation (refs.hpp:375-378: generations are anonymous and reset on open).
+  struct Recovered {
+    std::vector<SlotIndex> nodes;   // reachable HamtNode slots (d_nodes' live set)
+    std::vector<SlotIndex> records; // reachable ObjectRecord slots (d_records' live set)
+    std::uint64_t max_id{0};        // the highest reachable ObjectId: reseeds d_next_id
+  };
+  Recovered rebuild_counts(SlotIndex root_index);
+
   // Declaration order is init order: the arena backs the stores; the stores back
   // the sinks; the queue and reclaim context reference the stores. Destroyed in
   // reverse, so nothing outlives what it points at.
+  //
+  // The workspace source and its checkpointer lead, so they OUTLIVE the arena and
+  // stores they back: teardown returns the stores' chunks through the source (still
+  // alive) and through the checkpointer's chunk fence (still alive), and the slot
+  // fence the stores point at is destroyed only after them. Both are null/empty on
+  // the anonymous path -- which then constructs, allocates, and tears down exactly
+  // as it did before durability existed (`checkpoint.hpp:52-57`: the fence is off by
+  // default so anonymous paths stay byte-for-byte unchanged).
+  std::unique_ptr<WorkspaceFileChunkSource> d_source; // null == anonymous
+  std::optional<Checkpointer> d_checkpointer;         // engaged iff d_source
+
   Arena d_arena;
   RefStore<HamtNode> d_nodes;
   RefStore<ObjectRecord> d_records;

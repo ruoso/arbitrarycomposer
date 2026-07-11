@@ -384,6 +384,38 @@ public:
     return count_ref(index).load(std::memory_order_acquire);
   }
 
+  // Recovery: republish the slot's generation from a persisted in-record edge.
+  // Generations are anonymous runtime state that `restore` mints at zero -- but
+  // the `SlotRef` edges INSIDE the mmapped records still carry the generations the
+  // writer stamped, and every slot recycled during the writing session left them
+  // nonzero (`reclaim` bumps). Without this the first `peek` of a reopened edge
+  // would trip the stale-reference assert on a perfectly valid reference. The walk
+  // stamps each edge it follows, so every reachable slot ends at the generation its
+  // referrers carry; a slot with no referrer (the document root) keeps the zero
+  // `restore` left, which is equally self-consistent. Compiles away in release,
+  // where a `SlotRef` is index-only and nothing asserts. Writer-only, recovery-only.
+  void restore_generation([[maybe_unused]] SlotRef<T> ref) noexcept {
+#ifndef NDEBUG
+    generation_ref(ref.d_index).store(ref.d_generation, std::memory_order_release);
+#endif
+  }
+
+  // Recovery: adopt an owning `Ref` on a slot the reachability walk has already
+  // counted. Recovery has no `SlotRef` to resolve -- the durable document root is
+  // named by a raw storage index in the workspace header, not by an in-record edge
+  // -- so this is the only way to hand the recovered version handle the one count
+  // the walk reserved for it. Adopts a count already accounted for, exactly as
+  // `create` does: it does NOT increment. Writer-only, recovery-only.
+  Ref<T> adopt_index(SlotIndex index) noexcept {
+    T* ptr = d_typed.resolve(index);
+#ifndef NDEBUG
+    const std::uint32_t generation = generation_ref(index).load(std::memory_order_acquire);
+    return Ref<T>(typename Ref<T>::AdoptTag{}, this, index, ptr, generation);
+#else
+    return Ref<T>(typename Ref<T>::AdoptTag{}, this, index, ptr);
+#endif
+  }
+
   // Immediate reclamation: run `~T`, return the slot to the free list, and (in
   // debug) bump the slot's generation so any surviving stale reference faults.
   // This is what the default sink does and what a deferred queue calls when it

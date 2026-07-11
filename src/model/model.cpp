@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -511,6 +514,23 @@ void DocRoot::for_each_layer_in(ObjectId composition,
 Model::Model()
     : d_nodes(d_arena), d_records(d_arena), d_bundle{&d_nodes, &d_records}, d_node_sink(d_nodes),
       d_record_sink(d_records), d_reclaim_ctx{&d_nodes, &d_records} {
+  // The anonymous document: a default `Arena()` over an anonymous chunk source, no
+  // checkpointer, no slot fence -- byte-for-byte the pre-durability model.
+  wire_stores();
+}
+
+Model::Model(WorkspaceTag, std::unique_ptr<WorkspaceFileChunkSource> source)
+    : d_source(std::move(source)), d_arena(d_source->router()), d_nodes(d_arena),
+      d_records(d_arena), d_bundle{&d_nodes, &d_records}, d_node_sink(d_nodes),
+      d_record_sink(d_records), d_reclaim_ctx{&d_nodes, &d_records} {
+  // The workspace-backed document: the arena is routed through the file's per-store
+  // chunk views, so each size-class store draws (and, on reopen, re-binds) exactly
+  // the chunks the arena directory tags as its own.
+  wire_stores();
+  install_durability();
+}
+
+void Model::wire_stores() {
   // Install the deferred sinks so any release (including a render thread dropping
   // a pin) only enqueues -- never a destructor storm inline (doc 15:129-136).
   d_queue.register_store(d_nodes, d_node_sink);
@@ -521,6 +541,192 @@ Model::Model()
   // recorded the drain thunk; this only swaps the zero sink.
   d_records.set_zero_sink(&d_content_reclaim_sink);
   d_current.store(std::make_shared<const DocRoot>(d_bundle, Ref<HamtNode>{}, 0));
+}
+
+void Model::install_durability() {
+  // HamtNode and ObjectRecord are distinct size classes, so they are distinct
+  // SlotStores. The walk's two live sets and the two `finalize_open` calls rely on
+  // it: one shared store would need ONE merged live set, and the second call would
+  // otherwise rebuild its free list as the complement of only half the graph.
+  assert(&d_nodes.store() != &d_records.store() &&
+         "the node and record stores must be distinct size classes");
+
+  d_checkpointer.emplace(*d_source, d_arena);
+  // Every workspace-backed store's slot high-water must become durable with the
+  // root that names it, or a recovery would read a high-water that belongs to a
+  // different version.
+  d_checkpointer->register_store(d_nodes.store());
+  d_checkpointer->register_store(d_records.store());
+  // The durability-epoch quarantine on BOTH document stores (doc 15:209-213): a
+  // HamtNode or ObjectRecord slot freed AFTER the last checkpoint may still be
+  // referenced by the on-disk root, so it stays quarantined -- resolvable, but not
+  // reallocatable -- until a commit makes the freeing durable.
+  d_nodes.store().set_release_fence(&d_checkpointer->slot_fence());
+  d_records.store().set_release_fence(&d_checkpointer->slot_fence());
+}
+
+expected<std::unique_ptr<Model>, WorkspaceFileError> Model::create(const std::string& path) {
+  expected<std::unique_ptr<WorkspaceFileChunkSource>, WorkspaceFileError> source =
+      WorkspaceFileChunkSource::create(path);
+  if (!source) {
+    return unexpected(source.error());
+  }
+  std::unique_ptr<Model> model(new Model(WorkspaceTag{}, std::move(*source)));
+  // A store the router refused is bound to a RefusingChunkSource and would allocate
+  // nothing; the reason is a value on the source (doc 10).
+  if (model->d_source->bind_error().code != WorkspaceFileErrc::Ok) {
+    return unexpected(model->d_source->bind_error());
+  }
+  return model;
+}
+
+expected<std::unique_ptr<Model>, WorkspaceFileError> Model::open(const std::string& path) {
+  // Map the file, validate the header, select the highest-generation valid root
+  // (doc 15:163-166). `Checkpointer::open` also adopts that root's store-table
+  // snapshot, so the stores the Model's RefStores mint below bind to the geometry
+  // and chunk sets THIS root published -- never a mismatched pair.
+  expected<Checkpointer::OpenState, WorkspaceFileError> opened = Checkpointer::open(path);
+  if (!opened) {
+    return unexpected(opened.error());
+  }
+  const bool valid = opened->valid;
+  const SlotIndex root_index = opened->root_index;
+
+  std::unique_ptr<Model> model(new Model(WorkspaceTag{}, std::move(opened->source)));
+  if (model->d_source->bind_error().code != WorkspaceFileErrc::Ok) {
+    // A store table that disagrees with this build's slot geometry is refused as a
+    // value rather than mis-routed into garbage.
+    return unexpected(model->d_source->bind_error());
+  }
+  if (!valid) {
+    // The file was created but never checkpointed: there is no durable root, so the
+    // durable document is the empty one the constructor already published.
+    return model;
+  }
+
+  // Re-bind every store the selected root's snapshot records, at exactly the
+  // high-water that root published. The chunks are already mapped, so the file does
+  // not grow.
+  expected<std::monostate, WorkspaceFileError> reserved =
+      model->d_checkpointer->reserve_restored_all(model->d_arena);
+  if (!reserved) {
+    return unexpected(reserved.error());
+  }
+
+  // Publish each store's parallel refcount / reclaim-link columns over the reserved
+  // slots, constructing nothing -- the records already live in the file, and a
+  // recovered `HamtNode`'s non-trivial destructor is a LIVE-EDITING concern (the
+  // reclaim cascade), not a recovery one: recovery rebuilds counts by reading bytes
+  // (Decision 6). The chunks are bound and the high-water is set, so this re-binds
+  // nothing and cannot fail.
+  const std::uint32_t node_high_water = model->d_nodes.store().high_water();
+  const std::uint32_t record_high_water = model->d_records.store().high_water();
+  [[maybe_unused]] const bool nodes_restored = model->d_nodes.restore(node_high_water).has_value();
+  [[maybe_unused]] const bool records_restored =
+      model->d_records.restore(record_high_water).has_value();
+  assert(nodes_restored && records_restored &&
+         "restore over slots reserve_restored_all already bound cannot fail");
+
+  // Counts start at zero (refs.hpp:355-360) and are rebuilt HERE, from the graph --
+  // nothing on disk is trusted for bookkeeping (doc 15:184-190).
+  const Recovered recovered = model->rebuild_counts(root_index);
+
+  // Each store's free list is the below-high-water complement of its live set, and
+  // its live count is that set's size (checkpoint.hpp:202-204). One call per store.
+  model->d_checkpointer->finalize_open(model->d_nodes.store(), recovered.nodes);
+  model->d_checkpointer->finalize_open(model->d_records.store(), recovered.records);
+
+  // Ids are never reused (doc 14 § Identity), and spill-chunk records draw from the
+  // same counter -- so the counter must resume PAST every id in the file, or the
+  // next transaction would mint an id that aliases a recovered record.
+  model->d_next_id.store(recovered.max_id + 1, std::memory_order_relaxed);
+
+  if (root_index != k_no_root) {
+    // Adopt the one count the walk reserved for the version handle. `DocRoot` owns
+    // exactly one count on the version root (model.hpp), so this takes ownership of
+    // a count already accounted for -- it does not retain again.
+    model->d_current.store(std::make_shared<const DocRoot>(
+        model->d_bundle, model->d_nodes.adopt_index(root_index), 0));
+  }
+  return model;
+}
+
+Model::Recovered Model::rebuild_counts(SlotIndex root_index) {
+  Recovered out;
+  if (root_index == k_no_root) {
+    return out; // a durable EMPTY document: no root node, so nothing is reachable
+  }
+
+  // Expand-once, count-every-edge (Decision 4): each reached slot's count ends as
+  // its exact in-degree among reachable edges, which terminates on shared structure
+  // and stays correct wherever genuine sharing exists -- unlike assuming every count
+  // is 1.
+  std::vector<char> node_seen(d_nodes.store().high_water(), 0);
+  std::vector<char> record_seen(d_records.store().high_water(), 0);
+
+  // No HAMT edge points at a version root, so the root's in-degree is zero and the
+  // version handle's single count is the whole of its count.
+  d_nodes.set_count_index(root_index, 1);
+  node_seen[root_index] = 1;
+  out.nodes.push_back(root_index);
+
+  std::vector<SlotIndex> stack{root_index};
+  while (!stack.empty()) {
+    const SlotIndex index = stack.back();
+    stack.pop_back();
+    const HamtNode* node = d_nodes.peek_index(index);
+
+    if (node->is_leaf != 0) {
+      const SlotRef<ObjectRecord> edge = node->record;
+      const SlotIndex leaf = edge.index();
+      d_records.restore_generation(edge);
+      d_records.set_count_index(leaf, d_records.count_index(leaf) + 1);
+      if (record_seen[leaf] == 0) {
+        record_seen[leaf] = 1;
+        out.records.push_back(leaf);
+        const ObjectRecord* record = d_records.peek_index(leaf);
+        out.max_id = std::max(out.max_id, record->id.value);
+        // The walk VISITS every content record's state handle and descends nothing:
+        // v1 handles are inert (`k_state_none`) because no kind ships a persistent
+        // workspace-backed state slab yet, and content-state slabs are kind-owned in
+        // kind-owned stores whose shape the model cannot know (Decision 5). This is
+        // where a per-kind slab hook -- mirroring the writer-owned `StateRefSink`
+        // retain/release seam -- slots in when the first persistent kind lands.
+        assert((record->kind != RecordKind::Content || !record->as.content.state.has_state()) &&
+               "a persisted non-inert StateHandle needs a per-kind state-slab walk hook");
+      }
+      continue;
+    }
+
+    // A branch owns one count on each child the bitmap marks present; `children` is
+    // indexed directly by the 5-bit digit, not compacted.
+    std::uint32_t remaining = node->bitmap;
+    while (remaining != 0) {
+      const auto digit = static_cast<std::uint32_t>(std::countr_zero(remaining));
+      remaining &= remaining - 1;
+      const SlotRef<HamtNode> edge = node->children[digit];
+      const SlotIndex child = edge.index();
+      d_nodes.restore_generation(edge);
+      d_nodes.set_count_index(child, d_nodes.count_index(child) + 1);
+      if (node_seen[child] == 0) {
+        node_seen[child] = 1;
+        out.nodes.push_back(child);
+        stack.push_back(child);
+      }
+    }
+  }
+  return out;
+}
+
+expected<std::monostate, WorkspaceFileError> Model::checkpoint() {
+  if (!d_checkpointer.has_value()) {
+    return unexpected(WorkspaceFileError{WorkspaceFileErrc::Unsupported, 0});
+  }
+  // The published version's root slot -- the version `commit` makes durable. An
+  // empty document has no root node, so it publishes the no-root sentinel.
+  const DocStatePtr version = d_current.load();
+  const Ref<HamtNode>& root = version->root_ref();
+  return d_checkpointer->commit(root ? root.index() : k_no_root);
 }
 
 Model::~Model() {

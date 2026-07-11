@@ -252,6 +252,15 @@ void SlotStore::free_now(SlotIndex index) {
   push_free(index);
 }
 
+std::vector<SlotIndex> SlotStore::reusable_slots() const {
+  std::lock_guard<std::mutex> guard(d_pool_mutex);
+  std::vector<SlotIndex> out(d_free);
+  for (const std::unique_ptr<SlotFreePool>& pool : d_local_pools) {
+    out.insert(out.end(), pool->slots.begin(), pool->slots.end());
+  }
+  return out;
+}
+
 expected<std::monostate, PoolError> SlotStore::reserve_restored(std::uint32_t high_water) {
   assert_writer_thread();
   if (high_water == 0) {

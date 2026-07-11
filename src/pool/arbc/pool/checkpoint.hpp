@@ -212,6 +212,22 @@ public:
     });
 #endif
     drain_fences();
+#ifndef NDEBUG
+    // ... then reopen the page of every slot a later `allocate` could hand out. The
+    // seal above protects whole CHUNKS, but a slot on a free list is not published
+    // data: the next allocation placement-news into it. Sealing the chunk it lives
+    // in would fault that write -- and NOT just for the quarantine this commit
+    // released (`drain_fences`, which ran first, so those are on the free list now),
+    // but for every slot freed by an EARLIER commit that is still waiting to be
+    // reused, which this seal would otherwise re-protect on every commit. Page
+    // granularity makes it best-effort in the other direction: a live slot sharing a
+    // page with a free one is reopened along with it.
+    d_arena->for_each_store([this](SlotStore& store) {
+      for (const SlotIndex index : store.reusable_slots()) {
+        d_source->protect_range(store.resolve(index), store.slot_stride(), false);
+      }
+    });
+#endif
     d_epoch = d_generation + 1;
     snapshot();
     return std::monostate{};
@@ -349,12 +365,9 @@ private:
     std::size_t kept = 0;
     for (std::size_t i = 0; i < slots.size(); ++i) {
       if (slots[i].epoch <= d_durable_epoch) {
-#ifndef NDEBUG
-        // The slot is about to be reused: its chunk was just sealed read-only, so
-        // reopen its page for the next write (debug hardening, best-effort).
-        d_source->protect_range(slots[i].store->resolve(slots[i].index),
-                                slots[i].store->slot_stride(), false);
-#endif
+        // The slot's chunk was just sealed read-only; `commit` reopens the pages of
+        // every free-list slot right after this drain (it must cover slots freed by
+        // EARLIER epochs too, which this loop never sees again).
         slots[i].store->free_now(slots[i].index);
         ++d_slots_freed_to_list;
       } else {

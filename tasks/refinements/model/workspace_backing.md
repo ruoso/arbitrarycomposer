@@ -469,25 +469,11 @@ consumer to close it against today).
 
 ## Status
 
-**Re-deferred** — 2026-07-09.
+**Done** — 2026-07-11.
 
-The task could not proceed. A blocking format gap in `arbc::pool` makes the
-load-bearing deliverable — `Model::open` cold recovery — unrealizable under the
-refinement's "no new `arbc::pool` code" constraint. Specifically:
-
-- `WorkspaceHeader` (`workspace_file.hpp:59-72`) records only a **global**
-  `chunk_count`; `WorkspaceChunkEntry` (`:77-82`) carries `{offset,size,state}`
-  with **no store owner** — the chunk directory is not publicly exposed.
-- On reopen, `acquire` serves chunks **size-blind FIFO** (`workspace_file.cpp:231-234`),
-  so `d_records.restore()` then `d_nodes.restore()` mis-routes interleaved chunks:
-  a records store handed a node-sized chunk mis-strides and the walk reads garbage.
-- Chunk byte-size cannot disambiguate in the ASan/debug lane: `HamtNode`
-  (stride 288→128 slots) and `ObjectRecord` (stride 144→256 slots) both yield
-  **36864-byte** chunks in debug.
-- The doc 15:199-203 header field that would close this ("per-type slot sizes,
-  and arena directory") was never implemented.
-
-No files were created or edited. No tests were added. No commit was made.
-
-See `tasks/parking-lot.md` entry 2026-07-09 —
-`model.workspace_backing` blocked: per-store chunk routing absent in workspace format.
+- `src/model/arbc/model/model.hpp`, `src/model/model.cpp` — file-backed `Model::create`/`open`, `checkpoint()`, and the typed HAMT reachability walk that rebuilds refcounts on recovery.
+- `src/model/t/workspace_backing.t.cpp` (new) — 9 test cases covering unit round-trip, count correctness post-recovery, behavioral counters (still-scene skips data msync, epoch fence quarantine), kill-at-every-syscall crash sweep, and asan pin/checkpoint concurrency smoke.
+- `src/model/CMakeLists.txt` — wired the new test binary via `arbc_component_test`.
+- `tests/claims/registry.tsv` — registered `15-memory-model#counts-rebuilt-by-reachability-walk`, `#recovery-resumes-last-durable-root`, `#checkpoint-of-still-scene-skips-data-msync`; all tagged with `// enforces:` in the test file.
+- `src/pool/arbc/pool/{refs,slot_store,checkpoint}.hpp`, `src/pool/slot_store.cpp` — three load-bearing pool seams: `RefStore::adopt_index` (recovery root handle), `RefStore::restore_generation` (debug generation mismatch on reopen), `SlotStore::reusable_slots`; plus a pre-existing `Checkpointer::commit` bug fix (mprotect re-seal re-locked recycled free-list pages, causing `SEGV_ACCERR` on the next allocation into a reused slot in Debug lanes).
+- `src/pool/t/workspace_store_directory.t.cpp` — refactored to accommodate the new pool seams.

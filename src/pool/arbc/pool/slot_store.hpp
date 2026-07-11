@@ -206,6 +206,14 @@ public:
     }
   }
 
+  // Every slot a later `allocate` could hand out: the shared global free pool plus
+  // every thread's local pool. The companion of `for_each_sealable_chunk` -- a slot
+  // on a free list is NOT published data (the next allocation placement-news into
+  // it), so the checkpoint seal has to reopen its page, and the seal protects whole
+  // CHUNKS, which is coarser than the slots it means to freeze. Snapshot, not a
+  // view: taken under the pool lock.
+  std::vector<SlotIndex> reusable_slots() const;
+
   std::size_t slot_size() const noexcept { return d_slot_size; }
   std::size_t slot_stride() const noexcept { return d_slot_stride; }
   std::size_t slot_align() const noexcept { return d_slot_align; }
