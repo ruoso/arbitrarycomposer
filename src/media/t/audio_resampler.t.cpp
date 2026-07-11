@@ -1,5 +1,6 @@
 #include <arbc/media/audio_block.hpp>
 #include <arbc/media/audio_resampler.hpp>
+#include <arbc/media/resampler_prototype.hpp> // INTERNAL: the shared windowed-sinc generator
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -170,6 +171,29 @@ TEST_CASE("resample_audio pins byte-exact reconstructed output at a fixed non-in
   REQUIRE(std::memcmp(got.data(), k_golden_32k_to_48k.data(), got.size()) == 0);
 }
 
+// The frozen table in `audio_resampler.cpp` is checked-in DATA, and until now nothing in
+// the repo could regenerate it: its REGENERATE PROCEDURE pointed at the `[.regen]` case
+// below, which dumped only the output golden. The table and the "one generator, not a
+// second algorithm" claim it rests on were both unverifiable.
+//
+// So pin the generator against the table. This is the guard that lets the dumper be
+// trusted: if someone edits `resampler_prototype::generate` -- the SAME function that
+// builds the widened decimation bank at every device-edge configure -- and the frozen
+// upsampling table no longer falls out of it, this fails loudly here rather than
+// silently emitting a subtly wrong table the next time someone runs `[.regen]`.
+//
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+TEST_CASE("the shared prototype still reproduces the frozen upsampling bank byte-for-byte") {
+  const arbc::resampler_prototype::FrozenBank frozen = arbc::resampler_prototype::frozen_bank();
+  const arbc::PolyphaseBank regenerated = arbc::resampler_prototype::generate(
+      frozen.phases, frozen.taps, /*fc=*/1.0, /*force_integer_zero=*/true);
+
+  REQUIRE(regenerated.taps == frozen.taps);
+  REQUIRE(regenerated.coeffs.size() == frozen.count);
+  // Bit-for-bit, not approximately: the table is frozen bytes (doc 16 tier-3).
+  REQUIRE(std::memcmp(regenerated.coeffs.data(), frozen.coeffs, frozen.count * sizeof(float)) == 0);
+}
+
 // GCOV_EXCL_START -- maintenance dumper, not shipped behavior.
 namespace {
 void dump(const char* name, const std::vector<std::byte>& bytes) {
@@ -179,9 +203,34 @@ void dump(const char* name, const std::vector<std::byte>& bytes) {
                 i + 1 == bytes.size() ? "};\n" : (i % 16 == 15 ? ",\n    " : ", "));
   }
 }
+
+// Print the frozen polyphase bank paste-ready for `audio_resampler.cpp`, as hex floats
+// (an exact round-trip -- a decimal literal is not). Phase-major, one tap per line, with
+// the phase index marked on each phase's last tap exactly as the checked-in block has it.
+void dump_coefficients() {
+  const arbc::resampler_prototype::FrozenBank frozen = arbc::resampler_prototype::frozen_bank();
+  const arbc::PolyphaseBank bank = arbc::resampler_prototype::generate(
+      frozen.phases, frozen.taps, /*fc=*/1.0, /*force_integer_zero=*/true);
+
+  std::printf("// PHASES=%llu TAPS=%lld (half N=%lld), Blackman-Harris windowed sinc, "
+              "per-phase normalized\n",
+              static_cast<unsigned long long>(frozen.phases), static_cast<long long>(frozen.taps),
+              static_cast<long long>(frozen.taps / 2));
+  std::printf("constexpr std::array<float, %zu> k_resampler_coeffs = {\n", bank.coeffs.size());
+  for (std::size_t i = 0; i < bank.coeffs.size(); ++i) {
+    const bool last_of_phase = (i + 1) % static_cast<std::size_t>(frozen.taps) == 0;
+    std::printf("    %af,", static_cast<double>(bank.coeffs[i]));
+    if (last_of_phase) {
+      std::printf(" // phase %zu", i / static_cast<std::size_t>(frozen.taps));
+    }
+    std::printf("\n");
+  }
+  std::printf("};\n");
+}
 } // namespace
 
 TEST_CASE("dump resampler goldens", "[.regen]") {
+  dump_coefficients();
   dump("k_golden_32k_to_48k", as_bytes(golden_output()));
 }
 // GCOV_EXCL_STOP

@@ -1,4 +1,5 @@
 #include <arbc/media/audio_resampler.hpp>
+#include <arbc/media/resampler_prototype.hpp>
 #include <arbc/media/streaming_resampler.hpp>
 
 #include <array>
@@ -39,6 +40,11 @@ namespace {
 // then replace the block below with its output AND re-freeze the dependent
 // output goldens (src/media/t/audio_resampler.t.cpp and
 // tests/nested_audio_resampling_goldens.t.cpp).
+//
+// The dump calls `resampler_prototype::generate(k_resampler_phases, k_resampler_taps,
+// 1.0, true)` -- the SAME generator that builds the widened decimation bank, differing
+// only in cutoff and the Kronecker rule. A guard test asserts the generator still
+// reproduces this table byte-for-byte, so the two can never drift apart silently.
 
 // PHASES=32 TAPS=16 (half N=8), Blackman-Harris windowed sinc, per-phase normalized
 constexpr std::size_t k_resampler_phases = 32;
@@ -631,71 +637,36 @@ inline std::int64_t support_newest(const FramePos& fp, std::int64_t taps) {
 // oracle); it is the sole place libm's `std::sin`/`std::cos` are evaluated. The RT
 // inner loop then MACs over the resident float32 table, no-libm (Constraint 1).
 //
-// Unlike the upsampling table there is NO forced phase-0 Kronecker delta: an aligned
-// integer-ratio sample must NOT be reproduced verbatim (that would defeat the
-// anti-aliasing) -- every phase is a genuine device-Nyquist lowpass.
-struct DecimationBank {
-  std::vector<float> coeffs; // phase-major, `taps` per phase
-  std::int64_t taps{0};
-};
-
-inline double sinc_pi(double x) {
-  if (x == 0.0) {
-    return 1.0;
-  }
-  const double pix = 3.14159265358979323846 * x;
-  return std::sin(pix) / pix;
-}
-
-// Blackman-Harris window over [-half_span, half_span]. The generator only ever
-// evaluates `x` inside that support by construction (the widest tap lands at exactly
-// +half_span, the narrowest above -half_span), so `t` is always in [0, 1].
-inline double bh_window(double x, double half_span) {
-  const double t = (x + half_span) / (2.0 * half_span); // in [0, 1]
-  constexpr double a0 = 0.35875, a1 = 0.48829, a2 = 0.14128, a3 = 0.01168;
-  constexpr double two_pi = 6.28318530717958647692;
-  return a0 - a1 * std::cos(two_pi * t) + a2 * std::cos(2.0 * two_pi * t) -
-         a3 * std::cos(3.0 * two_pi * t);
-}
-
-inline DecimationBank generate_decimation_bank(std::uint64_t src_rate, std::uint64_t dst_rate) {
+// Unlike the upsampling table there is NO forced integer-argument Kronecker delta: an
+// aligned integer-ratio sample must NOT be reproduced verbatim (that would defeat the
+// anti-aliasing) -- every phase is a genuine device-Nyquist lowpass. That single boolean
+// is the ONLY difference between this bank and the frozen one; both come out of
+// `resampler_prototype::generate` (arbc/media/resampler_prototype.hpp), which is what
+// makes "one generator, not a second algorithm" a fact rather than an aspiration.
+inline PolyphaseBank generate_decimation_bank(std::uint64_t src_rate, std::uint64_t dst_rate) {
   const std::uint64_t phases = static_cast<std::uint64_t>(k_resampler_phases);
   const std::uint64_t half_base = k_resampler_taps / 2; // 8 lobes/side at the input Nyquist
   // ceil(half_base * src/dst): scale the half support by the decimation ratio so the
   // widened sinc keeps the base filter's lobe count (its stopband quality).
   const std::uint64_t half_lobes = (half_base * src_rate + dst_rate - 1) / dst_rate;
   const std::int64_t taps = static_cast<std::int64_t>(2 * half_lobes);
-  const std::int64_t half = taps / 2 - 1;
   const double fc = static_cast<double>(dst_rate) / static_cast<double>(src_rate); // < 1
-  const double half_span = static_cast<double>(taps) / 2.0;
-
-  DecimationBank bank;
-  bank.taps = taps;
-  bank.coeffs.assign(static_cast<std::size_t>(phases) * static_cast<std::size_t>(taps), 0.0F);
-  std::vector<double> row(static_cast<std::size_t>(taps), 0.0);
-  for (std::uint64_t p = 0; p < phases; ++p) {
-    double sum = 0.0;
-    for (std::int64_t k = 0; k < taps; ++k) {
-      // Offset of tap `k` from the output instant, in input-sample units (mirrors
-      // `mac_frame`'s idx = center - half + k against center + phase/phases).
-      const double x =
-          static_cast<double>(k - half) - static_cast<double>(p) / static_cast<double>(phases);
-      const double c = fc * sinc_pi(fc * x) * bh_window(x, half_span);
-      row[static_cast<std::size_t>(k)] = c;
-      sum += c;
-    }
-    // Per-phase DC normalization (unity passband gain), then freeze to float32.
-    const double inv = sum != 0.0 ? 1.0 / sum : 1.0;
-    for (std::int64_t k = 0; k < taps; ++k) {
-      bank.coeffs[static_cast<std::size_t>(p) * static_cast<std::size_t>(taps) +
-                  static_cast<std::size_t>(k)] =
-          static_cast<float>(row[static_cast<std::size_t>(k)] * inv);
-    }
-  }
-  return bank;
+  return resampler_prototype::generate(phases, taps, fc, /*force_integer_zero=*/false);
 }
 
 } // namespace
+
+// Hands the component's own tests the frozen table (internal header; not public API), so
+// the generator that regenerates it is guarded against drifting away from it.
+namespace resampler_prototype {
+
+FrozenBank frozen_bank() {
+  return FrozenBank{k_resampler_coeffs.data(), k_resampler_coeffs.size(),
+                    static_cast<std::uint64_t>(k_resampler_phases),
+                    static_cast<std::int64_t>(k_resampler_taps)};
+}
+
+} // namespace resampler_prototype
 
 void resample_audio(const AudioBlock& in, AudioBlock& out) {
   // Both rate directions are reconstructed here; only the equal-rate / layout /
@@ -715,7 +686,7 @@ void resample_audio(const AudioBlock& in, AudioBlock& out) {
   // exact-integer phase math (`frame_pos`), so the two directions differ only in the
   // active bank/tap-count (D1/D2).
   const bool decimating = src_rate > dst_rate;
-  DecimationBank dec;
+  PolyphaseBank dec;
   const float* coeffs = k_resampler_coeffs.data();
   std::int64_t taps = static_cast<std::int64_t>(k_resampler_taps);
   if (decimating) {
