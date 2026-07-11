@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace arbc {
@@ -63,12 +64,16 @@ build_pull_identity_map(const DocRoot& state, const std::function<Content*(Objec
 }
 
 std::function<ObjectId(const Content*)>
-make_pull_identity_of(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve) {
-  std::shared_ptr<const PullIdentityMap> ids = build_pull_identity_map(state, resolve);
-  return [ids](const Content* c) {
+pull_identity_of(std::shared_ptr<const PullIdentityMap> ids) {
+  return [ids = std::move(ids)](const Content* c) {
     const auto it = ids->find(c);
     return it != ids->end() ? it->second : ObjectId{};
   };
+}
+
+std::function<ObjectId(const Content*)>
+make_pull_identity_of(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve) {
+  return pull_identity_of(build_pull_identity_map(state, resolve));
 }
 
 } // namespace arbc

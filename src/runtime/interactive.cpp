@@ -1,4 +1,6 @@
-#include <arbc/base/transform.hpp> // Affine::max_scale
+#include <arbc/base/transform.hpp>          // Affine::max_scale
+#include <arbc/compositor/pull_service.hpp> // PullServiceImpl, PullConfig, direct_dispatch
+#include <arbc/model/records.hpp>           // LayerRecord
 #include <arbc/runtime/interactive.hpp>
 
 #include <chrono>
@@ -34,6 +36,60 @@ int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept {
 InteractiveRenderer::InteractiveRenderer(WorkerPoolConfig pool_config, Clock clock)
     : d_pool(std::move(pool_config)),
       d_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}) {}
+
+void InteractiveRenderer::refresh_identity_memo(const DocRoot& state,
+                                                const ContentResolver& resolve,
+                                                std::uint64_t revision) {
+  if (d_identity_revision == revision) {
+    return; // the pinned graph is immutable within a revision: the memo is exact
+  }
+  // One walk, three derived views. `build_pull_identity_map` is the same seam the
+  // export driver's `make_pull_identity_of` calls (operator_input_cache_identity
+  // Decision 2), so the two drivers cannot disagree on an input's cache identity.
+  d_identity_map = build_pull_identity_map(state, resolve);
+  d_id_of = pull_identity_of(d_identity_map);
+  d_content_by_id.clear();
+  d_content_by_id.reserve(d_identity_map->size());
+  for (const auto& [content, id] : *d_identity_map) {
+    d_content_by_id.emplace(id, content);
+  }
+  // Every operator layer, not the culled set: `map_damage_to_device` culls after
+  // routing, and over-approximating the routed damage is sound (doc 13:124-128).
+  d_operator_layers.clear();
+  state.for_each_layer([&](const LayerRecord& layer) {
+    if (const Content* const content = resolve(layer.content); is_operator(content)) {
+      d_operator_layers.push_back(OperatorLayer{layer.content, content});
+    }
+  });
+  d_identity_revision = revision;
+  ++d_identity_map_builds;
+}
+
+std::vector<Damage>
+InteractiveRenderer::route_arrival_damage(std::span<const Damage> arrival) const {
+  std::vector<Damage> routed(arrival.begin(), arrival.end());
+  if (d_operator_layers.empty()) {
+    return routed; // no operator shows anything: routing is the identity
+  }
+  for (const Damage& d : arrival) {
+    // An arrival names the id its tile was keyed under -- for an operator's input
+    // that is the SYNTHESIZED id the identity map assigned it, so the inverse map is
+    // how the driver gets back to the `Content*` the operator graph is keyed by. An
+    // id with no entry (a hand-built pending tile in a test) routes to nothing.
+    const auto it = d_content_by_id.find(d.object);
+    if (it == d_content_by_id.end()) {
+      continue;
+    }
+    // Routing an arrival that IS a plain leaf layer costs one empty walk
+    // (`route_operator_damage` emits nothing for an operator that does not reach the
+    // damaged content), and a content that is both a layer root and an operator's
+    // input correctly damages both footprints.
+    for (const Damage& up : route_operator_damage(d_operator_layers, it->second, d.rect, d.range)) {
+      damage_add(routed, up);
+    }
+  }
+  return routed;
+}
 
 InteractiveRenderer::FrameOutcome
 InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& resolve,
@@ -98,6 +154,23 @@ InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& r
   // changed. Only content damage invalidates (see the carried-damage note above).
   invalidate_damage(cache, content_damage);
 
+  // The frame's pull service (`runtime.interactive_pull_wiring`). Frame-local by
+  // construction: `PullServiceImpl` borrows the `TileCache&` and `Backend&`, and both
+  // arrive as parameters of THIS call, so it cannot be a member. Built after the
+  // early-out, so a still frame constructs no service, builds no identity map, and
+  // issues no pull. The config is the export driver's field-for-field
+  // (`offline_sequence.cpp:94-101`) except that `pending` is non-null: interactive is
+  // `BestEffort` and reaps across frames, where the export driver reaps to quiescence
+  // within one. `direct_dispatch()` renders every miss inline on this thread -- the
+  // documented byte-for-byte equivalent of the driver's pre-wiring inline fill.
+  refresh_identity_memo(state, resolve, revision);
+  PullConfig config;
+  config.counters = &d_counters;
+  config.pending = &d_pending;
+  config.id_of = d_id_of;
+  config.contribution = [revision](const Content*) { return revision; };
+  PullServiceImpl pulls(cache, backend, direct_dispatch(), std::move(config));
+
   // --- Step 4: plan + render misses within budget (doc 02:61-65). ----------
   // One frame deadline instant `d`, sampled from the injected clock exactly once:
   // it is both the `Deadline` value stamped onto miss requests and the
@@ -114,7 +187,7 @@ InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& r
   std::vector<LayerTilePlan> visible_plans;
   render_frame_interactive(state, resolve, viewport, cache, backend, pool, target, deadline,
                            d_prior_revision, &d_pending, &d_counters, dirty_ptr, composition_time,
-                           &visible_plans);
+                           &visible_plans, /*diagnostics=*/nullptr, &pulls);
 
   // --- Step 5: park to the deadline; enforce it (doc 02:61-65, 140-143). ----
   // Park for async arrivals only until `d`. `wait_completions` returns whether a
@@ -138,13 +211,22 @@ InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& r
   // damage. A failed/cancelled arrival is dropped by `poll_refinements` (no
   // insert, no damage) -- degrading to the placeholder policy, never thrown.
   const std::vector<Damage> arrival = poll_refinements(d_pending, cache, &d_counters, &backend);
+  // Route each arrival up to the operator layers that show it BEFORE mapping to
+  // device. Wiring `PullConfig::pending` above created a damage class that did not
+  // exist here before: an operator's input answering asynchronously, whose arrival
+  // names the input's synthesized id -- and `map_damage_to_device` matches damage
+  // against layer roots only, so unrouted it would map to zero rects, no follow-up
+  // frame would ever be scheduled, and the refined tile would sit unread in the
+  // cache. Carrying the ROUTED set (not the raw one) is what makes frame N+1 re-plan
+  // the operator's footprint and re-enter the identity delivery branch.
+  const std::vector<Damage> routed = route_arrival_damage(arrival);
   // A follow-up frame is owed exactly when the arrival damage maps to a non-empty
   // device dirty region (doc 02:69-71). The carried copy re-plans those tiles
   // Fresh on the next frame (device mapping happens fresh there in case the
   // camera moved between frames).
   const std::vector<Rect> arrival_device =
-      map_damage_to_device(state, viewport, arrival, composition_time);
-  d_carried_damage = arrival;
+      map_damage_to_device(state, viewport, routed, composition_time);
+  d_carried_damage = routed;
   const bool schedule_follow_up = !arrival_device.empty();
 
   // --- Step 7: speculation (doc 02:92-93, 04:99-101). ----------------------

@@ -118,8 +118,15 @@ task runtime "Runtime" {
   task interactive_pull_wiring "Wire PullService into the interactive frame path" {
     effort 1d
     allocate team
+    complete 100
     depends !operator_identity_offline_delivery, !interactive
-    note "Pass a PullServiceImpl with a production PullConfig::id_of into render_frame_interactive (interactive.cpp passes a null pulls today), so interactive operator layers get cache-identity-correct input pulls and the identity-delivery endpoint fix (the w-at-0/w-at-1 case) fires on the interactive path instead of rendering blank. Source: tasks/parking-lot.md 2026-07-10 (interactive frame endpoint delivery gap). Docs 02/13."
+    note "Pass a PullServiceImpl with a production PullConfig::id_of into render_frame_interactive (interactive.cpp passes a null pulls today), so interactive operator layers get cache-identity-correct input pulls and the identity-delivery endpoint fix (the w-at-0/w-at-1 case) fires on the interactive path instead of rendering blank. Source: tasks/parking-lot.md 2026-07-10 (interactive frame endpoint delivery gap). Docs 02/13. Refinement: tasks/refinements/runtime/interactive_pull_wiring.md"
+  }
+  task operator_model_damage_routing "Route model damage through route_operator_damage in interactive and export drivers" {
+    effort 1d
+    allocate team
+    depends !interactive_pull_wiring
+    note "Route model damage (content_damage, not refinement-arrival damage) through route_operator_damage in the interactive and export drivers, so an edit to a content that an operator consumes by $ref (and is not itself a visible layer) re-plans and invalidates the operator layers that reach it. Today map_damage_to_device matches damage against layer roots only (damage_planning.cpp:39), so such an edit is silently dropped — an under-approximation that doc 13:124-128 calls a correctness bug. Source-of-debt: tasks/refinements/runtime/interactive_pull_wiring.md. Docs 02/13."
   }
   task interactive_binder_wiring "Wire bind_operators into the interactive frame path" {
     effort 1d

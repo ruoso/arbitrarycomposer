@@ -4,18 +4,22 @@
 #include <arbc/compositor/compositor.hpp> // Viewport, ContentResolver, Backend, SurfacePool, Surface
 #include <arbc/compositor/counters.hpp>   // CompositorCounters, CompositorStats, TileCache
 #include <arbc/compositor/damage_planning.hpp> // DirtyRegion + the map/clock/invalidate free functions
-#include <arbc/compositor/refinement.hpp>      // RefinementQueue, poll_refinements
-#include <arbc/compositor/tile_planning.hpp> // render_frame_interactive
-#include <arbc/contract/content.hpp>         // Deadline
-#include <arbc/model/damage.hpp>             // Damage
-#include <arbc/model/model.hpp>              // DocRoot
-#include <arbc/runtime/worker_pool.hpp>      // WorkerPool, WorkerPoolConfig
+#include <arbc/compositor/operator_graph.hpp> // OperatorLayer, route_operator_damage
+#include <arbc/compositor/refinement.hpp>     // RefinementQueue, poll_refinements
+#include <arbc/compositor/tile_planning.hpp>  // render_frame_interactive
+#include <arbc/contract/content.hpp>          // Deadline
+#include <arbc/model/damage.hpp>              // Damage
+#include <arbc/model/model.hpp>               // DocRoot
+#include <arbc/runtime/pull_identity.hpp>     // PullIdentityMap, pull_identity_of
+#include <arbc/runtime/worker_pool.hpp>       // WorkerPool, WorkerPoolConfig
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 // The interactive render driver for `arbc::runtime` (L5, doc 17:60): doc
@@ -48,6 +52,30 @@
 // through `render_frame_interactive`, and the `WorkerPool`'s role here is the
 // async-completion park/wake (`wait_completions`/`poke`) for externally-async
 // content, not parallel miss dispatch -- that is `compositor.pull_service` (M4).
+//
+// Operators (`runtime.interactive_pull_wiring`). Each working frame builds a
+// frame-local `PullServiceImpl` over the `TileCache&`/`Backend&` it is handed and
+// passes it to `render_frame_interactive`, so the interactive driver serves the
+// same operator contract the offline one does (doc 02:40-41, "two drivers over the
+// same core"): an identity endpoint delivers its terminal input's pixels instead of
+// compositing blank, and every operator input caches under its OWN identity rather
+// than colliding on `ObjectId{}`. The `id_of` is `make_pull_identity_of`'s -- the
+// same seam the export driver calls -- memoized on `state.revision()` (the pinned
+// graph is immutable within a revision, doc 02:121-124, and a revision bump changes
+// every tile key anyway, doc 02:94-95), so the O(graph) walk is per-edit, not
+// per-frame. The dispatch is `direct_dispatch()`: every render still runs inline on
+// the frame thread and no worker touches the cache (`runtime.worker_dispatch_leaf_only`
+// owns the worker-backed swap).
+//
+// Because `PullConfig::pending` is wired, an operator's input can now answer
+// asynchronously, and its arrival damage names the input's SYNTHESIZED id -- which
+// is not a layer root, so `map_damage_to_device` (which matches damage against layer
+// roots) would map it to zero device rects and never schedule the follow-up frame
+// doc 02:69-71 promises. Step 6 therefore routes every arrival up through
+// `route_operator_damage` to the operator layers that show it, and carries the
+// ROUTED set, so frame N+1 re-plans the operator's footprint and re-enters the
+// identity delivery branch -- the interactive analog of the export driver's
+// re-composite pass.
 
 namespace arbc {
 
@@ -111,6 +139,12 @@ public:
   const RefinementQueue& pending() const noexcept { return d_pending; }
   std::optional<std::uint64_t> prior_revision() const noexcept { return d_prior_revision; }
   std::optional<Time> previous_time() const noexcept { return d_prev_time; }
+  // How many times the per-revision pull-identity memo has been (re)built: the
+  // behavioral counter that pins the wiring's per-frame cost at O(1) rather than
+  // O(graph) (doc 16:54-62 -- never a wall-clock assertion). Bumps once per
+  // revision that actually renders a frame; a still frame early-outs and builds
+  // nothing.
+  std::uint64_t identity_map_builds() const noexcept { return d_identity_map_builds; }
 
   // The async-completion park/wake substrate. Exposed so externally-async content
   // (or, in M4, `compositor.pull_service`'s dispatch) can `poke()` a render
@@ -118,6 +152,22 @@ public:
   WorkerPool& worker_pool() noexcept { return d_pool; }
 
 private:
+  // Rebuild the per-revision pull-identity memo when `revision` differs from the
+  // memo's (a no-op otherwise): the `Content* -> ObjectId` map, the `id_of` functor
+  // over it, its inverse (which arrival routing resolves a damaged `ObjectId` back
+  // through), and the visible operator-layer set `route_operator_damage` walks.
+  // Called only from a frame that does work, so a still frame's memo never grows.
+  void refresh_identity_memo(const DocRoot& state, const ContentResolver& resolve,
+                             std::uint64_t revision);
+
+  // Fold each refinement arrival forward through the operator layers that show it
+  // (doc 02:69-71, doc 13:104-107): the returned set is the arrivals themselves
+  // PLUS, for any arrival naming a content an operator consumes, the operator's own
+  // damaged footprint. Over-approximation is sound and under-approximation is a
+  // correctness bug (doc 13:124-128), so every arrival is routed -- an operator that
+  // does not reach the damaged content emits nothing.
+  std::vector<Damage> route_arrival_damage(std::span<const Damage> arrival) const;
+
   RefinementQueue d_pending;                     // the frame-to-frame registry of async renders
   CompositorCounters d_counters;                 // persistent behavioral counts across frames
   WorkerPool d_pool;                             // async-completion park/wake (inline by default)
@@ -136,6 +186,19 @@ private:
   // dropping the tiles the poll just inserted (a revision bump / model edit is
   // what invalidates; a refinement arrival is not).
   std::vector<Damage> d_carried_damage;
+
+  // The per-revision pull-identity memo. `make_pull_identity_of` walks the whole
+  // reachable content graph, which the deadline-bounded loop must not pay every
+  // frame; within one revision the pinned graph is immutable, so the memo is exact,
+  // and across a bump every tile key changes anyway, so a shifted synthesized id can
+  // never serve a stale hit. Keying on the revision alone is sound under exactly the
+  // single-document-per-renderer assumption `d_prior_revision` already relies on.
+  std::optional<std::uint64_t> d_identity_revision;      // the revision the memo was built at
+  std::shared_ptr<const PullIdentityMap> d_identity_map; // Content* -> ObjectId
+  std::function<ObjectId(const Content*)> d_id_of;       // PullConfig::id_of over it
+  std::unordered_map<ObjectId, const Content*> d_content_by_id; // the inverse, for routing
+  std::vector<OperatorLayer> d_operator_layers;                 // the visible operator layers
+  std::uint64_t d_identity_map_builds{0};                       // memo (re)builds, a counter
 };
 
 } // namespace arbc

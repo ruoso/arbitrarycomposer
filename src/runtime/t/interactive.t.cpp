@@ -133,21 +133,51 @@ private:
   Stability d_stability;
 };
 
-// Content that answers "asynchronously" but pre-settles inline: it fills the tile
-// and completes `done` before returning nullopt, so the driver records it pending
-// already-settled and the very next poll reaps it with no off-thread wake -- a
-// deterministic stand-in for "the async result arrived within the frame budget".
+// Content that answers asynchronously and whose result arrives WITHIN the frame:
+// it fills the tile, leaves `done` live, and settles it a moment later -- so the
+// driver records it pending and the very next poll reaps it with no off-thread
+// wake. The deterministic stand-in for "the async result arrived within the frame
+// budget".
+//
+// The settle has to land after the driver has *classified* the render as async,
+// which is why it does not happen inside `render`. Since `runtime.interactive_pull_
+// wiring` the driver dispatches every miss through `PullServiceImpl`, whose seam
+// returns void, so inline-vs-async is read off `done->settled()` at dispatch return
+// (`tile_planning.cpp:419-421`; `pull_service.cpp:286` does the same). A content
+// that completes `done` inside `render` and *then* returns nullopt has therefore
+// answered INLINE -- which is the truth of what it did, and the driver serves it
+// this frame. Modelling a genuine async arrival means settling once the driver has
+// taken the async branch, and the driver's own recording step is the callback that
+// proves it did: a deferred tile is registered as `PendingTile{..., content->
+// stability(), ...}` (`tile_planning.cpp:468`), so `stability()` runs exactly once
+// per recorded async render, strictly after the decision. Settling there is
+// frame-thread, clock-free, and race-free, where an off-thread settler would race
+// the classification. Planning's own earlier `stability()` calls hold no captured
+// completion and are plain reads.
 class AsyncPresettleSolid : public arbc::Content {
 public:
   std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
-  Stability stability() const override { return Stability::Static; }
+  Stability stability() const override {
+    if (d_deferred) {
+      const std::shared_ptr<RenderCompletion> done = std::move(d_deferred);
+      done->complete(d_result);
+    }
+    return Stability::Static;
+  }
   std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion> done) override {
     fill_solid(request.target);
-    done->complete(RenderResult{request.scale, /*exact=*/true});
+    d_result = RenderResult{request.scale, /*exact=*/true};
+    d_deferred = std::move(done);
     return std::nullopt;
   }
+
+private:
+  // `stability()` is a const read on the contract, so the deferred settlement it
+  // discharges is mutable state of the double, not of the content model.
+  mutable std::shared_ptr<RenderCompletion> d_deferred;
+  RenderResult d_result{};
 };
 
 // Content that answers asynchronously and never settles: the recorded pending
@@ -165,10 +195,24 @@ public:
 
 // Content that answers asynchronously by capturing `done` (and filling the tile)
 // for an off-thread settler to complete + poke -- the concurrency reap/wake case.
+//
+// `render` captures the completion but does NOT publish it to the settler; the
+// publish happens in `stability()`, which the driver calls exactly once per
+// recorded async render, strictly after it has classified the render as async (see
+// `AsyncPresettleSolid` above). Without that gate a settler thread could complete
+// `done` before the dispatch returned, and the driver -- reading `done->settled()`
+// -- would correctly serve the tile inline instead of reaping it off-thread, which
+// is not the path this test exists to prove. Gating the publish makes the off-thread
+// reap deterministic without a sleep or a wall-clock read.
 class AsyncCapture : public arbc::Content {
 public:
   std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
-  Stability stability() const override { return Stability::Timed; }
+  Stability stability() const override {
+    if (d_captured.load(std::memory_order_acquire)) {
+      d_ready.store(true, std::memory_order_release);
+    }
+    return Stability::Timed;
+  }
   std::optional<arbc::TimeRange> time_extent() const override { return arbc::TimeRange::all(); }
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion> done) override {
@@ -178,7 +222,7 @@ public:
       d_done = std::move(done);
       d_result = RenderResult{request.scale, /*exact=*/true};
     }
-    d_ready.store(true, std::memory_order_release);
+    d_captured.store(true, std::memory_order_release);
     return std::nullopt;
   }
 
@@ -196,6 +240,7 @@ public:
       done = std::move(d_done);
       result = d_result;
     }
+    d_captured.store(false, std::memory_order_release);
     d_ready.store(false, std::memory_order_release);
     if (done) {
       done->complete(result);
@@ -206,7 +251,8 @@ public:
 
 private:
   std::mutex d_mutex;
-  std::atomic<bool> d_ready{false};
+  mutable std::atomic<bool> d_ready{false}; // published to the settler by `stability()`
+  std::atomic<bool> d_captured{false};      // `render` left a completion live
   std::shared_ptr<RenderCompletion> d_done;
   RenderResult d_result{};
 };
@@ -309,6 +355,85 @@ TEST_CASE("interactive: a still scene advancing only the clock does no work") {
   CHECK(renderer.counters().follow_up_frames() == 0);
   // The zero-work frame does not touch (does not clear) the persisted target.
   CHECK(bytes_identical(after_frame1, snapshot(**target)));
+}
+
+// --- The per-revision pull-identity memo (runtime.interactive_pull_wiring) ----
+
+// The frame's `PullConfig::id_of` comes from `make_pull_identity_of`, which walks the
+// whole reachable content graph. The deadline-bounded loop must not pay that per
+// frame, so it is memoized on `state.revision()`: within one revision the pinned
+// graph is immutable (doc 02:121-124), and across a bump every tile key changes
+// anyway (doc 02:94-95), so a shifted synthesized id can never serve a stale hit.
+// A behavioral counter, never a wall-clock assertion (doc 16:54-62).
+TEST_CASE("interactive: the pull-identity map is built once per revision") {
+  MarkBackend backend;
+  SyncSolid content(Stability::Timed); // moving, so every clock advance is real work
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  // Five working frames at ONE revision: each advances the clock over a Timed layer,
+  // so each collects damage, re-plans, and renders -- and each reuses the one memo.
+  const arbc::DocStatePtr state = model.current();
+  for (int i = 0; i < 5; ++i) {
+    renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                          arbc::Time{static_cast<std::int64_t>(i) * 1'000'000}, k_budget);
+  }
+  CHECK(renderer.counters().requests_issued() == 5); // every frame did work...
+  CHECK(renderer.identity_map_builds() == 1);        // ...off one O(graph) walk
+
+  // A revision bump, then a sixth working frame: the memo is stale and rebuilds once.
+  bump_revision(model, scene.layer);
+  const arbc::DocStatePtr bumped = model.current();
+  REQUIRE(bumped->revision() != state->revision());
+  renderer.render_frame(*bumped, resolver, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{5'000'000}, k_budget);
+  CHECK(renderer.identity_map_builds() == 2);
+}
+
+// enforces: 02-architecture#interactive-still-scene-schedules-no-frame
+TEST_CASE("interactive: a still frame builds no identity map and constructs no pull service") {
+  MarkBackend backend;
+  SyncSolid content(Stability::Static);
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  // One working frame: the memo is built exactly once.
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{0}, k_budget);
+  REQUIRE(renderer.identity_map_builds() == 1);
+  const std::uint64_t requests = renderer.counters().requests_issued();
+  const std::uint64_t composites = renderer.counters().composites();
+
+  // The still-scene early-out precedes ALL of the wiring's new work (it returns before
+  // the memo refresh and before the `PullServiceImpl` is constructed), so N still
+  // frames stay exactly free: no walk, no pull, no render, no composite, no frame.
+  for (int i = 0; i < 8; ++i) {
+    const auto out = renderer.render_frame(*state, resolver, viewport, cache, backend, pool,
+                                           **target, {}, arbc::Time{0}, k_budget);
+    CHECK_FALSE(out.schedule_follow_up);
+  }
+  CHECK(renderer.identity_map_builds() == 1); // the memo did not grow
+  CHECK(renderer.counters().requests_issued() == requests);
+  CHECK(renderer.counters().composites() == composites);
 }
 
 // enforces: 02-architecture#interactive-still-scene-schedules-no-frame

@@ -391,6 +391,27 @@ target_link_libraries(arbc_crossfade_identity_counter_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_crossfade_identity_counter_t)
 
+# runtime.interactive_pull_wiring: the interactive driver's operator contract, pinned
+# byte-exact against the export driver's frame of the same document (doc 02:40-41's
+# "two drivers over the same core"). An identity endpoint delivers its terminal
+# input's pixels instead of compositing blank, issues zero operator renders, degrades
+# nowhere, and keys each operator input under its OWN cache identity. Cross-component
+# (runtime + compositor + kind_crossfade/kind_fade/kind_solid + backend_cpu), so it
+# links the umbrella `arbc`.
+add_executable(arbc_interactive_operator_identity_golden_t
+               interactive_operator_identity_golden.t.cpp)
+target_link_libraries(arbc_interactive_operator_identity_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_interactive_operator_identity_golden_t)
+
+# runtime.interactive_pull_wiring, Constraint 6: an operator INPUT that answers
+# asynchronously emits damage under its synthesized (non-layer-root) id, which only
+# `route_operator_damage` can turn into a follow-up frame that re-drives the endpoint.
+add_executable(arbc_interactive_operator_identity_t interactive_operator_identity.t.cpp)
+target_link_libraries(arbc_interactive_operator_identity_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_interactive_operator_identity_t)
+
 # operators.crossfade_runtime_binding end-to-end: builds a Document with a crossfade
 # over two inputs and drives it through the real offline (SequenceRenderer, inline +
 # parallel) and export (ExportMonitor) drivers with the PRODUCTION attach injection,

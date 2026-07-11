@@ -33,10 +33,17 @@ using PullIdentityMap = std::unordered_map<const Content*, ObjectId>;
 std::shared_ptr<const PullIdentityMap>
 build_pull_identity_map(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve);
 
-// The `PullConfig::id_of` functor over a freshly built identity map: a `Content*`
+// The `PullConfig::id_of` functor over an ALREADY-built identity map: a `Content*`
 // with no entry (should not occur for a graph-reachable node) falls back to the
-// default (root) `ObjectId{}`, exactly as the pre-existing driver lambdas did. Both
-// render drivers call this so the seam lands in one place (Constraint 8); a future
+// default (root) `ObjectId{}`, exactly as the pre-existing driver lambdas did. The
+// interactive driver memoizes one map per revision and needs both the functor and
+// the map itself (to invert it for arrival-damage routing), so the lookup rule
+// lives here once rather than being hand-rolled at the second call site.
+std::function<ObjectId(const Content*)>
+pull_identity_of(std::shared_ptr<const PullIdentityMap> ids);
+
+// The `PullConfig::id_of` functor over a freshly built identity map. Both render
+// drivers call this so the seam lands in one place (Constraint 8); a future
 // interactive-audio `id_of` wiring reuses it verbatim.
 std::function<ObjectId(const Content*)>
 make_pull_identity_of(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve);
