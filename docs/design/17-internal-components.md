@@ -223,6 +223,8 @@ file-set membership (above):
 ```
 src/<component>/
   arbc/<component>/…          public headers (FILE_SET HEADERS members)
+  arbc/<component>/testing/…  header-only test doubles for the component's
+                              own contracts (public headers, no objects)
   *.hpp, *.cpp                private headers and sources
   t/                          component unit tests
 plugins/imageseq/             out-of-lib reference plugin (own deps)
@@ -231,3 +233,17 @@ tests/                        cross-component: integration, claims register,
                               golden, stress, crash-recovery, fuzz corpus
 docs/design/
 ```
+
+The two `testing` trees are not the same thing and do not merge. Top-level
+`testing/` is the **`arbc-testing` static library**: the *content*
+conformance suite, a separate artifact plugin authors link against and
+`libarbc` never does. `arbc/<component>/testing/` holds **header-only
+doubles for a contract that component owns** — `arbc::testing::StubBackend`
+and `ForwardingBackend` for `Backend` (doc 09) are the first — shipped as
+ordinary public headers of that component. A double lives with the contract
+it doubles: a pure-virtual interface that grows an operation would otherwise
+ripple a dead stub into every implementation in the tree, and the component
+that owns the interface is the one place that can absorb it once. Because
+they are header-only they add nothing to `libarbc`, and the levelization
+table above binds them like any other header of their component (a `surface`
+double may not reach `backend_cpu`).

@@ -445,8 +445,8 @@ TEST_CASE("the driver's per-frame re-bind does not re-key nested's metadata memo
   // SequenceRenderer binds PER FRAME against a pin taken ONCE for the whole export. An
   // unconditional re-key in attach() would make this counter grow linearly with frame
   // count, breaking the memoization claim precisely on the production path.
-  for (const std::int64_t t : {std::int64_t{100}, std::int64_t{200}, std::int64_t{300},
-                               std::int64_t{400}}) {
+  for (const std::int64_t t :
+       {std::int64_t{100}, std::int64_t{200}, std::int64_t{300}, std::int64_t{400}}) {
     REQUIRE(renderer.render_frame_at(Time{t}).has_value());
   }
   CHECK(scene.nested->metadata_recomputes() == after_first); // delta 0 across N frames
@@ -466,8 +466,7 @@ TEST_CASE("a runtime-bound depth-1 nested frame issues exactly one pull per chil
   CountingPull counting;
   register_builtin_operator_binders();
 
-  const OperatorBindingScope scope =
-      bind_operators(scene.doc, counting, backend, scene.doc.pin());
+  const OperatorBindingScope scope = bind_operators(scene.doc, counting, backend, scene.doc.pin());
   REQUIRE(scope.size() == 1U);
 
   const auto target = backend.make_surface(k_dim, k_dim, k_working_rgba32f);
@@ -597,4 +596,3 @@ TEST_CASE("the widened binder is inert for a document holding no nested content"
   REQUIRE(frame.has_value());
   require_equal(to_bytes((**frame).cpu_bytes()), to_bytes((**reference).cpu_bytes()));
 }
-

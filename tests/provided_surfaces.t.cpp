@@ -7,6 +7,7 @@
 #include <arbc/media/surface_format.hpp>
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/offline.hpp>
+#include <arbc/surface/testing/counting_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -25,38 +26,6 @@
 // cache path, releasing it the instant it is done.
 
 namespace {
-
-// A counting decorator over a real Backend: forwards every call unchanged but
-// tallies make_surface, so a test asserts allocation *behavior* (doc 16 --
-// never a wall-clock timing). Mirrors the decorator in
-// `surface_pool_integration.t.cpp`.
-class CountingBackend final : public arbc::Backend {
-public:
-  explicit CountingBackend(arbc::Backend& inner) : d_inner(inner) {}
-
-  arbc::BackendCaps capabilities() const override { return d_inner.capabilities(); }
-  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
-  make_surface(int width, int height, arbc::SurfaceFormat format) override {
-    ++make_surface_calls;
-    return d_inner.make_surface(width, height, format);
-  }
-  void clear(arbc::Surface& s, float r, float g, float b, float a) override {
-    d_inner.clear(s, r, g, b, a);
-  }
-  void composite(arbc::Surface& dst, const arbc::Surface& src, const arbc::Affine& m,
-                 double opacity) override {
-    d_inner.composite(dst, src, m, opacity);
-  }
-  void downsample(arbc::Surface& dst, const arbc::Surface& src) override {
-    d_inner.downsample(dst, src);
-  }
-  void convert(arbc::Surface& dst, const arbc::Surface& src) override { d_inner.convert(dst, src); }
-
-  int make_surface_calls = 0;
-
-private:
-  arbc::Backend& d_inner;
-};
 
 // Content that answers every render by returning its OWN framebuffer as a
 // `provided` surface, never filling `request.target`. The framebuffer is
@@ -180,7 +149,7 @@ TEST_CASE("inline provided path allocates no copy and releases the surface withi
                      compose(arbc::Affine::translation(2.0, 2.0), arbc::Affine::scaling(4.0, 4.0)));
 
   arbc::CpuBackend cpu;
-  CountingBackend backend(cpu);
+  arbc::testing::CountingBackend backend(cpu);
   const arbc::Viewport viewport{8, 8, arbc::Affine::identity()};
   const arbc::DocStatePtr state = document.pin();
   const auto resolve = [&document](arbc::ObjectId id) { return document.resolve(id); };
@@ -217,7 +186,7 @@ TEST_CASE("a transient provided surface is copied into the cache, independent of
   document.add_layer(document.add_content(providing), arbc::Affine::identity());
 
   arbc::CpuBackend cpu;
-  CountingBackend backend(cpu);
+  arbc::testing::CountingBackend backend(cpu);
   const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
   const arbc::DocStatePtr state = document.pin();
   const auto resolve = [&document](arbc::ObjectId id) { return document.resolve(id); };

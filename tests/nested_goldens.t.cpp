@@ -10,6 +10,7 @@
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/surface/surface_pool.hpp>
+#include <arbc/surface/testing/counting_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -173,80 +174,31 @@ std::vector<std::byte> render_flat_then_convert(Scene& scene, Backend& backend, 
   return bytes_of(**parent_target);
 }
 
-// Counting decorator over the real CpuBackend (doc 16:54-62: a performance-shaped
-// promise gets behavioral counters, never a wall-clock timing). "Homogeneous trees
-// pay nothing" (doc 07:34-35) and "one conversion per nested render, never one per
-// layer" are exactly such promises, so they are pinned by tallying the boundary
-// conversions and the surface allocations one nested render issues.
-class CountingBackend final : public Backend {
-public:
-  BackendCaps capabilities() const override { return d_inner.capabilities(); }
-  expected<std::unique_ptr<Surface>, SurfaceError> make_surface(int width, int height,
-                                                                SurfaceFormat format) override {
-    ++make_surface_calls;
-    return d_inner.make_surface(width, height, format);
-  }
-  void clear(Surface& surface, float r, float g, float b, float a) override {
-    d_inner.clear(surface, r, g, b, a);
-  }
-  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                 double opacity) override {
-    d_inner.composite(dst, src, src_to_dst, opacity);
-  }
-  void downsample(Surface& dst, const Surface& src) override { d_inner.downsample(dst, src); }
-  void convert(Surface& dst, const Surface& src) override {
-    ++convert_calls;
-    d_inner.convert(dst, src);
-  }
-
-  void reset() {
-    make_surface_calls = 0;
-    convert_calls = 0;
-  }
-
-  int make_surface_calls = 0;
-  int convert_calls = 0;
-
-private:
-  CpuBackend d_inner;
-};
-
 // A backend that stores every format EXCEPT one -- the doc 09:55-60
 // errors-as-values edge, standing exactly where the nesting boundary needs an
 // allocation. When the child's DECLARED working space is a tag this backend cannot
 // store, nested has nowhere to compose the child, and there is no honest fallback:
 // composing into the parent's surface instead would blend the child's layers in the
 // wrong space, which is the silent lie rule 4's boundary exists to prevent.
-class RefusingBackend final : public Backend {
+//
+// Fault injection (doc 16:227-229) layered on `testing::CountingBackend`: it
+// overrides only the allocation it refuses, and inherits the counters and the real
+// forward for everything else -- so `convert_calls` below is the base's.
+class RefusingBackend final : public arbc::testing::CountingBackend {
 public:
-  explicit RefusingBackend(SurfaceFormat refused) : d_refused(refused) {}
+  RefusingBackend(Backend& inner, SurfaceFormat refused)
+      : arbc::testing::CountingBackend(inner), d_refused(refused) {}
 
-  BackendCaps capabilities() const override { return d_inner.capabilities(); }
   expected<std::unique_ptr<Surface>, SurfaceError> make_surface(int width, int height,
                                                                 SurfaceFormat format) override {
     if (format == d_refused) {
       return unexpected(SurfaceError::UnsupportedFormat);
     }
-    return d_inner.make_surface(width, height, format);
+    return arbc::testing::CountingBackend::make_surface(width, height, format);
   }
-  void clear(Surface& surface, float r, float g, float b, float a) override {
-    d_inner.clear(surface, r, g, b, a);
-  }
-  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                 double opacity) override {
-    d_inner.composite(dst, src, src_to_dst, opacity);
-  }
-  void downsample(Surface& dst, const Surface& src) override { d_inner.downsample(dst, src); }
-  void convert(Surface& dst, const Surface& src) override {
-    ++convert_calls;
-    d_inner.convert(dst, src);
-  }
-
-  int convert_calls = 0;
 
 private:
   SurfaceFormat d_refused;
-  CpuBackend d_inner;
 };
 
 // Render the child through NestedContent driven by the LIVE `PullServiceImpl`
@@ -388,7 +340,11 @@ TEST_CASE("nested blends the child's layers in the child's working space, not th
 // enforces: 07-color-and-pixel-formats#homogeneous-trees-pay-nothing
 // enforces: 07-color-and-pixel-formats#nesting-boundary-converts-composed-output
 TEST_CASE("a homogeneous nested render pays nothing; a heterogeneous one converts once") {
-  CountingBackend backend;
+  // A counting decorator over the real CpuBackend: it forwards every operation and
+  // tallies the boundary conversions and surface allocations one nested render
+  // issues, which is how the two promises above get pinned.
+  CpuBackend cpu;
+  arbc::testing::CountingBackend backend(cpu);
   InlinePull pull;
 
   Scene homogeneous;
@@ -426,8 +382,9 @@ TEST_CASE("nested answers honest empty pixels when the child's working space is 
   InlinePull pull;
 
   Scene scene;
-  scene.build(k_fast_rgba8srgb);              // the child declares the 8-bit sRGB fast mode ...
-  RefusingBackend refusing(k_fast_rgba8srgb); // ... which this backend cannot store.
+  scene.build(k_fast_rgba8srgb); // the child declares the 8-bit sRGB fast mode ...
+  CpuBackend cpu;
+  RefusingBackend refusing(cpu, k_fast_rgba8srgb); // ... which this backend cannot store.
   const std::vector<std::byte> unstorable =
       render_nested(scene, pull, refusing, 8, 1.0, k_working_rgba32f);
 

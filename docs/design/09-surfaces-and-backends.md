@@ -92,6 +92,46 @@ compositor already clears each temp). The pool is render-thread-confined
 it needs no locking. A backend may still specialize allocation behind
 `make_surface` (a GPU transient allocator, say) without changing this seam.
 
+**Test doubles are part of the contract, and the contract ships them.** A
+pure-virtual `Backend` means every added operation breaks every double in
+the tree, and the repair is a dead stub — a line answering the compiler, not
+documenting a behavior, unreachable by construction, and exactly the code
+doc 16's diff-coverage gate is right to reject. The `surface` component
+therefore ships the doubles alongside the contract, as header-only public
+headers under `arbc/surface/testing/`, in namespace `arbc::testing`. There
+are two, because doubles come in two shapes and the distinction is
+load-bearing:
+
+- **`StubBackend`** — every operation defaulted: no capabilities, no
+  storage (`make_surface` yields `UnsupportedFormat`; errors as values, and
+  a stub that has not been told how to allocate cannot honestly claim to),
+  and no-op pixel operations. The base for a double whose test drives *no*
+  real pixels.
+- **`ForwardingBackend`** — a decorator over an injected `Backend&` that
+  delegates *every* operation to it and adds no pixel behavior of its own.
+  The base for a double that observes or perturbs a real backend (counting
+  allocations, refusing one format). `CountingBackend` derives from it and
+  tallies one call per operation — the behavioral counters of doc 16:54-62,
+  which is what most doubles in the tree actually want.
+
+A double derives from the base matching its shape and overrides **only** the
+operations its test drives. The distinction matters because the two bases
+absorb a *new* `Backend` operation differently and each is correct for its
+shape: the stub no-ops it (a test that never drives it cannot notice), while
+the forwarder delegates it (a decorator that silently no-oped an operation
+its inner backend implements would produce wrong pixels quietly, rather than
+failing loudly — the worse outcome, and the reason a decorator must never
+inherit no-op defaults). A companion `StubSurface` — an abstract-`Surface`
+implementation with no pixel storage — lets a double allocate without a real
+backend, so a `surface`-level (L2) test can exercise the contract without
+reaching for the CPU backend (L3).
+
+These headers are in-library test support, distinct from the `arbc-testing`
+static library (doc 17), which is the *content* conformance suite that
+plugin authors link. They cost `libarbc` nothing (header-only, no objects)
+and are public because an out-of-lib backend implementor needs them for the
+same reason the in-tree tests do.
+
 ## Content-provided surfaces (texture adoption)
 
 Doc 03's contract has the compositor allocate the target and content fill

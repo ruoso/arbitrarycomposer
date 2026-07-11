@@ -3,6 +3,7 @@
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/runtime/document.hpp>
+#include <arbc/surface/testing/counting_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -10,39 +11,6 @@
 #include <utility>
 
 namespace {
-
-// A counting decorator over a real Backend: it forwards every call unchanged
-// but tallies make_surface, so a test can assert allocation *behavior* (a
-// behavioral counter, doc 16 -- never a wall-clock timing).
-class CountingBackend final : public arbc::Backend {
-public:
-  explicit CountingBackend(arbc::Backend& inner) : d_inner(inner) {}
-
-  arbc::BackendCaps capabilities() const override { return d_inner.capabilities(); }
-
-  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
-  make_surface(int width, int height, arbc::SurfaceFormat format) override {
-    ++make_surface_calls;
-    return d_inner.make_surface(width, height, format);
-  }
-
-  void clear(arbc::Surface& surface, float r, float g, float b, float a) override {
-    d_inner.clear(surface, r, g, b, a);
-  }
-  void composite(arbc::Surface& dst, const arbc::Surface& src, const arbc::Affine& src_to_dst,
-                 double opacity) override {
-    d_inner.composite(dst, src, src_to_dst, opacity);
-  }
-  void downsample(arbc::Surface& dst, const arbc::Surface& src) override {
-    d_inner.downsample(dst, src);
-  }
-  void convert(arbc::Surface& dst, const arbc::Surface& src) override { d_inner.convert(dst, src); }
-
-  int make_surface_calls = 0;
-
-private:
-  arbc::Backend& d_inner;
-};
 
 // enforces: 09-surfaces-and-backends#surface-pool-recycles
 TEST_CASE("a persistent pool reuses temps within and across frames") {
@@ -66,7 +34,10 @@ TEST_CASE("a persistent pool reuses temps within and across frames") {
                      compose(arbc::Affine::translation(0.0, 5.0), arbc::Affine::scaling(2.0, 2.0)));
 
   arbc::CpuBackend cpu;
-  CountingBackend backend(cpu);
+  // A counting decorator over the real backend: it forwards every call unchanged
+  // but tallies make_surface, so this asserts allocation *behavior* (a behavioral
+  // counter, doc 16 -- never a wall-clock timing).
+  arbc::testing::CountingBackend backend(cpu);
   const arbc::Viewport viewport{8, 8, arbc::Affine::identity()};
   const arbc::DocStatePtr state = document.pin();
   const auto resolve = [&document](arbc::ObjectId id) { return document.resolve(id); };

@@ -4,50 +4,23 @@
 #include <arbc/surface/surface_error.hpp>
 #include <arbc/surface/surface_pool.hpp>
 #include <arbc/surface/testing/stub_backend.hpp>
+#include <arbc/surface/testing/stub_surface.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <memory>
-#include <span>
 #include <utility>
 
 namespace {
 
-// A minimal L2-clean surface: it carries a size + format tag and bumps a
-// shared live-count on construction/destruction so a test can prove a
-// released surface is recycled (not freed) and a moved handle does not
-// double-release. No CPU storage -- the pool never touches pixels.
-class StubSurface final : public arbc::Surface {
-public:
-  StubSurface(int width, int height, arbc::SurfaceFormat format, int& live)
-      : d_width(width), d_height(height), d_format(format), d_live(live) {
-    ++d_live;
-  }
-  ~StubSurface() override { --d_live; }
-
-  StubSurface(const StubSurface&) = delete;
-  StubSurface& operator=(const StubSurface&) = delete;
-
-  int width() const override { return d_width; }
-  int height() const override { return d_height; }
-  arbc::SurfaceFormat format() const override { return d_format; }
-  std::span<std::byte> cpu_bytes() override { return {}; }
-  std::span<const std::byte> cpu_bytes() const override { return {}; }
-
-private:
-  int d_width;
-  int d_height;
-  arbc::SurfaceFormat d_format;
-  int& d_live;
-};
-
 // In-test backend (not CpuBackend, which is L3): counts make_surface calls,
 // stores only k_working_rgba32f, and yields SurfaceError for anything else so
-// the pool's miss-path forwarding is exercised without an L3 dependency.
+// the pool's miss-path forwarding is exercised without an L3 dependency. The
+// pixel operations it never drives are the base's no-ops; the surfaces it hands
+// out are `testing::StubSurface`, whose live-count knob proves a released surface
+// is recycled (not freed) and a moved handle does not double-release.
 class StubBackend final : public arbc::testing::StubBackend {
 public:
-  arbc::BackendCaps capabilities() const override { return {}; }
-
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
   make_surface(int width, int height, arbc::SurfaceFormat format) override {
     if (format != arbc::k_working_rgba32f) {
@@ -55,12 +28,9 @@ public:
     }
     ++make_surface_calls;
     std::unique_ptr<arbc::Surface> surface =
-        std::make_unique<StubSurface>(width, height, format, live);
+        std::make_unique<arbc::testing::StubSurface>(width, height, format, &live);
     return surface;
   }
-
-  void clear(arbc::Surface&, float, float, float, float) override {}
-  void composite(arbc::Surface&, const arbc::Surface&, const arbc::Affine&, double) override {}
 
   int make_surface_calls = 0; // total backend allocations
   int live = 0;               // StubSurfaces currently constructed

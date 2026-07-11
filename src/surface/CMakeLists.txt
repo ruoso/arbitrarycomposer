@@ -6,8 +6,12 @@ arbc_add_component(
                  arbc/surface/surface_error.hpp arbc/surface/surface_pool.hpp
                  arbc/surface/surface_ref.hpp
                  arbc/surface/testing/stub_backend.hpp
+                 arbc/surface/testing/forwarding_backend.hpp
+                 arbc/surface/testing/counting_backend.hpp
+                 arbc/surface/testing/stub_surface.hpp
   DEPENDS base media)
 
-arbc_component_test(COMPONENT surface SOURCES t/capabilities.t.cpp
+arbc_component_test(COMPONENT surface SOURCES t/backend_doubles.t.cpp
+                                             t/capabilities.t.cpp
                                              t/surface_pool.t.cpp
                                              t/surface_ref.t.cpp)
