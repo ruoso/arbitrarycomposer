@@ -77,11 +77,22 @@ struct ContentSnapshot {
     const Content* content{nullptr};
     std::string kind_id;
     std::string kind_version;
+    // The content's ObjectId -- its unknown-field stash key. A layer root's comes from
+    // the `LayerRecord`; a demoted operator input child's comes from `Document`'s
+    // content side-map, which keeps its entry after demotion (Decision 3).
+    ObjectId id{};
   };
   DocStatePtr state; // the pinned, immutable DocRoot
   std::vector<Entry> entries;
   std::unordered_map<ObjectId, std::size_t> by_id;        // content ObjectId -> entry index
   std::unordered_map<const Content*, std::size_t> by_ptr; // live Content* -> entry index
+  // A COPY of the document's unknown-field stash (doc 08 Principle 4, Decision 6). The
+  // store is writer-thread-owned like the content side-map, so the snapshot copies it
+  // rather than holding a reference into live state -- that is what keeps the off-thread
+  // save free of any live-editor read (Constraint 9) and preserves
+  // `08-serialization#writer-serializes-the-pinned-version`. Cheap: plain maps of
+  // `std::string`.
+  UnknownFieldStore unknown;
 };
 
 // The runtime's built-in codec table for the SAVE path: org.arbc.solid +

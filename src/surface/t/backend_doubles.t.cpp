@@ -27,8 +27,7 @@ class RecordingBackend final : public arbc::testing::StubBackend {
 public:
   // The distinctive capability report the forward must carry back verbatim: an
   // inherited `StubBackend::capabilities()` would answer an empty `{}` instead.
-  static constexpr arbc::BackendCaps k_caps{/*cpu_access=*/true,
-                                            arbc::ImportHandle::CpuMemory,
+  static constexpr arbc::BackendCaps k_caps{/*cpu_access=*/true, arbc::ImportHandle::CpuMemory,
                                             /*sync_primitives=*/true};
 
   arbc::BackendCaps capabilities() const override {

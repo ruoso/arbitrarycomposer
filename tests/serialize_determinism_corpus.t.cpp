@@ -353,7 +353,195 @@ constexpr const char* k_unknown_kind = R"json({
   }
 })json";
 
+// ---------------------------------------------------------------------------------
+// serialize.unknown_field_preservation: unknown SIBLING fields at every tier (doc 08
+// Principle 4). Each of these is already canonical, so `serialize(load(x)) == x`
+// byte-exact IS the preservation proof -- a dropped key would shorten the output.
+
+// Unknown siblings at the envelope ("generator"), the document root ("vendor"), the
+// composition ("title"), inside the known `working_space` sub-object ("vendor_gamut"),
+// at the layer (doc 08's own example field, `docs/design/08-serialization.md:35`:
+// "name"), and inside the known `time_map` sub-object ("curve"). `working_space`'s
+// `primaries` is read-ignored by the reader and emitted by the writer, so it is an
+// unknown at load and a known at save -- the never-shadow case, pinned byte-exactly here
+// and behaviorally in serialize_unknown_fields.t.cpp.
+constexpr const char* k_unknown_all_tiers = R"json({
+  "arbc": {
+    "format": 1,
+    "generator": "acme-authoring/2.1"
+  },
+  "composition": {
+    "canvas": [
+      0,
+      0,
+      1920,
+      1080
+    ],
+    "layers": [
+      {
+        "kind": "org.arbc.solid",
+        "kind_version": "1",
+        "name": "backdrop",
+        "opacity": 1.0,
+        "params": {
+          "color": [
+            1.0,
+            0.5,
+            0.25,
+            1.0
+          ]
+        },
+        "time_map": {
+          "curve": "ease-in",
+          "in": 100,
+          "offset": 5,
+          "rate": [
+            1,
+            2
+          ]
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      }
+    ],
+    "title": "scene one",
+    "working_space": {
+      "format": "rgba16f-linear-premul",
+      "premultiplied": true,
+      "primaries": "srgb",
+      "transfer": "linear",
+      "vendor_gamut": "acescg"
+    }
+  },
+  "vendor": {
+    "tool": "acme"
+  }
+}
+)json";
+
+// Unknown siblings on a STANDALONE `contents`-table body ("author") -- the one position
+// where a content body carries its own unknown siblings rather than the layer's
+// (Decision 5) -- plus an unknown key inside a KNOWN kind's `params` ("gamma"), which the
+// solid codec never consumed and the load-time residual recovers (Decision 4).
+constexpr const char* k_unknown_shared_body = R"json({
+  "arbc": {
+    "format": 1
+  },
+  "composition": {
+    "canvas": [
+      0,
+      0,
+      16,
+      16
+    ],
+    "layers": [
+      {
+        "$ref": "0",
+        "opacity": 1.0,
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      },
+      {
+        "$ref": "0",
+        "opacity": 1.0,
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      }
+    ]
+  },
+  "contents": {
+    "0": {
+      "author": "acme",
+      "kind": "org.arbc.solid",
+      "kind_version": "1",
+      "params": {
+        "color": [
+          1.0,
+          0.5,
+          0.25,
+          1.0
+        ],
+        "gamma": 2.2
+      }
+    }
+  }
+}
+)json";
+
+// An UNKNOWN-kind body at a LAYER position carrying an unrecognized sibling ("badge").
+// Before this task `extract_content_body`'s 4-key filter truncated the body before the
+// placeholder could see it, so `badge` died on the floor (Constraint 1).
+constexpr const char* k_unknown_kind_sibling = R"json({
+  "arbc": {
+    "format": 1
+  },
+  "composition": {
+    "canvas": [
+      0,
+      0,
+      16,
+      16
+    ],
+    "layers": [
+      {
+        "badge": "vendor-x",
+        "kind": "com.example.unknown",
+        "kind_version": "3.0",
+        "opacity": 1.0,
+        "params": {
+          "scale": 2.5
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      }
+    ]
+  }
+}
+)json";
+
 } // namespace
+
+// enforces: 08-serialization#unknown-fields-preserved-at-every-tier
+// enforces: 08-serialization#unknown-kind-round-trips-verbatim
+TEST_CASE("unknown sibling fields survive a round-trip at every document tier") {
+  // Doc 08 Principle 4 is a DATA-LOSS guarantee: within a known format major, a field
+  // this build does not name is preserved-and-ignored, not dropped. Each corpus entry is
+  // already canonical, so a byte-exact `serialize(load(x)) == x` is the proof -- and the
+  // second pass pins it as a fixed point, so the stash itself round-trips.
+  for (const char* x : {k_unknown_all_tiers, k_unknown_shared_body, k_unknown_kind_sibling}) {
+    const std::string once = content_roundtrip(x);
+    CHECK(once == std::string(x));
+    CHECK(content_roundtrip(once) == std::string(x)); // idempotent
+  }
+}
 
 // enforces: 08-serialization#canonical-output-is-byte-stable
 // enforces: 08-serialization#load-save-round-trips-canonically

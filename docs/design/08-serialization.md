@@ -94,7 +94,24 @@ These are core-owned placement, not `params`.
    known fields; the JSON type still never crosses out of
    `arbc::serialize`, Principle 1) and the writer re-emits them merged
    into canonical key order (Principle 5); a preserved unknown never
-   shadows a known field. Kind-level evolution is the plugin's business
+   shadows a known field. "Unknown" means *a key the core does not name* —
+   never *a key whose value the core could not use*: a **known** key
+   carrying a malformed value stays known, the reader substitutes that
+   field's default, and the bad value is not preserved (leniency, not a
+   stash). A layer's inline content body shares the layer's JSON object,
+   so an unrecognized key there is indistinguishable from an unrecognized
+   layer field and is preserved as one, re-emitted at the layer position;
+   only a body standing alone in the `contents` table (Principle 6) carries
+   unknown *content-body* siblings. The `contents` and `compositions` tables
+   are core-owned id-keyed maps, not sibling surfaces: an entry no reference
+   reaches is dropped on save — the same canonicalization that renumbers
+   hand-authored ids (Principle 6), not data loss. Inside a **known** kind's
+   `params` only the codec can say which keys it consumed, so the core
+   recovers the remainder by differencing the codec's own re-serialization
+   against the input *at load time* (freezing it before any edit, so
+   clearing a param never resurrects it); for a kind or `kind_version` this
+   build does not know, the placeholder already holds the whole body verbatim
+   (Principle 2). Kind-level evolution is otherwise the plugin's business
    via `kind_version`.
 5. **Determinism.** Serialization output is canonical (sorted keys, fixed
    number formatting) so documents diff cleanly under version control —

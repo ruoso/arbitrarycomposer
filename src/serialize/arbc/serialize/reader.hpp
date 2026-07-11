@@ -6,6 +6,7 @@
 #include <arbc/contract/registry.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/serialize/load_context.hpp>
+#include <arbc/serialize/unknown_fields.hpp>
 
 #include <functional>
 #include <memory>
@@ -95,8 +96,19 @@ using ContentSink = std::function<SunkContent(std::unique_ptr<Content>)>;
 //
 // Routing runs entirely BEFORE the model is touched, so a malformed content body
 // returns a `ReaderError` with the target `Model` left unmutated (revision 0, empty).
+//
+// `unknown` is the every-tier unknown-field stash (doc 08 Principle 4,
+// serialize.unknown_field_preservation): when non-null, every key the core does not
+// name -- at the document root, the `arbc` envelope, the composition (and its
+// `working_space` / `working_audio_format` interiors), each layer (and its `time_map`
+// interior), each standalone content body, and each known kind's `params` -- is
+// captured verbatim into it, keyed by `(scope, ObjectId)`, and the content-aware
+// `serialize_document` merges it back on save without ever shadowing a known key. It is
+// REPLACED wholesale on a successful load and left untouched on any error, exactly like
+// the target `Model`. `nullptr` is the historical lossy behavior.
 expected<std::monostate, ReaderError> load_document(std::string_view json, const Registry& registry,
                                                     const CodecTable& codecs, LoadContext& ctx,
-                                                    const ContentSink& sink, Model& into);
+                                                    const ContentSink& sink, Model& into,
+                                                    UnknownFieldStore* unknown = nullptr);
 
 } // namespace arbc

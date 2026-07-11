@@ -3,6 +3,7 @@
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/model/model.hpp>
+#include <arbc/serialize/unknown_fields.hpp>
 
 #include <functional>
 #include <optional>
@@ -82,6 +83,13 @@ using ContentBodyProvider = std::function<std::optional<ContentBody>(ObjectId co
 struct ContentMeta {
   std::string_view kind;
   std::string_view kind_version;
+  // The content's ObjectId, the key its unknown-field stash lives under
+  // (serialize.unknown_field_preservation Decision 3). Every content the reader
+  // materializes gets one from the sink, and a demoted operator input child keeps its
+  // `Document` map entry, so the L5 provider can always supply it. `ObjectId{}` (the
+  // default, for a content the runtime side-map does not know) simply resolves to no
+  // stash -- never to a fault.
+  ObjectId id{};
 };
 
 // The `const Content&`-keyed metadata lookup (serialize.sharing Decision 3): resolve
@@ -105,12 +113,21 @@ using ContentMetaProvider = std::function<std::optional<ContentMeta>(const Conte
 // The no-provider overload above stays byte-identical to today's goldens
 // (Constraint 6).
 //
+// `unknown` is the every-tier unknown-field stash the reader captured (doc 08
+// Principle 4, serialize.unknown_field_preservation). When non-null, each tier's
+// preserved siblings are merged into that tier's object AFTER the core has built it, so
+// a preserved key that collides with a known key LOSES (doc 08:96 -- the live case is
+// `working_space.primaries`, which the reader ignores and the writer emits). Merging
+// into the JSON object's `std::map` keeps the output in canonical ascending-key order,
+// so Principle 5 holds with no extra work. A stash whose bytes fail to re-parse is
+// treated as empty, never as an error. `nullptr` emits exactly today's bytes.
+//
 // Returns the byte buffer, or a `SerializeError` (a non-finite scalar, or a codec
 // that failed / had no registered codec / no metadata for a graph node); no nlohmann
 // exception crosses the API.
-expected<std::string, SerializeError> serialize_document(const DocRoot& doc,
-                                                         const ContentBodyProvider& provider,
-                                                         const ContentMetaProvider& meta,
-                                                         const CodecTable& codecs);
+expected<std::string, SerializeError>
+serialize_document(const DocRoot& doc, const ContentBodyProvider& provider,
+                   const ContentMetaProvider& meta, const CodecTable& codecs,
+                   const UnknownFieldStore* unknown = nullptr);
 
 } // namespace arbc

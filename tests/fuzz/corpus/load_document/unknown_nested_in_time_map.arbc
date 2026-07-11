@@ -1,0 +1,19 @@
+{
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      {
+        "kind": "com.example.unknown",
+        "kind_version": "3.0",
+        "badge": "vendor-x",
+        "opacity": 0.5,
+        "params": { "scale": 2.5 },
+        "span": [0, 705600000],
+        "time_map": { "in": 100, "offset": 5, "rate": [1, 2], "curve": "ease-in" },
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "visible": true
+      }
+    ]
+  }
+}

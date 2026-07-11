@@ -9,6 +9,7 @@
 #include <arbc/serialize/codec.hpp>       // the content-body routing this task lands
 #include <arbc/serialize/deserialize.hpp> // the content-body read hook (serialize.reader)
 #include <arbc/serialize/reader.hpp>
+#include <arbc/serialize/unknown_json.hpp> // the residual core (doc 08 Principle 4)
 
 #include <nlohmann/json.hpp>
 
@@ -16,6 +17,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -30,6 +32,32 @@ using json = nlohmann::json;
 // `{"arbc":{"format":1}}`). A document carrying any other major is rejected
 // wholesale -- never partially loaded.
 constexpr std::int64_t k_format_major = 1;
+
+// --- The core-owned key set at each tier (Constraint 2) ----------------------
+// Declared ONCE and used by BOTH the parse and the unknown-field subtraction, so
+// adding a core-owned key is a one-line edit in exactly one place. Everything a tier
+// does NOT name here is preserved verbatim in the `UnknownFieldStore` and merged back
+// on save (doc 08:88-98 Principle 4).
+//
+// NOTE for `serialize.compositions_table` (Constraint 7): that sibling task introduces
+// `compositions` at the ROOT and `composition` on a content BODY. Whichever of the two
+// lands second must add those names here -- otherwise they would be classified as
+// unknown fields, stashed, AND emitted by the core, i.e. double-emitted.
+//
+// `working_space.primaries` is deliberately ABSENT from `k_working_space_keys`: the
+// reader does not read it (it has a single value today and re-supplies the default),
+// while the writer DOES emit it. So it is an unknown at load and a known at save -- the
+// live never-shadow case (doc 08:96, Constraint 4).
+constexpr std::string_view k_root_keys[] = {"arbc", "composition", "contents"};
+constexpr std::string_view k_envelope_keys[] = {"format"};
+constexpr std::string_view k_composition_keys[] = {"canvas", "layers", "working_audio_format",
+                                                   "working_space"};
+constexpr std::string_view k_working_space_keys[] = {"format", "premultiplied", "transfer"};
+constexpr std::string_view k_working_audio_format_keys[] = {"channels", "sample_rate"};
+constexpr std::string_view k_layer_keys[] = {"audible",  "gain",      "opacity", "span",
+                                             "time_map", "transform", "visible"};
+constexpr std::string_view k_time_map_keys[] = {"in", "offset", "rate"};
+constexpr std::string_view k_body_keys[] = {"$ref", "inputs", "kind", "kind_version", "params"};
 
 unexpected<ReaderError> fail(ReaderError::Kind kind, std::string path) {
   return unexpected(ReaderError{kind, std::move(path), ObjectId{}});
@@ -178,6 +206,13 @@ struct LayerData {
   json content_body;
   bool has_content_id{false};
   ObjectId content_id{};
+  // The layer tier's preserved-and-ignored siblings (doc 08 Principle 4): every key of
+  // the layer object the core names neither as placement NOR as a content-body key,
+  // plus the residual of the known `time_map` sub-object nested back under its key. An
+  // inline body shares the layer's JSON object, so an unrecognized key there is
+  // indistinguishable from an unrecognized layer field and is recorded HERE (doc
+  // 08:101-105, Decision 5).
+  json unknown;
 };
 
 struct CompData {
@@ -188,28 +223,33 @@ struct CompData {
   bool has_working_audio_format{false};
   AudioFormat working_audio_format{};
   std::vector<LayerData> layers;
+  // The composition tier's residual, with the `working_space` / `working_audio_format`
+  // sub-residuals nested back under their keys.
+  json unknown;
 };
 
 // The content position lives BESIDE placement in the layer object (doc 08:29-36).
 // It is EITHER a `{"$ref": id}` into the document `contents` table (serialize.sharing:
 // a shared content whose body was hoisted to document root) OR an inline body: the
 // core-owned `kind`/`kind_version`, the kind-owned `params`, and the core-owned
-// `inputs` edges. Captured verbatim so an unknown kind re-serializes byte-equivalent;
-// placement keys stay the writer's separate concern.
+// `inputs` edges.
+//
+// The body is the layer object MINUS the core-owned placement keys -- NOT a whitelist
+// of the four body keys (Constraint 1). The old 4-key filter truncated the body before
+// anything downstream could preserve it, which is why an unknown-kind placeholder at a
+// layer position silently dropped its unrecognized siblings. Subtracting placement
+// instead of whitelisting body keys hands the placeholder every key it should hold,
+// while keeping the core's own placement out of the opaque stash -- re-emitting a stale
+// `opacity` or an explicitly-written default `gain` from the load-time body would fight
+// both omit-on-default and the writer's live value (Decision 1's rejected alternative).
 bool extract_content_body(const json& o, json& out) {
-  if (o.contains("$ref")) {
-    out = json::object();
-    out["$ref"] = o.at("$ref"); // a shared-content reference at the layer position
-    return true;
-  }
-  if (!o.contains("kind")) {
+  if (!o.contains("$ref") && !o.contains("kind")) {
     return false; // a placement-only layer (the writer's v1 output) has no content
   }
   out = json::object();
-  for (const char* key : {"kind", "kind_version", "params", "inputs"}) {
-    const auto it = o.find(key);
-    if (it != o.end()) {
-      out[key] = *it;
+  for (auto it = o.begin(); it != o.end(); ++it) {
+    if (!names_key(k_layer_keys, std::string_view(it.key()))) {
+      out[it.key()] = it.value();
     }
   }
   return true;
@@ -225,6 +265,18 @@ LayerData parse_layer(const json& o) {
   ld.span = parse_span(o);
   ld.time_map = parse_time_map(o);
   ld.has_content = extract_content_body(o, ld.content_body);
+
+  // The layer residual: neither a placement key nor a content-body key (Decision 5).
+  ld.unknown = json::object();
+  for (auto it = o.begin(); it != o.end(); ++it) {
+    const std::string_view key(it.key());
+    if (!names_key(k_layer_keys, key) && !names_key(k_body_keys, key)) {
+      ld.unknown[it.key()] = it.value();
+    }
+  }
+  if (json tm = unknown_residual_at(o, "time_map", k_time_map_keys); !tm.empty()) {
+    ld.unknown["time_map"] = std::move(tm);
+  }
   return ld;
 }
 
@@ -255,6 +307,17 @@ void parse_composition(const json& c, CompData& out) {
       }
     }
   }
+
+  // The composition residual, recursing into the two known sub-objects so an unknown key
+  // INSIDE `working_space` / `working_audio_format` survives too (doc 08:92).
+  out.unknown = unknown_residual(c, k_composition_keys);
+  if (json ws = unknown_residual_at(c, "working_space", k_working_space_keys); !ws.empty()) {
+    out.unknown["working_space"] = std::move(ws);
+  }
+  if (json wa = unknown_residual_at(c, "working_audio_format", k_working_audio_format_keys);
+      !wa.empty()) {
+    out.unknown["working_audio_format"] = std::move(wa);
+  }
 }
 
 // The read face of doc 08 Principle 6 (serialize.sharing): resolve a content
@@ -268,11 +331,16 @@ void parse_composition(const json& c, CompData& out) {
 class RefResolver {
 public:
   RefResolver(const json* contents, const CodecTable& codecs, const Registry& registry,
-              LoadContext& ctx, const ContentSink& sink)
-      : d_contents(contents), d_codecs(codecs), d_registry(registry), d_ctx(ctx), d_sink(sink) {}
+              LoadContext& ctx, const ContentSink& sink, UnknownFieldStore& unknown)
+      : d_contents(contents), d_codecs(codecs), d_registry(registry), d_ctx(ctx), d_sink(sink),
+        d_unknown(unknown) {}
 
   // Resolve one content position (inline body OR `{"$ref": id}`) to a sunk node.
-  expected<SunkContent, ReaderError> resolve(const json& node) {
+  // `layer_position` is true only for a LAYER's content position, where the body shares
+  // the layer's JSON object: its unknown siblings are recorded as LAYER fields by
+  // `parse_layer`, so this node stashes only its `params` residual (Decision 5). A body
+  // standing alone -- in the `contents` table or an `inputs` slot -- stashes both.
+  expected<SunkContent, ReaderError> resolve(const json& node, bool layer_position = false) {
     if (const auto rit = node.find("$ref"); rit != node.end()) {
       // `$ref` ids are decimal-string handles the writer derives (Decision 2). A
       // non-string, an absent id, or a re-entry into an in-progress id (a cycle) is
@@ -298,7 +366,8 @@ public:
         return fail(ReaderError::Kind::MalformedField, "/contents/" + id);
       }
       d_in_progress.insert(id);
-      expected<SunkContent, ReaderError> built = build(*bit);
+      // A `contents`-table body always stands alone, however it is reached.
+      expected<SunkContent, ReaderError> built = build(*bit, /*layer_position=*/false);
       d_in_progress.erase(id);
       if (!built) {
         return built;
@@ -306,7 +375,7 @@ public:
       d_cache.emplace(id, *built);
       return built;
     }
-    return build(node);
+    return build(node, layer_position);
   }
 
 private:
@@ -314,7 +383,7 @@ private:
   // children dedup and the graph is built bottom-up), route the `{kind, params}` node
   // through the codec table with the built inputs in hand (Decision 4), and hand the
   // node to the sink, which owns it and yields its live `Content*`.
-  expected<SunkContent, ReaderError> build(const json& body) {
+  expected<SunkContent, ReaderError> build(const json& body, bool layer_position) {
     std::vector<ContentRef> input_ptrs;
     if (const auto iit = body.find("inputs"); iit != body.end()) {
       if (!iit->is_array()) {
@@ -324,19 +393,34 @@ private:
         if (!slot.is_object()) {
           return fail(ReaderError::Kind::MalformedField, "/inputs"); // a slot is a body or $ref
         }
-        expected<SunkContent, ReaderError> child = resolve(slot);
+        expected<SunkContent, ReaderError> child = resolve(slot); // a slot body stands alone
         if (!child) {
           return unexpected(child.error());
         }
         input_ptrs.push_back(child->live);
       }
     }
+    // `params_residual` is Decision 4: the routing runs the codec's OWN serializer back
+    // over the content it just built and hands us `params_in - params_out` -- exactly the
+    // keys the codec did not consume, frozen at load time so a later edit that clears an
+    // optional param can never resurrect it. Empty for an unknown kind (the placeholder
+    // already holds the whole body verbatim) and for a codec that cannot re-serialize.
+    json params_residual;
     expected<std::unique_ptr<Content>, ReaderError> produced =
-        content_body_from_json(body, input_ptrs, d_codecs, d_registry, d_ctx);
+        content_body_from_json(body, input_ptrs, d_codecs, d_registry, d_ctx, &params_residual);
     if (!produced) {
       return unexpected(produced.error());
     }
-    return d_sink(std::move(*produced));
+    const SunkContent sunk = d_sink(std::move(*produced));
+
+    // The content residual, keyed by the ObjectId the sink just minted (Decision 3):
+    // never by `Content*`, so no entry can ever alias a later object.
+    json stash = layer_position ? json::object() : unknown_residual(body, k_body_keys);
+    if (!params_residual.is_null() && !params_residual.empty()) {
+      stash["params"] = std::move(params_residual);
+    }
+    d_unknown.set(UnknownScope::Content, sunk.id, to_unknown_fields(stash));
+    return sunk;
   }
 
   static unexpected<ReaderError> fail(ReaderError::Kind kind, std::string path) {
@@ -348,16 +432,16 @@ private:
   const Registry& d_registry;
   LoadContext& d_ctx;
   const ContentSink& d_sink;
+  UnknownFieldStore& d_unknown;                         // content-scope stashes, by ObjectId
   std::unordered_map<std::string, SunkContent> d_cache; // shared id -> one sunk node
   std::unordered_set<std::string> d_in_progress;        // ids on the resolution stack
 };
 
 } // namespace
 
-expected<std::monostate, ReaderError> load_document(std::string_view input,
-                                                    const Registry& registry,
-                                                    const CodecTable& codecs, LoadContext& ctx,
-                                                    const ContentSink& sink, Model& into) {
+expected<std::monostate, ReaderError>
+load_document(std::string_view input, const Registry& registry, const CodecTable& codecs,
+              LoadContext& ctx, const ContentSink& sink, Model& into, UnknownFieldStore* unknown) {
   // Non-throwing parse (serialize.json_dep discipline): a syntax error yields a
   // discarded value, never a thrown exception (Constraint 3).
   const json root = json::parse(input.begin(), input.end(), /*cb=*/nullptr,
@@ -423,13 +507,26 @@ expected<std::monostate, ReaderError> load_document(std::string_view input,
   // -> live Content; unknown -> placeholder), resolves `$ref`/`inputs` against
   // `contents_table` with intra-document dedup, and wires input edges bottom-up
   // (registry/ctx threaded through).
+  // Every tier's unknown siblings are staged here and published to the caller's store
+  // ONLY on a fully successful load, mirroring the "model unmutated on error" discipline
+  // (Decision 3; Constraint 10 -- a stash is never an error path of its own).
+  UnknownFieldStore staged;
+  staged.set(UnknownScope::Document, ObjectId{}, [&] {
+    json root_unknown = unknown_residual(root, k_root_keys);
+    if (json env = unknown_residual_at(root, "arbc", k_envelope_keys); !env.empty()) {
+      root_unknown["arbc"] = std::move(env); // the envelope's own unknown siblings
+    }
+    return to_unknown_fields(root_unknown);
+  }());
+
   if (sink) {
-    RefResolver resolver(contents_table, codecs, registry, ctx, sink);
+    RefResolver resolver(contents_table, codecs, registry, ctx, sink, staged);
     for (LayerData& ld : comp.layers) {
       if (!ld.has_content) {
         continue;
       }
-      expected<SunkContent, ReaderError> produced = resolver.resolve(ld.content_body);
+      expected<SunkContent, ReaderError> produced =
+          resolver.resolve(ld.content_body, /*layer_position=*/true);
       if (!produced) {
         return unexpected(produced.error()); // model unmutated: nothing installed yet
       }
@@ -449,6 +546,9 @@ expected<std::monostate, ReaderError> load_document(std::string_view input,
           return;
         }
         const ObjectId cid = txn.add_composition(comp.canvas_w, comp.canvas_h);
+        // The composition/layer stashes can only be keyed here: their ObjectIds are
+        // minted by this transaction (Decision 3).
+        staged.set(UnknownScope::Composition, cid, to_unknown_fields(comp.unknown));
         if (comp.has_working_space) {
           txn.set_working_space(cid, comp.working_space);
         }
@@ -458,6 +558,7 @@ expected<std::monostate, ReaderError> load_document(std::string_view input,
         for (const LayerData& ld : comp.layers) {
           const ObjectId content_id = ld.has_content_id ? ld.content_id : ObjectId{};
           const ObjectId lid = txn.add_layer(content_id, ld.transform, ld.opacity);
+          staged.set(UnknownScope::Layer, lid, to_unknown_fields(ld.unknown));
           // Re-apply exactly the omit-on-default twins the writer would have
           // emitted; a field left at its default stays diff-clean (Constraint 2).
           if (ld.gain != 1.0) {
@@ -484,17 +585,25 @@ expected<std::monostate, ReaderError> load_document(std::string_view input,
     // channel so no allocation failure escapes as an exception (doc 10).
     return fail(ReaderError::Kind::MalformedField, "/composition");
   }
+  // The load succeeded: publish the staged unknowns wholesale. A `nullptr` store is
+  // today's lossy behavior, so no existing caller changes shape (Decision 3).
+  if (unknown != nullptr) {
+    *unknown = std::move(staged);
+  }
   return std::monostate{};
 }
 
 // The content-free entry point: reconstruct only the envelope, composition, and
 // core-owned placement (its historical scope). An empty codec table and a null
 // content sink make the content-aware path above a no-op -- every layer binds
-// `ObjectId{}` -- so a placement-only document loads byte-identically to before.
+// `ObjectId{}` -- so a placement-only document loads byte-identically to before. It
+// carries no `UnknownFieldStore` either: with no store to hand a stash to, and no
+// content-aware writer overload to merge it back, preservation rides the content-aware
+// pair only (Decision 3).
 expected<std::monostate, ReaderError>
 load_document(std::string_view input, const Registry& registry, LoadContext& ctx, Model& into) {
   const CodecTable no_codecs;
-  return load_document(input, registry, no_codecs, ctx, ContentSink{}, into);
+  return load_document(input, registry, no_codecs, ctx, ContentSink{}, into, /*unknown=*/nullptr);
 }
 
 } // namespace arbc

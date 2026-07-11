@@ -7,7 +7,8 @@
 #include <arbc/media/pixel_format.hpp> // to_string(PixelFormat)
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
-#include <arbc/serialize/codec.hpp> // the content-body write routing this task lands
+#include <arbc/serialize/codec.hpp>        // the content-body write routing this task lands
+#include <arbc/serialize/unknown_json.hpp> // the never-shadow merge (doc 08 Principle 4)
 #include <arbc/serialize/writer.hpp>
 
 #include <nlohmann/json.hpp>
@@ -138,8 +139,8 @@ json time_map_json(const TimeMap& m) {
 class ContentGraph {
 public:
   ContentGraph(const ContentBodyProvider& provider, const ContentMetaProvider& meta,
-               const CodecTable& codecs)
-      : d_provider(provider), d_meta(meta), d_codecs(codecs) {}
+               const CodecTable& codecs, const UnknownFieldStore* unknown)
+      : d_provider(provider), d_meta(meta), d_codecs(codecs), d_unknown(unknown) {}
 
   // Pre-pass over the document graph: count occurrences, record metadata, assign the
   // shared-content ids. Must run before any layer or `contents` emission.
@@ -153,7 +154,9 @@ public:
       if (!body.has_value()) {
         return;
       }
-      visit(&body->content, body->kind, body->kind_version);
+      // A layer root's ObjectId is the layer record's `content` -- the same id the
+      // reader's sink minted, so it keys this content's unknown-field stash directly.
+      visit(&body->content, body->kind, body->kind_version, lr->content);
     });
     std::size_t next = 0;
     for (const Content* c : d_order) {
@@ -192,13 +195,14 @@ private:
   struct MetaEntry {
     std::string kind;
     std::string kind_version;
+    ObjectId id; // this content's stash key (Decision 3)
   };
 
-  void visit(const Content* c, std::string_view kind, std::string_view kind_version) {
+  void visit(const Content* c, std::string_view kind, std::string_view kind_version, ObjectId id) {
     const auto [it, inserted] = d_counts.try_emplace(c, 0);
     it->second += 1;
     if (inserted) {
-      d_meta_of.emplace(c, MetaEntry{std::string(kind), std::string(kind_version)});
+      d_meta_of.emplace(c, MetaEntry{std::string(kind), std::string(kind_version), id});
       d_order.push_back(c);
     }
     if (it->second > 1) {
@@ -210,9 +214,11 @@ private:
       }
       const std::optional<ContentMeta> m = d_meta(*child);
       if (m.has_value()) {
-        visit(child, m->kind, m->kind_version);
+        visit(child, m->kind, m->kind_version, m->id);
       } else {
-        visit(child, std::string_view{}, std::string_view{}); // let content_body_to_json fault
+        // No metadata: let content_body_to_json fault (or a placeholder re-emit its own
+        // stored body). With no id there is no stash to merge -- never a fault.
+        visit(child, std::string_view{}, std::string_view{}, ObjectId{});
       }
     }
   }
@@ -229,6 +235,14 @@ private:
       return json::object();
     }
     json body = std::move(*leaf);
+    // The content tier's preserved siblings (doc 08 Principle 4): a standalone body's
+    // unknown keys, and -- for a KNOWN kind -- the `params` interior the codec never
+    // consumed, which recurses into the codec's freshly-produced `params` object. The
+    // known side always wins (doc 08:96). A layer-position body carries no body-level
+    // stash: its unknown siblings are LAYER fields (Decision 5), merged in `layer_json`.
+    if (d_unknown != nullptr) {
+      merge_unknown_fields(body, d_unknown->find(UnknownScope::Content, m.id));
+    }
     const std::span<const ContentRef> ins = c->inputs();
     if (!ins.empty()) {
       json arr = json::array();
@@ -243,6 +257,7 @@ private:
   const ContentBodyProvider& d_provider;
   const ContentMetaProvider& d_meta;
   const CodecTable& d_codecs;
+  const UnknownFieldStore* d_unknown;                      // content-tier stashes (nullable)
   std::unordered_map<const Content*, int> d_counts;        // occurrences across the graph
   std::unordered_map<const Content*, MetaEntry> d_meta_of; // (kind, kind_version) per node
   std::unordered_map<const Content*, std::string> d_ids;   // shared content -> `$ref` id
@@ -251,7 +266,8 @@ private:
 };
 
 json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em,
-                const ContentBodyProvider* provider, ContentGraph* graph) {
+                const ContentBodyProvider* provider, ContentGraph* graph,
+                const UnknownFieldStore* unknown) {
   json o = json::object();
   // Spatial + core placement -- always present.
   const Affine& t = lr.transform;
@@ -291,11 +307,20 @@ json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em,
       }
     }
   }
+  // The layer tier's preserved siblings LAST, so both the core's placement keys and the
+  // spliced content body win any collision (doc 08:96). This is also where an inline
+  // body's own unknown siblings land -- they are indistinguishable from unknown layer
+  // fields and were recorded as such (Decision 5) -- and where an unknown key nested
+  // inside `time_map` merges back into the writer's own `time_map` object.
+  if (unknown != nullptr) {
+    merge_unknown_fields(o, unknown->find(UnknownScope::Layer, id));
+  }
   return o;
 }
 
 json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRecord& comp,
-                      Emitter& em, const ContentBodyProvider* provider, ContentGraph* graph) {
+                      Emitter& em, const ContentBodyProvider* provider, ContentGraph* graph,
+                      const UnknownFieldStore* unknown) {
   json o = json::object();
   // canvas hint (doc 01): `[x, y, w, h]`, extents as integers.
   o["canvas"] =
@@ -312,10 +337,17 @@ json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRec
   doc.for_each_layer_in(comp_id, [&](ObjectId lid) {
     const LayerRecord* lr = doc.find_layer(lid);
     if (lr != nullptr) {
-      layers.push_back(layer_json(*lr, lid, em, provider, graph));
+      layers.push_back(layer_json(*lr, lid, em, provider, graph, unknown));
     }
   });
   o["layers"] = std::move(layers);
+  // The composition tier's preserved siblings, including the residuals nested back under
+  // `working_space` / `working_audio_format` -- where the never-shadow rule bites for
+  // real: the reader ignores `working_space.primaries` while the writer emits it, so the
+  // preserved copy loses to the live one.
+  if (unknown != nullptr) {
+    merge_unknown_fields(o, unknown->find(UnknownScope::Composition, comp_id));
+  }
   return o;
 }
 
@@ -326,7 +358,8 @@ json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRec
 expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
                                                      const ContentBodyProvider* provider,
                                                      const ContentMetaProvider* meta,
-                                                     const CodecTable* codecs) {
+                                                     const CodecTable* codecs,
+                                                     const UnknownFieldStore* unknown) {
   Emitter em;
   json root = json::object();
   json envelope = json::object();
@@ -342,11 +375,11 @@ expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
     // graph only when all three content seams are supplied.
     std::optional<ContentGraph> graph;
     if (provider != nullptr && meta != nullptr && codecs != nullptr) {
-      graph.emplace(*provider, *meta, *codecs);
+      graph.emplace(*provider, *meta, *codecs, unknown);
       graph->build(doc, comp_id);
     }
     ContentGraph* graph_ptr = graph.has_value() ? &*graph : nullptr;
-    root["composition"] = composition_json(doc, comp_id, *comp, em, provider, graph_ptr);
+    root["composition"] = composition_json(doc, comp_id, *comp, em, provider, graph_ptr, unknown);
     if (graph_ptr != nullptr) {
       // The shared-content table at document root, beside `composition` (omitted when
       // nothing is shared -- the canonical key sort places `composition` < `contents`).
@@ -354,6 +387,15 @@ expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
         root["contents"] = std::move(*contents);
       }
     }
+  }
+
+  // The document tier's preserved siblings, merged after `composition`/`contents` so both
+  // win any collision; the `arbc` envelope's own unknowns ride nested under "arbc" and
+  // recurse into the envelope object the core just built. The `contents` table itself is
+  // NOT a sibling surface -- an entry no `$ref` reaches is dropped, the same
+  // canonicalization that renumbers hand-authored ids (Decision 5).
+  if (unknown != nullptr) {
+    merge_unknown_fields(root, unknown->find(UnknownScope::Document, ObjectId{}));
   }
 
   if (!em.ok()) {
@@ -373,14 +415,16 @@ expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
 } // namespace
 
 expected<std::string, SerializeError> serialize_document(const DocRoot& doc) {
-  return serialize_impl(doc, /*provider=*/nullptr, /*meta=*/nullptr, /*codecs=*/nullptr);
+  return serialize_impl(doc, /*provider=*/nullptr, /*meta=*/nullptr, /*codecs=*/nullptr,
+                        /*unknown=*/nullptr);
 }
 
 expected<std::string, SerializeError> serialize_document(const DocRoot& doc,
                                                          const ContentBodyProvider& provider,
                                                          const ContentMetaProvider& meta,
-                                                         const CodecTable& codecs) {
-  return serialize_impl(doc, &provider, &meta, &codecs);
+                                                         const CodecTable& codecs,
+                                                         const UnknownFieldStore* unknown) {
+  return serialize_impl(doc, &provider, &meta, &codecs, unknown);
 }
 
 } // namespace arbc

@@ -10,6 +10,7 @@
 #include <arbc/model/journal.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/editable_binding.hpp>
+#include <arbc/serialize/unknown_fields.hpp> // names no JSON type (doc 08:61-63)
 
 #include <cstdint>
 #include <functional>
@@ -117,6 +118,21 @@ public:
   // `Content*` (never null). The `Content` vtable stays in `runtime`, doc 17:66-72.
   void for_each_content(const std::function<void(Content*)>& fn) const;
 
+  // The same walk with each content's `ObjectId` in hand -- the key its unknown-field
+  // stash lives under (serialize.unknown_field_preservation Decision 3). The save path
+  // needs it for operator INPUT CHILDREN, which carry no `ContentRecord` after
+  // demote-after-sink yet keep their entry in this map, so their id is still known here.
+  void for_each_content(const std::function<void(ObjectId, Content*)>& fn) const;
+
+  // The document's every-tier unknown-field stash (doc 08 Principle 4): the fields a
+  // load preserved verbatim because this build's core does not name them, keyed by
+  // `(scope, ObjectId)`. Writer-thread-owned exactly like the content side-map, and
+  // COPIED into a `ContentSnapshot` by `capture_snapshot` so an off-thread save never
+  // reads live editor state (Constraint 9). Replaced wholesale by a successful load;
+  // empty for a document built programmatically, which is why an unknown-free document
+  // serializes byte-identically to before.
+  const UnknownFieldStore& unknown_fields() const noexcept { return d_unknown; }
+
   // The document's editable-state multiplexer, for the behavioral counters doc 16
   // asks the editable tests to assert: `unrouted_state_calls()` (zero in any
   // correct document -- a state call that could not reach its owner would free the
@@ -159,6 +175,11 @@ private:
   EditableBinding d_binding;
   Model d_model;
   Journal d_journal{d_model};
+  // The unknown-field stash (doc 08 Principle 4). Deliberately declared AFTER the
+  // teardown-contract members above: it is plain maps of `std::string`, owns no record
+  // edge and no state handle, so its destruction order is immaterial and it perturbs
+  // nothing the contract above pins down.
+  UnknownFieldStore d_unknown;
 };
 
 } // namespace arbc

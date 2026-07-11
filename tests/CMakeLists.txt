@@ -69,6 +69,18 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_serialize_sharing_t)
 
+# serialize.unknown_field_preservation: the every-tier unknown-field rules the corpus can
+# only prove by byte-equality -- the never-shadow collision rule (working_space.primaries),
+# the residual/merge core (recursion, atomicity, a malformed stash degrading to empty), and
+# the known-kind `params` residual frozen at load so a cleared optional never resurrects.
+# Names the serialize-internal unknown_json.hpp (which names nlohmann::json), so it links
+# the umbrella `arbc` plus nlohmann explicitly (nlohmann is PRIVATE to arbc_serialize).
+add_executable(arbc_serialize_unknown_fields_t serialize_unknown_fields.t.cpp)
+target_link_libraries(
+  arbc_serialize_unknown_fields_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_unknown_fields_t)
+
 # serialize.format_tests determinism / load->save round-trip CORPUS test: over an
 # inline corpus of representative canonical documents, asserts serialize(load(x)) == x
 # byte-exact + re-serialization idempotence, unknown-kind/field verbatim preservation,

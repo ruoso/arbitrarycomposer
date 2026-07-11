@@ -13,6 +13,17 @@
 // load_document over the built-in codec table (solid/tone/fade/crossfade), so the
 // params/contents codec parsing -- the most format-specific, most-likely-to-fault
 // code -- is exercised, not just the content-free envelope.
+//
+// That richest surface now includes the every-tier unknown-field stash (doc 08
+// Principle 4, serialize.unknown_field_preservation): the `UnknownFieldStore` is owned by
+// `Document` and threaded through the runtime load/save pair internally, so the
+// load->serialize->load->serialize chain below already drives it end to end -- the
+// residual subtraction on arbitrary keys, the canonical dump of the stash, its re-parse
+// at save, and the never-shadow merge -- with no extra plumbing here. A stash that
+// failed to re-parse, or a merge that reordered a key, would break the differential-
+// determinism invariant below rather than pass silently. The corpus seeds
+// `unknown_fields_all_tiers` / `unknown_shadowing_known` / `unknown_in_known_params` /
+// `unknown_nested_in_time_map` seed exactly that surface.
 
 #include <arbc/contract/registry.hpp>
 #include <arbc/runtime/document.hpp>
@@ -45,7 +56,8 @@ inline void arbc_fuzz_require(bool condition, const char* message) {
 //   1. load_document returns an error VALUE or succeeds -- it never throws a
 //      JSON/C++ exception, aborts, or reads out of bounds (doc 08:143-149). A throw
 //      escaping this call is caught by the corpus-replay driver / crashes libFuzzer.
-//   2. On any SUCCESSFUL load the output is deterministic:
+//   2. On any SUCCESSFUL load the output is deterministic -- including the unknown-field
+//      stash, which rides `Document` through both halves of the chain:
 //        serialize(load(serialize(load(x)))) == serialize(load(x))
 //      -- re-serialize succeeds, re-loading that output succeeds, and re-serializing
 //      it is byte-identical (doc 08 Principle 5/6). Every accepted input becomes a

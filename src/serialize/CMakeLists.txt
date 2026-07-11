@@ -1,8 +1,13 @@
+# `unknown_fields.hpp` joins PUBLIC_HEADERS precisely because it names no JSON type: the
+# stash is canonical JSON object TEXT in a std::string, so `arbc::runtime` (L5) can own a
+# store and copy it into a snapshot without ever seeing nlohmann (doc 08:61-63, doc 17:58).
+# Its json-facing half (`unknown_json.hpp`) stays INTERNAL, exactly like codec.hpp.
 arbc_add_component(
   NAME serialize
   SOURCES writer.cpp reader.cpp load_context.cpp codec.cpp placeholder_content.cpp
+          unknown_fields.cpp
   PUBLIC_HEADERS arbc/serialize/writer.hpp arbc/serialize/reader.hpp
-                 arbc/serialize/load_context.hpp
+                 arbc/serialize/load_context.hpp arbc/serialize/unknown_fields.hpp
   DEPENDS contract model)
 
 # nlohmann/json is header-only, so linking it PRIVATE keeps it off libarbc's

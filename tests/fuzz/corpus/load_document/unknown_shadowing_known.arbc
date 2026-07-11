@@ -1,0 +1,8 @@
+{
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "working_space": { "format": "rgba16f-linear-premul", "premultiplied": true, "primaries": "bogus-not-a-real-gamut", "transfer": "linear" },
+    "layers": []
+  }
+}

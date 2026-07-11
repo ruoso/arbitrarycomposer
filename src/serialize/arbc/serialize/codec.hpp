@@ -85,9 +85,21 @@ private:
 // placeholder records. Errors are values (Constraint 5): a missing/empty `kind` is
 // `MissingRequiredField`, a mistyped `kind`/`params` is `MalformedField`, and a
 // codec's own parse failure propagates; no nlohmann exception escapes.
+//
+// `params_residual` (serialize.unknown_field_preservation Decision 4) is how a KNOWN
+// kind's unknown `params` interiors are recovered: for a registered codec, the routing
+// runs that codec's OWN `SerializeFn` back over the content it just built and writes
+// `params_in - params_out` here -- precisely the keys the codec did not consume. The
+// diff is frozen at LOAD time, before any edit can touch the content, so clearing an
+// optional param (e.g. `org.arbc.fade`'s `params.in`) never resurrects it on save. Codec
+// authors write nothing; plugin codecs get preservation for free. Left an empty object
+// for an unknown kind (the placeholder already holds the whole body verbatim) or when
+// the codec cannot re-serialize (errors stay values -- a failed diff means "no preserved
+// fields", never a `ReaderError`).
 expected<std::unique_ptr<Content>, ReaderError>
 content_body_from_json(const nlohmann::json& body, std::span<const ContentRef> inputs,
-                       const CodecTable& codecs, const Registry& registry, LoadContext& ctx);
+                       const CodecTable& codecs, const Registry& registry, LoadContext& ctx,
+                       nlohmann::json* params_residual = nullptr);
 
 // Write routing (serialize.kind_params): emit ONE node's LEAF content body -- the
 // `{kind, kind_version, params}` frame only, NEVER the `inputs` limb (the

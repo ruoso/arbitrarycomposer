@@ -1,0 +1,21 @@
+{
+  "arbc": { "format": 1, "generator": "acme/2.1" },
+  "vendor": { "tool": "acme", "notes": ["a", "b"] },
+  "composition": {
+    "canvas": [0, 0, 1920, 1080],
+    "title": "scene one",
+    "working_space": { "format": "rgba16f-linear-premul", "premultiplied": true, "transfer": "linear", "vendor_gamut": "acescg" },
+    "working_audio_format": { "sample_rate": 48000, "channels": "stereo", "vendor_dither": "tpdf" },
+    "layers": [
+      {
+        "kind": "org.arbc.solid",
+        "kind_version": "1",
+        "name": "backdrop",
+        "opacity": 1.0,
+        "params": { "color": [1.0, 0.5, 0.25, 1.0] },
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "visible": true
+      }
+    ]
+  }
+}

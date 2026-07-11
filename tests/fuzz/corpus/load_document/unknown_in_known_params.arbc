@@ -1,0 +1,28 @@
+{
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      {
+        "$ref": "0",
+        "opacity": 1.0,
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "visible": true
+      },
+      {
+        "$ref": "0",
+        "opacity": 1.0,
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "visible": true
+      }
+    ]
+  },
+  "contents": {
+    "0": {
+      "author": "acme",
+      "kind": "org.arbc.solid",
+      "kind_version": "1",
+      "params": { "color": [1.0, 0.5, 0.25, 1.0], "gamma": 2.2, "lut": [1, 2, 3] }
+    }
+  }
+}

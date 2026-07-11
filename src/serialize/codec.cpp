@@ -1,5 +1,6 @@
 #include <arbc/serialize/codec.hpp>
 #include <arbc/serialize/placeholder_content.hpp>
+#include <arbc/serialize/unknown_json.hpp> // the params residual (doc 08 Principle 4)
 
 #include <span>
 #include <string>
@@ -31,7 +32,8 @@ unexpected<ReaderError> read_fail(ReaderError::Kind kind, std::string path) {
 
 expected<std::unique_ptr<Content>, ReaderError>
 content_body_from_json(const json& body, std::span<const ContentRef> inputs,
-                       const CodecTable& codecs, const Registry& registry, LoadContext& ctx) {
+                       const CodecTable& codecs, const Registry& registry, LoadContext& ctx,
+                       json* params_residual) {
   // The content body must be an object carrying at least a string `kind` (doc 08:29).
   if (!body.is_object()) {
     return read_fail(ReaderError::Kind::MalformedField, "");
@@ -63,7 +65,23 @@ content_body_from_json(const json& body, std::span<const ContentRef> inputs,
   // resolution + async asset loading into the codec (Principle 1).
   if (const Codec* codec = codecs.find(kind); codec != nullptr && codec->deserialize) {
     const json params = (pit != body.end()) ? *pit : json::object();
-    return codec->deserialize(params, inputs, ctx);
+    expected<std::unique_ptr<Content>, ReaderError> produced =
+        codec->deserialize(params, inputs, ctx);
+
+    // Decision 4: only the codec can say which `params` keys it consumed, and its own
+    // serializer already reveals that -- every built-in serializer emits every key its
+    // deserializer reads (`fade`'s optional `in`/`out` round-trip absence as absence).
+    // So run it back over the fresh content and keep `params_in - params_out`. Doing it
+    // HERE, at load, is what makes the rule safe: a save-time diff against a stashed raw
+    // `params` would see a param the user later CLEARED as "dropped by the codec" and
+    // resurrect it. Errors stay values: a codec that cannot re-serialize simply
+    // preserves nothing.
+    if (produced && params_residual != nullptr && codec->serialize) {
+      if (const expected<json, SerializeError> back = codec->serialize(**produced); back) {
+        *params_residual = unknown_residual_diff(params, *back);
+      }
+    }
+    return produced;
   }
 
   // No codec: round-trip as a placeholder preserving `kind`/`kind_version`/`params`

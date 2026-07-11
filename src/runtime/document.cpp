@@ -129,4 +129,10 @@ void Document::for_each_content(const std::function<void(Content*)>& fn) const {
   }
 }
 
+void Document::for_each_content(const std::function<void(ObjectId, Content*)>& fn) const {
+  for (const auto& entry : d_contents) {
+    fn(entry.first, entry.second.get());
+  }
+}
+
 } // namespace arbc

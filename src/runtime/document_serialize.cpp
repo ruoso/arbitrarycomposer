@@ -37,6 +37,10 @@ namespace arbc {
 struct DocumentSerializeAccess {
   static Model& model(Document& doc) { return doc.d_model; }
   static Journal& journal(Document& doc) { return doc.d_journal; }
+  // The mutable half of `Document::unknown_fields()`: the load path hands this to the
+  // serialize reader, which replaces it wholesale on a successful load (doc 08
+  // Principle 4). Writer-thread-only, exactly like the content side-map.
+  static UnknownFieldStore& unknown(Document& doc) { return doc.d_unknown; }
 };
 
 namespace {
@@ -153,11 +157,22 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) 
   // (Decision 6).
   ContentSnapshot snap;
   snap.state = doc.pin();
+  // COPY the unknown-field stash off the live document (Decision 6): the off-thread emit
+  // reads only the snapshot, never live editor state (Constraint 9).
+  snap.unknown = doc.unknown_fields();
   ObjectId comp_id;
   const CompositionRecord* comp = nullptr;
   if (!snap.state || !snap.state->find_first_composition(comp_id, comp)) {
     return snap;
   }
+
+  // Every content's ObjectId, including the operator INPUT CHILDREN that demote-after-sink
+  // stripped of their `ContentRecord` -- their entry in the document's content side-map
+  // survives demotion, so this is the one place that knows the id keying each content's
+  // unknown-field stash (Decision 3). Read on the writer thread, like `doc.resolve`.
+  std::unordered_map<const Content*, ObjectId> ids;
+  doc.for_each_content([&ids](ObjectId id, Content* c) { ids.emplace(c, id); });
+
   snap.state->for_each_layer_in(comp_id, [&](ObjectId lid) {
     const LayerRecord* lr = snap.state->find_layer(lid);
     if (lr == nullptr) {
@@ -178,7 +193,7 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) 
     bridge.lookup(kind, kind_id, kind_version); // unknown -> empty views (placeholder body wins)
     const std::size_t idx = snap.entries.size();
     snap.entries.push_back(
-        ContentSnapshot::Entry{c, std::string(kind_id), std::string(kind_version)});
+        ContentSnapshot::Entry{c, std::string(kind_id), std::string(kind_version), cid});
     snap.by_id.emplace(cid, idx);
     snap.by_ptr.emplace(c, idx);
   });
@@ -219,9 +234,11 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) 
       if (!builtin_kind_of(*child, child_kind_id, child_kind_version)) {
         continue; // unknown/placeholder child -> meta nullopt -> verbatim re-emit
       }
+      const auto idit = ids.find(child);
+      const ObjectId child_id = (idit != ids.end()) ? idit->second : ObjectId{};
       const std::size_t cidx = snap.entries.size();
       snap.entries.push_back(ContentSnapshot::Entry{child, std::string(child_kind_id),
-                                                    std::string(child_kind_version)});
+                                                    std::string(child_kind_version), child_id});
       snap.by_ptr.emplace(child, cidx);
     }
   }
@@ -249,9 +266,11 @@ expected<std::string, SerializeError> serialize_snapshot(const ContentSnapshot& 
       return std::nullopt;
     }
     const ContentSnapshot::Entry& e = snapshot.entries[it->second];
-    return ContentMeta{e.kind_id, e.kind_version};
+    return ContentMeta{e.kind_id, e.kind_version, e.id};
   };
-  return serialize_document(*snapshot.state, provider, meta, codecs);
+  // The unknown-field stash rides the SNAPSHOT's copy, never the live document's, so this
+  // stays a pure read of immutable state (Decision 6, Constraint 9).
+  return serialize_document(*snapshot.state, provider, meta, codecs, &snapshot.unknown);
 }
 
 expected<std::string, SerializeError> save_document(const Document& doc, const KindBridge& bridge,
@@ -363,7 +382,10 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
   LoadContext ctx{std::string{}};
   const JournalSuspension no_journal(doc);
   Model& into = DocumentSerializeAccess::model(doc);
-  return arbc::load_document(bytes, registry, codecs, ctx, sink, into);
+  // The document's unknown-field stash is replaced wholesale by a successful load and
+  // left untouched on any error, exactly like the model (doc 08 Principle 4).
+  return arbc::load_document(bytes, registry, codecs, ctx, sink, into,
+                             &DocumentSerializeAccess::unknown(doc));
 }
 
 } // namespace arbc

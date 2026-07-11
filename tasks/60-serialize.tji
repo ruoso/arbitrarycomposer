@@ -47,8 +47,9 @@ task serialize "Serialization" {
   task unknown_field_preservation "All-tier unknown-field preservation" {
     effort 2d
     allocate team
+    complete 100
     depends !format_tests
-    note "Preserve unknown sibling fields verbatim at every document tier (envelope, composition, layer, content-body siblings) per doc 08 Principle 4 — today only params interiors survive and the reader drops the rest (incl. doc 08's own example layer 'name' field): capture leftover keys into an opaque serialized-bytes stash carried on the records (bytes, not JSON — the JSON type stays private to arbc::serialize), re-merge into canonical sorted output on save without shadowing known keys, extend the determinism corpus with unknown-sibling fixtures at each tier. Source: tasks/parking-lot.md 2026-07-09 (layer-level unknown-field gap). Docs 08/16."
+    note "Preserve unknown sibling fields verbatim at every document tier (envelope, composition, layer, content-body siblings) per doc 08 Principle 4 — today only params interiors survive and the reader drops the rest (incl. doc 08's own example layer 'name' field): capture leftover keys into an opaque serialized-bytes stash carried on the records (bytes, not JSON — the JSON type stays private to arbc::serialize), re-merge into canonical sorted output on save without shadowing known keys, extend the determinism corpus with unknown-sibling fixtures at each tier. Source: tasks/parking-lot.md 2026-07-09 (layer-level unknown-field gap). Docs 08/16. Refinement: tasks/refinements/serialize/unknown_field_preservation.md"
   }
   task compositions_table "In-document compositions table" {
     effort 3d
