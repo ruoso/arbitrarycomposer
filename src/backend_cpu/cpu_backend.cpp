@@ -8,12 +8,42 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <span>
 #include <utility>
 
 namespace arbc {
+
+namespace {
+
+// A compile-time format as a value, for the SOURCE side of a two-format
+// operation. `visit_surface` resolves the destination (it hands back a WRITABLE
+// TypedSpan); a `const Surface&` source only needs its format lifted to a
+// compile-time constant, and reads through the checked `Surface::span<F>() const`
+// accessor. Composing the two gives ONE dispatch per operation over the (src,
+// dst) pair -- total over the closed format set -- never a per-pixel branch
+// (doc 07:79-95).
+template <PixelFormat F> struct FormatTag {
+  static constexpr PixelFormat format = F;
+};
+
+template <class Visitor> void visit_pixel_format(PixelFormat format, Visitor&& visitor) {
+  switch (format) {
+  case PixelFormat::Rgba32fLinearPremul:
+    visitor(FormatTag<PixelFormat::Rgba32fLinearPremul>{});
+    return;
+  case PixelFormat::Rgba16fLinearPremul:
+    visitor(FormatTag<PixelFormat::Rgba16fLinearPremul>{});
+    return;
+  case PixelFormat::Rgba8Srgb:
+    visitor(FormatTag<PixelFormat::Rgba8Srgb>{});
+    return;
+  }
+}
+
+} // namespace
 
 // Byte-backed storage sized by the pixel format (doc 07): 16 / 8 / 4 bytes per
 // pixel for 32f / 16f / 8. Zero-filled bytes are transparent black in every
@@ -118,6 +148,54 @@ void CpuBackend::downsample(Surface& dst, const Surface& src) {
     assert(!dst_typed.data.empty() && !src_span.empty());
     downsample_box_kernel<F>(dst_typed, dst.width(), dst.height(), src_span, src.width(),
                              src.height());
+  });
+}
+
+void CpuBackend::convert(Surface& dst, const Surface& src) {
+  // Same-geometry, position-for-position (doc 09, the conversion operation): the
+  // kernel transcodes pixel (i, j) into pixel (i, j) and does not resample, so
+  // differing dimensions are a caller error, never a silent reinterpretation --
+  // debug assert, cull in release, the convention composite and downsample use.
+  assert(dst.width() == src.width() && dst.height() == src.height());
+  if (dst.width() != src.width() || dst.height() != src.height()) {
+    return;
+  }
+
+  // One dispatch per operation (doc 07:79-95), never per pixel: resolve the
+  // (source, destination) runtime tag PAIR to compile-time formats once, then run
+  // the monomorphized kernel, which routes each sample through the premultiplied
+  // linear working space (2N codecs, not N*N -- doc 07:104-108). The format set
+  // is closed and core-owned, so the pair dispatch is total: no default-case hole.
+  const std::size_t pixel_count =
+      static_cast<std::size_t>(dst.width()) * static_cast<std::size_t>(dst.height());
+  visit_surface(dst, [&](auto dst_typed) {
+    constexpr PixelFormat DstF = decltype(dst_typed)::format;
+    visit_pixel_format(src.format().pixel_format, [&](auto src_tag) {
+      constexpr PixelFormat SrcF = decltype(src_tag)::format;
+      if constexpr (SrcF == DstF) {
+        // The diagonal of the pair dispatch is an EXACT byte copy, decisively not
+        // a decode/encode round-trip. Routing it through convert_kernel<F, F>
+        // would decode to the linear working space and re-encode -- byte-identical
+        // for the float formats, but NOT for Rgba8Srgb, where the straight-alpha
+        // unpremultiply and the sRGB encode's rounding can move a low bit (and a
+        // zero-alpha pixel loses its color outright). A public conversion never
+        // perturbs pixels it has no reason to perturb.
+        //
+        // Equal pixel format IS equal tag triple here: `make_surface` stores only
+        // the three closed working formats, and each pins a distinct pixel format,
+        // so no surface this backend hands out can share a pixel format while
+        // differing in color space or alpha convention. The assert pins that.
+        assert(dst.format() == src.format());
+        const std::span<const std::byte> in = src.cpu_bytes();
+        const std::span<std::byte> out = dst.cpu_bytes();
+        assert(in.size() == out.size());
+        std::memcpy(out.data(), in.data(), out.size());
+      } else {
+        const std::span<const typename PixelTraits<SrcF>::Storage> src_span = src.span<SrcF>();
+        assert(!dst_typed.data.empty() && !src_span.empty());
+        convert_kernel<SrcF, DstF>(src_span, dst_typed, pixel_count);
+      }
+    });
   });
 }
 

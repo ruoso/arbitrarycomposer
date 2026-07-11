@@ -50,6 +50,7 @@ public:
   void downsample(arbc::Surface& dst, const arbc::Surface& src) override {
     d_inner.downsample(dst, src);
   }
+  void convert(arbc::Surface& dst, const arbc::Surface& src) override { d_inner.convert(dst, src); }
 
   int make_surface_calls = 0;
 

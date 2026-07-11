@@ -17,6 +17,7 @@
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
 #include <arbc/surface/surface_pool.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -127,7 +128,7 @@ struct StubReq {
 
 // A backend that allocates real-buffer surfaces and folds a deterministic marker
 // on composite (mirrors `counters.t.cpp`'s `MarkBackend`).
-class MarkBackend : public arbc::Backend {
+class MarkBackend : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -145,7 +146,6 @@ public:
       b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);
     }
   }
-  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
 };
 
 // A single-layer document over `content_id`; the resolver binds it to a

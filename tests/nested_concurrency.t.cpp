@@ -58,6 +58,17 @@ std::vector<std::byte> bytes_of(const Surface& s) {
 } // namespace
 
 TEST_CASE("nested renders race-free and deterministically across worker threads") {
+  // The stress runs over both boundary shapes. The heterogeneous child adds a
+  // per-render surface allocation and a conversion at the nesting boundary (doc 07
+  // rule 4); both are frame-thread-local -- the intermediate is a stack-local
+  // unique_ptr owned by the one `render` frame and `convert` runs on that thread
+  // alongside the existing clear/composite -- so a heterogeneous child introduces
+  // no new shared mutable state and no new race relative to the homogeneous one.
+  // This is the claim TSan is here to check, not assume.
+  SurfaceFormat child_space = k_working_rgba32f;
+  SECTION("homogeneous child (the parent's working space)") { child_space = k_working_rgba32f; }
+  SECTION("heterogeneous child (the 8-bit sRGB fast mode)") { child_space = k_fast_rgba8srgb; }
+
   Model model;
   SolidContent solid_a{Rgba{0.6F, 0.2F, 0.1F, 0.8F}, Rect{0.0, 0.0, 8.0, 8.0}};
   SolidContent solid_b{Rgba{0.1F, 0.4F, 0.3F, 0.5F}, Rect{0.0, 0.0, 8.0, 8.0}};
@@ -72,6 +83,7 @@ TEST_CASE("nested renders race-free and deterministically across worker threads"
     const ObjectId lb = tx.add_layer(cb, Affine::translation(1.0, 1.0));
     tx.attach_layer(comp, la);
     tx.attach_layer(comp, lb);
+    tx.set_working_space(comp, child_space);
     tx.commit();
     binding[ca] = &solid_a;
     binding[cb] = &solid_b;

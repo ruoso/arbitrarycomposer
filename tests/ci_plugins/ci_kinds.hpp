@@ -51,9 +51,7 @@ using namespace arbc;
 
 using Made = expected<std::unique_ptr<Content>, std::string>;
 
-inline Made made_error(std::string message) {
-  return unexpected<std::string>(std::move(message));
-}
+inline Made made_error(std::string message) { return unexpected<std::string>(std::move(message)); }
 
 // --- Config parsing. `strto*` rather than `std::from_chars` because
 //     floating-point `from_chars` is not available on every standard library the
@@ -252,10 +250,9 @@ inline DecodedImage raster_gradient(int width, int height) {
   const float last_y = static_cast<float>(height - 1);
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; ++x) {
-      const std::size_t o =
-          (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
-           static_cast<std::size_t>(x)) *
-          4U;
+      const std::size_t o = (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+                             static_cast<std::size_t>(x)) *
+                            4U;
       const float a = 0.5F + 0.5F * static_cast<float>(x) / last_x;
       pixels[o] = a * static_cast<float>(x) / last_x;
       pixels[o + 1] = a * static_cast<float>(y) / last_y;
@@ -341,7 +338,8 @@ inline Made make_crossfade(ContentConfig config, InputOwner& owner) {
   std::int64_t start = 0;
   std::int64_t duration = 0;
   if (!parse_int64(fields[0], start) || !parse_int64(fields[1], duration) || duration <= 0) {
-    return made_error("org.arbc.crossfade: window is not a number, or the duration is not positive");
+    return made_error(
+        "org.arbc.crossfade: window is not a number, or the duration is not positive");
   }
   CrossfadeParams params;
   params.shape = CrossfadeShape::Linear;

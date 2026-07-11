@@ -5,6 +5,7 @@
 #include <arbc/kind_nested/nested_content.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/surface/backend.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -46,7 +47,7 @@ private:
 };
 
 // A backend that never allocates or composites: metadata queries touch no pixels.
-class NullBackend final : public Backend {
+class NullBackend final : public testing::StubBackend {
 public:
   BackendCaps capabilities() const override { return {}; }
   expected<std::unique_ptr<Surface>, SurfaceError> make_surface(int, int, SurfaceFormat) override {
@@ -54,7 +55,6 @@ public:
   }
   void clear(Surface&, float, float, float, float) override {}
   void composite(Surface&, const Surface&, const Affine&, double) override {}
-  void downsample(Surface&, const Surface&) override {}
 };
 
 // A pull that never runs (metadata tests do not render).

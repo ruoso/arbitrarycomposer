@@ -13,6 +13,7 @@
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -130,7 +131,7 @@ private:
 
 // A backend that allocates real `BufferSurface` tiles; composite/clear are
 // no-ops (this file asserts cache identity and counters, never pixels).
-class BufferBackend : public arbc::Backend {
+class BufferBackend : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -141,7 +142,6 @@ public:
              float /*a*/) override {}
   void composite(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/, const arbc::Affine& /*m*/,
                  double /*opacity*/) override {}
-  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
 };
 
 const arbc::ObjectId k_content{7};

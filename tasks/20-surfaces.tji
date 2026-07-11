@@ -22,6 +22,12 @@ task surfaces "Surfaces and backends" {
     depends !capabilities
     note "Import of caller memory as surfaces in the CPU backend (wrap; copy for anything else), sync token API shaped for GPU fences later. Doc 09."
   }
+  task stub_backend_test_doubles "Migrate out-of-tree Backend test doubles onto StubBackend" {
+    effort 0.5d
+    allocate team
+    depends kinds.nested_working_space_conversion
+    note "The Backend doubles in tests/ still hand-roll stub convert/clear/composite/etc. overrides; migrate them onto arbc::testing::StubBackend (src/surface/arbc/surface/testing/stub_backend.hpp) introduced in kinds.nested_working_space_conversion for consistency and to eliminate per-double dead-stub boilerplate. Doc 09. Source-of-debt: tasks/refinements/kinds/nested_working_space_conversion.md"
+  }
   task surface_pool "Surface pooling" {
     effort 1d
     allocate team

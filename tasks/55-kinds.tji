@@ -62,8 +62,9 @@ task kinds "Reference kinds" {
   task nested_working_space_conversion "org.arbc.nested heterogeneous working-space conversion" {
     effort 2d
     allocate team
+    complete 100
     depends !nested
-    note "Wire the heterogeneous nesting-boundary conversion (doc 07 rule 4): add a convert operation to the Backend contract, implement it in CpuBackend over the landed convert_kernel, invoke when child working_space() differs from parent's — replacing the placeholder-on-mismatch. Pin per-format byte-exact goldens. Docs 05/07/09. Source-of-debt: tasks/refinements/kinds/nested.md"
+    note "Wire the heterogeneous nesting-boundary conversion (doc 07 rule 4): add a convert operation to the Backend contract, implement it in CpuBackend over the landed convert_kernel, invoke when child working_space() differs from parent's — replacing the placeholder-on-mismatch. Pin per-format byte-exact goldens. Docs 05/07/09. Source-of-debt: tasks/refinements/kinds/nested.md Refinement: tasks/refinements/kinds/nested_working_space_conversion.md"
   }
   task nested_runtime_binding "org.arbc.nested runtime injection wiring" {
     effort 1d

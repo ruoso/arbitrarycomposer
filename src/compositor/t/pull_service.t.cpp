@@ -22,6 +22,7 @@
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
 #include <arbc/surface/surface_pool.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -88,7 +89,7 @@ private:
 };
 
 // A backend that allocates real-buffer surfaces (mirrors `operator_graph.t.cpp`).
-class MarkBackend : public arbc::Backend {
+class MarkBackend : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -106,7 +107,6 @@ public:
       b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);
     }
   }
-  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
 };
 
 // A `MarkBackend` that additionally records the last `composite` (dst / src /
@@ -114,7 +114,7 @@ public:
 // the covering tile into the caller's target and the tile->target affine it used
 // (the region/scale-honoring mapping, Constraint 1) -- not just that some
 // composite ran.
-class CaptureBackend : public arbc::Backend {
+class CaptureBackend : public arbc::testing::StubBackend {
 public:
   struct Composite {
     const arbc::Surface* dst{nullptr};
@@ -145,7 +145,6 @@ public:
       b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);
     }
   }
-  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
 };
 
 // A configurable operator/leaf `Content` double. Empty `inputs` -> a leaf; an

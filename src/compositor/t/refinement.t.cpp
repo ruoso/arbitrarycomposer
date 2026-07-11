@@ -17,6 +17,7 @@
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
 #include <arbc/surface/surface_pool.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -70,7 +71,7 @@ public:
 // A stub backend that hands back format-agnostic stub surfaces and no-ops the
 // composite ops -- the driver-seam tests only care that misses are recorded, not
 // the pixels (byte-exactness is the golden's job).
-class StubBackend : public arbc::Backend {
+class StubBackend : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -81,7 +82,6 @@ public:
              float /*a*/) override {}
   void composite(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/,
                  const arbc::Affine& /*src_to_dst*/, double /*opacity*/) override {}
-  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
 };
 
 // A Content that always answers async: it returns `nullopt` (leaving the

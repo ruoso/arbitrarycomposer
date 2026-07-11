@@ -42,6 +42,7 @@ public:
   void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                  double opacity) override;
   void downsample(Surface& dst, const Surface& src) override;
+  void convert(Surface& dst, const Surface& src) override;
 };
 
 } // namespace arbc

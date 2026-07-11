@@ -344,18 +344,46 @@ std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
     return RenderResult{request.scale, true};
   }
 
-  // Homogeneous working-space precondition (doc 07:34-35). Nested composites the
-  // child directly into the parent's working space (the request target's tag), so
-  // the child's working space MUST equal it -- "homogeneous trees pay nothing".
-  // The heterogeneous boundary needs a `Backend` conversion operation that does
-  // not exist yet: it is the deferred `kinds.nested_working_space_conversion`, so
-  // here the assumption is a precondition, never silently coerced.
-  assert(comp->working_space == target.format() &&
-         "heterogeneous nesting boundary deferred to kinds.nested_working_space_conversion");
+  // The nesting boundary is a conversion point (doc 07 rule 4). The child's
+  // layers are the CHILD composition's layers, and rule 2 puts all compositing in
+  // the composition's own working space -- so they blend in the child's declared
+  // working space, and it is the child's COMPOSED OUTPUT that converts, exactly
+  // once, into the parent's. Concretely: on a mismatch, compose into a
+  // child-tagged intermediate the size of the target (every per-layer temp then
+  // follows the intermediate's tag for free -- `compose_child_layer` already
+  // allocates at its target's format), then convert that once at the end.
+  //
+  // Converting each per-layer temp into the PARENT's format instead would be a
+  // smaller change and is wrong: it blends the child's layers in the parent's
+  // space (contradicting rule 2 -- a child declaring the 8-bit sRGB fast mode is
+  // ASKING for its layers to blend there, artifacts and all) and costs one
+  // conversion per layer instead of one per render.
+  //
+  // Homogeneous trees pay nothing (doc 07:34-35): equal tags take exactly the
+  // pre-conversion path -- no intermediate, no extra clear, no conversion, the
+  // request's target composed into directly.
+  std::unique_ptr<Surface> intermediate;
+  Surface* composed_into = &target;
+  if (!(comp->working_space == target.format())) {
+    expected<std::unique_ptr<Surface>, SurfaceError> boundary =
+        backend.make_surface(target.width(), target.height(), comp->working_space);
+    if (!boundary.has_value()) {
+      // The backend cannot store the child's declared working space (errors as
+      // values, doc 09:55-60). Honest empty pixels over the already-cleared
+      // target -- the same placeholder the unresolved child above and the
+      // unstorable per-layer temp take. Not a `GraphDiagnostic`: that lives in
+      // the sibling `compositor`, an L4->L4 edge doc 17:41-44 forbids.
+      return RenderResult{request.scale, true};
+    }
+    intermediate = std::move(*boundary);
+    composed_into = intermediate.get();
+    backend.clear(*composed_into, 0.0F, 0.0F, 0.0F, 0.0F);
+  }
 
   // Synthetic viewport (doc 05:24): the camera maps child-composition-local
   // coordinates to device (target) pixels, derived from the request's
-  // region-to-surface mapping -- device = scale * (local - region.origin).
+  // region-to-surface mapping -- device = scale * (local - region.origin). The
+  // intermediate is target-sized, so the device geometry is the same either way.
   const Affine camera = compose(Affine::scaling(request.scale, request.scale),
                                 Affine::translation(-request.region.x0, -request.region.y0));
   const Rect device_rect =
@@ -369,8 +397,17 @@ std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
     if (layer == nullptr) {
       return;
     }
-    compose_child_layer(*layer, camera, device_rect, request, backend, target);
+    compose_child_layer(*layer, camera, device_rect, request, backend, *composed_into);
   });
+
+  // The composed output converts ONCE into the parent's working space (doc 07
+  // rule 4) -- same geometry, replacing every target pixel. A deferred layer left
+  // its region premultiplied-transparent in the intermediate, and (0,0,0,0)
+  // converts to premultiplied transparent in every format, so the async
+  // placeholder stays a placeholder across the boundary.
+  if (intermediate != nullptr) {
+    backend.convert(target, *intermediate);
+  }
 
   return RenderResult{request.scale, true};
 }

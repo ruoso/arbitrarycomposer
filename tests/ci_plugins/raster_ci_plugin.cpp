@@ -7,11 +7,11 @@
 // `<width>x<height>` config. The only artifact in the tree that carries a decode
 // dependency is `arbc-plugin-imageseq` (doc 17:167-174, the codec line).
 
-#include "ci_kinds.hpp"
-
 #include <arbc/contract/plugin.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/kind_raster/raster_content.hpp>
+
+#include "ci_kinds.hpp"
 
 extern "C" ARBC_PLUGIN_EXPORT void arbc_plugin_register(arbc::Registry& registry) {
   (void)registry.add(

@@ -15,6 +15,7 @@
 #include <cstring>
 #include <limits>
 #include <span>
+#include <utility>
 #include <vector>
 
 // Byte-exact reference-vector golden suite for the color kernels and codecs
@@ -169,6 +170,56 @@ std::vector<std::byte> convert_bytes(arbc::SurfaceFormat src_fmt, arbc::SurfaceF
   arbc::convert_kernel<SrcF, DstF>(std::as_const(src).span<SrcF>(),
                                    arbc::TypedSpan<DstF>{dst.span<DstF>()}, 2);
   return bytes_of(dst);
+}
+
+// The SURFACE-level operation over the SAME fixed input. `CpuBackend::convert` is
+// the L2 `Backend` seam the nesting boundary (doc 07 rule 4) and the later import
+// / display-out edges call; it must be a faithful wrapper of `convert_kernel`, not
+// a second, divergent implementation -- so it is asserted against the very same
+// frozen tables below, and adds no new regeneration surface.
+template <PixelFormat SrcF, PixelFormat DstF>
+std::vector<std::byte> backend_convert_bytes(arbc::SurfaceFormat src_fmt,
+                                             arbc::SurfaceFormat dst_fmt) {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(2, 1, src_fmt);
+  wr<SrcF>(src, 0, kConvA);
+  wr<SrcF>(src, 1, kConvB);
+  // Pre-dirty the destination: `convert` REPLACES every destination pixel, so a
+  // partial write must not be able to hide behind a zero-initialized buffer.
+  arbc::CpuSurface dst(2, 1, dst_fmt);
+  backend.clear(dst, 0.9F, 0.1F, 0.7F, 1.0F);
+  backend.convert(dst, src);
+  return bytes_of(dst);
+}
+
+// A 256-pixel rgba8-sRGB sweep written as RAW STORAGE bytes rather than through
+// the encode codec, so it covers straight-alpha samples a decode/encode
+// round-trip cannot reproduce -- notably alpha 0 carrying nonzero chroma (i == 0
+// below), which unpremultiply destroys. Deterministic: a fixed affine sweep over
+// the code space, no RNG and no clock (doc 16).
+void write_srgb8_sweep(arbc::Surface& s) {
+  const std::span<std::uint8_t> px = s.span<PixelFormat::Rgba8Srgb>();
+  for (std::size_t i = 0; i < 256; ++i) {
+    px[i * 4 + 0] = static_cast<std::uint8_t>((i * 7 + 31) % 256);
+    px[i * 4 + 1] = static_cast<std::uint8_t>((i * 13 + 17) % 256);
+    px[i * 4 + 2] = static_cast<std::uint8_t>((i * 29 + 3) % 256);
+    px[i * 4 + 3] = static_cast<std::uint8_t>(i);
+  }
+}
+
+// One equal-tag `convert` over the two fixed convert samples: the destination is
+// pre-dirtied, so the returned bytes are the copy the operation actually made.
+template <PixelFormat F>
+std::pair<std::vector<std::byte>, std::vector<std::byte>>
+identity_convert_bytes(arbc::SurfaceFormat fmt) {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(2, 1, fmt);
+  wr<F>(src, 0, kConvA);
+  wr<F>(src, 1, kConvB);
+  arbc::CpuSurface dst(2, 1, fmt);
+  backend.clear(dst, 0.9F, 0.1F, 0.7F, 1.0F);
+  backend.convert(dst, src);
+  return {bytes_of(dst), bytes_of(src)};
 }
 
 // ===========================================================================
@@ -330,6 +381,97 @@ TEST_CASE("convert_kernel is byte-exact for every directed format pair") {
   require_bytes(convert_bytes<PixelFormat::Rgba8Srgb, PixelFormat::Rgba16fLinearPremul>(
                     arbc::k_fast_rgba8srgb, arbc::k_working_rgba16f),
                 kConv_8_16);
+}
+
+// The L2 seam over the same six directed pairs, asserted against the SAME frozen
+// tables: `Backend::convert` routes to `convert_kernel` and is not a divergent
+// second implementation. No new table, so no new regeneration surface.
+// enforces: 07-color-and-pixel-formats#conversions-route-through-working-space
+// enforces: 07-color-and-pixel-formats#kernels-byte-exact-per-format
+// enforces: 09-surfaces-and-backends#convert-is-same-geometry-replace
+TEST_CASE("Backend::convert is byte-exact for every directed cross-format pair") {
+  require_bytes(
+      backend_convert_bytes<PixelFormat::Rgba32fLinearPremul, PixelFormat::Rgba16fLinearPremul>(
+          arbc::k_working_rgba32f, arbc::k_working_rgba16f),
+      kConv_32_16);
+  require_bytes(backend_convert_bytes<PixelFormat::Rgba32fLinearPremul, PixelFormat::Rgba8Srgb>(
+                    arbc::k_working_rgba32f, arbc::k_fast_rgba8srgb),
+                kConv_32_8);
+  require_bytes(
+      backend_convert_bytes<PixelFormat::Rgba16fLinearPremul, PixelFormat::Rgba32fLinearPremul>(
+          arbc::k_working_rgba16f, arbc::k_working_rgba32f),
+      kConv_16_32);
+  require_bytes(backend_convert_bytes<PixelFormat::Rgba16fLinearPremul, PixelFormat::Rgba8Srgb>(
+                    arbc::k_working_rgba16f, arbc::k_fast_rgba8srgb),
+                kConv_16_8);
+  require_bytes(backend_convert_bytes<PixelFormat::Rgba8Srgb, PixelFormat::Rgba32fLinearPremul>(
+                    arbc::k_fast_rgba8srgb, arbc::k_working_rgba32f),
+                kConv_8_32);
+  require_bytes(backend_convert_bytes<PixelFormat::Rgba8Srgb, PixelFormat::Rgba16fLinearPremul>(
+                    arbc::k_fast_rgba8srgb, arbc::k_working_rgba16f),
+                kConv_8_16);
+}
+
+// enforces: 09-surfaces-and-backends#convert-is-same-geometry-replace
+TEST_CASE("Backend::convert with equal tags is an exact copy, never a re-encode") {
+  SECTION("the float formats copy byte-for-byte over a pre-dirtied destination") {
+    const auto f32 =
+        identity_convert_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f);
+    REQUIRE(f32.first == f32.second);
+    const auto f16 =
+        identity_convert_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f);
+    REQUIRE(f16.first == f16.second);
+  }
+
+  SECTION("rgba8-sRGB copies exactly where the working-space round-trip does not") {
+    arbc::CpuBackend backend;
+    arbc::CpuSurface src(256, 1, arbc::k_fast_rgba8srgb);
+    write_srgb8_sweep(src);
+    const std::vector<std::byte> want = bytes_of(src);
+
+    arbc::CpuSurface dst(256, 1, arbc::k_fast_rgba8srgb);
+    backend.clear(dst, 0.9F, 0.1F, 0.7F, 1.0F); // pre-dirty: convert must replace
+    backend.convert(dst, src);
+    REQUIRE(bytes_of(dst) == want);
+
+    // Decisively NOT a decode/encode round-trip: routing the identity pair through
+    // the kernel (decode to premultiplied linear working floats, re-encode) does
+    // not reproduce these bytes -- the straight-alpha unpremultiply drops the
+    // chroma of the zero-alpha sample outright. `convert` copies instead, so the
+    // public operation never silently quantizes on a no-op, which is the trap the
+    // import and display-out callers would otherwise inherit.
+    arbc::CpuSurface roundtrip(256, 1, arbc::k_fast_rgba8srgb);
+    arbc::convert_kernel<PixelFormat::Rgba8Srgb, PixelFormat::Rgba8Srgb>(
+        std::as_const(src).span<PixelFormat::Rgba8Srgb>(),
+        arbc::TypedSpan<PixelFormat::Rgba8Srgb>{roundtrip.span<PixelFormat::Rgba8Srgb>()}, 256);
+    REQUIRE(bytes_of(roundtrip) != want);
+  }
+}
+
+// enforces: 09-surfaces-and-backends#convert-is-same-geometry-replace
+TEST_CASE("convert culls a dimension mismatch rather than resampling") {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(2, 1, arbc::k_working_rgba32f);
+  wr<PixelFormat::Rgba32fLinearPremul>(src, 0, kConvA);
+  wr<PixelFormat::Rgba32fLinearPremul>(src, 1, kConvB);
+
+  arbc::CpuSurface dst(1, 1, arbc::k_working_rgba16f);
+  backend.clear(dst, 0.9F, 0.1F, 0.7F, 1.0F);
+  const std::vector<std::byte> before = bytes_of(dst);
+  REQUIRE(before.size() == 8); // 1 px rgba16f
+
+  REQUIRE_FALSE(dst.width() == src.width()); // the rejection precondition
+
+#ifdef NDEBUG
+  // Release: `convert` is position-for-position and same-geometry by contract, so
+  // a dimension mismatch is a caller error and the operation culls (asserts
+  // compiled out) -- it never resamples to fit and never writes a partial
+  // destination. Debug asserts instead; the predicate is witnessed above without
+  // tripping the abort, mirroring the composite tag-mismatch convention in
+  // cpu_backend.t.cpp.
+  backend.convert(dst, src);
+  REQUIRE(bytes_of(dst) == before);
+#endif
 }
 
 // --- codec reference vectors ------------------------------------------------

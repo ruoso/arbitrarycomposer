@@ -4,11 +4,11 @@
 // bounded `Timed` audio extent, because crossfade's audio facet is always `Timed`
 // and its extent is the pure union of its inputs' -- see `arbc_ci::BoundedAudioLeaf`.
 
-#include "ci_kinds.hpp"
-
 #include <arbc/contract/plugin.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/kind_crossfade/crossfade_content.hpp>
+
+#include "ci_kinds.hpp"
 
 namespace {
 

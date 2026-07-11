@@ -26,6 +26,21 @@ operation set (draw surface onto surface under affine transform + opacity,
 doc 02 step 5), format/space conversion kernels (doc 07), and capability
 flags (CPU access? external import? which handle types? sync primitives?).
 
+**The conversion operation.** `Backend::convert(dst, src)` rewrites `src`'s
+pixels into `dst`'s tag triple: same geometry, position-for-position,
+replacing every destination pixel. It blends nothing and takes neither a
+transform nor an opacity — it is a transcode, and the compositing operation
+set stays separate from it. Conversion routes format → premultiplied linear
+working float → format (doc 07:104-108), so the CPU backend needs 2N codecs
+rather than N×N kernels, and one variant dispatch per operation resolves the
+source/destination pair. It is infallible: the closed, core-owned format set
+makes the dispatch total, and the only unsupported-format failure — *can this
+backend store that tag at all?* — is already surfaced as a value by
+`make_surface`. A caller therefore holds two live surfaces before it can
+call `convert`, and by then the answer is yes. This is the operation doc 07
+rule 4's nesting boundary uses, and the one the import and display-out edges
+will reuse.
+
 - **CPU reference backend (v1):** surfaces are memory buffers; kernels are
   the doc-07 templated loops; everything supports typed access; import is
   wrap-or-copy of caller memory. Exists for correctness, tests, and hosts
@@ -146,13 +161,17 @@ is fully specified; the v1 implementation pins three points it left implicit:
    value (holding the `SurfaceRef` in the cache rather than copying) is a
    parking-lot item: its payoff is real only on a GPU backend where the copy is
    a measured cost, and it forces a cache-layer change not yet warranted.
-3. **v1 requires a working-space tag.** The tag-compatibility clause above
-   (a differently-tagged provided surface converting at composite time) is
-   latent until a backend advertises a second storable format: the CPU backend
-   stores one working format and asserts tag agreement in `composite`, so v1
-   requires the provided surface to carry the composition working-space tag.
-   Cross-tag convert-at-composite lands with the multi-format/GPU backend work
-   (`color.kernels` / GPU backends) that introduces the second format — a
+3. **v1 requires a working-space tag on a *provided* surface.** The
+   tag-compatibility clause above (a differently-tagged provided surface
+   converting **at composite time**) is latent until a backend advertises a
+   second storable format: the CPU backend asserts tag agreement in
+   `composite`, so v1 requires the provided surface to carry the composition
+   working-space tag. Note this is narrower than it looks — explicit
+   conversion *is* available (`Backend::convert`, above), and the nesting
+   boundary uses it (doc 07 rule 4, `kinds.nested_working_space_conversion`);
+   what remains deferred is folding the conversion *into* `composite` so a
+   mismatched source needs no explicit step. That lands with the
+   multi-format/GPU backend work (`color.kernels` / GPU backends) — a
    parking-lot item tied to that capability, not a standalone task.
 
 ## Threading note

@@ -32,18 +32,22 @@ using NestedResolver = std::function<Content*(ObjectId)>;
 // cycle budget, and async all come from that one service, never rebuilt) and
 // source-over compositing via the `Backend`.
 //
-// Scope (doc 05 machinery): the VISUAL facet, HOMOGENEOUS working-space trees
-// ("homogeneous trees pay nothing", doc 07:34-35), two-level caching (the
-// service's leaf cache plus the parent's cache of nested's composed result),
-// cycle/Droste termination, and snapshot consistency. The AUDIO facet
+// Scope (doc 05 machinery): the VISUAL facet over BOTH homogeneous and
+// HETEROGENEOUS working-space trees, two-level caching (the service's leaf cache
+// plus the parent's cache of nested's composed result), cycle/Droste
+// termination, and snapshot consistency. The nesting boundary is a conversion
+// point (doc 07 rule 4): a child composition declaring a different working space
+// composites its own layers in its OWN space -- into a child-tagged intermediate
+// -- and its composed output converts once into the parent's working space
+// through `Backend::convert`; a child declaring the parent's space pays nothing
+// (no intermediate, no conversion, doc 07:34-35). The AUDIO facet
 // (`kinds.nested_audio`, doc 12:202-208) is the 1D-signal twin over the same
 // scaffold: `render_audio` re-expresses the per-layer descent for samples exactly
 // as `render` does for pixels -- a synthetic MONITOR mixing each audible child
 // layer's audio (pulled through `PullService::pull_audio`, time-mapped +
 // gain-scaled, additively mixed) the way the synthetic viewport composites its
-// pixels. Heterogeneous working-space conversion
-// (`kinds.nested_working_space_conversion`) remains a deferred follow-up whose
-// prerequisite (a `Backend` conversion operation) is not yet landed.
+// pixels; its rate/layout boundary conversion is the deferred
+// `kinds.nested_audio_resampling`.
 //
 // Levelization (doc 17:59): the kind depends only on `contract`. It re-expresses
 // the compositor's per-layer cull/compose loop directly (it may not name the
@@ -76,7 +80,10 @@ public:
 
   // Compose the child through the synthetic viewport (doc 05:24). Clears the
   // target, then bottom-to-top pulls each visible child layer's content through
-  // the injected `PullService` and source-over composites the settled result.
+  // the injected `PullService` and source-over composites the settled result --
+  // into the target itself when the child's working space is the target's, or
+  // into a child-tagged intermediate that converts once into the target when it
+  // is not (the doc 07 rule 4 nesting boundary).
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion> done) override;
 

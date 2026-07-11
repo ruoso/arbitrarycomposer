@@ -5,6 +5,7 @@
 #include <arbc/kind_nested/nested_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/kind_tone/tone_content.hpp>
+#include <arbc/media/surface_format.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/testing/contract_tests.hpp>
 
@@ -57,7 +58,11 @@ struct Fixture {
   ObjectId comp{};
   DocStatePtr doc;
 
-  Fixture() {
+  // `working_space` is the CHILD composition's declared working space. The suite
+  // renders every content into a `k_working_rgba32f` target, so the default is a
+  // homogeneous tree and any other value makes the nesting boundary a real
+  // conversion point (doc 07 rule 4) for the whole suite to run across.
+  explicit Fixture(SurfaceFormat working_space = k_working_rgba32f) {
     auto tx = model.transact("child");
     comp = tx.add_composition(8.0, 8.0);
     const ObjectId ca = tx.add_content(1);
@@ -66,6 +71,7 @@ struct Fixture {
     const ObjectId lb = tx.add_layer(cb, Affine::translation(1.0, 1.0));
     tx.attach_layer(comp, la);
     tx.attach_layer(comp, lb);
+    tx.set_working_space(comp, working_space);
     tx.commit();
     binding[ca] = &solid_a;
     binding[cb] = &solid_b;
@@ -175,6 +181,22 @@ TEST_CASE("org.arbc.nested passes the contract conformance suite") {
   // pixels do not vary with the snapshot handle (snapshot_sensitive stays false);
   // operator_graph is on (the umbrella auto-skips the leaf check for nested's
   // non-empty inputs()).
+  options.snapshot_sensitive = false;
+  options.operator_graph = true;
+  arbc::contract_tests(fx.factory(), options);
+}
+
+// The same suite over a HETEROGENEOUS tree: the child declares the 8-bit sRGB fast
+// mode while the suite renders into its `k_working_rgba32f` target, so every render
+// in every family crosses the doc 07 rule 4 conversion boundary. Nothing about the
+// contract relaxes there -- render purity stays BYTE-exact across the converted
+// intermediate (the CPU backend is specified deterministic, doc 16:49-53), and the
+// bounds / scale / time honesty and operator-graph families must all still hold.
+// enforces: 07-color-and-pixel-formats#nesting-boundary-converts-composed-output
+TEST_CASE("org.arbc.nested passes the conformance suite across a heterogeneous boundary") {
+  Fixture fx(k_fast_rgba8srgb);
+  REQUIRE_FALSE(fx.doc->find_composition(fx.comp)->working_space == k_working_rgba32f);
+  testing::Options options;
   options.snapshot_sensitive = false;
   options.operator_graph = true;
   arbc::contract_tests(fx.factory(), options);

@@ -3,6 +3,7 @@
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
 #include <arbc/surface/surface_pool.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -43,7 +44,7 @@ private:
 // In-test backend (not CpuBackend, which is L3): counts make_surface calls,
 // stores only k_working_rgba32f, and yields SurfaceError for anything else so
 // the pool's miss-path forwarding is exercised without an L3 dependency.
-class StubBackend final : public arbc::Backend {
+class StubBackend final : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
 
@@ -60,7 +61,6 @@ public:
 
   void clear(arbc::Surface&, float, float, float, float) override {}
   void composite(arbc::Surface&, const arbc::Surface&, const arbc::Affine&, double) override {}
-  void downsample(arbc::Surface&, const arbc::Surface&) override {}
 
   int make_surface_calls = 0; // total backend allocations
   int live = 0;               // StubSurfaces currently constructed

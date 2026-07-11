@@ -9,11 +9,11 @@
 // the seam so an out-of-lib operator can declare its inputs (and its codec, and its
 // binder) is the registered follow-up `runtime.plugin_operator_registration`.
 
-#include "ci_kinds.hpp"
-
 #include <arbc/contract/plugin.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/kind_fade/fade_content.hpp>
+
+#include "ci_kinds.hpp"
 
 namespace {
 

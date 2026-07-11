@@ -5,6 +5,7 @@ arbc_add_component(
                  arbc/surface/typed_span.hpp arbc/surface/capabilities.hpp
                  arbc/surface/surface_error.hpp arbc/surface/surface_pool.hpp
                  arbc/surface/surface_ref.hpp
+                 arbc/surface/testing/stub_backend.hpp
   DEPENDS base media)
 
 arbc_component_test(COMPONENT surface SOURCES t/capabilities.t.cpp

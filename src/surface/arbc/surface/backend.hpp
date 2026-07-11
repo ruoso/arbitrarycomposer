@@ -47,6 +47,28 @@ public:
   // selection is not the backend's concern.
   virtual void downsample(Surface& dst, const Surface& src) = 0;
 
+  // Format/space conversion (doc 07 rule 4; doc 09 "the conversion operation").
+  // Rewrite `src`'s pixels into `dst`'s tag triple: same geometry,
+  // position-for-position, REPLACING every destination pixel. It blends nothing
+  // and takes neither a transform nor an opacity -- a transcode, kept separate
+  // from the composite operation set above. Conversion routes format ->
+  // premultiplied linear working float -> format (doc 07:104-108), so a backend
+  // needs 2N codecs rather than N*N kernels, and equal tags are an exact copy,
+  // never a decode/encode round-trip.
+  //
+  // Infallible: the format set is closed and core-owned (doc 07:110-115), so the
+  // dispatch over the directed format pairs is total, and the only real failure
+  // -- can this backend store that tag at all? -- is already a value out of
+  // `make_surface`, which the caller must have gotten past to hold two live
+  // surfaces. `dst` dims must equal `src` dims; a mismatch is a caller error
+  // (debug assert, release cull), like the conventions above.
+  //
+  // This is the operation doc 07 rule 4's nesting boundary uses (the child's
+  // composed output converts into the parent's working space), and the one the
+  // import and display-out edges reuse -- so it carries no caller-specific
+  // parameters.
+  virtual void convert(Surface& dst, const Surface& src) = 0;
+
 protected:
   Backend() = default;
 };

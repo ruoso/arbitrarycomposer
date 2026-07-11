@@ -5,11 +5,11 @@
 // (nested_content.hpp:68) -- exactly as the runtime binders do in-lib. The child is
 // named by `ObjectId` only; resolution is entirely host-side.
 
-#include "ci_kinds.hpp"
-
 #include <arbc/contract/plugin.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/kind_nested/nested_content.hpp>
+
+#include "ci_kinds.hpp"
 
 extern "C" ARBC_PLUGIN_EXPORT void arbc_plugin_register(arbc::Registry& registry) {
   (void)registry.add(

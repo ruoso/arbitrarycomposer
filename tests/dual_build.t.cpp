@@ -19,8 +19,6 @@
 // `d_handles` after `d_registry`) unmaps each image only once every factory and
 // every content built from it is gone.
 
-#include "ci_plugins/ci_kinds.hpp"
-
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/expected.hpp>
 #include <arbc/base/geometry.hpp>
@@ -43,6 +41,8 @@
 #include <arbc/testing/contract_tests.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+
+#include "ci_plugins/ci_kinds.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -227,9 +227,9 @@ struct Case {
   const char* module;
   const char* human_name;
   std::string config;
-  Time time;                 // a request instant inside the kind's interesting range
-  testing::Options options;  // the SAME options this kind's in-lib conformance
-                             // driver already uses (Acceptance 6)
+  Time time;                // a request instant inside the kind's interesting range
+  testing::Options options; // the SAME options this kind's in-lib conformance
+                            // driver already uses (Acceptance 6)
 };
 
 // The six, in the order the aggregate-host case loads them.
@@ -305,10 +305,10 @@ void require_render_equivalent(CpuBackend& backend, Content& plugin_side, Conten
   const Rect region = Rect::from_size(k_target_extent, k_target_extent);
   auto plugin_done = std::make_shared<RenderCompletion>();
   auto in_lib_done = std::make_shared<RenderCompletion>();
-  const RenderRequest plugin_request{region,           1.0,          time, StateHandle{},
-                                     **plugin_target,  Exactness::Exact, Deadline::none()};
-  const RenderRequest in_lib_request{region,           1.0,          time, StateHandle{},
-                                     **in_lib_target,  Exactness::Exact, Deadline::none()};
+  const RenderRequest plugin_request{
+      region, 1.0, time, StateHandle{}, **plugin_target, Exactness::Exact, Deadline::none()};
+  const RenderRequest in_lib_request{
+      region, 1.0, time, StateHandle{}, **in_lib_target, Exactness::Exact, Deadline::none()};
 
   const std::optional<RenderResult> plugin_result =
       settle(plugin_side.render(plugin_request, plugin_done), plugin_done);
@@ -343,8 +343,7 @@ bool same_extent(const std::optional<TimeRange>& a, const std::optional<TimeRang
   if (a.has_value() != b.has_value()) {
     return false;
   }
-  return !a.has_value() ||
-         (a->start.flicks == b->start.flicks && a->end.flicks == b->end.flicks);
+  return !a.has_value() || (a->start.flicks == b->start.flicks && a->end.flicks == b->end.flicks);
 }
 
 // Load one CI module into a fresh host and hand back its factory. The registry grew
@@ -485,10 +484,9 @@ TEST_CASE("the opt-in ARBC_PLUGIN_PATH scan over the CI plugin directory loads e
       REQUIRE(entry.diagnostic.empty());
     }
     // Deterministic lexicographic order (plugin_host.hpp).
-    REQUIRE(std::is_sorted(report.entries.begin(), report.entries.end(),
-                           [](const PluginScanEntry& a, const PluginScanEntry& b) {
-                             return a.path < b.path;
-                           }));
+    REQUIRE(std::is_sorted(
+        report.entries.begin(), report.entries.end(),
+        [](const PluginScanEntry& a, const PluginScanEntry& b) { return a.path < b.path; }));
 
     REQUIRE(plugin_host.registry().size() == 6);
     for (const Case& c : ci_cases(host)) {

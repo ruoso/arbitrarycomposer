@@ -4,11 +4,11 @@
 // discriminates "this kind registered" from "this kind was dragged in by another"
 // (Constraint 4). Never installed; built only under `BUILD_TESTING`.
 
-#include "ci_kinds.hpp"
-
 #include <arbc/contract/plugin.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
+
+#include "ci_kinds.hpp"
 
 extern "C" ARBC_PLUGIN_EXPORT void arbc_plugin_register(arbc::Registry& registry) {
   // The entry point returns void (contract/plugin.hpp:20): a failed `add` is a

@@ -16,6 +16,7 @@
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
 #include <arbc/surface/surface_pool.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -78,7 +79,7 @@ private:
 // function of the source's first byte and the opacity into every destination
 // byte, so an identical composite sequence reproduces identical bytes and a
 // dropped composite would not. Counts nothing itself.
-class MarkBackend : public arbc::Backend {
+class MarkBackend : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -98,7 +99,6 @@ public:
       b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);
     }
   }
-  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
 };
 
 // A deterministic non-zero fill, so a composited tile is distinguishable

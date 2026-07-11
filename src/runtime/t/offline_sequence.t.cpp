@@ -13,6 +13,7 @@
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -67,7 +68,7 @@ private:
   std::vector<std::byte> d_bytes;
 };
 
-class MarkBackend : public arbc::Backend {
+class MarkBackend : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -87,12 +88,11 @@ public:
       b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);
     }
   }
-  void downsample(arbc::Surface&, const arbc::Surface&) override {}
 };
 
 // A backend that cannot store any working space: `make_surface` yields the
 // capability-honest `SurfaceError` value (doc 10), never an abort.
-class RejectingBackend : public arbc::Backend {
+class RejectingBackend : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -101,7 +101,6 @@ public:
   }
   void clear(arbc::Surface&, float, float, float, float) override {}
   void composite(arbc::Surface&, const arbc::Surface&, const arbc::Affine&, double) override {}
-  void downsample(arbc::Surface&, const arbc::Surface&) override {}
 };
 
 // A synchronous solid fill. Configurable stability; records the request discipline

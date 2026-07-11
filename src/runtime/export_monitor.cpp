@@ -32,6 +32,7 @@ public:
   void clear(Surface&, float, float, float, float) override {}
   void composite(Surface&, const Surface&, const Affine&, double) override {}
   void downsample(Surface&, const Surface&) override {}
+  void convert(Surface&, const Surface&) override {}
 };
 
 // The visual tile cache and the 1D block cache the pull substrate owns. Both stay

@@ -17,6 +17,7 @@
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
 #include <arbc/surface/surface_pool.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -75,7 +76,7 @@ private:
 // sequence reproduces identical bytes and a dropped composite would not. It
 // counts nothing itself -- the compositor's `CompositorCounters` is the counter
 // under test.
-class MarkBackend : public arbc::Backend {
+class MarkBackend : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -93,7 +94,6 @@ public:
       b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);
     }
   }
-  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
 };
 
 // Content that answers synchronously with an exact, at-scale result, so a

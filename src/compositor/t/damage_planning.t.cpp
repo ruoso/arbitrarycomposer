@@ -17,6 +17,7 @@
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
 #include <arbc/surface/surface_pool.hpp>
+#include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -82,7 +83,7 @@ private:
 
 // Allocates real-buffer surfaces; composite/clear touch bytes but count nothing
 // themselves -- `CompositorCounters` is the counter under test.
-class MarkBackend : public arbc::Backend {
+class MarkBackend : public arbc::testing::StubBackend {
 public:
   arbc::BackendCaps capabilities() const override { return {}; }
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
@@ -93,7 +94,6 @@ public:
              float /*a*/) override {}
   void composite(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/, const arbc::Affine& /*m*/,
                  double /*opacity*/) override {}
-  void downsample(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/) override {}
 };
 
 // Content of a fixed stability that answers synchronously, exact, at scale.
