@@ -72,9 +72,19 @@ private:
   std::string d_path;
 };
 
-// Byte-copy the workspace file so recovery runs against an INDEPENDENT file. The
-// writer must stay alive across the copy: its teardown would hole-punch the very
-// chunks a crash would have left behind (the landed pool idiom).
+// Byte-copy the workspace file so recovery runs against an INDEPENDENT file, with the
+// writer still alive across the copy -- the faithful stand-in for a crash, which is what
+// the recovery tests are about: the file is captured mid-flight, exactly as a killed
+// writer would have left it, with no teardown of any kind having run.
+//
+// (This idiom is inherited from the pool tests, where the writer's teardown genuinely
+// DOES hole-punch every live chunk -- there the Checkpointer is destroyed first, so the
+// store's chunk releases run unfenced and punch immediately. `Model` is the other way
+// round on purpose: it declares d_source/d_checkpointer BEFORE d_arena and the stores
+// (model.hpp:549-565), so the chunk fence outlives them, the releases land in the
+// checkpointer's quarantine, and ~Checkpointer drops that quarantine un-punched. A clean
+// Model close therefore leaves a reopenable file; "clean close preserves the workspace
+// file" below pins it.)
 void copy_file(const std::string& src, const std::string& dst) {
 #if defined(_WIN32)
   REQUIRE(::CopyFileA(src.c_str(), dst.c_str(), FALSE) != 0);
@@ -398,8 +408,9 @@ TEST_CASE("a checkpointed document recovers field-identical, with counts rebuilt
     REQUIRE(model.checkpointer()->commit_count() == 1);
     REQUIRE(model.checkpointer()->generation() == 1);
 
-    // Recover from an independent copy taken while the writer is still alive: its
-    // teardown would hole-punch chunks a crash would have left behind.
+    // Recover from an independent copy taken while the writer is still alive -- the
+    // crash stand-in (see copy_file). A clean close would leave a reopenable file too;
+    // that is a separate guarantee, pinned by its own test below.
     TempPath recovered;
     copy_file(path.str(), recovered.str());
 
@@ -418,6 +429,47 @@ TEST_CASE("a checkpointed document recovers field-identical, with counts rebuilt
     // allocation to overwrite).
     REQUIRE(recovered_model.live_slots() == live_before);
   }
+}
+
+// enforces: 15-memory-model#recovery-resumes-last-durable-root
+TEST_CASE("a clean close preserves the workspace file: reopening the SAME path resumes") {
+  // The workspace file is a cache that has to survive an ordinary quit, not only a crash.
+  // Nothing pinned that, and the surrounding tests' crash-simulation idiom (copy the file
+  // while the writer is alive, because in the POOL tests a teardown hole-punches every
+  // live chunk) reads like the opposite guarantee. It does not hold for `Model`: `Model`
+  // declares its source and checkpointer before its arena and stores (model.hpp:549-565)
+  // precisely so the chunk fence outlives them -- the stores' releases land in the
+  // checkpointer's quarantine and are dropped un-punched, never reaching `punch_now`.
+  //
+  // So: no copy, no crash, no fence games. Check point, destruct the model normally, and
+  // reopen the very file it just closed.
+  TempPath path;
+  Doc doc;
+  std::size_t live_before = 0;
+
+  {
+    auto created = arbc::Model::create(path.str());
+    REQUIRE(created.has_value());
+    arbc::Model& model = **created;
+    doc = build_doc(model);
+    REQUIRE(model.checkpoint().has_value());
+    live_before = model.live_slots();
+    REQUIRE(live_before > 0);
+  } // clean teardown -- the whole point
+
+  auto reopened = arbc::Model::open(path.str());
+  REQUIRE(reopened.has_value());
+  arbc::Model& reopened_model = **reopened;
+
+  // Field-identical through the recovered version, and the reachability walk rebuilt the
+  // same live-slot count -- i.e. the chunks are genuinely still there, not a fresh doc.
+  assert_doc_intact(reopened_model.current(), doc);
+  REQUIRE(reopened_model.live_slots() == live_before);
+
+  // And it is still a live workspace: the reopened model checkpoints again onto the same
+  // file, so a clean close leaves the document RESUMABLE, not merely readable once.
+  REQUIRE(reopened_model.workspace_backed());
+  REQUIRE(reopened_model.checkpoint().has_value());
 }
 
 // enforces: 15-memory-model#counts-rebuilt-by-reachability-walk

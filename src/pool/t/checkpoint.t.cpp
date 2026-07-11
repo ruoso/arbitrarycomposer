@@ -649,6 +649,63 @@ TEST_CASE("a write into a published data chunk faults after commit (debug)") {
   REQUIRE((*source)->protect_data(false).has_value());
 }
 
+// enforces: 15-memory-model#freed-slot-quarantined-until-durable
+TEST_CASE("a slot recycled from an EARLIER epoch is writable after a later commit re-seals "
+          "its chunk (debug)") {
+  // Regression. `commit`'s debug seal re-mprotects whole published chunks read-only on
+  // EVERY commit, but the reopen after `drain_fences` used to cover only the slots
+  // quarantined in the CURRENT epoch. A slot freed and drained in an earlier epoch is on
+  // the free list and belongs to nobody's quarantine any more -- so the next commit's
+  // seal re-sealed its page and left it that way, and the first allocation to recycle it
+  // died on SEGV_ACCERR inside the placement-new. Only reachable when the recycled slot
+  // sits in a chunk that is sealable at all (fully published, strictly below the
+  // frontier), which is why the free/commit/reuse test above -- single frontier chunk,
+  // nothing sealed -- never caught it. Two commits are the crux: the first drains, the
+  // second re-seals.
+  //
+  // Fixed by reopening every reusable slot's page after the drain, not just the epoch's.
+  // Model's asan lane covered this only indirectly; this pins it at the pool layer.
+  TempPath path;
+  auto source = arbc::WorkspaceFileChunkSource::create(path.str());
+  REQUIRE(source.has_value());
+  arbc::Arena arena(**source);
+  // Two slots per chunk: slots 0,1 fill chunk 0 (sealable once the frontier moves on),
+  // slot 2 opens chunk 1 and keeps it the writable frontier.
+  arena.store_for(sizeof(GraphNode), alignof(GraphNode), /*chunk_bits=*/1);
+  arbc::RefStore<GraphNode> store(arena);
+  arbc::Checkpointer ckpt(**source, arena);
+  store.store().set_release_fence(&ckpt.slot_fence());
+
+  arbc::SlotIndex freed = 0;
+  {
+    arbc::Ref<GraphNode> a = *store.create(); // slot 0, chunk 0
+    a->value = 7;
+    freed = a.index();
+  }
+  arbc::Ref<GraphNode> b = *store.create(); // slot 1, chunk 0 -- now full
+  b->value = 8;
+  arbc::Ref<GraphNode> frontier = *store.create(); // slot 2, chunk 1 -- the frontier
+  frontier->value = 9;
+  REQUIRE(freed < 2); // the freed slot really is in the chunk that gets sealed
+
+  // Epoch 1: seals chunk 0 read-only, then drains -- `freed` returns to the free list
+  // and its page is reopened for writing.
+  REQUIRE(ckpt.commit(frontier.index()).has_value());
+
+  // Epoch 2: seals chunk 0 again. `freed` is on the free list, in nobody's quarantine.
+  // This is the commit that used to leave its page read-only.
+  REQUIRE(ckpt.commit(frontier.index()).has_value());
+
+  // The payload write inside create() is what faulted. Reaching the assert at all is the
+  // regression check; that it is the recycled slot proves we exercised the intended path.
+  arbc::Ref<GraphNode> recycled = *store.create();
+  recycled->value = 42;
+  REQUIRE(recycled.index() == freed);
+  REQUIRE(recycled->value == 42);
+
+  REQUIRE((*source)->protect_data(false).has_value());
+}
+
 #endif // NDEBUG
 
 // enforces: 15-memory-model#freed-slot-quarantined-until-durable
