@@ -111,8 +111,9 @@ task runtime "Runtime" {
   task host_viewport_document_binding "Bind HostViewport directly against a Document" {
     effort 1d
     allocate team
+    complete 100
     depends !async_external_load
-    note "HostViewport takes a bare Model& + injected ContentResolver, so a host that owns a Document cannot construct one against it directly and must hand-roll the resolver and the settle hook. Add a HostViewport::Config factory (or constructor overload) that accepts a Document& and wires the resolver, settle hook, and damage sink automatically. Source-of-debt: tasks/refinements/runtime/async_external_load.md (implementer deviation from Decision 7). Docs 02/17."
+    note "HostViewport takes a bare Model& + injected ContentResolver, so a host that owns a Document cannot construct one against it directly and must hand-roll the resolver and the settle hook. Add a HostViewport::Config factory (or constructor overload) that accepts a Document& and wires the resolver, settle hook, and damage sink automatically. Source-of-debt: tasks/refinements/runtime/async_external_load.md (implementer deviation from Decision 7). Docs 02/17. Refinement: tasks/refinements/runtime/host_viewport_document_binding.md"
   }
   task interactive_pull_wiring "Wire PullService into the interactive frame path" {
     effort 1d

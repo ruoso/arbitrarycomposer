@@ -35,6 +35,8 @@
 
 namespace arbc {
 
+class Document; // forward-declared; the Document& constructor is defined in the .cpp
+
 class DamageRouter final : public DamageSink {
 public:
   // Move-only RAII registration token modeled on `CacheHold`
@@ -87,6 +89,14 @@ public:
   // Constraint 1), mirroring today's `HostViewport`. WRITER-THREAD ONLY, like the
   // `Model::set_damage_sink` it installs into.
   explicit DamageRouter(Model& model);
+  // The same, for the `Document` a host actually owns
+  // (runtime.host_viewport_document_binding): a document-bound host reaches no `Model&` --
+  // that is the whole gap the Document binding closes -- so without this overload it could
+  // build the viewports that register with a router but never the router itself. Delegates;
+  // the slot it occupies is the one `Document::set_damage_sink` forwards into, so a host that
+  // installs a router MUST NOT also call `doc.set_damage_sink` (the model has one slot, and
+  // the second install would evict the first).
+  explicit DamageRouter(Document& doc);
   // Clears the model slot and asserts an empty registrant list (Constraint 5): the
   // router must outlive all its registrants.
   ~DamageRouter() override;

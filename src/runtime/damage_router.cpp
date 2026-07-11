@@ -1,4 +1,7 @@
 #include <arbc/runtime/damage_router.hpp>
+#include <arbc/runtime/document.hpp>
+
+#include "document_access.hpp" // HostViewportDocumentAccess (the Model& behind a Document)
 
 #include <algorithm>
 #include <cassert>
@@ -11,6 +14,8 @@ DamageRouter::DamageRouter(Model& model) : d_model(model) {
   // sinks register with the router, never with the model directly.
   d_model.set_damage_sink(this);
 }
+
+DamageRouter::DamageRouter(Document& doc) : DamageRouter(HostViewportDocumentAccess::model(doc)) {}
 
 DamageRouter::~DamageRouter() {
   // The router must outlive all its registrants (Constraint 5): each viewport's

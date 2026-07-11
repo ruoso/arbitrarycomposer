@@ -31,14 +31,18 @@
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/document_serialize.hpp>
 #include <arbc/runtime/external_composition_loader.hpp> // k_external_ref_depth_cap
+#include <arbc/runtime/host_viewport.hpp>               // the Document-bound viewport
+#include <arbc/runtime/interactive.hpp>                 // InteractiveRenderer
 #include <arbc/runtime/operator_binding.hpp>
 #include <arbc/runtime/pull_identity.hpp>
 #include <arbc/serialize/load_context.hpp> // AssetSource
+#include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_pool.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -239,6 +243,51 @@ bool names(const std::vector<Damage>& set, ObjectId object) {
                      [object](const Damage& d) { return d.object == object; });
 }
 
+// A constant clock: the free-run transport advances by zero flicks every step, so a still,
+// undamaged scene is genuinely still and no assertion below reads the wall clock.
+arbc::HostViewport::Clock epoch_clock() {
+  return [] { return std::chrono::steady_clock::time_point{}; };
+}
+
+// The whole host side of a Document-bound viewport, in one object
+// (runtime.host_viewport_document_binding). Everything the frame needs -- the resolver, the
+// damage-sink install, the external-arrival settle hook -- is derived by the constructor from
+// `doc` and `binding`. There is no `settle_external_loads` call ANYWHERE in the two tests that
+// use this: `step()` is the only thing the host drives.
+class DocumentViewport {
+public:
+  DocumentViewport(Document& doc, KindBridge& bridge, const Registry& registry, int dim)
+      : d_cache(64U * 1024 * 1024), d_pool(d_backend),
+        d_target(d_backend.make_surface(dim, dim, doc.pin()->working_space())),
+        d_viewport(d_renderer, doc, arbc::HostViewport::DocumentBinding{&bridge, &registry},
+                   d_backend, d_pool, d_cache, checked(d_target), epoch_clock(), config(doc, dim)) {
+  }
+
+  arbc::HostViewport& operator*() noexcept { return d_viewport; }
+  arbc::HostViewport* operator->() noexcept { return &d_viewport; }
+
+private:
+  using Target = arbc::expected<std::unique_ptr<Surface>, arbc::SurfaceError>;
+
+  static Surface& checked(Target& target) {
+    REQUIRE(target.has_value()); // throws on failure, so the viewport below is never built blind
+    return **target;
+  }
+
+  static arbc::HostViewport::Config config(const Document& doc, int dim) {
+    arbc::HostViewport::Config cfg;
+    cfg.viewport = Viewport{dim, dim, Affine::identity(), root_composition_of(doc)};
+    return cfg;
+  }
+
+  CpuBackend d_backend;
+  TileCache d_cache;
+  SurfacePool d_pool;
+  Target d_target;
+  arbc::InteractiveRenderer d_renderer{{}, epoch_clock()};
+  arbc::HostViewport d_viewport;
+};
+
 } // namespace
 
 // enforces: 05-recursive-composition#deferred-external-child-installs-live
@@ -296,8 +345,8 @@ TEST_CASE("settling a deferred arrival installs on a NEW revision and damages th
   RecordingDamageSink sink;
   doc.set_damage_sink(&sink);
 
-  CHECK(source.fire_all() == 1);                                    // the bytes arrive ...
-  CHECK(arbc::settle_external_loads(doc, bridge, registry) == 1);   // ... and land
+  CHECK(source.fire_all() == 1);                                  // the bytes arrive ...
+  CHECK(arbc::settle_external_loads(doc, bridge, registry) == 1); // ... and land
   CHECK(doc.pending_external_loads() == 0);
 
   const DocStatePtr pin = doc.pin();
@@ -308,7 +357,7 @@ TEST_CASE("settling a deferred arrival installs on a NEW revision and damages th
   CHECK(root_composition_of(doc) == root_before);
   CHECK(root_content_ids(doc).size() == 1);
   CHECK(nested_id(doc, 0) == embedding);
-  CHECK(nested_at(doc, 0).child() == child); // the SAME pre-allocated id ...
+  CHECK(nested_at(doc, 0).child() == child);      // the SAME pre-allocated id ...
   CHECK(pin->find_composition(child) != nullptr); // ... now names a real record
 
   // Decision 3: the damage naming the embedding content rides the install's OWN commit. It is
@@ -667,4 +716,111 @@ TEST_CASE("two pending references to one URI share one in-flight child and one f
   CHECK(saved.find(R"("ref": "child.arbc")") != std::string::npos);
   CHECK(saved.find(R"("ref": "./child.arbc")") != std::string::npos);
   CHECK(saved.find("\"compositions\"") == std::string::npos);
+}
+
+// --- The arrival, settled by a FRAME (runtime.host_viewport_document_binding) -------------
+//
+// Everything above drives the free `settle_external_loads` by hand, which is the loader's
+// contract but not the host's experience of it. These two drive a real `HostViewport` bound to
+// the `Document` and call NOTHING but `step()` -- the test Decision 7 of
+// `runtime.async_external_load` promised ("the pending count drops to zero and a new revision
+// publishes across a frame") and never landed, because the seam it landed the settle hook on
+// could not be built against a `Document` at all.
+
+// enforces: 01-core-concepts#viewport-binds-to-document
+// enforces: 05-recursive-composition#deferred-external-child-installs-live
+TEST_CASE("a deferred external arrival settles inside the frame that observes it") {
+  DeferringAssetSource source;
+  source.put("mem/child.arbc", k_leaf);
+
+  Document doc;
+  KindBridge bridge;
+  const Registry registry;
+  REQUIRE(arbc::load_document(nesting_doc("child.arbc"), doc, bridge, registry, "mem/parent.arbc",
+                              &source));
+
+  // The load completed WITHOUT the child: the embedding binds a valid, pre-allocated id that
+  // names no composition yet, which is the doc-05 placeholder.
+  const ObjectId child = nested_at(doc, 0).child();
+  REQUIRE(child.valid());
+  CHECK(doc.pending_external_loads() == 1);
+  CHECK(doc.pin()->find_composition(child) == nullptr);
+  const std::uint64_t before = doc.pin()->revision();
+
+  DocumentViewport viewport(doc, bridge, registry, 16);
+
+  // A baseline step with nothing arrived: the load's own commits predate the viewport's sink
+  // install, so there is no damage, no frame, and the settle hook finds an empty queue. An
+  // idle document-bound viewport costs one queue check per step and nothing more.
+  viewport->step();
+  CHECK(viewport->frames_issued() == 0);
+  CHECK(viewport->external_loads_settled() == 0);
+  CHECK(doc.pending_external_loads() == 1);
+
+  // The bytes come back on the source's own schedule. The host does not settle them -- it does
+  // not know they arrived. It just runs its next frame.
+  CHECK(source.fire_all() == 1);
+  viewport->step();
+
+  // And that frame is where the arrival landed: the queue drained, a new revision published,
+  // the child now names a real composition, and the SAME step issued the frame that composites
+  // it -- the install's commit flushed damage naming the embedding into this viewport's
+  // accumulator, ahead of the pin and the drain (doc 02 step 1: an arrival IS damage).
+  CHECK(doc.pending_external_loads() == 0);
+  CHECK(viewport->external_loads_settled() == 1);
+  CHECK(doc.pin()->revision() > before);
+  CHECK(doc.pin()->find_composition(child) != nullptr);
+  CHECK(viewport->frames_issued() == 1);
+
+  // Steady state again: the hook is polled, settles nothing, and wakes no frame by itself.
+  viewport->step();
+  CHECK(viewport->external_loads_settled() == 1);
+  CHECK(viewport->frames_issued() == 1);
+}
+
+// enforces: 05-recursive-composition#deferred-external-chain-and-cycle-terminate
+TEST_CASE("a deferring grandchild chain lands over successive frames, driven only by step()") {
+  // a -> b -> c, all deferring: c's request cannot even be ISSUED until b's bytes are parsed.
+  // The free-function proof above pins that the chain lands one link per settle; this pins that
+  // "the host calls this once per frame" (`document_serialize.hpp:172-175`) is a real frame.
+  DeferringAssetSource source;
+  source.put("mem/b.arbc", nesting_doc("c.arbc"));
+  source.put("mem/c.arbc", k_leaf);
+
+  Document doc;
+  KindBridge bridge;
+  const Registry registry;
+  REQUIRE(arbc::load_document(nesting_doc("b.arbc"), doc, bridge, registry, "mem/a.arbc", &source));
+  CHECK(doc.pending_external_loads() == 1);
+
+  DocumentViewport viewport(doc, bridge, registry, 16);
+
+  // Frame 1: b lands. Parsing b is what DISCOVERS c and issues its fetch, so the pending count
+  // does not fall -- it walks along the chain.
+  CHECK(source.fire_all() == 1);
+  viewport->step();
+  CHECK(viewport->external_loads_settled() == 1);
+  CHECK(source.requests() == 2);
+  CHECK(doc.pending_external_loads() == 1); // now it is c that is pending
+  CHECK(viewport->frames_issued() == 1);
+
+  // Frame 2: c lands under b. The graph is complete, and the second install woke its own frame.
+  CHECK(source.fire_all() == 1);
+  viewport->step();
+  CHECK(viewport->external_loads_settled() == 2);
+  CHECK(doc.pending_external_loads() == 0);
+  CHECK(viewport->frames_issued() == 2);
+
+  const DocStatePtr pin = doc.pin();
+  const ObjectId b_root = nested_at(doc, 0).child();
+  REQUIRE(pin->find_composition(b_root) != nullptr);
+  ObjectId b_nest_content;
+  pin->for_each_layer_in(b_root, [&](ObjectId lid) {
+    const arbc::LayerRecord* lr = pin->find_layer(lid);
+    REQUIRE(lr != nullptr);
+    b_nest_content = lr->content;
+  });
+  const auto* const b_nested = dynamic_cast<const NestedContent*>(doc.resolve(b_nest_content));
+  REQUIRE(b_nested != nullptr);
+  CHECK(pin->find_composition(b_nested->child()) != nullptr); // c, installed under b
 }

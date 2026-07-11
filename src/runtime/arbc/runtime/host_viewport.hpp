@@ -55,6 +55,15 @@
 
 namespace arbc {
 
+// The document-side collaborators the `Document&` constructor binds against. Forward-declared,
+// not included: `document_serialize.hpp` (which names `KindBridge` and the settle free function)
+// is included only by `host_viewport.cpp`, so this header's weight does not regress. All three
+// are inside `runtime`'s existing closure -- `Document`/`KindBridge` are `runtime` itself and
+// `Registry` is `contract` -- so the binding adds NO levelization edge (doc 17:24,:60).
+class Document;
+class KindBridge;
+class Registry;
+
 class HostViewport {
 public:
   // The injected wall-clock source -- the SAME kind the renderer uses
@@ -86,9 +95,13 @@ public:
     //
     // A `std::function` rather than a `Document*` because the settle needs the document's
     // `KindBridge` and `Registry` too, and this object deliberately holds neither a
-    // `Document` nor a codec table (it takes a `Model&` + a `ContentResolver`). The host
-    // wires `[&] { return settle_external_loads(doc, bridge, registry); }`. Empty -- the
+    // `Document` nor a codec table (it takes a `Model&` + a `ContentResolver`). Empty -- the
     // default -- means a host with no external references pays nothing at all.
+    //
+    // A host that owns a `Document` does not fill this in: the `Document&` constructor DERIVES
+    // it from `(doc, DocumentBinding)` (runtime.host_viewport_document_binding). This stays as
+    // the ESCAPE HATCH -- set explicitly, it wins over the derived hook, so a host with a
+    // bespoke settle policy keeps one.
     std::function<std::size_t()> settle_external_loads;
   };
 
@@ -102,11 +115,54 @@ public:
     RebaseNeed need{RebaseNeed::none};
   };
 
+  // What a `Document`-bound viewport needs BEYOND the document itself, and nothing more: the
+  // codec/kind bridge and the plugin registry the external-arrival settle consumes
+  // (`settle_external_loads(doc, bridge, registry)`, `document_serialize.hpp:180`). Both
+  // non-null => the settle hook is derived from the document; a default `DocumentBinding{}` --
+  // the right shape for a programmatically-built document with no external references --
+  // derives none, so such a host still "pays nothing at all" (`Config::settle_external_loads`,
+  // below). Pointers, not references, because absence is a real and common state.
+  //
+  // A separate parameter rather than two `Config` fields (Decision 3): they are meaningless on
+  // the `Model&` path, and a `Config` carrying fields one documented constructor silently
+  // ignores is a trap.
+  struct DocumentBinding {
+    KindBridge* bridge{nullptr};
+    const Registry* registry{nullptr};
+  };
+
   // Binds the collaborators (references, not owned -- the interactive renderer, the
   // model whose damage this viewport subscribes to, and the caller-persisted render
   // surfaces) and installs the damage sink on `model` for this object's lifetime.
   // `resolve` serves `render_frame`'s content-vtable binding (`document.hpp`).
+  //
+  // This is the UNIT-TEST seam, and it stays: a test standing up a bare `Model` wants none of
+  // a `Document`'s journal, editable binding, or pending-loads queue. A host that owns a
+  // `Document` uses the constructor below instead.
   HostViewport(InteractiveRenderer& renderer, Model& model, ContentResolver resolve,
+               Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target, Clock clock,
+               Config config);
+
+  // Bind this viewport against the `Document` a host actually owns (doc 01 § Viewport,
+  // runtime.host_viewport_document_binding). The document supplies the three seams the host
+  // would otherwise hand-assemble -- and, having no `Model&` of its own, could not:
+  //
+  //   * the `ContentResolver`, as `doc.resolve` (the id->Content vtable binding, doc 17:66-72);
+  //   * the damage-sink install, on the document's model -- so a commit's damage reaches this
+  //     viewport's frame with no `set_damage_sink` call by the host at all. `Config::router`
+  //     still selects the fan-out path, exactly as on the `Model&` constructor: with a router
+  //     set the viewport registers with IT and never touches the document's single sink slot;
+  //   * the external-arrival settle hook, as `settle_external_loads(doc, *binding.bridge,
+  //     *binding.registry)`, run at the top of every `step()` (doc 02 step 1: an arrival IS
+  //     damage). Derived only when `binding` carries both; an explicitly-set
+  //     `Config::settle_external_loads` WINS over the derived one, so a host with a bespoke
+  //     settle policy keeps its escape hatch.
+  //
+  // It DELEGATES to the `Model&` constructor above -- there is no `Document` member, no mode
+  // flag, and exactly one code path through a frame (Constraint 2). `doc` must outlive this
+  // viewport: the derived resolver and settle hook capture it, the same lifetime contract the
+  // other reference collaborators already carry.
+  HostViewport(InteractiveRenderer& renderer, Document& doc, DocumentBinding binding,
                Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target, Clock clock,
                Config config);
   ~HostViewport();

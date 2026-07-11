@@ -1,4 +1,8 @@
+#include <arbc/runtime/document.hpp>
+#include <arbc/runtime/document_serialize.hpp> // KindBridge, settle_external_loads
 #include <arbc/runtime/host_viewport.hpp>
+
+#include "document_access.hpp" // HostViewportDocumentAccess (the Model& behind a Document)
 
 #include <chrono>
 #include <optional>
@@ -17,6 +21,21 @@ Time elapsed_flicks(std::chrono::steady_clock::duration delta) {
   using flick_duration =
       std::chrono::duration<std::int64_t, std::ratio<1, Time::flicks_per_second>>;
   return Time{std::chrono::duration_cast<flick_duration>(delta).count()};
+}
+
+// Fill in the settle hook the `Document` itself implies, leaving an explicitly-set one alone
+// (Decision 3: the host's own policy wins, so the seam `async_external_load` landed is not
+// thrown away). With no bridge or no registry there is nothing to settle WITH -- a
+// programmatically-built document has no external references -- and the viewport installs no
+// hook at all, so an idle step still costs exactly nothing.
+HostViewport::Config derive_document_config(Document& doc, HostViewport::DocumentBinding binding,
+                                            HostViewport::Config config) {
+  if (!config.settle_external_loads && binding.bridge != nullptr && binding.registry != nullptr) {
+    config.settle_external_loads = [&doc, bridge = binding.bridge, registry = binding.registry] {
+      return arbc::settle_external_loads(doc, *bridge, *registry);
+    };
+  }
+  return config;
 }
 
 } // namespace
@@ -42,6 +61,19 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Model& model, ContentR
     d_model.set_damage_sink(&d_sink);
   }
 }
+
+// The `Document&` binding (runtime.host_viewport_document_binding): derive the resolver, the
+// settle hook and the `Model&` from the document, then DELEGATE. Everything below this line --
+// the damage-sink install (`Document::set_damage_sink` forwards to exactly the same
+// `Model::set_damage_sink` this reaches), the router branch, the whole of `step()` -- is the
+// one code path the `Model&` constructor has always run, unchanged.
+HostViewport::HostViewport(InteractiveRenderer& renderer, Document& doc, DocumentBinding binding,
+                           Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target,
+                           Clock clock, Config config)
+    : HostViewport(
+          renderer, HostViewportDocumentAccess::model(doc),
+          [&doc](ObjectId id) { return doc.resolve(id); }, backend, pool, cache, target,
+          std::move(clock), derive_document_config(doc, binding, std::move(config))) {}
 
 HostViewport::~HostViewport() {
   // Router path: `d_registration`'s destructor unregisters from the router (which

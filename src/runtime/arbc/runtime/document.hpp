@@ -173,6 +173,17 @@ private:
   // shape and member set stay unchanged (refinement Constraint 4).
   friend struct DocumentSerializeAccess;
 
+  // The host-facing viewport objects (`HostViewport`, `DamageRouter`) bind against a
+  // `Document` and must reach the versioned `Model` underneath -- `HostViewport` takes it
+  // by reference in its member-init list, so the `Document&` constructor can DELEGATE to
+  // the `Model&` one rather than fork the frame path
+  // (runtime.host_viewport_document_binding Decision 2). Granted through the same
+  // attorney-client shape as the serialize façade above (defined in `document_access.hpp`)
+  // rather than a public `Model& model()`, which would hand every host the unguarded model
+  // and let it bypass `add_content`'s editable-facet registration, journal wiring, and
+  // captured-initial-state record.
+  friend struct HostViewportDocumentAccess;
+
   // DECLARATION ORDER IS THE TEARDOWN CONTRACT (destruction runs in reverse).
   //
   // `~Model` drops the current version and drains, which reclaims every content

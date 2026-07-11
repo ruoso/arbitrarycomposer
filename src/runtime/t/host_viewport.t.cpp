@@ -9,6 +9,7 @@
 #include <arbc/compositor/compositor.hpp>
 #include <arbc/compositor/pull_service.hpp> // BlockCache
 #include <arbc/contract/content.hpp>
+#include <arbc/contract/registry.hpp> // Registry (the DocumentBinding half the settle consumes)
 #include <arbc/media/audio_block.hpp> // ChannelLayout, channel_count
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/damage.hpp>
@@ -17,6 +18,8 @@
 #include <arbc/runtime/damage_router.hpp>
 #include <arbc/runtime/device_monitor.hpp>
 #include <arbc/runtime/device_sink.hpp>
+#include <arbc/runtime/document.hpp>           // Document (the Document& binding)
+#include <arbc/runtime/document_serialize.hpp> // KindBridge
 #include <arbc/runtime/host_viewport.hpp>
 #include <arbc/runtime/interactive.hpp>
 #include <arbc/runtime/lookahead_pump.hpp>
@@ -28,6 +31,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -37,6 +41,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -744,4 +749,204 @@ TEST_CASE("host_viewport: the settle hook runs at the top of the frame, before p
                            epoch_clock(), bare);
   plain.step();
   CHECK(plain.external_loads_settled() == 0);
+}
+
+// --- The `Document&` binding (runtime.host_viewport_document_binding) ---------
+
+namespace {
+
+// The Document-side twin of `add_single_layer`: one solid content, one layer, minted through
+// the DOCUMENT's own edit seams (so the content is bound in its side-map and `doc.resolve`
+// serves it -- which is precisely what the Document-bound viewport is supposed to find without
+// being told).
+Scene add_single_layer(arbc::Document& doc) {
+  const ObjectId content = doc.add_content(std::make_shared<SyncSolid>());
+  const ObjectId layer = doc.add_layer(content, Affine::identity());
+  return {content, layer};
+}
+
+// A viewport `Config` at the size every test in this file renders at.
+arbc::HostViewport::Config doc_config() {
+  arbc::HostViewport::Config cfg;
+  cfg.viewport = Viewport{256, 256, Affine::identity()};
+  cfg.budget = k_budget;
+  return cfg;
+}
+
+} // namespace
+
+// enforces: 01-core-concepts#viewport-binds-to-document
+TEST_CASE("host_viewport: a Document-bound viewport composites byte-for-byte what a hand-wired "
+          "Model-and-resolver viewport does") {
+  // The binding changes the WIRING and nothing else. Two viewports over the same scene -- one
+  // constructed against a `Document` with no host-supplied resolver at all, one against a bare
+  // `Model` with the resolver, the damage sink and the settle hook assembled by hand, which is
+  // the only shape a host had before this task -- must paint identical bytes.
+  MarkBackend backend;
+  // One renderer EACH: `InteractiveRenderer` carries cross-frame state (the revision it last
+  // completed), and these two viewports observe two different models. Sharing one would gate
+  // the second viewport's frame against the first's revision -- a property of the renderer, not
+  // of the binding under test.
+  arbc::InteractiveRenderer renderer_a({}, epoch_clock());
+  arbc::InteractiveRenderer renderer_b({}, epoch_clock());
+
+  // (a) the Document-bound wiring: `doc` supplies the resolver AND the sink install.
+  arbc::Document doc;
+  const Scene doc_scene = add_single_layer(doc);
+  arbc::SurfacePool pool_a(backend);
+  arbc::TileCache cache_a(64u * 1024 * 1024);
+  auto target_a = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_a.has_value());
+  arbc::HostViewport bound(renderer_a, doc, arbc::HostViewport::DocumentBinding{}, backend, pool_a,
+                           cache_a, **target_a, epoch_clock(), doc_config());
+
+  // (b) the hand-wired `Model&` path, unchanged and still public (Constraint 1).
+  arbc::Model model;
+  const Scene model_scene = add_single_layer(model);
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return id == model_scene.content ? &content : nullptr;
+  };
+  arbc::SurfacePool pool_b(backend);
+  arbc::TileCache cache_b(64u * 1024 * 1024);
+  auto target_b = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_b.has_value());
+  arbc::HostViewport hand(renderer_b, model, resolve, backend, pool_b, cache_b, **target_b,
+                          epoch_clock(), doc_config());
+
+  // One equivalent edit each, to bootstrap a frame on both.
+  doc.set_layer_transform(doc_scene.layer, Affine::identity());
+  bump_damage(model, model_scene.layer);
+  bound.step();
+  hand.step();
+  CHECK(bound.frames_issued() == 1);
+  CHECK(hand.frames_issued() == 1);
+
+  const std::span<const std::byte> a = (*target_a)->cpu_bytes();
+  const std::span<const std::byte> b = (*target_b)->cpu_bytes();
+  REQUIRE(a.size() == b.size());
+  CHECK(std::equal(a.begin(), a.end(), b.begin()));
+  // And the comparison is not vacuous: the Document-bound frame actually resolved the
+  // document's content and painted it. A viewport whose resolver returned null everywhere
+  // would leave the cleared target at zero.
+  CHECK(std::any_of(a.begin(), a.end(), [](std::byte v) { return v != std::byte{0}; }));
+}
+
+// enforces: 01-core-concepts#viewport-binds-to-document
+// enforces: 01-core-concepts#viewport-step-drives-transport-damage-frame
+TEST_CASE("host_viewport: the document's damage reaches a Document-bound viewport's frame with no "
+          "set_damage_sink call by the host") {
+  MarkBackend backend;
+  arbc::Document doc;
+  const Scene scene = add_single_layer(doc);
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  arbc::HostViewport viewport(renderer, doc, arbc::HostViewport::DocumentBinding{}, backend, pool,
+                              cache, **target, epoch_clock(), doc_config());
+
+  // The scene was built BEFORE the viewport existed, so its commits predate the sink install:
+  // an opening step has nothing to draw and costs nothing (doc 02: no damage -> no work).
+  viewport.step();
+  CHECK(viewport.frames_issued() == 0);
+
+  // A placement change auto-damages the layer, and that damage reaches this viewport's
+  // accumulator because the CONSTRUCTOR installed it on the document's sink slot. The host
+  // never called `doc.set_damage_sink` -- there is nothing for it to call it WITH.
+  doc.set_layer_transform(scene.layer, Affine::translation(4.0, 4.0));
+  viewport.step();
+  CHECK(viewport.frames_issued() == 1);
+
+  // Still true on the next commit, and an undamaged step in between stays free.
+  viewport.step();
+  CHECK(viewport.frames_issued() == 1);
+  doc.set_layer_transform(scene.layer, Affine::identity());
+  viewport.step();
+  CHECK(viewport.frames_issued() == 2);
+}
+
+// enforces: 02-architecture#idle-viewport-issues-no-frames
+TEST_CASE("host_viewport: an idle Document-bound viewport with a settle hook issues no frames") {
+  // A full `DocumentBinding` over a document with no external references: the derived settle
+  // hook runs on every step, finds an empty queue, installs nothing -- and, crucially, does NOT
+  // wake the frame loop by itself. The seam costs an idle viewport one queue check per step.
+  MarkBackend backend;
+  arbc::Document doc;
+  arbc::KindBridge bridge;
+  const arbc::Registry registry;
+  const Scene scene = add_single_layer(doc);
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  arbc::HostViewport viewport(renderer, doc,
+                              arbc::HostViewport::DocumentBinding{&bridge, &registry}, backend,
+                              pool, cache, **target, epoch_clock(), doc_config());
+
+  for (int i = 0; i < 5; ++i) {
+    const arbc::HostViewport::StepOutcome step = viewport.step();
+    CHECK_FALSE(step.schedule_follow_up);
+  }
+  CHECK(viewport.frames_issued() == 0);
+  CHECK(viewport.external_loads_settled() == 0);
+  CHECK(doc.pending_external_loads() == 0);
+
+  // The gate is not dead: a document edit still wakes the very next step, and settles nothing.
+  doc.set_layer_transform(scene.layer, Affine::identity());
+  viewport.step();
+  CHECK(viewport.frames_issued() == 1);
+  CHECK(viewport.external_loads_settled() == 0);
+}
+
+// enforces: 01-core-concepts#multiple-viewports-observe-one-composition
+TEST_CASE("host_viewport: two Document-bound viewports fan out through one DamageRouter over one "
+          "document") {
+  MarkBackend backend;
+  arbc::Document doc;
+  const Scene scene = add_single_layer(doc);
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache_a(64u * 1024 * 1024);
+  arbc::TileCache cache_b(64u * 1024 * 1024);
+  auto target_a = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  auto target_b = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_a.has_value());
+  REQUIRE(target_b.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  // The router occupies the DOCUMENT's single damage slot (the same slot
+  // `Document::set_damage_sink` forwards into); both viewports register with it.
+  arbc::DamageRouter router(doc);
+  arbc::HostViewport::Config cfg = doc_config();
+  cfg.router = &router;
+
+  arbc::HostViewport vp_a(renderer, doc, arbc::HostViewport::DocumentBinding{}, backend, pool,
+                          cache_a, **target_a, epoch_clock(), cfg);
+  std::optional<arbc::HostViewport> vp_b;
+  vp_b.emplace(renderer, doc, arbc::HostViewport::DocumentBinding{}, backend, pool, cache_b,
+               **target_b, epoch_clock(), cfg);
+  CHECK(router.registered() == 2);
+
+  // One committed edit on the document fans out to both accumulators, once each.
+  doc.set_layer_transform(scene.layer, Affine::identity());
+  CHECK(router.deliveries() == 2);
+  vp_a.step();
+  vp_b->step();
+  CHECK(vp_a.frames_issued() == 1);
+  CHECK(vp_b->frames_issued() == 1);
+
+  // Neither viewport STOLE the document's sink slot on its way in: with one of them gone, the
+  // router is still the document's sink and still delivers the next batch. Had a Document-bound
+  // viewport installed itself directly (the seam a host would otherwise reach for), this
+  // delivery would never arrive.
+  vp_b.reset();
+  CHECK(router.registered() == 1);
+  doc.set_layer_transform(scene.layer, Affine::translation(2.0, 2.0));
+  CHECK(router.deliveries() == 3);
+  vp_a.step();
+  CHECK(vp_a.frames_issued() == 2);
 }

@@ -228,7 +228,7 @@ TEST_CASE("a deferred external child replaces the placeholder with the real pixe
   KindBridge bridge;
   const Registry registry;
   REQUIRE(arbc::load_document(k_parent, doc, bridge, registry, k_base, &deferring));
-  REQUIRE(root_nested(doc).child().valid());                          // a VALID id ...
+  REQUIRE(root_nested(doc).child().valid());                                 // a VALID id ...
   REQUIRE(doc.pin()->find_composition(root_nested(doc).child()) == nullptr); // ... no record
   REQUIRE(doc.pending_external_loads() == 1);
 
@@ -380,8 +380,7 @@ TEST_CASE("save-while-pending is a fixed point: the same bytes loaded, pending, 
 
   Document loaded;
   KindBridge loaded_bridge;
-  REQUIRE(
-      arbc::load_document(k_parent, loaded, loaded_bridge, registry, k_base, &inline_source));
+  REQUIRE(arbc::load_document(k_parent, loaded, loaded_bridge, registry, k_base, &inline_source));
   REQUIRE(root_nested(loaded).child().valid());
   REQUIRE(loaded.pin()->find_composition(root_nested(loaded).child()) != nullptr);
   const std::string from_loaded = save(loaded, loaded_bridge);
@@ -390,7 +389,7 @@ TEST_CASE("save-while-pending is a fixed point: the same bytes loaded, pending, 
   KindBridge pending_bridge;
   REQUIRE(arbc::load_document(k_parent, pending, pending_bridge, registry, k_base, &deferring));
   REQUIRE(pending.pending_external_loads() == 1);
-  REQUIRE(root_nested(pending).child().valid()); // valid ...
+  REQUIRE(root_nested(pending).child().valid());                                     // valid ...
   REQUIRE(pending.pin()->find_composition(root_nested(pending).child()) == nullptr); // ... absent
   const std::string from_pending = save(pending, pending_bridge);
 
