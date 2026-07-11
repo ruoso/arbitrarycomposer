@@ -453,7 +453,140 @@ long run_second_commit(long target, bool after, const std::string& snapshot) {
   return np;
 }
 
+// --- two-store variant (pool.workspace_store_directory) ----------------------
+//
+// The same kill sweep over a workspace backing TWO size-class stores, whose store
+// table `commit` now writes into the header right before the root flip. Uses raw
+// SlotStores (not RefStore) because what is under test is the storage-level pairing
+// of root and store-table snapshot, not a typed graph.
+
+// The colliding size classes: a 288-byte stride at 128 slots/chunk and a 144-byte
+// stride at 256 slots/chunk both yield 36864-byte chunks, so chunk byte size cannot
+// route them and the arena directory's owner tag must.
+constexpr std::size_t k_two_align = alignof(std::max_align_t);
+constexpr std::size_t k_node_stride = 288;
+constexpr std::uint32_t k_node_bits = 7;
+constexpr std::size_t k_record_stride = 144;
+constexpr std::uint32_t k_record_bits = 8;
+
+std::uint8_t two_pattern(std::uint32_t tag, std::uint32_t slot, std::size_t offset) {
+  return static_cast<std::uint8_t>((tag * 131u) ^ (slot * 17u) ^ (offset * 7u));
+}
+
+void two_fill(void* base, std::size_t stride, std::uint32_t tag, std::uint32_t slot) {
+  auto* bytes = static_cast<std::uint8_t*>(base);
+  for (std::size_t i = 0; i < stride; ++i) {
+    bytes[i] = two_pattern(tag, slot, i);
+  }
+}
+
+// Reopen `snapshot` and assert the RECOVERED ROOT AND THE RECOVERED STORE TABLE ARE
+// THE SAME COMMIT'S: every store's chunk set covers its high-water (adopt_snapshot
+// refuses otherwise, so a successful open is itself that assertion), the restored
+// high-waters are one of the two committed generations' -- never a mix -- and every
+// slot below them resolves to its pre-crash bytes. `expected_slots` is the per-store
+// high-water of generation 1; generation 2 doubles it.
+void assert_two_store_recovers(const std::string& snapshot, std::uint32_t gen1_slots) {
+  auto opened = arbc::Checkpointer::open(snapshot);
+  if (!opened.has_value()) {
+    return; // a clean error value is an acceptable recovery outcome
+  }
+  if (!opened->valid) {
+    return; // died before the first root became durable
+  }
+  REQUIRE((opened->generation == 1 || opened->generation == 2));
+  const std::uint32_t expected = opened->generation == 2 ? 2 * gen1_slots : gen1_slots;
+
+  arbc::WorkspaceFileChunkSource& ws = *opened->source;
+  arbc::Arena arena(ws.router());
+  arbc::Checkpointer ckpt(ws, arena);
+  REQUIRE(ckpt.reserve_restored_all(arena).has_value());
+
+  arbc::SlotStore& nodes = arena.store_for(k_node_stride, k_two_align, k_node_bits);
+  arbc::SlotStore& records = arena.store_for(k_record_stride, k_two_align, k_record_bits);
+  // The high-water the recovery read belongs to the root it selected: the OLD root
+  // pairs with the OLD snapshot, the new root with the new one -- never a mismatch.
+  REQUIRE(nodes.high_water() == expected);
+  REQUIRE(records.high_water() == expected);
+
+  for (std::uint32_t i = 0; i < expected; ++i) {
+    const auto* node = static_cast<const std::uint8_t*>(nodes.resolve(i));
+    const auto* record = static_cast<const std::uint8_t*>(records.resolve(i));
+    for (std::size_t b = 0; b < k_node_stride; ++b) {
+      REQUIRE(node[b] == two_pattern(1, i, b));
+    }
+    for (std::size_t b = 0; b < k_record_stride; ++b) {
+      REQUIRE(record[b] == two_pattern(2, i, b));
+    }
+  }
+}
+
+// Build a durable generation-1 state (gen1_slots per store), then a second batch, and
+// commit it with the snapshot injector armed. Mirrors run_second_commit for the
+// two-store case. Returns the number of enumerated injection points during commit #2.
+long run_second_two_store_commit(long target, bool after, const std::string& snapshot,
+                                 std::uint32_t gen1_slots) {
+  TempPath path;
+  auto src = arbc::WorkspaceFileChunkSource::create(path.str());
+  REQUIRE(src.has_value());
+  arbc::WorkspaceFileChunkSource& ws = **src;
+  arbc::Arena arena(ws.router());
+  arbc::SlotStore& nodes = arena.store_for(k_node_stride, k_two_align, k_node_bits);
+  arbc::SlotStore& records = arena.store_for(k_record_stride, k_two_align, k_record_bits);
+  arbc::Checkpointer ckpt(ws, arena);
+  ckpt.register_store(nodes);
+  ckpt.register_store(records);
+
+  SnapshotInjector inj(ws, path.str());
+  ws.set_syscall_injector(&inj);
+
+  const auto grow = [&](std::uint32_t from, std::uint32_t to) {
+    for (std::uint32_t i = from; i < to; ++i) {
+      two_fill(nodes.resolve(*nodes.allocate()), k_node_stride, 1, i);
+      two_fill(records.resolve(*records.allocate()), k_record_stride, 2, i);
+    }
+  };
+  grow(0, gen1_slots);
+  REQUIRE(ckpt.commit(0).has_value()); // generation 1, slot A
+  grow(gen1_slots, 2 * gen1_slots);    // in flight: not yet published
+
+  if (snapshot.empty()) {
+    inj.count_only();
+  } else {
+    inj.arm(target, after, snapshot);
+  }
+  REQUIRE(ckpt.commit(0).has_value()); // generation 2, slot B
+  ws.set_syscall_injector(nullptr);
+  if (!snapshot.empty()) {
+    REQUIRE(inj.captured());
+  }
+  return inj.points();
+}
+
 } // namespace
+
+// enforces: 15-memory-model#store-high-water-durable-with-root
+TEST_CASE("two-store kill sweep: the recovered high-water always belongs to the recovered root",
+          "[pool]") {
+  // 200 slots per store at generation 1, 400 at generation 2 -- so the two generations
+  // need DIFFERENT chunk counts in both stores (nodes: 2 -> 4 chunks, records: 1 -> 2).
+  // A commit that published the new high-water against the old root would therefore
+  // claim chunks the old root's data msync never covered: exactly the corruption the
+  // per-root store-table snapshot exists to prevent. Killing at every commit boundary
+  // must land on old-root+old-high-water or new-root+new-high-water, never a mix.
+  constexpr std::uint32_t gen1_slots = 200;
+  const long num_points = run_second_two_store_commit(0, false, {}, gen1_slots);
+  REQUIRE(num_points >= 3); // >=1 data msync + the root flip + the header msync
+
+  for (long target = 0; target < num_points; ++target) {
+    for (bool after : {false, true}) {
+      TempPath snap;
+      const long np = run_second_two_store_commit(target, after, snap.str(), gen1_slots);
+      REQUIRE(np == num_points); // every re-run enumerates the same boundaries
+      assert_two_store_recovers(snap.str(), gen1_slots);
+    }
+  }
+}
 
 // enforces: 15-memory-model#checkpoint-recovers-consistent-root
 TEST_CASE("commit-ordering kill sweep: old root before the header sync, new root after", "[pool]") {
@@ -719,6 +852,42 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
     REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::UnsupportedFormat);
+  }
+
+  SECTION("truncation inside store-table snapshot B -> HeaderIoFailed, never a partial table") {
+    // The store tables sit between the chunk directory and the page-aligned data
+    // region, so a file cut inside table B is short of its own header region. Refuse
+    // rather than map a half-present table and read a torn row as geometry.
+    const std::uint64_t table_b =
+        header->store_table_offset + header->max_stores * sizeof(arbc::WorkspaceStoreEntry);
+    REQUIRE(table_b < data_offset);
+    TempPath dst = truncate_copy(table_b + sizeof(arbc::WorkspaceStoreEntry) / 2);
+    auto opened = arbc::Checkpointer::open(dst.str());
+    REQUIRE_FALSE(opened.has_value());
+    REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::HeaderIoFailed);
+  }
+
+  SECTION("a store table overlapping the chunk directory -> HeaderIoFailed") {
+    // A corrupt `store_table_offset` must never let a row read land inside (or past)
+    // the mapping's bounds. Point the table at the header itself.
+    TempPath dst;
+    copy_file(path.str(), dst.str());
+    const std::uint64_t overlapping = sizeof(arbc::WorkspaceHeader);
+    write_at(dst.str(), offsetof(arbc::WorkspaceHeader, store_table_offset), &overlapping,
+             sizeof(overlapping));
+    auto opened = arbc::Checkpointer::open(dst.str());
+    REQUIRE_FALSE(opened.has_value());
+    REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::HeaderIoFailed);
+  }
+
+  SECTION("a store table running past the data region -> HeaderIoFailed") {
+    TempPath dst;
+    copy_file(path.str(), dst.str());
+    const std::uint64_t huge = 1u << 20;
+    write_at(dst.str(), offsetof(arbc::WorkspaceHeader, max_stores), &huge, sizeof(huge));
+    auto opened = arbc::Checkpointer::open(dst.str());
+    REQUIRE_FALSE(opened.has_value());
+    REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::HeaderIoFailed);
   }
 
   SECTION("torn inactive root slot -> A/B redundancy still recovers the durable root") {

@@ -499,8 +499,8 @@ TEST_CASE("a composition cycle round-trips as data, and is not an operator-input
     RecordingSink sink;
     Model loaded;
     arbc::expected<std::monostate, ReaderError> result{std::monostate{}};
-    REQUIRE_NOTHROW(result = arbc::load_document(doc, registry, codecs, ctx, sink.as_sink(),
-                                                 loaded));
+    REQUIRE_NOTHROW(result =
+                        arbc::load_document(doc, registry, codecs, ctx, sink.as_sink(), loaded));
     REQUIRE(result); // a LEGAL composition cycle, not an UnresolvableReference
 
     // Exactly one nesting node was built, shared by both compositions' layers.
@@ -547,8 +547,8 @@ TEST_CASE("a composition cycle round-trips as data, and is not an operator-input
     RecordingSink sink;
     Model loaded;
     arbc::expected<std::monostate, ReaderError> result{std::monostate{}};
-    REQUIRE_NOTHROW(result = arbc::load_document(doc, registry, codecs, ctx, sink.as_sink(),
-                                                 loaded));
+    REQUIRE_NOTHROW(result =
+                        arbc::load_document(doc, registry, codecs, ctx, sink.as_sink(), loaded));
     REQUIRE_FALSE(result);
     CHECK(result.error().kind == ReaderError::Kind::UnresolvableReference);
     CHECK(loaded.current()->revision() == 0);
@@ -695,8 +695,8 @@ TEST_CASE("the composition-table read errors are values, with the model unmutate
       RecordingSink sink;
       Model model;
       arbc::expected<std::monostate, ReaderError> result{std::monostate{}};
-      REQUIRE_NOTHROW(
-          result = arbc::load_document(c.doc, registry, codecs, ctx, sink.as_sink(), model));
+      REQUIRE_NOTHROW(result =
+                          arbc::load_document(c.doc, registry, codecs, ctx, sink.as_sink(), model));
       REQUIRE_FALSE(result);
       CHECK(result.error().kind == ReaderError::Kind::MalformedField);
       CHECK(result.error().path == std::string(c.path));

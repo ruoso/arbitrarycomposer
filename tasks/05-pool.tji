@@ -78,8 +78,9 @@ task pool "Memory pool" {
   task workspace_store_directory "Per-store chunk directory in workspace format" {
     effort 2d
     allocate team
+    complete 100
     depends !checkpoints
-    note "Record per-store chunk ownership and per-store high-water in the workspace header — the doc 15 'per-type slot sizes, and arena directory' field that was never implemented — so reopen routes each chunk to the store that owns it; unblocks model.workspace_backing's cold-recovery partition of d_nodes vs d_records (today's size-blind FIFO acquire mis-routes interleaved chunks, and chunk byte-size is ambiguous in the debug lane where both strides yield 36864-byte chunks). Source: tasks/parking-lot.md 2026-07-09 (model.workspace_backing re-defer, resolution A). Doc 15."
+    note "Record per-store chunk ownership and per-store high-water in the workspace header — the doc 15 'per-type slot sizes, and arena directory' field that was never implemented — so reopen routes each chunk to the store that owns it; unblocks model.workspace_backing's cold-recovery partition of d_nodes vs d_records (today's size-blind FIFO acquire mis-routes interleaved chunks, and chunk byte-size is ambiguous in the debug lane where both strides yield 36864-byte chunks). Source: tasks/parking-lot.md 2026-07-09 (model.workspace_backing re-defer, resolution A). Doc 15. Refinement: tasks/refinements/pool/workspace_store_directory.md"
   }
   task crash_tests "Crash-recovery test sweep" {
     effort 2d

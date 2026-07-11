@@ -210,12 +210,30 @@ A mapped file has no stable base address, so in-record references are
 variant survives only as a transient handle on stacks, never inside
 records. Records were already standard-layout, fixed-size, and
 pointer-free by doc 03/15 rules — this closes the loop. The file carries a
-header with layout schema version, per-type slot sizes, and arena
+header with layout schema version, per-store slot sizes, and arena
 directory; workspace files are same-machine artifacts (native endianness
 and padding, no portability promise) — **the doc 08 JSON document remains
 the interchange and version-control format**; the workspace file is a
 session/scratch artifact beside it, like a database's data file vs its
 dump.
+
+**The arena directory is what makes reopen unambiguous.** One workspace
+file backs *several* slab stores at once — a document's HAMT nodes and its
+object records are different size classes, so different stores — and a
+store is identified, in memory and on disk alike, by its **(slot stride,
+slot alignment)** pair: the same key the arena already uses to find the
+store for a type. The header's **store table** carries one entry per
+store — stride, alignment, slots per chunk, and the store's **slot
+high-water mark as of the checkpoint that published it** — and the arena
+directory tags every data chunk with the store that owns it. Reopen
+therefore does no guessing: each store re-binds exactly the chunks the
+file says are its own, in slot order, and reserves exactly the high-water
+the file records. Chunk *byte size* is emphatically not an identity — two
+stores with different strides can land on the same chunk size — so routing
+is by recorded owner, never inferred from geometry. A file whose store
+table disagrees with the reopening build's strides (a debug-vs-release
+lane mismatch, say) is refused as a value rather than silently
+mis-routed.
 
 **Checkpointing rides the version model.** Because live records are never
 overwritten (immutability), consistency needs only ordering, LMDB-style:
@@ -225,10 +243,14 @@ both consistent. The one interaction to get right is **slot reuse**: a
 slot freed *after* the last durable checkpoint may still be referenced by
 the on-disk root, so reclamation quarantines freed slots per **durability
 epoch** — the deferred-reclamation queue (above) gains a "reusable after
-checkpoint N" fence. Checkpoint cadence is policy (timer, transaction
-count, explicit host call); the doc 14 autosave scenario becomes "msync +
-root flip" — cheaper than serializing, though the JSON autosave remains
-the belt to this suspender.
+checkpoint N" fence. The store table rides the same A/B discipline: each
+root slot owns its own store-table snapshot, written before that root is
+flipped, so the high-water a recovery reads is always the one belonging to
+the root it selected — a crash mid-commit lands on the old root *and* the
+old high-water, never a mismatched pair. Checkpoint cadence is policy
+(timer, transaction count, explicit host call); the doc 14 autosave
+scenario becomes "msync + root flip" — cheaper than serializing, though
+the JSON autosave remains the belt to this suspender.
 
 Debug hardening gets stronger here too: published data chunks can be
 `mprotect`ed read-only between transactions in debug builds, making any

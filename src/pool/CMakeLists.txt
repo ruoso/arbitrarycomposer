@@ -10,7 +10,7 @@ arbc_add_component(
 
 arbc_component_test(COMPONENT pool SOURCES t/pool.t.cpp t/refs.t.cpp t/reclamation.t.cpp
                     t/refcounts_in_store.t.cpp t/workspace_file.t.cpp t/checkpoint.t.cpp
-                    t/crash_tests.t.cpp t/bench_smoke.t.cpp t/free_pools.t.cpp
-                    t/big_block_pool.t.cpp)
+                    t/workspace_store_directory.t.cpp t/crash_tests.t.cpp t/bench_smoke.t.cpp
+                    t/free_pools.t.cpp t/big_block_pool.t.cpp)
 
 arbc_component_bench(COMPONENT pool SOURCES bench/allocator_bench.cpp)

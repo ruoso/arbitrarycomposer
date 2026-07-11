@@ -338,6 +338,14 @@ class Arena {
 public:
   Arena();                             // owns a default AnonymousChunkSource
   explicit Arena(ChunkSource& source); // borrows an external source
+  // Per-store-routed arena (doc 15's arena directory): every size-class store is
+  // handed its OWN ChunkSource by the router rather than sharing one source. This
+  // is how a workspace-backed arena gives each store a facade serving only the
+  // chunks the file records as that store's own -- so a reopen re-binds each store
+  // to its own chunks instead of guessing. A store the router refuses is backed by
+  // a RefusingChunkSource (it allocates nothing) rather than by a fallback that
+  // could mis-route; the router carries the reason.
+  explicit Arena(ChunkSourceRouter& router);
   ~Arena();
   Arena(const Arena&) = delete;
   Arena& operator=(const Arena&) = delete;
@@ -364,7 +372,9 @@ public:
 
 private:
   std::unique_ptr<ChunkSource> d_owned_source; // non-null only for the default
+  RefusingChunkSource d_refusing;              // backs a store the router refused to bind
   ChunkSource* d_source;
+  ChunkSourceRouter* d_router{nullptr}; // non-null only for the routed constructor
   std::map<std::pair<std::size_t, std::size_t>, std::unique_ptr<SlotStore>> d_stores;
 };
 

@@ -4,12 +4,21 @@
 #include <arbc/pool/slot_store.hpp>
 #include <arbc/pool/workspace_file.hpp>
 
+#include <bit>
+#include <cassert>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace arbc {
+
+// The SlotStore chunk-bits exponent for a store-table row's slots-per-chunk
+// (validated as a nonzero power of two by `adopt_snapshot`, so this never sees a
+// value `countr_zero` cannot invert).
+inline std::uint32_t chunk_bits_for(std::uint32_t chunk_slots) noexcept {
+  return static_cast<std::uint32_t>(std::countr_zero(chunk_slots));
+}
 
 // The durability protocol for the mmap workspace file (design doc 15,
 // "Checkpointing rides the version model", lines 183-199). Turns the layout
@@ -123,6 +132,22 @@ public:
 
   DurabilityEpochFence& slot_fence() noexcept { return d_slot_fence; }
 
+  // Register a workspace-backed store whose slot high-water every commit publishes
+  // into the store-table snapshot the root it flips owns. Writer-only setup,
+  // mirroring `set_release_fence`. Idempotent. Registering a store with no
+  // store-table row (an untagged / anonymous store) is a no-op: it has no row to
+  // publish into. A debug assert in `commit` catches the converse mistake -- a
+  // workspace-bound store left unregistered, whose high-water would never become
+  // durable.
+  void register_store(SlotStore& store) {
+    const std::uint32_t id = d_source->store_id(static_cast<std::uint32_t>(store.slot_stride()),
+                                                static_cast<std::uint32_t>(store.slot_align()));
+    if (id == k_workspace_no_owner || is_registered(store)) {
+      return;
+    }
+    d_registered.push_back(RegisteredStore{&store, id});
+  }
+
   // Ordered commit (doc 15:183-194): (1) msync every live data chunk, (2)
   // publish the new root into the inactive header slot with a bumped generation
   // and flip, (3) msync the header. The data a root points to is durable before
@@ -140,6 +165,28 @@ public:
     }
 
     const std::uint32_t new_generation = d_epoch; // == d_generation + 1
+
+    // (2a) Publish each registered store's high-water into the INACTIVE store-table
+    // snapshot -- the one owned by the root slot about to be flipped. Step 1's data
+    // msync has already made every chunk those high-waters cover durable, and step
+    // 3's header msync makes the root AND its snapshot durable together, so this
+    // costs ZERO additional syscalls (Decision 4). A crash before step 3 leaves the
+    // old root durable, paired with the snapshot this commit never touched: old root
+    // with old high-water, always -- never a mismatched pair.
+#ifndef NDEBUG
+    d_arena->for_each_store([this](SlotStore& store) {
+      const std::uint32_t id = d_source->store_id(static_cast<std::uint32_t>(store.slot_stride()),
+                                                  static_cast<std::uint32_t>(store.slot_align()));
+      assert((id == k_workspace_no_owner || is_registered(store)) &&
+             "a workspace-bound store must be register_store'd, or its high-water never "
+             "becomes durable and a recovery under-restores it");
+    });
+#endif
+    for (const RegisteredStore& entry : d_registered) {
+      d_source->publish_store_high_water(d_next_slot, entry.id,
+                                         static_cast<std::uint32_t>(entry.store->high_water()));
+    }
+
     d_source->publish_root_slot(d_next_slot,
                                 encode_root(WorkspaceRoot{new_generation, root_index}));
     expected<std::monostate, WorkspaceFileError> header = d_source->sync_header();
@@ -190,13 +237,60 @@ public:
     }
     const WorkspaceRoot a = decode_root((*source)->root_slot(0));
     const WorkspaceRoot b = decode_root((*source)->root_slot(1));
-    const WorkspaceRoot chosen = a.generation >= b.generation ? a : b;
+    const int chosen_slot = a.generation >= b.generation ? 0 : 1;
+    const WorkspaceRoot chosen = chosen_slot == 0 ? a : b;
+
+    // Adopt the store-table snapshot the SELECTED root published (doc 15's A/B
+    // discipline extended to the store table). This validates that every store's
+    // chunk set covers its recorded high-water and hole-punches the chunks a
+    // crashed commit appended above it -- so what the caller restores below is a
+    // lookup, never a guess.
+    expected<std::monostate, WorkspaceFileError> adopted = (*source)->adopt_snapshot(chosen_slot);
+    if (!adopted) {
+      return unexpected(adopted.error());
+    }
+
     OpenState state;
     state.source = std::move(*source);
     state.root_index = chosen.root_index;
     state.generation = chosen.generation;
     state.valid = chosen.generation != 0;
     return state;
+  }
+
+  // Recovery: re-bind every store the selected root's store-table snapshot records
+  // and reserve exactly the high-water it published. `Arena::store_for` routes each
+  // store to its own per-store facade, so a store re-binds exactly the chunks the
+  // arena directory tags as its own, in slot order -- and because the chunks are
+  // already mapped, the file never grows. The caller then runs its typed
+  // reachability walk and `finalize_open` per store.
+  //
+  // Requires an Arena constructed over the source's `router()`.
+  expected<std::monostate, WorkspaceFileError> reserve_restored_all(Arena& arena) {
+    // A store the caller already bound with the wrong geometry poisoned the bind;
+    // surface that before restoring anything on top of it.
+    if (d_source->bind_error().code != WorkspaceFileErrc::Ok) {
+      return unexpected(d_source->bind_error());
+    }
+    const std::vector<WorkspaceStoreEntry> rows = d_source->restored_stores();
+    for (const WorkspaceStoreEntry& row : rows) {
+      if (row.slot_stride == 0) {
+        continue; // unused row
+      }
+      SlotStore& store =
+          arena.store_for(row.slot_stride, row.slot_align, chunk_bits_for(row.chunk_slots));
+      if (d_source->bind_error().code != WorkspaceFileErrc::Ok) {
+        return unexpected(d_source->bind_error());
+      }
+      register_store(store);
+      if (!store.reserve_restored(row.high_water)) {
+        // `adopt_snapshot` already proved the chunk set covers the high-water, so
+        // the only way to land here is a high-water past what the store's directory
+        // can address -- a corrupt row, refused as a value.
+        return unexpected(WorkspaceFileError{WorkspaceFileErrc::StoreDirectoryInconsistent, 0});
+      }
+    }
+    return std::monostate{};
   }
 
   // Recovery finalize: repopulate `store`'s free list with the below-high-water
@@ -216,6 +310,23 @@ public:
   std::uint32_t generation() const noexcept { return d_generation; }
 
 private:
+  // A store bound to a store-table row, whose high-water each commit publishes into
+  // the flipped root's snapshot. GEOMETRY AND HIGH-WATER ONLY reach disk -- no
+  // refcount, free list, or generation tag is ever written (doc 15:199-205).
+  struct RegisteredStore {
+    SlotStore* store;
+    std::uint32_t id; // store-table row index
+  };
+
+  bool is_registered(const SlotStore& store) const {
+    for (const RegisteredStore& entry : d_registered) {
+      if (entry.store == &store) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // ChunkReleaseFence adapter feeding the Checkpointer's chunk quarantine.
   struct ChunkFence final : ChunkReleaseFence {
     Checkpointer* self{nullptr};
@@ -289,6 +400,7 @@ private:
   DurabilityEpochFence d_slot_fence;
   ChunkFence d_chunk_fence{};
   std::vector<ChunkEntry> d_chunk_quarantine;
+  std::vector<RegisteredStore> d_registered;
 
   std::uint64_t d_commit_count{0};
   std::uint64_t d_data_msyncs{0};

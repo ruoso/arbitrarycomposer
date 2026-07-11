@@ -42,6 +42,10 @@ enum class WorkspaceFileErrc {
   UnsupportedFormat, // format-major mismatch
   GrowFailed,        // ftruncate/mmap while appending a chunk (incl. disk-full)
   DirectoryFull,     // exceeded the file's chunk-directory capacity
+  // --- arena directory (pool.workspace_store_directory) ----------------------
+  StoreLayoutMismatch,        // a store-table row's geometry disagrees with this build
+  MaxStoresExceeded,          // more distinct size classes than the store table holds
+  StoreDirectoryInconsistent, // a store's chunk set does not cover its recorded high-water
 };
 
 // Errors as values, never thrown (doc 10). `sys_errno` is the errno captured at
@@ -68,7 +72,16 @@ struct WorkspaceHeader {
   // the layout (written zero); the protocol that flips them is pool.checkpoints.
   std::uint64_t root_slot_a;
   std::uint64_t root_slot_b;
-  std::uint64_t reserved[7]; // zeroed padding, room for future header fields
+  // The arena directory's store table (pool.workspace_store_directory): file
+  // offset of snapshot A (snapshot B follows it immediately) and the row count of
+  // each snapshot. TWO snapshots, one per root slot: a commit writes only the
+  // INACTIVE one, so the high-water a recovery reads always belongs to the root it
+  // selected (doc 15, "the store table rides the same A/B discipline"). Placed
+  // after the chunk directory and before the page-aligned `data_offset`, so the
+  // directory does not move and the default layout costs zero extra pages.
+  std::uint64_t store_table_offset;
+  std::uint64_t max_stores;
+  std::uint64_t reserved[5]; // zeroed padding, room for future header fields
 };
 
 // One chunk-directory entry, laid out immediately after the header on disk. The
@@ -78,7 +91,15 @@ struct WorkspaceChunkEntry {
   std::uint64_t offset; // file offset of this chunk's mapping
   std::uint64_t size;   // mapped byte length
   std::uint32_t state;  // WorkspaceChunkState
-  std::uint32_t reserved;
+  // The store-table row of the store that owns this chunk, or k_workspace_no_owner.
+  // This tag is what makes reopen unambiguous: chunk BYTE SIZE is not a store
+  // identity (a 288-byte stride at 128 slots/chunk and a 144-byte stride at 256
+  // slots/chunk both yield 36864-byte chunks), so routing must read the owner, not
+  // infer it from geometry. The chunk's slot range is DERIVED from its position in
+  // its owner's directory-ordered chunk list -- growth is strictly append-only and a
+  // punched entry is never re-used, so per-owner directory order is per-owner
+  // acquisition order, permanently (Decision 6).
+  std::uint32_t owner;
 };
 
 enum WorkspaceChunkState : std::uint32_t {
@@ -86,17 +107,45 @@ enum WorkspaceChunkState : std::uint32_t {
   k_workspace_chunk_live = 1, // currently mapped and handed out
 };
 
+// One store-table row: the geometry that identifies a size-class store on disk,
+// plus the slot high-water the checkpoint that published this snapshot made
+// durable. GEOMETRY AND HIGH-WATER ONLY -- refcounts, free pools, generation tags,
+// and the reclaim queue are anonymous runtime state rebuilt on open (doc
+// 15:199-205), so no bookkeeping ever reaches disk. `slot_stride == 0` marks an
+// unused row (no separate state field).
+struct WorkspaceStoreEntry {
+  std::uint32_t slot_stride;
+  std::uint32_t slot_align;
+  std::uint32_t chunk_slots;
+  std::uint32_t high_water;
+};
+
+// A chunk grown through the source's own `acquire` rather than through a
+// per-store view belongs to no store; the untagged reopen queue serves it back in
+// directory order, exactly as format 1 did.
+inline constexpr std::uint32_t k_workspace_no_owner = 0xFFFF'FFFFu;
+
 inline constexpr std::uint64_t k_workspace_magic = 0x4642'5357'4342'5241ull; // "ARBCWSBF" LE
-inline constexpr std::uint32_t k_workspace_format_major = 1;
+// 2: the arena directory. A format-1 file's chunks are untagged and it has no
+// store table, so a two-store reopen could only GUESS at ownership -- the exact
+// bug this format bump fixes. v1 files are refused as an UnsupportedFormat value;
+// the workspace file is a same-machine session artifact beside the doc 08 JSON
+// document (doc 15:214-218), so a refused v1 file costs a reload from JSON, never
+// data (Decision 5).
+inline constexpr std::uint32_t k_workspace_format_major = 2;
 inline constexpr std::uint32_t k_workspace_format_minor = 0;
 inline constexpr std::uint32_t k_workspace_default_max_chunks = 16384;
+inline constexpr std::uint32_t k_workspace_default_max_stores = 16;
 
+static_assert(sizeof(WorkspaceHeader) == 112, "on-disk header layout is a contract");
 static_assert(sizeof(WorkspaceHeader) % 8 == 0, "directory must stay 8-aligned after header");
 static_assert(sizeof(WorkspaceChunkEntry) == 24, "on-disk directory entry layout is a contract");
+static_assert(sizeof(WorkspaceStoreEntry) == 16, "on-disk store-table row layout is a contract");
 
 // Construction-time policy knobs for a fresh workspace file.
 struct WorkspaceLayout {
   std::uint32_t max_chunks{k_workspace_default_max_chunks};
+  std::uint32_t max_stores{k_workspace_default_max_stores};
 };
 
 // Platform file handle for the workspace file's private state: a POSIX fd or a
@@ -109,6 +158,28 @@ using WorkspaceFileHandle = int; // POSIX fd
 #endif
 
 class WorkspaceFileChunkSource;
+
+// The per-store ChunkSource facade (doc 15's arena directory). Handed to exactly
+// one size-class store, it serves ONLY that store's chunks: on a reopened file it
+// drains the chunks the directory tags with this store's row, in directory order
+// (== that store's acquisition order), and every chunk it grows is tagged with
+// that row. A store therefore physically cannot see another store's chunks --
+// mis-routing is structurally impossible rather than merely discouraged
+// (Decision 2). `release` routes to the source's fenced hole-punch path
+// unchanged. Owned by the source; obtained through `store_view`.
+class WorkspaceStoreView final : public ChunkSource {
+public:
+  expected<ChunkSpan, PoolError> acquire(std::size_t size, std::size_t alignment) override;
+  void release(ChunkSpan span) noexcept override;
+
+private:
+  friend class WorkspaceFileChunkSource;
+  WorkspaceStoreView(WorkspaceFileChunkSource& source, std::uint32_t id) noexcept
+      : d_source(&source), d_id(id) {}
+
+  WorkspaceFileChunkSource* d_source;
+  std::uint32_t d_id;
+};
 
 // Durability fence for chunk hole-punch (doc 15). An emptied chunk freed after
 // the last checkpoint may still back the on-disk root, so its `fallocate(
@@ -229,6 +300,60 @@ public:
   std::uint64_t root_slot(int ab) const noexcept;
   void publish_root_slot(int ab, std::uint64_t value) noexcept;
 
+  // --- arena directory / store table (pool.workspace_store_directory) --------
+
+  // Bind the size-class store `(slot_stride, slot_align)` -- the very key
+  // `Arena::store_for` already uses -- to its own chunk-source facade.
+  //
+  // On a fresh file this appends a store-table row to BOTH snapshots: the identity
+  // columns are per-store, not per-root, so they are duplicated; only `high_water`
+  // differs per snapshot. On a reopened file it matches the row the adopted
+  // snapshot records and VALIDATES `chunk_slots` -- a disagreement (a debug-vs-
+  // release lane mismatch, say) is `StoreLayoutMismatch`, a clean value, never a
+  // silent mis-route. Repeated binds of the same size class return the same facade.
+  // `MaxStoresExceeded` when the table is full. Writer-only setup.
+  expected<ChunkSource*, WorkspaceFileError>
+  store_view(std::uint32_t slot_stride, std::uint32_t slot_align, std::uint32_t chunk_slots);
+
+  // The per-store routing seam an Arena binds to: `Arena arena(ws.router())` hands
+  // every size-class store its own `store_view` facade. `Arena arena(ws)` -- the
+  // plain ChunkSource constructor -- keeps the untagged single-queue behavior, so
+  // every existing single-store caller is unchanged.
+  ChunkSourceRouter& router() noexcept { return d_router; }
+
+  // The last `store_view` refusal. The router reports a refusal as a null source
+  // (it cannot return a value); this carries the reason. `Ok` until a bind fails.
+  const WorkspaceFileError& bind_error() const noexcept { return d_bind_error; }
+
+  // Adopt the store-table snapshot the selected root published (0 = A, 1 = B) --
+  // the recovery step that makes reopen unambiguous. Validates every row's
+  // geometry; checks that each store's reopened chunk set COVERS its recorded
+  // high-water (`StoreDirectoryInconsistent` otherwise -- an asserted invariant,
+  // never a trusted one); and hole-punches the post-checkpoint chunk garbage,
+  // i.e. the live chunks a crashed commit appended above the selected root's
+  // high-water, which `reserve_restored` would never claim. That punch is the
+  // chunk-level analogue of the freed-slot durability quarantine and is what keeps
+  // the file from leaking storage across an unclean shutdown. Called once, by
+  // `Checkpointer::open`.
+  expected<std::monostate, WorkspaceFileError> adopt_snapshot(int ab);
+
+  // The adopted snapshot's rows (empty until `adopt_snapshot`; all-zero on a file
+  // with no stores). Unused rows have `slot_stride == 0`.
+  const std::vector<WorkspaceStoreEntry>& restored_stores() const noexcept {
+    return d_restored_stores;
+  }
+
+  // The store-table row index of `(slot_stride, slot_align)`, or
+  // `k_workspace_no_owner` when that size class has no row.
+  std::uint32_t store_id(std::uint32_t slot_stride, std::uint32_t slot_align) noexcept;
+
+  // Write `high_water` into store-table snapshot `ab`'s row `id` -- the commit's
+  // high-water publish. A plain store into the already-mapped header: the commit
+  // only ever writes the INACTIVE snapshot, and the same `sync_header()` that makes
+  // the flipped root durable makes these durable with it. Zero extra syscalls
+  // (Decision 4).
+  void publish_store_high_water(int ab, std::uint32_t id, std::uint32_t high_water) noexcept;
+
   // Debug hardening (doc 15): mprotect every live data mapping read-only after a
   // checkpoint publishes it, or a single range writable when a quarantined slot
   // is handed back for reuse. No-op / unsupported outside POSIX debug builds.
@@ -261,10 +386,35 @@ public:
   std::uint64_t chunk_count() const noexcept { return d_chunk_count; }
 
 private:
+  friend class WorkspaceStoreView;
   WorkspaceFileChunkSource() = default;
 
   WorkspaceHeader* header() noexcept;
   WorkspaceChunkEntry* directory() noexcept;
+  // Row 0 of store-table snapshot `ab` (0 = A, 1 = B), inside the mapped header.
+  WorkspaceStoreEntry* store_table(int ab) noexcept;
+
+  // Size the per-store state to the file's store table and arm the router. Called
+  // once by `create` / `open`, after the header mapping is established.
+  void init_store_directory(std::uint32_t max_stores, std::uint64_t table_offset);
+
+  // Append a fresh chunk to the file, tagging its directory entry with `owner`
+  // (`k_workspace_no_owner` for the untagged path). The single growth path behind
+  // both `acquire` and every store view's `acquire`.
+  expected<ChunkSpan, PoolError> grow(std::size_t size, std::size_t alignment, std::uint32_t owner);
+
+  // Serve store `id`: drain its reopened chunks first (in directory order, which is
+  // its acquisition order), then grow. The body of WorkspaceStoreView::acquire.
+  expected<ChunkSpan, PoolError> acquire_for(std::uint32_t id, std::size_t size,
+                                             std::size_t alignment);
+
+  // Adapter feeding an Arena's per-store binds into `store_view` (the same
+  // self-pointer idiom as Checkpointer's ChunkFence).
+  struct Router final : ChunkSourceRouter {
+    WorkspaceFileChunkSource* self{nullptr};
+    ChunkSource* source_for(std::size_t slot_stride, std::size_t slot_align,
+                            std::size_t chunk_slots) override;
+  };
 
   // Syscall shims: each routes through `d_injector` when installed (one branch),
   // else calls the real syscall directly. Defined only under
@@ -283,15 +433,19 @@ private:
   };
 
   // A chunk remapped by `open` and not yet served back through `acquire`. On
-  // reopen the live data chunks are mapped and queued here in directory order;
-  // recovery's `reserve_restored` pulls them out (front-to-back) instead of
-  // growing the file.
+  // reopen the live data chunks are mapped and queued in directory order --
+  // per-owner for tagged chunks, in one untagged queue for the rest; recovery's
+  // `reserve_restored` pulls them out (front-to-back) instead of growing the file.
   struct ReopenedChunk {
     void* base;
     std::uint64_t offset;
     std::uint64_t size;
     std::uint32_t index;
   };
+
+  // Drop a reopened chunk no store will claim (post-checkpoint garbage): unmap it,
+  // hole-punch its file range, and clear its directory entry.
+  void discard_reopened(const ReopenedChunk& chunk) noexcept;
 
   std::string d_path;
 #if defined(_WIN32)
@@ -308,12 +462,36 @@ private:
   void* d_header_map{nullptr};
   std::size_t d_header_bytes{0};
   std::unordered_map<void*, LiveChunk> d_live;
+  // Reopened chunks with no owner tag (grown through the source's own `acquire`),
+  // served back by `acquire` in directory order.
   std::vector<ReopenedChunk> d_reopened;
   std::size_t d_reopened_cursor{0};
+
+  // --- arena directory state (pool.workspace_store_directory) ----------------
+  std::uint32_t d_max_stores{0};
+  std::uint64_t d_store_table_offset{0};
+  Router d_router{};
+  // All four indexed by store-table row (StoreId), sized `d_max_stores`.
+  std::vector<std::unique_ptr<WorkspaceStoreView>> d_views; // null until bound
+  std::vector<std::vector<ReopenedChunk>> d_store_reopened; // per-owner, directory order
+  std::vector<std::size_t> d_store_cursor;
+  std::vector<WorkspaceStoreEntry> d_restored_stores; // the adopted snapshot's rows
+  WorkspaceFileError d_bind_error{};
+  bool d_from_file{false};        // reopened an existing file (vs created fresh)
+  bool d_snapshot_adopted{false}; // adopt_snapshot has run
+
   ChunkReleaseFence* d_release_fence{nullptr};
   SyscallInjector* d_injector{nullptr};
   WorkspaceFileError d_last_error{};
 };
+
+// The facade forwards into its owning source (complete only here).
+inline expected<ChunkSpan, PoolError> WorkspaceStoreView::acquire(std::size_t size,
+                                                                  std::size_t alignment) {
+  return d_source->acquire_for(d_id, size, alignment);
+}
+
+inline void WorkspaceStoreView::release(ChunkSpan span) noexcept { d_source->release(span); }
 
 // Debug hook for doc 15's "position independence is asserted, not assumed":
 // records may reference other slots only through index-only SlotRefs (pool.refs)

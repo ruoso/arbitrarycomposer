@@ -317,6 +317,8 @@ Arena::Arena()
 
 Arena::Arena(ChunkSource& source) : d_source(&source) {}
 
+Arena::Arena(ChunkSourceRouter& router) : d_source(&d_refusing), d_router(&router) {}
+
 Arena::~Arena() = default;
 
 SlotStore& Arena::store_for(std::size_t slot_size, std::size_t slot_align, std::uint32_t chunk_bits,
@@ -331,9 +333,17 @@ SlotStore& Arena::store_for(std::size_t slot_size, std::size_t slot_align, std::
     // First typed view over this size class mints the store and installs its
     // count-column backing; later views for the same class share this store
     // (and its backing) -- one count column, one backing, per size class.
+    ChunkSource* source = d_source;
+    if (d_router != nullptr) {
+      // Routed arena: this size class gets its own source. A refusal falls back to
+      // the source that hands out NOTHING -- never to the shared one, which would be
+      // exactly the mis-route the arena directory exists to prevent.
+      ChunkSource* routed = d_router->source_for(stride, align, std::size_t{1} << bits);
+      source = routed != nullptr ? routed : &d_refusing;
+    }
     it = d_stores
              .emplace(key,
-                      std::make_unique<SlotStore>(stride, align, bits, *d_source, refcount_backing))
+                      std::make_unique<SlotStore>(stride, align, bits, *source, refcount_backing))
              .first;
   }
   return *it->second;
