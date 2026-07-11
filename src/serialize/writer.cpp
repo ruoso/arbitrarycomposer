@@ -274,6 +274,19 @@ private:
     // a Droste scene it is worse: the content becomes a transitive input of ITSELF and the
     // `$ref` closes an operator-input cycle, which Principle 6 forbids and the reader
     // rejects. Nothing is lost by stopping here.
+    //
+    // An EXTERNAL child is stopped at BEFORE either edge (doc 08 Principle 3, Principle
+    // 7's third corollary; runtime.nested_external_ref Decision 2). Its composition is a
+    // perfectly ordinary composition in THIS model -- that is what makes render, damage
+    // and caching need no external-ness at all -- but it is the other document's DATA, and
+    // enqueueing it would walk its layers into this document's `contents` table and emit a
+    // `compositions` entry for it. Load, save, and the reference is gone, replaced by a
+    // frozen copy: the reference the user authored is silently INLINED. So the traversal
+    // descends neither the child composition nor the projected `inputs()`; the URI rides
+    // the kind's `params`, which is the one thing the core does not own.
+    if (!c->external_composition_ref().empty()) {
+      return;
+    }
     if (enqueue_composition(c->composition_ref())) {
       return;
     }
@@ -312,6 +325,17 @@ private:
     // stash: its unknown siblings are LAYER fields (Decision 5), merged in `layer_json`.
     if (d_unknown != nullptr) {
       merge_unknown_fields(body, d_unknown->find(UnknownScope::Content, m.id));
+    }
+    // An EXTERNAL child is named by the kind's `params.ref` and by nothing else (doc 08
+    // Principle 3): the core emits NEITHER a `composition` field NOR an `inputs` array
+    // for it. The child's contents belong to the other document -- `visit` above already
+    // refused to walk them, so they are in no `contents` table and its composition is in
+    // no `compositions` table, and emitting a `composition` ordinal here would name an
+    // entry that does not exist. Whether the reference actually LOADED is invisible from
+    // here, which is Constraint 9's second half: a document saved with the widget file
+    // missing is byte-identical to the same document saved with it present.
+    if (!c->external_composition_ref().empty()) {
+      return body;
     }
     // The core-owned child-composition reference (doc 08 Principle 7), appended AFTER
     // the codec returned and after the unknown merge, exactly as `inputs` is: the id is

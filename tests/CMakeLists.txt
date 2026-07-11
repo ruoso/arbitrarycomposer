@@ -215,6 +215,28 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_nested_codec_golden_t)
 
+# runtime.nested_external_ref end-to-end: M8's promise ("external nested projects load") over a
+# REAL FilesystemAssetSource and real files in a temp project directory. The pixel golden is an
+# ORACLE -- the external scene must render byte-identically to the same scene authored
+# in-document (doc 05:47-52) -- and the save-side half pins the data-loss hazard shut: a loaded
+# external child must NOT be hoisted into the compositions/contents tables. Needs a real Backend
+# and a real OperatorBindingScope, so it is cross-component.
+add_executable(arbc_nested_external_ref_golden_t nested_external_ref_golden.t.cpp)
+target_link_libraries(arbc_nested_external_ref_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_external_ref_golden_t)
+
+# runtime.nested_external_ref loader behaviours, over an IN-MEMORY AssetSource double: the dedup
+# counter (two refs to one URI cost ONE request), the A->B->A cross-document cycle and the
+# self-reference (allocate-before-parse cuts the knot), the unavailable-is-not-an-error
+# placeholder path, and the hostile-chain depth cap. Deterministic -- no temp files, no timing
+# assertions, counters only (doc 16:54-62). Drives a live binding for the cycle render, so it is
+# cross-component like its golden sibling.
+add_executable(arbc_nested_external_ref_t nested_external_ref.t.cpp)
+target_link_libraries(arbc_nested_external_ref_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_external_ref_t)
+
 add_executable(arbc_contract_conformance_t contract_conformance.t.cpp)
 target_link_libraries(
   arbc_contract_conformance_t

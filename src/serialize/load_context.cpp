@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace arbc {
 namespace {
@@ -31,18 +32,56 @@ bool has_scheme(std::string_view s) {
 
 } // namespace
 
+std::string normalize_uri(std::string_view uri) {
+  // A SCHEMED reference is left verbatim: scheme dispatch is the stubbed extension
+  // point (doc 08 Principle 3), and normalizing an authority-bearing URI textually is
+  // exactly the guesswork the stub exists to avoid.
+  if (has_scheme(uri)) {
+    return std::string(uri);
+  }
+  const bool absolute = !uri.empty() && uri.front() == '/';
+  std::vector<std::string_view> segments;
+  std::size_t at = 0;
+  while (at <= uri.size()) {
+    const std::size_t slash = uri.find('/', at);
+    const std::size_t end = (slash == std::string_view::npos) ? uri.size() : slash;
+    const std::string_view segment = uri.substr(at, end - at);
+    if (segment == "..") {
+      if (!segments.empty() && segments.back() != "..") {
+        segments.pop_back();
+      } else if (!absolute) {
+        segments.push_back(segment); // nothing to pop past a relative root: keep it
+      }
+    } else if (!segment.empty() && segment != ".") {
+      segments.push_back(segment);
+    }
+    if (slash == std::string_view::npos) {
+      break;
+    }
+    at = slash + 1;
+  }
+  std::string out(absolute ? "/" : "");
+  for (std::size_t i = 0; i < segments.size(); ++i) {
+    if (i != 0) {
+      out.push_back('/');
+    }
+    out.append(segments[i]);
+  }
+  return out;
+}
+
 std::string LoadContext::resolve_uri(std::string_view reference) const {
-  // Schemed or absolute references are taken verbatim (the scheme hook is the
-  // later extension point). A relative path joins onto the base URI's directory
-  // (everything up to and including its last '/').
+  // An absolute path is already rooted; a relative one joins onto the base URI's
+  // directory (everything up to and including its last '/'). The join is then
+  // normalized, so the resolved URI is a canonical identity rather than a spelling.
   if (has_scheme(reference) || (!reference.empty() && reference.front() == '/')) {
-    return std::string(reference);
+    return normalize_uri(reference);
   }
   const std::size_t slash = d_base_uri.find_last_of('/');
   std::string resolved =
       (slash == std::string::npos) ? std::string() : d_base_uri.substr(0, slash + 1);
   resolved.append(reference);
-  return resolved;
+  return normalize_uri(resolved);
 }
 
 ResolvedRef LoadContext::resolve(std::string_view reference) {

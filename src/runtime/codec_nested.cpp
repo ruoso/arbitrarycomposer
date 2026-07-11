@@ -7,23 +7,39 @@
 // crossfade each keep their binder in their codec TU for the same reason, and nested now
 // matches.
 //
-// The thinnest codec in the tree, because `NestedContent` has NO params at all: its child
-// `ObjectId` is its entire state, and that reference is CORE-owned graph structure (doc 08
-// Principle 7). The core reads it off `Content::composition_ref()` and re-derives the
-// emitted `"composition"` id from the document's shape on every save, so `serialize_nested`
-// neither writes it nor could fight it -- it returns an empty `params` object. On the read
-// side the reader has already pre-allocated the child's `ObjectId` (its `CompResolver`
-// runs ahead of the codec, which is why a Droste back-edge costs nothing) and hands it in,
-// so `deserialize_nested` simply builds around it.
+// Nested's child comes to it one of exactly TWO ways, and the split is the whole of the
+// codec (doc 08 Principle 7 vs Principle 3):
 //
-// Emitting `params` as an empty object rather than omitting it is what gives nested free
-// unknown-`params` preservation through the core's load-time residual diff
-// (`codec.cpp`): a hand-authored `params.ref` naming an EXTERNAL child -- loader territory
-// until `runtime.nested_external_ref` lands (doc 05:54-61) -- round-trips verbatim rather
-// than being silently dropped.
+//  - an IN-DOCUMENT child is CORE-owned graph structure. The core reads it off
+//    `Content::composition_ref()` and re-derives the emitted `"composition"` id from the
+//    document's shape on every save, so `serialize_nested` neither writes it nor could
+//    fight it; on the read side the reader has already pre-allocated the child's
+//    `ObjectId` (its `CompResolver` runs ahead of the codec, which is why a Droste
+//    back-edge costs nothing) and hands it in as the `composition` argument.
+//
+//  - an EXTERNAL child is KIND-owned: a `params.ref` URI naming another `.arbc` (doc
+//    05:47-61). `params` is the one thing the core does not own, so both halves of that
+//    reference are this TU's: `serialize_nested` emits `{"ref": ...}` verbatim as the
+//    document authored it -- never an absolutised path, so a project directory stays
+//    relocatable and the output stays byte-stable -- and `deserialize_nested` consumes it,
+//    driving the `ExternalCompositionLoader` through the `LoadContext` to install the
+//    referenced document's composition graph into THIS document's model and taking its
+//    root id as the child (runtime.nested_external_ref Decision 1).
+//
+// A body naming its child BOTH ways -- a core-owned `composition` AND a `params.ref` --
+// asserts two contradictory things and is rejected as a value (Decision 7). The check
+// lives here, not in the core reader, because `params` is kind territory and the core may
+// not read its semantics.
+//
+// An UNRESOLVABLE `ref` (no asset source, a missing file, a depth-cap overrun, unparseable
+// bytes) is NOT an error: the content is built with a null child, keeps its `ref`, renders
+// the doc-05 placeholder, and the parent load succeeds (Decision 6). This is why a `ref`
+// with no `composition` does not trip the missing-child rejection below -- nothing is
+// lost, the file simply is not there right now.
 
 #include <arbc/kind_nested/nested_content.hpp>
 #include <arbc/runtime/builtin_codecs.hpp>
+#include <arbc/runtime/external_composition_loader.hpp>
 #include <arbc/runtime/operator_binding.hpp>
 
 #include <nlohmann/json.hpp>
@@ -31,6 +47,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 
 namespace arbc {
 namespace {
@@ -41,27 +58,74 @@ unexpected<ReaderError> read_fail(ReaderError::Kind kind, std::string path) {
   return unexpected(ReaderError{kind, std::move(path), ObjectId{}});
 }
 
-// Nested owns no `params`: the child reference is core-owned and the writer appends it
-// AFTER this returns (Constraint 1). A non-nested content is a codec/kind-routing
-// mismatch -> CodecFailed as a value, exactly as every sibling codec reports it.
+// An IN-DOCUMENT child rides no `params` at all: its reference is core-owned and the
+// writer appends it AFTER this returns (Constraint 1), so the params object is empty. An
+// EXTERNAL child rides `params.ref` and nothing else -- the AUTHORED string, byte-for-byte
+// as the document said it, so `save(load(bytes)) == bytes` for a relative reference
+// (Constraint 4). Emitting the RESOLVED URI instead would make the output depend on where
+// the project directory happens to sit on disk.
+//
+// Whether the reference actually LOADED is invisible here (the content holds its `ref`
+// either way), which is Constraint 9's second half: a document saved with the widget file
+// missing is byte-identical to the same document saved with it present.
+//
+// A non-nested content is a codec/kind-routing mismatch -> CodecFailed as a value, exactly
+// as every sibling codec reports it.
 expected<json, SerializeError> serialize_nested(const Content& content) {
-  if (dynamic_cast<const NestedContent*>(&content) == nullptr) {
+  const auto* const nested = dynamic_cast<const NestedContent*>(&content);
+  if (nested == nullptr) {
     return unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});
   }
-  return json::object();
+  json params = json::object();
+  if (!nested->ref().empty()) {
+    params["ref"] = nested->ref();
+  }
+  return params;
 }
 
-// Rebuild a `NestedContent` around the child `ObjectId` the reader already resolved and
-// pre-allocated. The codec interns nothing and resolves nothing: an id naming a
-// composition absent from the table is already `UnresolvableReference` ahead of this call
-// (doc 08:184-186), so the only failure left to report is an ABSENT child -- a nested
-// content with nothing to nest, which would round-trip as the empty placeholder forever
-// (Decision 3). `inputs` is never consumed: nested's inputs are derived from the child
-// composition, and the reader rejects a body carrying both edge sets before we are called.
-expected<std::unique_ptr<Content>, ReaderError> deserialize_nested(const json& /*params*/,
-                                                                   std::span<const ContentRef>,
-                                                                   ObjectId composition,
-                                                                   LoadContext& /*ctx*/) {
+// Rebuild a `NestedContent` around either the child `ObjectId` the reader already resolved
+// and pre-allocated (in-document), or the composition the loader installs from the `.arbc`
+// that `params.ref` names (external).
+//
+// `loader` is bound by CLOSURE at load-codec-table build time (`document_serialize.cpp`),
+// not by a `DeserializeFn` parameter: a structural seam that ONE kind needs does not belong
+// in the signature every kind implements (Constraint 3, following runtime.operator_codecs
+// Decision 2). A null loader -- the save-path codec table, and any caller that assembled
+// one without a load -- makes every external reference unavailable, which is the same
+// benign degradation as an absent `AssetSource`.
+//
+// A present-but-non-string `ref` is treated LENIENTLY as absent: it is then a param the
+// codec did not consume, so it rides the core's residual diff and round-trips verbatim,
+// and no hostile input can turn a mistyped key into a load failure.
+//
+// `inputs` is never consumed: nested's inputs are derived from the child composition, and
+// the reader rejects a body carrying both edge sets before we are called.
+expected<std::unique_ptr<Content>, ReaderError>
+deserialize_nested(const json& params, std::span<const ContentRef>, ObjectId composition,
+                   LoadContext& ctx, ExternalCompositionLoader* loader) {
+  std::string ref;
+  if (const auto it = params.find("ref"); it != params.end() && it->is_string()) {
+    ref = it->get<std::string>();
+  }
+  if (!ref.empty()) {
+    // One child, named two contradictory ways (Decision 7). Rejecting beats silently
+    // preferring one and dropping the other -- doc 08 states the preference twice, and
+    // nested_codec Decision 2 already made the same call for `composition` + `inputs`.
+    if (composition.valid()) {
+      return read_fail(ReaderError::Kind::MalformedField, "/params/ref");
+    }
+    // An unavailable reference yields `ObjectId{}` -- a null child, the doc-05 placeholder,
+    // and a parent load that still succeeds. That does NOT contradict the missing-child
+    // rejection below: that one rejects a body naming NO child at all (silent data loss),
+    // whereas here the `ref` is present, preserved, and re-saved byte-identically.
+    const ObjectId child = (loader != nullptr) ? loader->load(ctx, ref) : ObjectId{};
+    return std::unique_ptr<Content>(std::make_unique<NestedContent>(child, std::move(ref)));
+  }
+  // The codec interns nothing and resolves nothing for an in-document child: an id naming a
+  // composition absent from the table is already `UnresolvableReference` ahead of this call
+  // (doc 08:184-186), so the only failure left to report is an ABSENT child -- a nested
+  // content with nothing to nest, which would round-trip as the empty placeholder forever
+  // (Decision 3).
   if (!composition.valid()) {
     return read_fail(ReaderError::Kind::MissingRequiredField, "/composition");
   }
@@ -70,7 +134,16 @@ expected<std::unique_ptr<Content>, ReaderError> deserialize_nested(const json& /
 
 } // namespace
 
-Codec nested_codec() { return Codec{serialize_nested, deserialize_nested}; }
+Codec nested_codec() { return nested_codec(nullptr); }
+
+Codec nested_codec(ExternalCompositionLoader* loader) {
+  return Codec{serialize_nested,
+               [loader](const json& params, std::span<const ContentRef> inputs,
+                        ObjectId composition,
+                        LoadContext& ctx) -> expected<std::unique_ptr<Content>, ReaderError> {
+                 return deserialize_nested(params, inputs, composition, ctx, loader);
+               }};
+}
 
 void register_nested_binder() {
   // The typed match lives here, the one runtime TU that names `NestedContent` (doc

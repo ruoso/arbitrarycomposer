@@ -1,8 +1,10 @@
-// runtime.nested_codec unit tests: the two halves of `nested_codec()` driven directly,
-// plus the document round-trip that proves nested's empty-`params` choice buys free
-// unknown-key preservation. The byte-exact goldens, the attach-invariance proof and the
-// TSan lane live in the cross-component `tests/` tree (they need a live Backend / a real
-// binding scope); what belongs here is the codec itself.
+// runtime.nested_codec unit tests: the two halves of `nested_codec()` driven directly --
+// both ways a nested content can name its child (a core-owned `composition`, or a kind-owned
+// external `params.ref`, never both) -- plus the document round-trip that proves an
+// unconsumed `params` key still rides the residual diff. The byte-exact goldens, the
+// attach-invariance proof, the loader's behaviours and the TSan lanes live in the
+// cross-component `tests/` tree (they need a live Backend / a real binding scope / a real
+// AssetSource); what belongs here is the codec itself.
 //
 // This TU names `Codec` -- and through it nlohmann::json, PRIVATE to arbc_runtime -- so
 // the component-test binary links nlohmann explicitly (src/runtime/CMakeLists.txt).
@@ -113,14 +115,68 @@ TEST_CASE("deserialize_nested with no child is a MissingRequiredField value at /
   CHECK(out.error().path == "/composition");
 }
 
+// enforces: 08-serialization#builtin-nested-codec-round-trips
+TEST_CASE("deserialize_nested consumes params.ref and keeps the AUTHORED string") {
+  const Codec codec = arbc::nested_codec(); // no loader bound: the reference is unavailable
+  REQUIRE(codec.deserialize);
+  LoadContext ctx{std::string{"proj/scene.arbc"}};
+
+  json params = json::object();
+  params["ref"] = "widgets/gauge.arbc";
+  const arbc::expected<std::unique_ptr<Content>, ReaderError> built =
+      codec.deserialize(params, std::span<const ContentRef>{}, ObjectId{}, ctx);
+
+  // A `ref` with no `composition` is NOT the missing-child case: the child is named, it is
+  // just not loadable from here (no loader, no asset source). So the content is built with
+  // a null child -- the doc-05 placeholder -- and keeps its reference (Decision 6).
+  REQUIRE(built);
+  const auto* const nested = dynamic_cast<const NestedContent*>(built->get());
+  REQUIRE(nested != nullptr);
+  CHECK_FALSE(nested->child().valid());
+  // The AUTHORED string, never the resolved `proj/widgets/gauge.arbc` (Constraint 4): an
+  // absolutised path would make the output depend on where the project sits on disk.
+  CHECK(nested->ref() == "widgets/gauge.arbc");
+  CHECK(nested->external_composition_ref() == "widgets/gauge.arbc");
+
+  // ... and the codec emits exactly that back, so the round-trip is byte-stable.
+  const arbc::expected<json, SerializeError> out = codec.serialize(*nested);
+  REQUIRE(out);
+  CHECK(out->dump() == R"({"ref":"widgets/gauge.arbc"})");
+}
+
+// enforces: 08-serialization#composition-and-ref-is-read-error
+TEST_CASE("a body naming its child BOTH by composition and by params.ref is a read error") {
+  const Codec codec = arbc::nested_codec();
+  LoadContext ctx{std::string{}};
+
+  // One child, two contradictory names (Decision 7). The check lives in the CODEC, not the
+  // core reader's `RefResolver::build` (which catches `composition` + `inputs`), because
+  // `params` is kind territory and the core may not read its semantics. Rejecting beats
+  // silently preferring one -- doc 08 states the preference twice, and the sibling
+  // `composition` + `inputs` case already made the same call.
+  json params = json::object();
+  params["ref"] = "child.arbc";
+  arbc::expected<std::unique_ptr<Content>, ReaderError> out{nullptr};
+  REQUIRE_NOTHROW(out =
+                      codec.deserialize(params, std::span<const ContentRef>{}, ObjectId{42}, ctx));
+  REQUIRE_FALSE(out);
+  CHECK(out.error().kind == ReaderError::Kind::MalformedField);
+  CHECK(out.error().path == "/params/ref");
+}
+
 // enforces: 08-serialization#known-kind-params-unknowns-preserved
 // enforces: 08-serialization#builtin-nested-codec-round-trips
-TEST_CASE("a params key nested's codec never consumed round-trips verbatim, `ref` included") {
-  // Nested consumes NO params at all, so the core's load-time residual diff
-  // (`params_in - codec.serialize(built)`) preserves the whole object for free -- and that
-  // is what keeps a hand-authored EXTERNAL child reference (`params.ref`, loader territory
-  // until `runtime.nested_external_ref`) readable-and-rewritable today rather than silently
-  // dropped. The content is a REAL NestedContent, not a placeholder: the codec ran.
+TEST_CASE("a consumed `ref` and an unconsumed sibling param both round-trip verbatim") {
+  // `ref` is now a CONSUMED param -- the codec reads it on load and emits it on save -- so
+  // it no longer rides the residual diff (which is what carried it before
+  // `runtime.nested_external_ref`). The `vendor_tag` beside it still does: the core's
+  // load-time residual (`params_in - codec.serialize(built)`) is exactly the keys the codec
+  // did NOT consume, so preservation survives the codec learning to read one of them.
+  //
+  // No `AssetSource` is installed here (the plain `load_document` overload), so the
+  // reference is UNAVAILABLE -- and that is the point: the parent load still succeeds, the
+  // content is a real `NestedContent` with a null child, and the document re-saves
+  // byte-identically, `ref` and all. A missing widget file never destroys the reference.
   const char* const k_doc = R"json({
   "arbc": {
     "format": 1
@@ -134,12 +190,11 @@ TEST_CASE("a params key nested's codec never consumed round-trips verbatim, `ref
     ],
     "layers": [
       {
-        "composition": "1",
         "kind": "org.arbc.nested",
         "kind_version": "1",
         "opacity": 1.0,
         "params": {
-          "ref": "file://child.arbc",
+          "ref": "widgets/gauge.arbc",
           "vendor_tag": "x"
         },
         "transform": [
@@ -153,40 +208,6 @@ TEST_CASE("a params key nested's codec never consumed round-trips verbatim, `ref
         "visible": true
       }
     ]
-  },
-  "compositions": {
-    "1": {
-      "canvas": [
-        0,
-        0,
-        8,
-        8
-      ],
-      "layers": [
-        {
-          "kind": "org.arbc.solid",
-          "kind_version": "1",
-          "opacity": 1.0,
-          "params": {
-            "color": [
-              0.0,
-              1.0,
-              0.0,
-              1.0
-            ]
-          },
-          "transform": [
-            1.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0
-          ],
-          "visible": true
-        }
-      ]
-    }
   }
 }
 )json";
@@ -197,7 +218,8 @@ TEST_CASE("a params key nested's codec never consumed round-trips verbatim, `ref
   REQUIRE(arbc::load_document(k_doc, doc, bridge, registry));
 
   // The nesting layer really is a live NestedContent -- the codec is registered, so this is
-  // no longer the unknown-kind placeholder path.
+  // no longer the unknown-kind placeholder path -- and it is holding an unavailable
+  // reference, not a resolved child.
   const auto pin = doc.pin();
   ObjectId root;
   const arbc::CompositionRecord* rec = nullptr;
@@ -210,11 +232,12 @@ TEST_CASE("a params key nested's codec never consumed round-trips verbatim, `ref
   });
   const auto* const nested = dynamic_cast<const NestedContent*>(doc.resolve(nest_id));
   REQUIRE(nested != nullptr);
-  CHECK(pin->find_composition(nested->child()) != nullptr);
+  CHECK_FALSE(nested->child().valid());
+  CHECK(nested->ref() == "widgets/gauge.arbc");
 
   const arbc::expected<std::string, SerializeError> saved = arbc::save_document(doc, bridge);
   REQUIRE(saved);
-  CHECK(*saved == std::string(k_doc)); // byte-exact, unknown params and all
+  CHECK(*saved == std::string(k_doc)); // byte-exact: consumed `ref` + preserved `vendor_tag`
 }
 
 // enforces: 08-serialization#nesting-inputs-are-derived-not-persisted

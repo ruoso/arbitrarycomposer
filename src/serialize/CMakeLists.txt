@@ -17,3 +17,12 @@ arbc_add_component(
 target_link_libraries(arbc_serialize PRIVATE nlohmann_json::nlohmann_json)
 
 arbc_component_test(COMPONENT serialize SOURCES t/writer.t.cpp t/reader.t.cpp)
+
+# t/reader.t.cpp drives `load_composition` (runtime.nested_external_ref), which takes a
+# `CodecTable` -- and through it nlohmann::json, which is PRIVATE to arbc_serialize. Link it
+# into the component-test binary the same way, the idiom src/runtime/CMakeLists.txt already
+# uses. nlohmann is header-only and invisible to check_levels.py (it scans `#include
+# <arbc/...>` only), so this adds no levelization edge and no new dependency (doc 10).
+if(TARGET arbc_serialize_t)
+  target_link_libraries(arbc_serialize_t PRIVATE nlohmann_json::nlohmann_json)
+endif()

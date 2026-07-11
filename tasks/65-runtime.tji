@@ -97,8 +97,15 @@ task runtime "Runtime" {
   task nested_external_ref "Resolve external nested child through LoadContext" {
     effort 2d
     allocate team
+    complete 100
     depends !nested_codec
-    note "Resolve a kind-owned params.ref URI in a NestedContent's body through LoadContext's base-URI resolution and async AssetSource hook (load_context.hpp:49-87), loading the referenced .arbc as a child composition and deduping by resolved identity, so nested renders an external project. Source-of-debt: tasks/refinements/runtime/nested_codec.md Acceptance criteria (deferred follow-up). Docs 05/08."
+    note "Resolve a kind-owned params.ref URI in a NestedContent's body through LoadContext's base-URI resolution and async AssetSource hook (load_context.hpp:49-87), loading the referenced .arbc as a child composition and deduping by resolved identity, so nested renders an external project. Source-of-debt: tasks/refinements/runtime/nested_codec.md Acceptance criteria (deferred follow-up). Docs 05/08. Refinement: tasks/refinements/runtime/nested_external_ref.md"
+  }
+  task async_external_load "Deferring AssetSource for externally-loaded nested child" {
+    effort 2d
+    allocate team
+    depends !nested_external_ref
+    note "Drive a deferring AssetSource — one whose on_ready fires after load_document returns — installing the child composition on a later model revision and damaging the embedding content so the placeholder is replaced live. Doc 05:47-52 (external loading is async by nature) and doc 03 async render path. Source-of-debt: tasks/refinements/runtime/nested_external_ref.md. Docs 05/03."
   }
   task interactive_pull_wiring "Wire PullService into the interactive frame path" {
     effort 1d

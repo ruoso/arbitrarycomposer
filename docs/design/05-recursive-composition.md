@@ -51,6 +51,19 @@ an external one. External loading is async by nature, and the nested kind's
 async render path plus placeholder policy already cover the not-yet-loaded
 state.
 
+The loaded child is installed as an ordinary composition in the **host
+document's model**, so render, aggregate revision, damage routing and tile
+caching see no difference between an inline child and an external one — the
+"plus a loader" is the whole of the difference. Load-time termination of an
+external cycle (A embeds B embeds A; a document embedding *itself*) is
+guaranteed the same way the in-document Droste knot is cut (doc 08 Principle
+7): the loader records the child's composition id in its resolved-identity map
+*before* parsing the child's bytes, so a back-edge resolves to the in-flight
+composition instead of re-loading it. A non-cyclic external chain is bounded
+by a load-time depth cap; exceeding it, like a missing or unreadable file,
+makes the reference **unavailable** — the embedding content keeps its `ref`
+and renders the placeholder.
+
 Persistence follows the same split (doc 08): an in-document child
 serializes into the document-level `compositions` table, the nested
 content naming it by a core-owned id — the core reads the reference off

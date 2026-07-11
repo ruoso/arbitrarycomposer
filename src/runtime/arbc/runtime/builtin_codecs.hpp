@@ -21,6 +21,8 @@
 
 namespace arbc {
 
+class ExternalCompositionLoader; // runtime/external_composition_loader.hpp
+
 // Per-built-in producer `kind_version` (Constraint 3): a fixed constant chosen and
 // pinned by this task, golden-pinned as the literal emitted beside `kind`. Advisory
 // metadata -- the built-in kinds declare no version of their own today.
@@ -67,15 +69,31 @@ Codec crossfade_codec();
 // (`operator_binding.hpp`), beside `register_fade_binder()`.
 void register_crossfade_binder();
 
-// org.arbc.nested: the nesting codec, and the thinnest in the tree. `NestedContent` has
-// no params at all -- its child `ObjectId` is its whole state, and that reference is
-// core-owned (doc 08 Principle 7): the writer re-derives the `"composition"` id from graph
-// structure after `serialize` returns, and the reader pre-allocates the child id and hands
-// it to `deserialize` as its `composition` argument. So serialize emits an empty `params`
-// object and deserialize is `NestedContent(composition)`; an absent child is a
-// `MissingRequiredField` value at `/composition`. Input edges are NOT consumed: nested's
-// `inputs()` are a projection of the child composition, never authored data.
+// org.arbc.nested: the nesting codec. A nested content's child arrives one of two ways
+// (doc 08 Principle 7 vs Principle 3):
+//
+//  - IN-DOCUMENT: core-owned. The writer re-derives the `"composition"` id from graph
+//    structure after `serialize` returns, and the reader pre-allocates the child id and
+//    hands it to `deserialize` as its `composition` argument -- so serialize emits an
+//    EMPTY `params` object and deserialize is `NestedContent(composition)`. An absent
+//    child is a `MissingRequiredField` value at `/composition`.
+//  - EXTERNAL: kind-owned. Serialize emits `{"ref": "<authored URI>"}` verbatim;
+//    deserialize consumes it, resolves it through the `LoadContext`, and drives `loader`
+//    to install the referenced `.arbc`'s composition graph into this document's model
+//    (runtime.nested_external_ref). A body carrying BOTH a `composition` and a
+//    `params.ref` names one child two contradictory ways: `MalformedField` at
+//    `/params/ref`.
+//
+// Input edges are NOT consumed either way: nested's `inputs()` are a projection of the
+// child composition, never authored data.
+//
+// `loader` is bound by CLOSURE rather than widening `DeserializeFn` -- a structural seam
+// one kind needs does not belong in the signature every kind implements (Constraint 3).
+// The no-argument overload binds no loader, which is what the SAVE path wants (it never
+// deserializes) and what makes every external reference degrade to the doc-05 placeholder
+// -- the same benign outcome as an absent `AssetSource`.
 Codec nested_codec();
+Codec nested_codec(ExternalCompositionLoader* loader);
 
 // Register the runtime binder for `org.arbc.nested` (a typed attach/detach thunk over
 // the concrete `NestedContent`, `kinds.nested_runtime_binding`). Defined in the same TU as

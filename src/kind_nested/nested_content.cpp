@@ -7,12 +7,35 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 
 namespace arbc {
 
 namespace {
+
+// ONE lock for every NestedContent memo, not one per content. `ensure_memo` holds the
+// lock across the CHILD contents' metadata queries (the audio fold), and a child may
+// embed back into this very content: an embedding graph may be CYCLIC (doc 05:54-75),
+// and a cyclic graph admits no consistent per-node lock order. With a lock per content,
+// two threads walking the same cycle from different entry nodes take A-then-B and
+// B-then-A -- a lock-order inversion, and a real deadlock the moment they interleave.
+// A single lock has nothing to invert.
+//
+// It stays RECURSIVE for the reason the per-content lock was: the same-thread re-entrant
+// query a cycle produces (a node's walk reaching itself) must short-circuit on the
+// up-front-valid memo, not self-deadlock.
+//
+// Cheap enough to share: it covers only the metadata memo walk -- id lookups in the
+// pinned immutable snapshot, the lockless side-map resolve, and the children's memos.
+// `render`/`render_audio`, the heavy paths and the only ones that block on a pull, never
+// take it.
+std::recursive_mutex& memo_mutex() {
+  static std::recursive_mutex mutex;
+  return mutex;
+}
 
 // Map a child-local audio extent back into parent time through a layer's time
 // map inverse (doc 11:59-71). The per-edge map is `local = (parent - in)*rate +
@@ -39,9 +62,17 @@ std::optional<TimeRange> map_child_extent_to_parent(const TimeMap& tm, const Tim
 
 NestedContent::NestedContent(ObjectId child) : d_child(child) {}
 
+// The external-child ctor (doc 05:47-61). Nothing below this line branches on `d_ref`:
+// an externally-loaded child is an ordinary composition id, so `ensure_memo`, `render`,
+// `render_audio` and `inputs()` take exactly the path they take for an in-document one
+// -- and an UNAVAILABLE reference is the `d_child == ObjectId{}` case those three already
+// answer with the empty placeholder (`find_composition` returns null for an absent id).
+NestedContent::NestedContent(ObjectId child, std::string ref)
+    : d_child(child), d_ref(std::move(ref)) {}
+
 void NestedContent::attach(PullService& pull, Backend& backend, NestedResolver resolver,
                            const DocRoot& doc) {
-  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   // A NEW pin re-keys the metadata (doc 05:15-16); re-injecting the very snapshot
   // the memo already holds does not (Decision 3). The comparison reads the MEMO's
   // recorded snapshot, not `d_doc`: the runtime binder detaches at the end of every
@@ -59,7 +90,7 @@ void NestedContent::attach(PullService& pull, Backend& backend, NestedResolver r
 }
 
 void NestedContent::detach() noexcept {
-  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   d_pull = nullptr;
   d_backend = nullptr;
   d_resolver = nullptr;
@@ -69,7 +100,7 @@ void NestedContent::detach() noexcept {
 }
 
 bool NestedContent::attached() const noexcept {
-  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   return d_pull != nullptr && d_backend != nullptr && d_doc != nullptr &&
          static_cast<bool>(d_resolver);
 }
@@ -77,7 +108,7 @@ bool NestedContent::attached() const noexcept {
 // --- metadata (composed + memoized on the pinned aggregate revision) ----------
 
 void NestedContent::ensure_memo() const {
-  // Caller holds d_mutex.
+  // Caller holds the shared memo lock (`memo_mutex`).
   if (d_doc == nullptr) {
     // No live snapshot to key against, and a released one must NOT be dereferenced.
     // Two ways to be here, both answered from the memo:
@@ -238,25 +269,25 @@ void NestedContent::ensure_memo() const {
 }
 
 std::optional<Rect> NestedContent::bounds() const {
-  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   ensure_memo();
   return d_memo.bounds;
 }
 
 Stability NestedContent::stability() const {
-  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   ensure_memo();
   return d_memo.stability;
 }
 
 std::optional<TimeRange> NestedContent::time_extent() const {
-  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   ensure_memo();
   return d_memo.time_extent;
 }
 
 std::span<const ContentRef> NestedContent::inputs() const {
-  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   ensure_memo();
   // The storage is stable for the pinned revision (a fixed pin never re-keys);
   // the span views the memo's own vector in declared order (content.hpp:287-289).
@@ -264,7 +295,7 @@ std::span<const ContentRef> NestedContent::inputs() const {
 }
 
 Rect NestedContent::map_input_damage(std::size_t input, const Rect& rect) const {
-  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   ensure_memo();
   if (input >= d_memo.inputs.size()) {
     return rect; // out of range: identity (safe over-approximation)
@@ -279,7 +310,7 @@ std::optional<std::size_t> NestedContent::identity(const RenderRequest& /*reques
 }
 
 std::uint64_t NestedContent::metadata_recomputes() const noexcept {
-  const std::lock_guard<std::recursive_mutex> lock(d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   return d_metadata_recomputes;
 }
 
@@ -493,13 +524,13 @@ std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
 AudioFacet* NestedContent::audio() { return &d_audio_facet; }
 
 std::optional<TimeRange> NestedContent::NestedAudioFacet::audio_extent() const {
-  const std::lock_guard<std::recursive_mutex> lock(d_owner->d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   d_owner->ensure_memo();
   return d_owner->d_memo.audio_extent;
 }
 
 Stability NestedContent::NestedAudioFacet::audio_stability() const {
-  const std::lock_guard<std::recursive_mutex> lock(d_owner->d_mutex);
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   d_owner->ensure_memo();
   return d_owner->d_memo.audio_stability;
 }

@@ -13,6 +13,7 @@
 #include <arbc/model/records.hpp>
 #include <arbc/runtime/builtin_codecs.hpp>
 #include <arbc/runtime/document_serialize.hpp>
+#include <arbc/runtime/external_composition_loader.hpp>
 #include <arbc/serialize/codec.hpp>       // CodecTable (internal; names nlohmann::json)
 #include <arbc/serialize/deserialize.hpp> // DeserializeFn
 #include <arbc/serialize/load_context.hpp>
@@ -262,6 +263,17 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) 
     // traversal, so the two must skip the same edges or the map would carry meta entries
     // for contents the writer never emits. It is also what keeps this walk from reading the
     // memo `NestedContent::attach` mutates on the render thread (Constraint 6).
+    //
+    // An EXTERNAL child is stopped at BEFORE either edge, exactly as the writer's
+    // `ContentGraph::visit` stops (doc 08 Principle 3): its composition lives in THIS
+    // model but is the other document's data, so enqueueing it would capture the other
+    // document's contents into this snapshot and the emit would inline them -- destroying
+    // the very reference this content exists to hold. The two walks must skip the same
+    // edges or the reverse map would carry meta entries for contents the writer never
+    // emits.
+    if (!c->external_composition_ref().empty()) {
+      continue;
+    }
     if (enqueue_composition(c->composition_ref())) {
       continue;
     }
@@ -359,37 +371,9 @@ DeserializeFn recording_deserialize(DeserializeFn base, std::string_view kind_id
 } // namespace
 
 expected<std::monostate, ReaderError> load_document(std::string_view bytes, Document& doc,
-                                                    KindBridge& bridge, const Registry& registry) {
+                                                    KindBridge& bridge, const Registry& registry,
+                                                    std::string base_uri, AssetSource* assets) {
   LoadSession session;
-
-  // The per-load codec table: built-in serialize (unused on load) + a
-  // kind-recording deserialize wrapper per built-in kind (Decision 4).
-  CodecTable codecs;
-  {
-    Codec solid = solid_codec();
-    codecs.add(
-        SolidContent::kind_id,
-        Codec{solid.serialize, recording_deserialize(solid.deserialize, SolidContent::kind_id,
-                                                     k_solid_kind_version, session, bridge)});
-    Codec tone = tone_codec();
-    codecs.add(ToneContent::kind_id,
-               Codec{tone.serialize, recording_deserialize(tone.deserialize, ToneContent::kind_id,
-                                                           k_tone_kind_version, session, bridge)});
-    Codec fade = fade_codec();
-    codecs.add(FadeContent::kind_id,
-               Codec{fade.serialize, recording_deserialize(fade.deserialize, FadeContent::kind_id,
-                                                           k_fade_kind_version, session, bridge)});
-    Codec crossfade = crossfade_codec();
-    codecs.add(CrossfadeContent::kind_id,
-               Codec{crossfade.serialize,
-                     recording_deserialize(crossfade.deserialize, CrossfadeContent::kind_id,
-                                           k_crossfade_kind_version, session, bridge)});
-    Codec nested = nested_codec();
-    codecs.add(
-        NestedContent::kind_id,
-        Codec{nested.serialize, recording_deserialize(nested.deserialize, NestedContent::kind_id,
-                                                      k_nested_kind_version, session, bridge)});
-  }
 
   // Provisional-root records minted by the sink, keyed by live pointer: a node is
   // minted as a layer root when first sunk, then DEMOTED to an owned-only input child
@@ -429,14 +413,67 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
     return SunkContent{id, live};
   };
 
-  // Built-in leaf kinds resolve no external assets, so the base URI is empty.
-  LoadContext ctx{std::string{}};
   const JournalSuspension no_journal(doc);
   Model& into = DocumentSerializeAccess::model(doc);
+
+  // `base_uri` is what a kind's relative references resolve against (doc 08 Principle 3:
+  // "URIs resolved relative to the document"); `assets` is how their bytes are fetched.
+  // Both default to nothing, and both being absent is a supported, benign configuration:
+  // every external reference is then simply unavailable, which is what the fuzz lane and
+  // every leaf-kind document already are.
+  LoadContext ctx{std::move(base_uri)};
+  ctx.set_asset_source(assets);
+
+  // The host document's ROOT composition id, allocated up front so the loader can seed
+  // its resolved-identity map with "this document -> this composition" (Constraint 6):
+  // a document that references ITSELF then dedups to its own root, and a cross-document
+  // Droste collapses onto the in-document one exactly. `allocate_id` is a bare monotonic
+  // counter bump that installs no record, so this mutates nothing -- and the root is
+  // still the lowest-id composition, as `find_first_composition` requires.
+  const ObjectId root_composition = into.allocate_id();
+
+  // The codec table and the loader are mutually referential and that is intentional
+  // (Constraint 3): the loader reads the table when it recurses into a child document,
+  // and the nested codec's closure holds the loader. The table is filled AFTER the loader
+  // is constructed over it -- it is only ever read at call time, inside a load.
+  CodecTable codecs;
+  ExternalCompositionLoader loader(into, registry, codecs, sink);
+  loader.seed(ctx.base_uri(), root_composition);
+
+  // The per-load codec table: built-in serialize (unused on load) + a
+  // kind-recording deserialize wrapper per built-in kind (Decision 4).
+  {
+    Codec solid = solid_codec();
+    codecs.add(
+        SolidContent::kind_id,
+        Codec{solid.serialize, recording_deserialize(solid.deserialize, SolidContent::kind_id,
+                                                     k_solid_kind_version, session, bridge)});
+    Codec tone = tone_codec();
+    codecs.add(ToneContent::kind_id,
+               Codec{tone.serialize, recording_deserialize(tone.deserialize, ToneContent::kind_id,
+                                                           k_tone_kind_version, session, bridge)});
+    Codec fade = fade_codec();
+    codecs.add(FadeContent::kind_id,
+               Codec{fade.serialize, recording_deserialize(fade.deserialize, FadeContent::kind_id,
+                                                           k_fade_kind_version, session, bridge)});
+    Codec crossfade = crossfade_codec();
+    codecs.add(CrossfadeContent::kind_id,
+               Codec{crossfade.serialize,
+                     recording_deserialize(crossfade.deserialize, CrossfadeContent::kind_id,
+                                           k_crossfade_kind_version, session, bridge)});
+    // The one codec that takes the loader: nested is the only kind that names a child
+    // composition, so it is the only one with an external reference to resolve.
+    Codec nested = nested_codec(&loader);
+    codecs.add(
+        NestedContent::kind_id,
+        Codec{nested.serialize, recording_deserialize(nested.deserialize, NestedContent::kind_id,
+                                                      k_nested_kind_version, session, bridge)});
+  }
+
   // The document's unknown-field stash is replaced wholesale by a successful load and
   // left untouched on any error, exactly like the model (doc 08 Principle 4).
   return arbc::load_document(bytes, registry, codecs, ctx, sink, into,
-                             &DocumentSerializeAccess::unknown(doc));
+                             &DocumentSerializeAccess::unknown(doc), root_composition);
 }
 
 } // namespace arbc

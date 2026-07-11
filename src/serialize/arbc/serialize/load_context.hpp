@@ -38,6 +38,19 @@ public:
                        std::function<void(std::string_view bytes)> on_ready) = 0;
 };
 
+// Lexically canonicalize a URI -- purely textual, no filesystem access, so it is
+// safe on hostile input and on a URI naming nothing that exists. Collapses `.`
+// segments, empty segments (`a//b`), and `..` against the segment before it; a
+// schemed reference is returned verbatim (scheme dispatch is the stubbed extension
+// point, doc 08 Principle 3), and a leading `..` that cannot be popped is kept, so a
+// reference escaping the base directory stays a distinct, honest identity.
+//
+// This is what makes "deduplicates by RESOLVED IDENTITY" (doc 08 Principle 3) a
+// statement about identity rather than about spelling: `child.arbc` and
+// `./child.arbc` name one file, so they must yield ONE `ResolvedRef`, one asset
+// request, and one loaded child composition.
+std::string normalize_uri(std::string_view uri);
+
 // The single resolution / loading choke point a load threads through every kind
 // (doc 08:64-66,74-79; serialize.reader Decision 4 + Constraint 6): base-URI
 // resolution (v1 resolves relative paths against the document's base URI; the
@@ -48,7 +61,10 @@ public:
 // runs on one thread.
 class LoadContext {
 public:
-  explicit LoadContext(std::string base_uri) : d_base_uri(std::move(base_uri)) {}
+  // The base is itself canonicalized, so `base_uri()` IS the document's resolved
+  // identity -- which is what lets a loader seed its resolved-URI map with "this
+  // document" and collapse a self-reference onto the in-document Droste case.
+  explicit LoadContext(std::string base_uri) : d_base_uri(normalize_uri(base_uri)) {}
 
   // Resolve `reference` against the base URI and dedup by resolved identity: the
   // same reference (or any reference resolving to the same URI) returns the same

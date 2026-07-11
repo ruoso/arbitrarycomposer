@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 
 namespace arbc {
 
@@ -595,6 +596,22 @@ public:
   // every save and never rides a kind's `params`. Default: `ObjectId{}`, "not a
   // composition reference" -- the answer for every kind but nested.
   virtual ObjectId composition_ref() const { return ObjectId{}; }
+
+  // The authored URI a nested content's child composition was LOADED FROM, when
+  // that child came from an external project file (doc 05:47-61). The child is by
+  // then an ordinary composition in this document's model -- `composition_ref()`
+  // names it and every downstream system sees an in-document child -- but it is not
+  // this document's DATA. The kind answers the authored reference here so the
+  // serializer names the child by that URI instead of hoisting the other document's
+  // contents into this one's `contents` table (doc 08 Principle 3, Principle 7's
+  // third corollary): a content answering non-empty emits neither an `inputs` array
+  // nor a `composition` field, and the write traversal descends neither. The URI
+  // itself rides the kind's `params`, the one thing the core does not own.
+  //
+  // Empty means "the child, if any, is document-local" -- the default, and the
+  // answer for every kind but nested. Read-only discovery, never a write channel:
+  // the core cannot set it, exactly as it cannot set `composition_ref()`.
+  virtual std::string_view external_composition_ref() const { return {}; }
 
   // Map damage on input `input`'s given `rect` into damage on this content's
   // output (doc 13:54-57). Default: identity (pass-through-shaped content).

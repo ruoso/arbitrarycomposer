@@ -85,6 +85,19 @@ These are core-owned placement, not `params`.
    stores) plug in later. Cross-file sharing (two parents referencing one
    child `.arbc`) deduplicates through the loader by resolved identity, so
    the doc-05 shared-content semantics survive persistence.
+
+   Dedup is keyed on the **resolved** URI; the **authored** reference is what
+   round-trips — a document that says `widgets/gauge.arbc` saves back saying
+   `widgets/gauge.arbc`, never an absolutised path, so a project directory
+   stays relocatable and the output stays byte-stable. A reference that cannot
+   be loaded — no asset source installed, a missing or unreadable file, a
+   depth-cap overrun — is reported as **unavailable**, not as a read error:
+   the embedding content loads with no child, keeps its reference verbatim,
+   and renders the placeholder (doc 05). The asymmetry with a dangling
+   in-document `composition` id (Principle 7, a read error) is deliberate —
+   self-inconsistent bytes are a malformed document, whereas a missing
+   external file is a condition of the environment that may resolve later, and
+   doc 05 already assigns that state the placeholder.
 4. **Versioning is boring on purpose.** `arbc.format` is a major version;
    readers reject majors they don't know. Within a major, unknown *fields*
    are preserved-and-ignored (same discipline as unknown kinds) — and that
@@ -210,6 +223,19 @@ These are core-owned placement, not `params`.
    and `inputs` is a serialization error surfaced as a value on load
    (rejecting it beats silently dropping one of the two edge sets the author
    wrote).
+
+   That rule is a rule about *document-local* children. A content that answers
+   a non-empty `external_composition_ref()` (doc 03) names its child by that
+   URI: the core emits **neither** an `inputs` array **nor** a `composition`
+   field for it, and the write traversal descends **neither** its `inputs()`
+   nor its child composition — the child's contents belong to the other
+   document and must not be copied into this one's `contents` table. The
+   reference itself rides the kind's `params` (Principle 3), which is the one
+   thing the core does not own. A third corollary on kinds follows: a body
+   carrying **both** a core-owned `composition` and a kind's external
+   `params.ref` names one child two contradictory ways and is a serialization
+   error surfaced as a value on load — rejecting it beats silently preferring
+   one.
 
 ## Deliberately not in the format
 

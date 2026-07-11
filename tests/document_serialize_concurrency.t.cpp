@@ -23,14 +23,17 @@
 #include <arbc/runtime/document_serialize.hpp>
 #include <arbc/runtime/operator_binding.hpp>
 #include <arbc/runtime/pull_identity.hpp>
-#include <arbc/serialize/codec.hpp> // CodecTable (to hold builtin_codecs() by value)
+#include <arbc/serialize/codec.hpp>        // CodecTable (to hold builtin_codecs() by value)
+#include <arbc/serialize/load_context.hpp> // AssetSource (the external-child lane)
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 
 TEST_CASE("a captured snapshot serializes off-thread while the writer thread mutates") {
@@ -396,6 +399,125 @@ TEST_CASE("saving a nesting document races a live binding scope on another threa
   CHECK(binds.load() >= 1);
   // The binding really did populate the derived edges the writer skipped -- otherwise the
   // byte-equality above would be vacuous.
+  {
+    const arbc::OperatorBindingScope scope = arbc::bind_operators(doc, service, backend, pin);
+    CHECK(nested->attached());
+    CHECK_FALSE(nested->inputs().empty());
+  }
+}
+
+// enforces: 08-serialization#nesting-inputs-are-derived-not-persisted
+// enforces: 08-serialization#external-composition-ref-round-trips
+TEST_CASE("saving an EXTERNALLY-loaded nesting document races a live binding scope, benignly") {
+  // Constraint 9's second half (runtime.nested_external_ref). The sibling lane above froze an
+  // IN-DOCUMENT child; this one freezes an EXTERNAL one -- a child composition loaded from
+  // another `.arbc` and installed into this document's model, whose `NestedContent` therefore
+  // holds BOTH a live child `ObjectId` and a non-empty authored `ref`.
+  //
+  // That is the configuration where a save could most plausibly go wrong under a live binding:
+  // the content's `composition_ref()` RESOLVES (so the writer's old rule would hoist the other
+  // document's contents into this one's tables) and its `inputs()` is memo-derived and
+  // non-empty exactly while the render thread holds a binding. The writer must consult only the
+  // immutable `external_composition_ref()` -- set once at construction, never touched by
+  // attach/detach -- and stop. No new lock, TSan clean, and every racing save lands on the
+  // identical bytes: no `compositions` key, no `contents` key, the `ref` intact.
+  using arbc::Content;
+  using arbc::Document;
+  using arbc::KindBridge;
+  using arbc::NestedContent;
+  using arbc::ObjectId;
+
+  // The child project, served from memory: no temp files in a TSan lane.
+  class MemorySource final : public arbc::AssetSource {
+  public:
+    void request(std::string_view, std::function<void(std::string_view)> on_ready) override {
+      static constexpr const char* k_child =
+          R"({"arbc":{"format":1},"composition":{"canvas":[0,0,8,8],"layers":[)"
+          R"({"kind":"org.arbc.solid","kind_version":"1","params":{"color":[0,1,0,1]}}]}})";
+      on_ready(k_child);
+    }
+  };
+  static constexpr const char* k_parent =
+      R"({"arbc":{"format":1},"composition":{"canvas":[0,0,16,16],"layers":[)"
+      R"({"kind":"org.arbc.nested","kind_version":"1","params":{"ref":"child.arbc"}}]}})";
+
+  MemorySource source;
+  Document doc;
+  KindBridge bridge;
+  const arbc::Registry registry;
+  REQUIRE(arbc::load_document(k_parent, doc, bridge, registry, "proj/parent.arbc", &source));
+
+  // Reach the loaded nesting content, and confirm its child really did resolve -- otherwise
+  // this lane would be racing the (uninteresting) unavailable path.
+  const arbc::DocStatePtr pin = doc.pin();
+  ObjectId root;
+  const arbc::CompositionRecord* rec = nullptr;
+  REQUIRE(pin->find_first_composition(root, rec));
+  ObjectId nest_id;
+  pin->for_each_layer_in(root, [&](ObjectId lid) {
+    const arbc::LayerRecord* lr = pin->find_layer(lid);
+    REQUIRE(lr != nullptr);
+    nest_id = lr->content;
+  });
+  auto* const nested = dynamic_cast<NestedContent*>(doc.resolve(nest_id));
+  REQUIRE(nested != nullptr);
+  REQUIRE(nested->child().valid());
+  REQUIRE(nested->ref() == "child.arbc");
+
+  const arbc::expected<std::string, arbc::SerializeError> reference =
+      arbc::save_document(doc, bridge);
+  REQUIRE(reference.has_value());
+  const std::string expected_bytes = *reference;
+  REQUIRE(expected_bytes.find(R"("ref": "child.arbc")") != std::string::npos);
+  REQUIRE(expected_bytes.find("\"compositions\"") == std::string::npos);
+
+  arbc::CpuBackend backend;
+  arbc::TileCache cache(64U * 1024 * 1024);
+  const arbc::ContentResolver resolve = [&doc](ObjectId id) { return doc.resolve(id); };
+  arbc::PullConfig config;
+  config.id_of = arbc::make_pull_identity_of(*pin, resolve);
+  const std::uint64_t revision = pin->revision();
+  config.contribution = [revision](const Content*) { return revision; };
+  arbc::PullServiceImpl service(cache, backend, arbc::direct_dispatch(), config);
+  arbc::register_builtin_operator_binders();
+
+  constexpr int k_rounds = 500;
+  std::atomic<bool> stop{false};
+  std::atomic<int> binds{0};
+
+  std::thread render([&] {
+    while (!stop.load()) {
+      arbc::OperatorBindingScope scope = arbc::bind_operators(doc, service, backend, pin);
+      static_cast<void>(nested->inputs()); // the derived edges the writer must NOT read
+      static_cast<void>(nested->bounds()); // the memo the binding keys
+      binds.fetch_add(1);
+      scope.release();
+    }
+  });
+
+  std::atomic<bool> serialize_error{false};
+  std::atomic<bool> mismatch{false};
+  int saved = 0;
+  for (int i = 0; i < k_rounds; ++i) {
+    const arbc::expected<std::string, arbc::SerializeError> out = arbc::save_document(doc, bridge);
+    if (!out.has_value()) {
+      serialize_error.store(true);
+    } else if (*out != expected_bytes) {
+      mismatch.store(true);
+    } else {
+      ++saved;
+    }
+  }
+  stop.store(true);
+  render.join();
+
+  CHECK_FALSE(serialize_error.load());
+  CHECK_FALSE(mismatch.load());
+  CHECK(saved == k_rounds);
+  CHECK(binds.load() >= 1);
+  // The binding really did populate the derived edges the writer skipped -- the child's layers
+  // ARE reachable through the model, so `inputs()` is non-empty -- otherwise the byte-equality
+  // above would be vacuous and the suppression would be proving nothing.
   {
     const arbc::OperatorBindingScope scope = arbc::bind_operators(doc, service, backend, pin);
     CHECK(nested->attached());

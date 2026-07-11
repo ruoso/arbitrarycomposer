@@ -6,9 +6,10 @@
 
 #include <cstdint>
 #include <functional>
-#include <mutex>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace arbc {
@@ -62,6 +63,25 @@ public:
   // relies on that: it builds the `PullService`'s identity map by walking `inputs()`
   // over the pinned graph, and that service is an input to `bind_operators`.
   explicit NestedContent(ObjectId child);
+
+  // Wrap a child composition that was LOADED FROM an external project file (doc
+  // 05:47-61, doc 08 Principle 3): `child` is an ordinary composition in the host
+  // document's model exactly as an in-document one is -- "external" is provenance,
+  // not a different runtime representation, so render / audio / inputs / damage all
+  // stay on the path above -- and `ref` is the AUTHORED URI the document said, kept
+  // verbatim so it re-saves verbatim and a project directory stays relocatable.
+  //
+  // `child` is `ObjectId{}` when the reference is UNAVAILABLE (no asset source, a
+  // missing or unreadable file, a load-time depth-cap overrun): the content still
+  // holds its `ref`, describes as the empty placeholder, and renders as one -- the
+  // parent document loads regardless (doc 05:50-52). Restoring the file and
+  // reloading brings the scene back, which is why the reference is preserved rather
+  // than the whole content being demoted to an unknown-kind placeholder.
+  //
+  // The kind holds a plain `std::string` and never a `LoadContext`: resolution and
+  // loading are the runtime loader's (doc 17 -- `kind_nested` (L4) may not name
+  // `serialize` (L4)).
+  NestedContent(ObjectId child, std::string ref);
 
   // Inject the render-time services (mirrors the raster attach seam):
   //  - `pull`     the shared PullService every child render travels through;
@@ -151,6 +171,11 @@ public:
   // re-derives the core-owned `"composition"` reference from it on every save. Nested is
   // the one kind that answers non-null.
   ObjectId composition_ref() const override { return d_child; }
+  // The authored URI the child was loaded from, or empty for a document-local child
+  // (doc 08 Principle 3). Non-empty tells the serializer to name the child by this
+  // URI -- emitting neither `composition` nor `inputs`, and descending neither --
+  // instead of copying the other document's contents into this one's tables.
+  std::string_view external_composition_ref() const override { return d_ref; }
   // Map an input layer's damage through that layer's embedding transform
   // (covering / over-approximating, content.hpp:293-301).
   Rect map_input_damage(std::size_t input, const Rect& rect) const override;
@@ -164,6 +189,11 @@ public:
   std::uint64_t metadata_recomputes() const noexcept;
 
   ObjectId child() const noexcept { return d_child; }
+
+  // The authored external reference, for the codec (which re-emits it into `params`)
+  // and for a host asking where this child came from. Empty for a document-local
+  // child. The twin of `external_composition_ref()`, typed for the kind's own users.
+  const std::string& ref() const noexcept { return d_ref; }
 
   static constexpr const char* kind_id = "org.arbc.nested";
 
@@ -200,9 +230,9 @@ private:
   };
 
   // Recompute the memo if the pinned revision moved (WRITER for the memo; guarded
-  // by `d_mutex`). Unattached, it answers from the memo instead: the surviving one
-  // when detached, else the empty placeholder (keyed to no snapshot, so `attach`
-  // re-keys it).
+  // by the shared memo lock). Unattached, it answers from the memo instead: the
+  // surviving one when detached, else the empty placeholder (keyed to no snapshot,
+  // so `attach` re-keys it).
   void ensure_memo() const;
 
   // One child layer, re-expressing the compositor's per-layer predicate loop
@@ -252,17 +282,24 @@ private:
   };
 
   ObjectId d_child;
+  // The authored external URI, or empty for a document-local child. Immutable after
+  // construction, so it is safe to read from the save path while a render binding is
+  // live (Constraint 9: a save must not depend on binding state, or on load state).
+  std::string d_ref;
   PullService* d_pull{nullptr};
   Backend* d_backend{nullptr};
   NestedResolver d_resolver{};
   const DocRoot* d_doc{nullptr};
 
-  // Recursive so a cyclic graph (a Droste self-embedding) that re-queries this
+  // Guarded by the ONE shared nested-memo lock (`nested_content.cpp`), not a
+  // per-instance one: `ensure_memo` holds the lock across the CHILD contents'
+  // metadata queries, and a cyclic embedding graph (doc 05:54-75) admits no
+  // consistent per-node lock order -- see `memo_mutex()` for why. It stays
+  // recursive so a cyclic graph (a Droste self-embedding) that re-queries this
   // same content's metadata while `ensure_memo` is mid-computation does not
   // self-deadlock: the memo is marked valid up front, so the re-entrant query
   // short-circuits to the in-progress (neutral) value -- each node visited once
   // (doc 05:54-75 graph-walk-bounds-cycles).
-  mutable std::recursive_mutex d_mutex;
   mutable Memo d_memo;
   mutable std::uint64_t d_metadata_recomputes{0};
 

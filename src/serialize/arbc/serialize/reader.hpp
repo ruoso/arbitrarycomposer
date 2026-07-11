@@ -106,9 +106,44 @@ using ContentSink = std::function<SunkContent(std::unique_ptr<Content>)>;
 // `serialize_document` merges it back on save without ever shadowing a known key. It is
 // REPLACED wholesale on a successful load and left untouched on any error, exactly like
 // the target `Model`. `nullptr` is the historical lossy behavior.
+//
+// `root_composition` PRE-ALLOCATES the root composition's `ObjectId`
+// (runtime.nested_external_ref Constraint 6). An external-reference loader needs that id
+// in hand BEFORE the read begins, so it can seed its resolved-URI map with "this document
+// -> this composition" and collapse a document that references ITSELF onto the
+// in-document Droste case. The default -- an invalid id -- allocates one during the read,
+// exactly as before, so the root stays the lowest-id composition either way.
 expected<std::monostate, ReaderError> load_document(std::string_view json, const Registry& registry,
                                                     const CodecTable& codecs, LoadContext& ctx,
                                                     const ContentSink& sink, Model& into,
-                                                    UnknownFieldStore* unknown = nullptr);
+                                                    UnknownFieldStore* unknown = nullptr,
+                                                    ObjectId root_composition = ObjectId{});
+
+// Install ONE document's composition graph into an EXISTING model as a child subtree,
+// under the caller-supplied root id `root_composition`, and return that id
+// (runtime.nested_external_ref). The read is `load_document`'s, exactly: same envelope
+// check, same codec routing, same `$ref` resolution, same cycle discipline. The three
+// differences are the whole of "external":
+//
+//  - it installs through an ordinary transaction rather than `load_baseline`, which would
+//    republish the HOST document at revision 0 and discard it;
+//  - it leaves the model root alone -- `find_first_composition` names the lowest-id
+//    composition, and the host's root was allocated before any child's;
+//  - it drops the child's unknown-field residuals: they are the OTHER document's data,
+//    which this one never re-emits (its child is named by URI, doc 08 Principle 3).
+//
+// `root_composition` must come from `Model::allocate_id()` and must ALREADY be recorded in
+// the caller's resolved-URI map: that is the allocate-before-parse knot-cut that makes a
+// cross-document cycle (A embeds B embeds A) terminate as a finite graph
+// (compositions_table Decision 4, lifted across documents; doc 05, doc 08 Principle 7).
+//
+// Returns `ObjectId{}` when the bytes are a legal document that simply holds no root
+// composition -- there is nothing to embed, and the caller reports the reference
+// unavailable. Malformed bytes are a `ReaderError` value, which the caller likewise turns
+// into unavailability rather than failing the parent load (doc 08 Principle 3, doc 05).
+expected<ObjectId, ReaderError> load_composition(std::string_view json, const Registry& registry,
+                                                 const CodecTable& codecs, LoadContext& ctx,
+                                                 const ContentSink& sink, Model& into,
+                                                 ObjectId root_composition);
 
 } // namespace arbc

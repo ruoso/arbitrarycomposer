@@ -354,9 +354,13 @@ public:
   CompResolver(const json* table, Model& model) : d_table(table), d_model(model) {}
 
   // Seed the walk with the root composition: ordinal `"0"`, the lowest id in the
-  // document, and never a key in the `compositions` table.
-  ObjectId add_root(const json& body) {
-    const ObjectId id = d_model.allocate_id();
+  // document, and never a key in the `compositions` table. `seeded` is a caller-
+  // PRE-ALLOCATED id (runtime.nested_external_ref Constraint 6) -- the external
+  // loader hands the child's root id in, having recorded it in its resolved-URI map
+  // BEFORE these bytes were parsed, which is what makes a cross-document cycle
+  // terminate. An invalid `seeded` allocates one here, as it always did.
+  ObjectId add_root(const json& body, ObjectId seeded) {
+    const ObjectId id = seeded.valid() ? seeded : d_model.allocate_id();
     d_allocated.emplace("0", id);
     d_pending.push_back(Pending{id, &body});
     return id;
@@ -547,25 +551,37 @@ private:
   std::unordered_set<std::string> d_in_progress;        // ids on the resolution stack
 };
 
-} // namespace
+// One composition of a document, resolved but not yet materialized into the model.
+struct ResolvedComp {
+  ObjectId id;
+  CompData data;
+};
 
-expected<std::monostate, ReaderError>
-load_document(std::string_view input, const Registry& registry, const CodecTable& codecs,
-              LoadContext& ctx, const ContentSink& sink, Model& into, UnknownFieldStore* unknown) {
-  // Non-throwing parse (serialize.json_dep discipline): a syntax error yields a
-  // discarded value, never a thrown exception (Constraint 3).
-  const json root = json::parse(input.begin(), input.end(), /*cb=*/nullptr,
-                                /*allow_exceptions=*/false);
+// A whole document's composition graph, resolved into intermediates and ready to
+// install. Split out of `load_document` (runtime.nested_external_ref) so an EXTERNAL
+// child document can be read through exactly the same machinery and installed into an
+// EXISTING model under a caller-seeded root id -- "the same mechanism plus a loader"
+// (doc 05:47-52) is a promise about the reader as much as the compositor.
+struct DocumentGraph {
+  ObjectId root{}; // the root composition's id; invalid == the document has none
+  std::vector<ResolvedComp> comps;
+  UnknownFieldStore staged;
+};
+
+// Non-throwing parse + envelope check (serialize.json_dep discipline): a syntax error
+// yields a discarded value, never a thrown exception (Constraint 3). Envelope:
+// `{"arbc":{"format":<major>}}` -- a missing key is MissingRequiredField, a present-but-
+// mistyped one is MalformedField, and a known-but-unsupported major is a clean rejection
+// with no document mutation (Constraint 4, Principle 4).
+expected<json, ReaderError> parse_document(std::string_view input) {
+  json root = json::parse(input.begin(), input.end(), /*cb=*/nullptr,
+                          /*allow_exceptions=*/false);
   if (root.is_discarded()) {
     return fail(ReaderError::Kind::MalformedJson, "");
   }
   if (!root.is_object()) {
     return fail(ReaderError::Kind::MalformedField, ""); // a non-object envelope
   }
-
-  // Envelope: `{"arbc":{"format":<major>}}`. A missing key is MissingRequiredField;
-  // a present-but-mistyped one is MalformedField; a known-but-unsupported major is
-  // a clean rejection with no document mutation (Constraint 4, Principle 4).
   const auto ait = root.find("arbc");
   if (ait == root.end()) {
     return fail(ReaderError::Kind::MissingRequiredField, "/arbc");
@@ -583,11 +599,22 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
   if (fit->get<std::int64_t>() != k_format_major) {
     return fail(ReaderError::Kind::UnknownFormatMajor, "/arbc/format");
   }
+  return root;
+}
 
+// Resolve `root`'s whole composition graph into intermediates BEFORE touching the model
+// (Decision 5, 7), so a malformed body, a dangling `$ref`, or a `$ref` cycle returns a
+// `ReaderError` with no composition installed. `seeded_root` is the id the root
+// composition must take: `Model::allocate_id()`'s next value for a fresh document, or --
+// for an external child -- the id its embedding `NestedContent` already holds, which is
+// how the loader cuts the cross-document cycle knot before parsing these bytes
+// (compositions_table Decision 4, lifted across documents).
+expected<DocumentGraph, ReaderError> resolve_graph(const json& root, const Registry& registry,
+                                                   const CodecTable& codecs, LoadContext& ctx,
+                                                   const ContentSink& sink, Model& into,
+                                                   ObjectId seeded_root) {
   // The ROOT composition (doc 08 Principle 7: "a document holds exactly one root
-  // `composition`"). Parsed into an intermediate BEFORE touching the model, along with
-  // every composition reachable from it, so any error leaves the target `Model`
-  // unmutated (revision 0, empty).
+  // `composition`").
   const auto cit = root.find("composition");
   if (cit != root.end() && !cit->is_object()) {
     return fail(ReaderError::Kind::MalformedField, "/composition");
@@ -623,20 +650,17 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
     contents_table = &*ctit;
   }
 
-  // Reconstruct each layer's content graph BEFORE touching the model (Decision 5, 7),
-  // so a malformed body, a dangling `$ref`, or a `$ref` cycle returns a `ReaderError`
-  // with the target `Model` still empty. Routing happens only when a `ContentSink` is
-  // installed to take ownership of every produced node; the content-free overload
-  // passes a null sink and an empty codec table, so a placement-only document is
-  // byte-identical to before. The recursion routes by kind id through `codecs` (known
-  // -> live Content; unknown -> placeholder), resolves `$ref`/`inputs` against
-  // `contents_table` with intra-document dedup, and wires input edges bottom-up
-  // (registry/ctx threaded through).
+  // Routing happens only when a `ContentSink` is installed to take ownership of every
+  // produced node; the content-free overload passes a null sink and an empty codec table,
+  // so a placement-only document is byte-identical to before. The recursion routes by
+  // kind id through `codecs` (known -> live Content; unknown -> placeholder), resolves
+  // `$ref`/`inputs` against `contents_table` with intra-document dedup, and wires input
+  // edges bottom-up (registry/ctx threaded through).
   // Every tier's unknown siblings are staged here and published to the caller's store
   // ONLY on a fully successful load, mirroring the "model unmutated on error" discipline
   // (Decision 3; Constraint 10 -- a stash is never an error path of its own).
-  UnknownFieldStore staged;
-  staged.set(UnknownScope::Document, ObjectId{}, [&] {
+  DocumentGraph out;
+  out.staged.set(UnknownScope::Document, ObjectId{}, [&] {
     json root_unknown = unknown_residual(root, k_root_keys);
     if (json env = unknown_residual_at(root, "arbc", k_envelope_keys); !env.empty()) {
       root_unknown["arbc"] = std::move(env); // the envelope's own unknown siblings
@@ -645,23 +669,18 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
   }());
 
   // One breadth-first pass over the composition graph (compositions_table Constraint 3):
-  // the root is seeded and allocated FIRST -- so it is the lowest-id composition, the
-  // model's root rule, guaranteed rather than assumed (Constraint 8) -- then each
+  // the root is seeded FIRST -- so, on a fresh document, it is the lowest-id composition,
+  // the model's root rule, guaranteed rather than assumed (Constraint 8) -- then each
   // composition's layers are resolved in turn, and a nesting content's `"composition"`
   // field enqueues its child, which this same loop reaches. `d_pending` grows while we
   // walk it by index; a cycle simply re-uses an already-allocated id and enqueues
   // nothing, so the loop terminates. ONE `RefResolver` spans every composition, so a
   // content shared across two of them dedups into a single `contents` entry and a single
   // live node (Constraint 4).
-  struct ResolvedComp {
-    ObjectId id;
-    CompData data;
-  };
-  std::vector<ResolvedComp> comps;
   CompResolver comp_resolver(compositions_table, into);
-  RefResolver resolver(contents_table, &comp_resolver, codecs, registry, ctx, sink, staged);
+  RefResolver resolver(contents_table, &comp_resolver, codecs, registry, ctx, sink, out.staged);
   if (has_composition) {
-    comp_resolver.add_root(*cit);
+    out.root = comp_resolver.add_root(*cit, seeded_root);
     for (std::size_t i = 0; i < comp_resolver.size(); ++i) {
       // BY VALUE: `resolve` below can enqueue and reallocate the pending vector.
       const CompResolver::Pending pending = comp_resolver.at(i);
@@ -676,62 +695,89 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
           expected<SunkContent, ReaderError> produced =
               resolver.resolve(ld.content_body, /*layer_position=*/true);
           if (!produced) {
-            return unexpected(produced.error()); // model unmutated: nothing installed yet
+            return unexpected(produced.error()); // no composition installed yet
           }
           ld.content_id = produced->id;
           ld.has_content_id = true;
         }
       }
-      comps.push_back(std::move(rc));
+      out.comps.push_back(std::move(rc));
     }
   }
+  return out;
+}
 
-  // Install the reconstructed graph as the version-0 baseline with an empty
-  // journal (Decision 3). The nodes are already sunk (owned by the caller) in the
-  // resolution phase above; a layer root binds its sunk `content_id` (the same id for
-  // two layers sharing one content, Constraint 3), a placement-only layer binds the
-  // invalid `ObjectId{}` placeholder exactly as the content-free path does. Every
-  // reachable composition is materialized here, under the id the resolver pre-allocated
-  // for it -- the same id a nesting content already holds (Decision 4).
+// Materialize the resolved graph inside `txn`. The nodes are already sunk (owned by the
+// caller) in the resolution phase; a layer root binds its sunk `content_id` (the same id
+// for two layers sharing one content, Constraint 3), a placement-only layer binds the
+// invalid `ObjectId{}` placeholder exactly as the content-free path does. Every reachable
+// composition is materialized under the id the resolver pre-allocated for it -- the same
+// id a nesting content already holds (Decision 4).
+void install_graph(Model::Transaction& txn, DocumentGraph& g) {
+  for (const ResolvedComp& rc : g.comps) {
+    const ObjectId cid = txn.add_composition(rc.id, rc.data.canvas_w, rc.data.canvas_h);
+    // The composition's own unknown siblings stash under its pre-allocated ObjectId; the
+    // layer stashes can only be keyed here, since their ObjectIds are minted by this
+    // transaction (Decision 3).
+    g.staged.set(UnknownScope::Composition, cid, to_unknown_fields(rc.data.unknown));
+    if (rc.data.has_working_space) {
+      txn.set_working_space(cid, rc.data.working_space);
+    }
+    if (rc.data.has_working_audio_format) {
+      txn.set_working_audio_format(cid, rc.data.working_audio_format);
+    }
+    for (const LayerData& ld : rc.data.layers) {
+      const ObjectId content_id = ld.has_content_id ? ld.content_id : ObjectId{};
+      const ObjectId lid = txn.add_layer(content_id, ld.transform, ld.opacity);
+      g.staged.set(UnknownScope::Layer, lid, to_unknown_fields(ld.unknown));
+      // Re-apply exactly the omit-on-default twins the writer would have emitted; a
+      // field left at its default stays diff-clean (Constraint 2).
+      if (ld.gain != 1.0) {
+        txn.set_gain(lid, ld.gain);
+      }
+      if (!ld.visible) {
+        txn.set_visible(lid, false);
+      }
+      if (!ld.audible) {
+        txn.set_audible(lid, false);
+      }
+      if (!(ld.span == TimeRange::all())) {
+        txn.set_span(lid, ld.span);
+      }
+      if (!(ld.time_map == TimeMap{})) {
+        txn.set_time_map(lid, ld.time_map);
+      }
+      txn.attach_layer(cid, lid);
+    }
+  }
+}
+
+} // namespace
+
+expected<std::monostate, ReaderError>
+load_document(std::string_view input, const Registry& registry, const CodecTable& codecs,
+              LoadContext& ctx, const ContentSink& sink, Model& into, UnknownFieldStore* unknown,
+              ObjectId root_composition) {
+  const expected<json, ReaderError> root = parse_document(input);
+  if (!root) {
+    return unexpected(root.error());
+  }
+  // The caller may PRE-ALLOCATE the root composition's id (runtime.nested_external_ref
+  // Constraint 6): the external loader needs it in hand before the read begins, so it can
+  // seed its resolved-URI map with "this document -> this composition" and collapse a
+  // document that references ITSELF onto the in-document Droste case exactly. An invalid
+  // id means "allocate one", which is what every other caller passes and what keeps the
+  // root the lowest-id composition (Constraint 8).
+  expected<DocumentGraph, ReaderError> graph =
+      resolve_graph(*root, registry, codecs, ctx, sink, into, root_composition);
+  if (!graph) {
+    return unexpected(graph.error());
+  }
+
+  // Install the reconstructed graph as the version-0 baseline with an empty journal
+  // (Decision 3).
   const expected<std::monostate, PoolError> installed =
-      into.load_baseline([&](Model::Transaction& txn) {
-        for (const ResolvedComp& rc : comps) {
-          const ObjectId cid = txn.add_composition(rc.id, rc.data.canvas_w, rc.data.canvas_h);
-          // The composition's own unknown siblings stash under its pre-allocated
-          // ObjectId; the layer stashes can only be keyed here, since their ObjectIds are
-          // minted by this transaction (Decision 3).
-          staged.set(UnknownScope::Composition, cid, to_unknown_fields(rc.data.unknown));
-          if (rc.data.has_working_space) {
-            txn.set_working_space(cid, rc.data.working_space);
-          }
-          if (rc.data.has_working_audio_format) {
-            txn.set_working_audio_format(cid, rc.data.working_audio_format);
-          }
-          for (const LayerData& ld : rc.data.layers) {
-            const ObjectId content_id = ld.has_content_id ? ld.content_id : ObjectId{};
-            const ObjectId lid = txn.add_layer(content_id, ld.transform, ld.opacity);
-            staged.set(UnknownScope::Layer, lid, to_unknown_fields(ld.unknown));
-            // Re-apply exactly the omit-on-default twins the writer would have
-            // emitted; a field left at its default stays diff-clean (Constraint 2).
-            if (ld.gain != 1.0) {
-              txn.set_gain(lid, ld.gain);
-            }
-            if (!ld.visible) {
-              txn.set_visible(lid, false);
-            }
-            if (!ld.audible) {
-              txn.set_audible(lid, false);
-            }
-            if (!(ld.span == TimeRange::all())) {
-              txn.set_span(lid, ld.span);
-            }
-            if (!(ld.time_map == TimeMap{})) {
-              txn.set_time_map(lid, ld.time_map);
-            }
-            txn.attach_layer(cid, lid);
-          }
-        }
-      });
+      into.load_baseline([&](Model::Transaction& txn) { install_graph(txn, *graph); });
   if (!installed) {
     // Arena exhaustion during the baseline install (a resource error, not a
     // format one); the model is left unmutated. Surfaced on the reader's error
@@ -741,9 +787,46 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
   // The load succeeded: publish the staged unknowns wholesale. A `nullptr` store is
   // today's lossy behavior, so no existing caller changes shape (Decision 3).
   if (unknown != nullptr) {
-    *unknown = std::move(staged);
+    *unknown = std::move(graph->staged);
   }
   return std::monostate{};
+}
+
+expected<ObjectId, ReaderError> load_composition(std::string_view input, const Registry& registry,
+                                                 const CodecTable& codecs, LoadContext& ctx,
+                                                 const ContentSink& sink, Model& into,
+                                                 ObjectId root_composition) {
+  // The same read as `load_document`, with two differences that are the whole point
+  // (runtime.nested_external_ref Decision 1): the graph lands in an EXISTING model under
+  // a caller-seeded root id, through an ordinary transaction rather than
+  // `load_baseline` -- which would republish the host document at revision 0 and discard
+  // it -- and the model ROOT is left alone, because `find_first_composition` names the
+  // lowest-id composition and the host's root was allocated before any child's.
+  //
+  // The child's unknown-field residuals are deliberately DROPPED: they belong to the
+  // other document, which this one never re-emits (its contents are named by URI, doc 08
+  // Principle 3), and the document-scope stash would collide with the host's own.
+  const expected<json, ReaderError> root = parse_document(input);
+  if (!root) {
+    return unexpected(root.error());
+  }
+  expected<DocumentGraph, ReaderError> graph =
+      resolve_graph(*root, registry, codecs, ctx, sink, into, root_composition);
+  if (!graph) {
+    return unexpected(graph.error());
+  }
+  if (!graph->root.valid()) {
+    // A document with no root composition has nothing to embed. Not an error in itself
+    // -- the bytes are legal -- but there is no child, so the caller reports the
+    // reference unavailable (Decision 6).
+    return ObjectId{};
+  }
+  Model::Transaction txn = into.transact("load external composition");
+  install_graph(txn, *graph);
+  if (!txn.commit()) {
+    return fail(ReaderError::Kind::MalformedField, "/composition"); // arena exhaustion
+  }
+  return graph->root;
 }
 
 // The content-free entry point: reconstruct only the envelope, composition, and

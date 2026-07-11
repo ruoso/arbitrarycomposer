@@ -119,6 +119,15 @@ public:
   // the default, and the answer for every kind but nested.
   virtual ObjectId composition_ref() const { return ObjectId{}; }
 
+  // When a nested content's child composition was loaded from an external
+  // project file (doc 05), the child is an ordinary composition in this
+  // document's model — but it is not this document's DATA. The kind answers
+  // the authored reference here so the serializer knows to name the child by
+  // that URI instead of emitting it into the compositions table (doc 08
+  // Principle 3). Empty means "the child, if any, is document-local" — the
+  // default, and the answer for every kind but nested.
+  virtual std::string_view external_composition_ref() const { return {}; }
+
   // --- change notification (outbound) ---
   // The core connects this on attach; content calls damage() when it changes.
   // An editable content's state sinks (doc 14's Editable facet) bind the same

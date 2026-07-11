@@ -11,8 +11,9 @@
 #include <arbc/base/ids.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/runtime/document.hpp>
-#include <arbc/serialize/reader.hpp> // ReaderError
-#include <arbc/serialize/writer.hpp> // SerializeError
+#include <arbc/serialize/load_context.hpp> // AssetSource (the external-reference load hook)
+#include <arbc/serialize/reader.hpp>       // ReaderError
+#include <arbc/serialize/writer.hpp>       // SerializeError
 
 #include <cstdint>
 #include <deque>
@@ -127,7 +128,23 @@ expected<std::string, SerializeError> save_document(const Document& doc, const K
 // unknown kind (no codec) round-trips as a `PlaceholderContent`. On any error the
 // document is left unmutated (revision 0). `registry` is the plugin-present witness
 // the placeholder path consults.
+//
+// `base_uri` is the document's own URI -- what a kind's RELATIVE references resolve
+// against (doc 08 Principle 3, "URIs resolved relative to the document") -- and `assets`
+// is how the bytes behind a resolved reference are fetched. Supply both to make a nested
+// content's external `params.ref` (doc 05:47-61) actually load the `.arbc` it names:
+// `FilesystemAssetSource` is the built-in source, and a host with a content store plugs
+// its own in here. `runtime.nested_external_ref` ships the loader those two feed.
+//
+// Both default to nothing, and that is a fully supported configuration -- it is what the
+// fuzz lane and every leaf-kind document already are. With no base and no source, an
+// external reference is simply UNAVAILABLE: the nested content loads with a null child,
+// keeps its `ref` verbatim (so the document re-saves byte-identically), renders the doc-05
+// placeholder, and the parent load SUCCEEDS. A missing widget file never makes a project
+// unopenable.
 expected<std::monostate, ReaderError> load_document(std::string_view bytes, Document& doc,
-                                                    KindBridge& bridge, const Registry& registry);
+                                                    KindBridge& bridge, const Registry& registry,
+                                                    std::string base_uri = {},
+                                                    AssetSource* assets = nullptr);
 
 } // namespace arbc
