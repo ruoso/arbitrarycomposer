@@ -3,8 +3,7 @@
 #include <arbc/contract/content.hpp>
 #include <arbc/media/pixel_traits.hpp>   // WorkingPixel, PixelTraits
 #include <arbc/media/surface_format.hpp> // SurfaceFormat
-#include <arbc/model/journal.hpp>        // StateCostFn, RestoreSink
-#include <arbc/model/model.hpp>          // Model::Transaction, StateRefSink
+#include <arbc/model/model.hpp>          // Model::Transaction
 #include <arbc/model/records.hpp>        // StateHandle, k_state_none
 #include <arbc/pool/big_block_pool.hpp>  // BigBlockPool, BlockSlotRef (doc 15 bulk pool)
 #include <arbc/pool/chunk_source.hpp>    // ChunkSource, AnonymousChunkSource
@@ -240,6 +239,13 @@ public:
   StateHandle capture() override;
   void restore(StateHandle state) override;
   std::size_t state_cost(StateHandle state) const override;
+  // The state-handle reference lifecycle the runtime binding drives off the
+  // model's `StateRefSink` (doc 14:173-176): a published record's handle is
+  // retained, and releasing it at the record's zero-count reclaim drops the
+  // version's no-longer-shared tile blobs by the pool refcount. Writer/drain
+  // thread only -- these are exactly `RasterStore`'s version-refcount seams.
+  void retain(StateHandle state) override;
+  void release(StateHandle state) override;
 
   // Paint `color` over `region` under transactional discipline (doc 03:152-158):
   // copies only the touched tiles into a new version, assigns it via
@@ -264,49 +270,11 @@ private:
   StateHandle d_base;
 };
 
-// The model-side sinks raster registers onto a live Model/Journal (refinement
-// Constraint 9). Production auto-registration is the deferred
-// `kinds.raster_runtime_binding`; raster's tests register these directly.
-
-// Adjusts a version's refcount on record publish/reclaim (doc 14:173-176).
-class RasterStateRefSink final : public StateRefSink {
-public:
-  explicit RasterStateRefSink(RasterStore& store) : d_store(&store) {}
-  void retain(StateHandle handle) override { d_store->retain_version(handle); }
-  void release(StateHandle handle) override { d_store->release_version(handle); }
-
-private:
-  RasterStore* d_store;
-};
-
-// The tile-table byte cost of a captured handle (journal budgeting, doc 14:120).
-class RasterStateCostFn final : public StateCostFn {
-public:
-  explicit RasterStateCostFn(RasterStore& store) : d_store(&store) {}
-  std::size_t cost(const StateHandle& handle) const override { return d_store->state_cost(handle); }
-
-private:
-  RasterStore* d_store;
-};
-
-// Rebases the live content on undo/redo navigation (doc 14:117); a no-op for a
-// navigation event naming a different content object.
-class RasterRestoreSink final : public RestoreSink {
-public:
-  RasterRestoreSink(RasterContent& content, ObjectId object)
-      : d_content(&content), d_object(object) {}
-  // The bound content id (known only after the model allocates it) may be set
-  // once the object is created.
-  void set_object(ObjectId object) { d_object = object; }
-  void on_restore(ObjectId content, StateHandle target) override {
-    if (content == d_object) {
-      d_content->restore(target);
-    }
-  }
-
-private:
-  RasterContent* d_content;
-  ObjectId d_object;
-};
+// The model-side sink adapters that used to live here (RasterStateRefSink /
+// RasterStateCostFn / RasterRestoreSink) are gone: the runtime now binds an
+// editable content's state sinks generically through the `Editable` facet
+// (`arbc/runtime/editable_binding.hpp`, `kinds.raster_runtime_binding`), so a
+// kind ships no model-sink adapter of its own -- and stays dlopen-safe, since
+// the runtime reaches it through virtual facet dispatch, never a concrete type.
 
 } // namespace arbc

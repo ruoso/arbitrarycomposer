@@ -41,6 +41,38 @@ struct RecordingDamageSink final : DamageSink {
   void flush(const std::vector<Damage>& d) override { last = d; }
 };
 
+// The model-side state sinks, driven through the `Editable` facet -- the same
+// generic, kind-agnostic adapters the runtime installs in production
+// (`arbc/runtime/editable_binding.hpp`; raster ships none of its own any more).
+// These tests exercise raster's concrete state behaviour against a bare
+// `Model`/`Journal`, one level below the runtime that auto-registers them, so
+// they wire the facet by hand; `tests/raster_runtime_binding.t.cpp` is the proof
+// that a `Document` does this wiring for the host.
+struct FacetRefSink final : StateRefSink {
+  explicit FacetRefSink(Editable& e) : editable(&e) {}
+  void retain(StateHandle h) override { editable->retain(h); }
+  void release(StateHandle h) override { editable->release(h); }
+  Editable* editable;
+};
+
+struct FacetCostFn final : StateCostFn {
+  explicit FacetCostFn(Editable& e) : editable(&e) {}
+  std::size_t cost(const StateHandle& h) const override { return editable->state_cost(h); }
+  Editable* editable;
+};
+
+struct FacetRestoreSink final : RestoreSink {
+  explicit FacetRestoreSink(Editable& e) : editable(&e) {}
+  void set_object(ObjectId id) { object = id; }
+  void on_restore(ObjectId content, StateHandle target) override {
+    if (content == object) {
+      editable->restore(target);
+    }
+  }
+  Editable* editable;
+  ObjectId object{};
+};
+
 } // namespace
 
 // Raster reads any of the three decoded input formats through media PixelTraits
@@ -144,7 +176,7 @@ TEST_CASE("raster paint through a transaction assigns state and damages the touc
   // Sinks are declared before the model so they outlive ~Model's drain (which
   // fires the final releases through them).
   RasterContent content(white_4x4(), /*tile_edge=*/2);
-  RasterStateRefSink refsink(content.store());
+  FacetRefSink refsink(*content.editable());
   RecordingDamageSink dsink;
   Model model;
   model.set_state_ref_sink(&refsink);
@@ -184,7 +216,7 @@ TEST_CASE("raster paint through a transaction assigns state and damages the touc
 // enforces: 14-data-model-and-editing#content-state-reclaimed-by-refcount
 TEST_CASE("a pinned raster version holds its state; superseding reclaims it by refcount") {
   RasterContent content(white_4x4(), /*tile_edge=*/2);
-  RasterStateRefSink refsink(content.store());
+  FacetRefSink refsink(*content.editable());
   NoopDamageSink dsink;
   Model model;
   model.set_state_ref_sink(&refsink);
@@ -239,9 +271,9 @@ TEST_CASE("a pinned raster version holds its state; superseding reclaims it by r
 // enforces: 14-data-model-and-editing#coalesced-gesture-captures-once
 TEST_CASE("a coalesced raster gesture keeps only first-before and last-after") {
   RasterContent content(white_4x4(), /*tile_edge=*/2);
-  RasterStateRefSink refsink(content.store());
-  RasterStateCostFn costfn(content.store());
-  RasterRestoreSink restoresink(content, ObjectId{});
+  FacetRefSink refsink(*content.editable());
+  FacetCostFn costfn(*content.editable());
+  FacetRestoreSink restoresink(*content.editable());
   NoopDamageSink dsink;
   Model model;
   Journal journal(model);
@@ -318,7 +350,7 @@ TEST_CASE("raster Editable capture/restore rebases the live base") {
   REQUIRE(before == content.base_handle());
   REQUIRE(editable->state_cost(before) > 0);
 
-  RasterStateRefSink refsink(content.store());
+  FacetRefSink refsink(*editable);
   NoopDamageSink dsink;
   Model model;
   model.set_state_ref_sink(&refsink);

@@ -1,6 +1,6 @@
 arbc_add_component(
   NAME runtime
-  SOURCES document.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp
+  SOURCES document.cpp editable_binding.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp
           codec_fade.cpp codec_crossfade.cpp operator_binding.cpp pull_identity.cpp
           offline.cpp
           offline_sequence.cpp housekeeping.cpp housekeeping_thread.cpp
@@ -8,7 +8,8 @@ arbc_add_component(
           playback_hints.cpp
           audio_worker_pool.cpp lookahead_pump.cpp device_monitor.cpp export_monitor.cpp
           plugin_host.cpp
-  PUBLIC_HEADERS arbc/runtime/document.hpp arbc/runtime/document_serialize.hpp
+  PUBLIC_HEADERS arbc/runtime/document.hpp arbc/runtime/editable_binding.hpp
+                 arbc/runtime/document_serialize.hpp
                  arbc/runtime/operator_binding.hpp
                  arbc/runtime/pull_identity.hpp
                  arbc/runtime/offline.hpp
@@ -44,6 +45,7 @@ arbc_component_test(COMPONENT runtime
                             t/offline_sequence.t.cpp t/audio_worker_pool.t.cpp
                             t/lookahead_pump.t.cpp t/device_monitor.t.cpp
                             t/export_monitor.t.cpp t/content_binding.t.cpp
+                            t/editable_binding.t.cpp
                             t/document_serialize.t.cpp t/operator_codecs.t.cpp
                             t/pull_identity.t.cpp
                             t/plugin_host.t.cpp)

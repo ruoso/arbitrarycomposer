@@ -148,6 +148,14 @@ public:
 
   // Journal memory budgeting.
   virtual size_t state_cost(const StateHandle&) const = 0;
+
+  // State-handle lifetime. The runtime binding drives these off the model's
+  // StateRefSink seam: retain when a published version pins the handle,
+  // release when its record is reclaimed, so "a pinned version pins content
+  // state too" and "version GC releases unreferenced state handles by
+  // refcount" both hold. Writer/drain-thread only.
+  virtual void retain(StateHandle) = 0;
+  virtual void release(StateHandle) = 0;
 };
 ```
 
@@ -188,6 +196,23 @@ render *that* state, making rendering a pure function of
 (state, region, scale, time). This is what makes cache keys honest while
 edits race renders: revision identifies state, state is immutable, so a
 cached tile can never show pixels newer than its key.
+
+**Runtime binding of the facet.** The `Editable` methods are the content's
+half of the contract; the model's half is the state sinks it exposes
+(`StateRefSink` on the `Model`, `StateCostFn`/`RestoreSink` on the `Journal`).
+Joining them is a `runtime` concern (doc 17: the model stays free of the
+`Content` vtable): when the runtime instantiates an editable content it
+registers generic facet-backed adapters onto the live `Model`/`Journal` and
+tears them down on release — the state-sink analogue of the damage sink the
+core connects on attach (doc 03). The record minted for an editable content
+embeds its `capture()`d initial state, not an inert handle, published in the
+same transaction that mints it: a content that is editable already *has* state
+at instantiation, and a record naming no state would leave the first edit's
+journal entry with an inert *before* handle — an undo that restores the content
+to nothing. Non-editable content keeps the inert record. v1 binds one editable
+content per document (the seams are single-slot and a `StateHandle` does not
+name its owner); multiplexing many editable contents onto the shared journal is
+a later refinement.
 
 ## History
 

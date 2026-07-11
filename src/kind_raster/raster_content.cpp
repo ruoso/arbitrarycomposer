@@ -555,6 +555,10 @@ void RasterContent::restore(StateHandle state) {
 
 std::size_t RasterContent::state_cost(StateHandle state) const { return d_store.state_cost(state); }
 
+void RasterContent::retain(StateHandle state) { d_store.retain_version(state); }
+
+void RasterContent::release(StateHandle state) { d_store.release_version(state); }
+
 void RasterContent::paint(Model::Transaction& txn, ObjectId self, const Rect& region,
                           const WorkingPixel& color) {
   Rect touched{};

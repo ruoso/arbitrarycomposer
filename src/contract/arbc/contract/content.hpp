@@ -429,7 +429,7 @@ protected:
 // The editable-state facet (doc 03:98, doc 14:110-123). A content with mutable,
 // undoable state (a raster's pixel buffer) implements this and returns it from
 // `Content::editable()`; leaf and live content omit it (the null default). The
-// three operations are the capture discipline doc 14 mandates, all over the same
+// operations are the capture discipline doc 14 mandates, all over the same
 // opaque `model::StateHandle` a render request pins (doc 14:181-187), so
 // `render(snapshot = h)` renders exactly the state `capture()` froze:
 //   - `capture()`: snapshot the current edited state into a `StateHandle`. MUST
@@ -440,6 +440,12 @@ protected:
 //     damage for what changed (doc 14:117-119).
 //   - `state_cost(h)`: the byte cost of a captured state, for journal memory
 //     budgeting (doc 14:120-122).
+//   - `retain(h)` / `release(h)`: the handle's reference lifecycle (doc
+//     14:173-176). The runtime binding drives these off the model's
+//     `StateRefSink` seam -- retain when a published version pins the handle,
+//     release when that record is reclaimed -- so "a pinned version pins content
+//     state too" and "version GC releases unreferenced state handles by
+//     refcount" both come true. WRITER/DRAIN-THREAD ONLY.
 // The L3 interface only (doc 17:53): pure virtuals and a virtual destructor, no
 // state. `org.arbc.raster` is the first and reference implementer (doc 14:164).
 class Editable {
@@ -451,6 +457,8 @@ public:
   virtual StateHandle capture() = 0;
   virtual void restore(StateHandle state) = 0;
   virtual std::size_t state_cost(StateHandle state) const = 0;
+  virtual void retain(StateHandle state) = 0;
+  virtual void release(StateHandle state) = 0;
 
 protected:
   Editable() = default;

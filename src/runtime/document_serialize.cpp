@@ -36,9 +36,34 @@ namespace arbc {
 // version-0 baseline, without widening `Document`'s public shape (Constraint 4).
 struct DocumentSerializeAccess {
   static Model& model(Document& doc) { return doc.d_model; }
+  static Journal& journal(Document& doc) { return doc.d_journal; }
 };
 
 namespace {
+
+// A load is a fresh document at version 0 with an EMPTY journal (doc 14:263-264;
+// serialize.reader Decision 3: "an undo immediately after load is a no-op that
+// never reverts the freshly-loaded document to empty"). `Model::load_baseline`
+// already bypasses the `CommitSink` for the baseline publish itself -- but the
+// reconstruction commits that PRECEDE it (each `add_content`, each demotion of a
+// provisional root) go through the ordinary transactional path and would
+// otherwise land in the document's journal as undoable edits. Detach the commit
+// sink for the reconstruction and restore it after, so a load journals nothing.
+class JournalSuspension {
+public:
+  explicit JournalSuspension(Document& doc) noexcept : d_doc(&doc) {
+    DocumentSerializeAccess::model(doc).set_commit_sink(nullptr);
+  }
+  ~JournalSuspension() {
+    DocumentSerializeAccess::model(*d_doc).set_commit_sink(
+        &DocumentSerializeAccess::journal(*d_doc));
+  }
+  JournalSuspension(const JournalSuspension&) = delete;
+  JournalSuspension& operator=(const JournalSuspension&) = delete;
+
+private:
+  Document* d_doc;
+};
 
 // Recover a live content's built-in `(kind_id, kind_version)` from its concrete type
 // (runtime.operator_codecs Decision 5). An operator input child carries no ObjectId,
@@ -336,6 +361,7 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
 
   // Built-in leaf kinds resolve no external assets, so the base URI is empty.
   LoadContext ctx{std::string{}};
+  const JournalSuspension no_journal(doc);
   Model& into = DocumentSerializeAccess::model(doc);
   return arbc::load_document(bytes, registry, codecs, ctx, sink, into);
 }

@@ -454,6 +454,15 @@ target_link_libraries(arbc_nested_concurrency_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_nested_concurrency_t)
 
+# Raster editable-state runtime binding (kind_raster + runtime): a raster added to
+# a Document journals/budgets/undoes with no manual sink wiring. Cross-component,
+# so it lives here rather than src/runtime/t/ -- doc 17 keeps `runtime` free of a
+# concrete-kind edge, and tests/ is exempt from the include-hygiene scan.
+add_executable(arbc_raster_runtime_binding_t raster_runtime_binding.t.cpp)
+target_link_libraries(arbc_raster_runtime_binding_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_raster_runtime_binding_t)
+
 # Raster render-vs-edit concurrency stress (tier-6, tsan lane): pinned-snapshot
 # readers race an editor painting new versions.
 add_executable(arbc_raster_concurrency_stress_t raster_concurrency_stress.t.cpp)

@@ -4,18 +4,56 @@
 
 namespace arbc {
 
+Document::Document() {
+  // The document owns the single, document-wide history (doc 14:193-195): the
+  // journal IS the model's CommitSink, so every Document mutator's commit appends
+  // one entry and is undoable. The binding then has a live Model/Journal to
+  // register an editable content's state sinks onto (add_content, below).
+  d_model.set_commit_sink(&d_journal);
+  d_binding.attach(d_model, d_journal);
+}
+
 ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t kind) {
   // Mint a versioned ContentRecord (kind id + inert StateHandle) as a top-level
   // DocState entry, published as one new version -- exactly like every other
   // Document mutator. The id->Content vtable binding then rides the runtime
   // side-map keyed by that record's id (doc 17:66-72 keeps the model free of the
   // Content vtable). resolve(id) serves it; find_content(id) carries no pointer.
+  Content& live = *content;
   auto txn = d_model.transact();
   const ObjectId id = txn.add_content(kind);
+
+  // Register-on-instantiate, the state-sink analogue of the damage sink the core
+  // connects on attach (doc 03:113-118). Through the `Editable` facet only, so the
+  // runtime names no concrete kind (doc 17:66-72); non-editable content binds
+  // nothing. Bound INSIDE the transaction: the sinks must be live before the commit
+  // publishes the record, or the retain owed for the state it embeds is missed.
+  //
+  // A second editable content throws here (v1 binds one, `EditableBinding`); the
+  // transaction is then dropped un-committed, so the failed add publishes nothing.
+  if (Editable* editable = d_binding.bind(id, live)) {
+    // Close the `model.content_binding` gap: that task deliberately left the fresh
+    // ContentRecord's StateHandle inert. An editable content already HAS state at
+    // instantiation, so capture it onto the record here, in the same transaction --
+    // one published version, exactly as before. Without this the record names no
+    // state, so the first edit's journal entry has an INERT *before* handle and its
+    // undo would restore the content to nothing (doc 14:133-152).
+    const StateHandle initial = editable->capture();
+    if (initial.has_state()) {
+      txn.set_content_state(id, initial);
+    }
+  }
+
   txn.commit();
   d_contents.emplace(id, std::move(content));
   return id;
 }
+
+Model::Transaction Document::transact(std::string name) {
+  return d_model.transact(std::move(name));
+}
+
+void Document::drain() { d_model.drain(); }
 
 ObjectId Document::add_layer(ObjectId content, const Affine& transform, double opacity) {
   auto txn = d_model.transact();

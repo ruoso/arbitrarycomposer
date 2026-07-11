@@ -26,8 +26,9 @@ task kinds "Reference kinds" {
   task raster_runtime_binding "org.arbc.raster runtime sink wiring" {
     effort 1d
     allocate team
+    complete 100
     depends !raster, model.content_binding
-    note "When the runtime instantiates an org.arbc.raster content, register its StateRefSink/StateCostFn/RestoreSink onto the live Model/Journal and tear down on release — closing the production wiring raster's tests drive manually. Docs 03/14/17. Source-of-debt: tasks/refinements/kinds/raster.md"
+    note "When the runtime instantiates an org.arbc.raster content, register its StateRefSink/StateCostFn/RestoreSink onto the live Model/Journal and tear down on release — closing the production wiring raster's tests drive manually. Docs 03/14/17. Source-of-debt: tasks/refinements/kinds/raster.md Refinement: tasks/refinements/kinds/raster_runtime_binding.md"
   }
   task raster_pool_backing "org.arbc.raster big-block pool tile backing" {
     effort 2d

@@ -112,6 +112,9 @@ public:
 
   // --- change notification (outbound) ---
   // The core connects this on attach; content calls damage() when it changes.
+  // An editable content's state sinks (doc 14's Editable facet) bind the same
+  // way — the runtime registers them onto the live Model/Journal on instantiate
+  // and clears them on release.
   void set_damage_sink(DamageSink);
 
 protected:

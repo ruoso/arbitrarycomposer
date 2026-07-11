@@ -7,21 +7,24 @@
 #include <arbc/contract/content.hpp>
 #include <arbc/media/audio_format.hpp>
 #include <arbc/media/surface_format.hpp>
+#include <arbc/model/journal.hpp>
 #include <arbc/model/model.hpp>
+#include <arbc/runtime/editable_binding.hpp>
 
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <unordered_map>
 
 namespace arbc {
 
-// Host-facing document: the versioned model plus the content binding.
-// Records hold opaque content ids; the id-to-Content binding lives here,
-// keeping the model free of the contract vtable (doc 17).
+// Host-facing document: the versioned model, the document-wide history, and the
+// content binding. Records hold opaque content ids; the id-to-Content binding
+// lives here, keeping the model free of the contract vtable (doc 17).
 class Document {
 public:
-  Document() = default;
+  Document();
 
   // Mint a versioned content object: commits a `Transaction::add_content(kind)`,
   // publishing a `ContentRecord` (opaque `kind` id + inert `StateHandle`) into a
@@ -29,6 +32,17 @@ public:
   // `content` in the runtime side-map. `kind` is an opaque caller-supplied token
   // (the reverse-DNS<->numeric bridge is `runtime.document_serialize`'s); it
   // defaults to 0. `resolve(id)` serves the vtable binding, unchanged.
+  //
+  // If the content exposes the `Editable` facet (doc 03:98), its state sinks are
+  // registered onto this document's live `Model`/`Journal` here -- so its edits
+  // are journaled and undoable, its undo memory is budgeted by `state_cost`, and
+  // a published version pins its state until the record is reclaimed
+  // (doc 14:173-176) -- and the minted record embeds the content's CAPTURED
+  // initial state rather than the inert handle `model.content_binding` left behind
+  // (still one published version). Non-editable content registers nothing and
+  // keeps the inert record, byte-identical to before. Throws `std::logic_error` on
+  // a SECOND editable content -- v1 binds one per document (see `EditableBinding`)
+  // -- publishing nothing.
   ObjectId add_content(std::shared_ptr<Content> content, std::uint64_t kind = 0);
   ObjectId add_layer(ObjectId content, const Affine& transform, double opacity = 1.0);
   void set_layer_transform(ObjectId layer, const Affine& transform);
@@ -70,6 +84,26 @@ public:
   // blends it in (doc 07). Committed as its own version, bumping the revision.
   void set_working_space(ObjectId composition, const SurfaceFormat& format);
 
+  // Open a transaction on the document's model -- the host-facing edit seam an
+  // editable content's mutators ride (doc 03:152-158: mutation through the
+  // concrete type, under transactional discipline; `RasterContent::paint` takes
+  // the `Transaction&`). Commits publish one version and, through the document's
+  // `CommitSink`, append one journal entry, so a content edit made this way is
+  // undoable without the host wiring anything. WRITER-THREAD ONLY.
+  Model::Transaction transact(std::string name = {});
+
+  // The document-wide history (doc 14:193-195 -- one journal across all objects).
+  // Core-owned: it is this document's `CommitSink`, and an editable content's
+  // cost/restore sinks are registered onto it by `add_content`. `undo()`/`redo()`
+  // publish ordinary forward versions. WRITER-THREAD ONLY.
+  Journal& journal() noexcept { return d_journal; }
+  const Journal& journal() const noexcept { return d_journal; }
+
+  // Run deferred reclamation to quiescence (the model's drain, doc 15:129-136):
+  // superseded records whose last reference is gone are reclaimed, releasing any
+  // content state they pinned. WRITER-ONLY / single-drainer.
+  void drain();
+
   // Pin the current version for rendering (doc 14).
   DocStatePtr pin() const;
   Content* resolve(ObjectId content) const;
@@ -88,12 +122,31 @@ private:
   // shape and member set stay unchanged (refinement Constraint 4).
   friend struct DocumentSerializeAccess;
 
-  Model d_model;
+  // DECLARATION ORDER IS THE TEARDOWN CONTRACT (destruction runs in reverse).
+  //
+  // `~Model` drops the current version and drains, which reclaims every content
+  // record at zero count and, through `ContentStateReclaimSink`, RELEASES each
+  // record's embedded `StateHandle` through the installed `StateRefSink` -- that
+  // is what makes "release fires exactly once, when the record is reclaimed"
+  // (doc 14:173-176) true at document teardown rather than a leak. So both the
+  // sink objects (`d_binding`) and the content they forward into (`d_contents`)
+  // MUST still be alive while the model destructs, and the journal -- whose
+  // entries hold record edges -- must go first so those records can reach zero.
+  //
+  // Reverse-declaration destruction gives exactly that: journal, model, binding,
+  // contents. Do not reorder these members, and do not clear the sink slots in a
+  // `~Document` body: clearing them before the model's final drain would silence
+  // the release and strand the content's version refcount at 1. (The explicit,
+  // per-content teardown is `EditableBinding::unbind()`, which drains first.)
   // The permanent, levelization-mandated home of the id->Content vtable binding
   // (doc 17:66-72): the versioned `ContentRecord` in `DocState` holds only the
   // opaque `{kind, StateHandle}`, so the model stays free of the `Content` vtable.
   // Writer-thread-owned; keyed by the record's `ObjectId`; `resolve()` reads it.
   std::unordered_map<ObjectId, std::shared_ptr<Content>> d_contents;
+  // The editable content's state sinks, forwarding to its `Editable` facet.
+  EditableBinding d_binding;
+  Model d_model;
+  Journal d_journal{d_model};
 };
 
 } // namespace arbc

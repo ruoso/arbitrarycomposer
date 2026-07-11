@@ -59,9 +59,9 @@ TEST_CASE("raster tile pixels are pool-backed, page-aligned, shared and reclaime
 
   // (a) A resolved tile handle peeks to exactly edge*edge*4*sizeof(float)
   // page-aligned bytes, and the base version holds one pool count on each blob.
-  const std::size_t expected_bytes =
-      static_cast<std::size_t>(edge) * static_cast<std::size_t>(edge) * k_tile_channels *
-      sizeof(float);
+  const std::size_t expected_bytes = static_cast<std::size_t>(edge) *
+                                     static_cast<std::size_t>(edge) * k_tile_channels *
+                                     sizeof(float);
   const BlockSlotRef tile0 = base_table->level(0).tiles[0];
   const std::span<const std::byte> blob = pool.peek(tile0);
   REQUIRE(blob.size() == expected_bytes);
