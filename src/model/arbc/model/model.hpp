@@ -127,11 +127,19 @@ using DocStatePtr = std::shared_ptr<const DocRoot>;
 // state handles by refcount" (doc 14:173-176). Registered via
 // `Model::set_state_ref_sink`; while none is registered retain/release are
 // no-ops and behavior is byte-identical to inert handles. WRITER-THREAD ONLY.
+// Every state seam names its owner: a `StateHandle` is a bare slot index, local
+// to the owning content's own store (records.hpp:51-56), so two contents both
+// holding slot 3 are indistinguishable by handle alone. The owning `ObjectId`
+// therefore rides the call, exactly as `RestoreSink::on_restore` always did
+// (journal.hpp) -- and it costs nothing, because the owner is already in hand at
+// both call sites (`set_content_state`'s own parameter, and the reclaimed
+// `ObjectRecord`'s `id`). Widening the seam rather than the handle keeps the
+// mmapped record types standard-layout and fixed-size (doc 15:258-260).
 class StateRefSink {
 public:
   virtual ~StateRefSink() = default;
-  virtual void retain(StateHandle handle) = 0;
-  virtual void release(StateHandle handle) = 0;
+  virtual void retain(ObjectId content, StateHandle handle) = 0;
+  virtual void release(ObjectId content, StateHandle handle) = 0;
 };
 
 // The ObjectRecord store's zero-count sink: at the zero-count-reclaim boundary of
@@ -151,7 +159,7 @@ public:
   void on_zero(SlotIndex index) override {
     const ObjectRecord* r = d_records->peek_index(index);
     if (r->kind == RecordKind::Content && r->as.content.state.has_state() && *d_sink != nullptr) {
-      (*d_sink)->release(r->as.content.state);
+      (*d_sink)->release(r->id, r->as.content.state);
     }
     d_records->enqueue_reclaim(index);
   }

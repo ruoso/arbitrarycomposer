@@ -18,10 +18,14 @@ namespace arbc {
 // doc 14:111-122). `model.editable_facet` registers the concrete one from above;
 // while none is registered a content handle contributes 0 and only record sizes
 // bound the budget (doc 17:66-72, refinement Decisions).
+// The owning `ObjectId` rides the call for the same reason it rides
+// `StateRefSink` and `RestoreSink`: a bare `StateHandle` names a slot in some
+// content's store but not WHICH content's, and the journal is already
+// per-content -- a `ContentStateEdit` carries the owner (`journal_entry.hpp`).
 class StateCostFn {
 public:
   virtual ~StateCostFn() = default;
-  virtual std::size_t cost(const StateHandle& handle) const = 0;
+  virtual std::size_t cost(ObjectId content, const StateHandle& handle) const = 0;
 };
 
 // Abstract, model-defined seam (pure change-notification, doc 02): a navigation

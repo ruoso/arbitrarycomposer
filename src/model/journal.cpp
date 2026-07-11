@@ -20,8 +20,8 @@ std::size_t Journal::entry_cost(const JournalEntry& e) const {
   // Content-state payload cost via the L3 seam; 0 when unregistered.
   if (d_cost_fn != nullptr) {
     for (const ContentStateEdit& ce : e.contents) {
-      cost += d_cost_fn->cost(ce.before);
-      cost += d_cost_fn->cost(ce.after);
+      cost += d_cost_fn->cost(ce.object, ce.before);
+      cost += d_cost_fn->cost(ce.object, ce.after);
     }
   }
   return cost;

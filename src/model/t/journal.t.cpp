@@ -43,7 +43,7 @@ struct FixedStateCostFn final : arbc::StateCostFn {
   std::size_t per_handle;
   mutable int calls = 0;
   explicit FixedStateCostFn(std::size_t c) : per_handle(c) {}
-  std::size_t cost(const arbc::StateHandle& handle) const override {
+  std::size_t cost(arbc::ObjectId, const arbc::StateHandle& handle) const override {
     ++calls;
     return handle.has_state() ? per_handle : 0;
   }

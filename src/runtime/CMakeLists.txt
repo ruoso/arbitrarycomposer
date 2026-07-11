@@ -45,7 +45,7 @@ arbc_component_test(COMPONENT runtime
                             t/offline_sequence.t.cpp t/audio_worker_pool.t.cpp
                             t/lookahead_pump.t.cpp t/device_monitor.t.cpp
                             t/export_monitor.t.cpp t/content_binding.t.cpp
-                            t/editable_binding.t.cpp
+                            t/editable_binding.t.cpp t/editable_sink_multiplex.t.cpp
                             t/document_serialize.t.cpp t/operator_codecs.t.cpp
                             t/pull_identity.t.cpp
                             t/plugin_host.t.cpp)

@@ -1241,7 +1241,7 @@ void Model::Transaction::set_content_state(ObjectId content, StateHandle after) 
   // pairing holds even on the error path. The `before` handle keeps the retain it
   // took when the base record was created; this call touches only `after`.
   if (after.has_state() && d_model->d_state_ref_sink != nullptr) {
-    d_model->d_state_ref_sink->retain(after);
+    d_model->d_state_ref_sink->retain(content, after);
   }
 
   expected<Ref<HamtNode>, PoolError> next =

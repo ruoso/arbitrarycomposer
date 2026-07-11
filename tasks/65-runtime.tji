@@ -102,8 +102,9 @@ task runtime "Runtime" {
   task editable_sink_multiplex "Multiplex many editable contents onto the single-slot Model/Journal seams" {
     effort 2d
     allocate team
+    complete 100
     depends kinds.raster_runtime_binding, model.editable_facet
-    note "Lift the single-editable-content-per-document limit (Constraint 9 of kinds.raster_runtime_binding): tag StateHandle with its owning ObjectId or carry ObjectId on the StateRefSink/StateCostFn seams (mirroring RestoreSink::on_restore), then install a per-Document multiplexing sink trio that routes retain/release/cost by owner. Source-of-debt: tasks/refinements/kinds/raster_runtime_binding.md. Docs 03/14/17."
+    note "Lift the single-editable-content-per-document limit (Constraint 9 of kinds.raster_runtime_binding): tag StateHandle with its owning ObjectId or carry ObjectId on the StateRefSink/StateCostFn seams (mirroring RestoreSink::on_restore), then install a per-Document multiplexing sink trio that routes retain/release/cost by owner. Source-of-debt: tasks/refinements/kinds/raster_runtime_binding.md. Docs 03/14/17. Refinement: tasks/refinements/runtime/editable_sink_multiplex.md"
   }
   task housekeeping_document_wiring "Wire Housekeeper onto the live Document arenas" {
     effort 1d

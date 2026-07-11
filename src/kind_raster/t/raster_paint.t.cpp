@@ -48,16 +48,21 @@ struct RecordingDamageSink final : DamageSink {
 // `Model`/`Journal`, one level below the runtime that auto-registers them, so
 // they wire the facet by hand; `tests/raster_runtime_binding.t.cpp` is the proof
 // that a `Document` does this wiring for the host.
+// These hand-wired doubles bind ONE content, so they ignore the owning `ObjectId`
+// the seams now carry; the runtime's production adapters route on it instead
+// (`EditableRouter`), which is what lets a `Document` hold N editable contents.
 struct FacetRefSink final : StateRefSink {
   explicit FacetRefSink(Editable& e) : editable(&e) {}
-  void retain(StateHandle h) override { editable->retain(h); }
-  void release(StateHandle h) override { editable->release(h); }
+  void retain(ObjectId, StateHandle h) override { editable->retain(h); }
+  void release(ObjectId, StateHandle h) override { editable->release(h); }
   Editable* editable;
 };
 
 struct FacetCostFn final : StateCostFn {
   explicit FacetCostFn(Editable& e) : editable(&e) {}
-  std::size_t cost(const StateHandle& h) const override { return editable->state_cost(h); }
+  std::size_t cost(ObjectId, const StateHandle& h) const override {
+    return editable->state_cost(h);
+  }
   Editable* editable;
 };
 

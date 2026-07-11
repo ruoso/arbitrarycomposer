@@ -40,9 +40,12 @@ public:
   // (doc 14:173-176) -- and the minted record embeds the content's CAPTURED
   // initial state rather than the inert handle `model.content_binding` left behind
   // (still one published version). Non-editable content registers nothing and
-  // keeps the inert record, byte-identical to before. Throws `std::logic_error` on
-  // a SECOND editable content -- v1 binds one per document (see `EditableBinding`)
-  // -- publishing nothing.
+  // keeps the inert record, byte-identical to before.
+  //
+  // A document may hold ANY NUMBER of editable contents: the document's one sink
+  // trio routes every retain/release/cost/restore by the owning `ObjectId` that
+  // now rides each state seam (`EditableBinding`). The v1 one-per-document limit,
+  // which used to throw here, is gone (`runtime.editable_sink_multiplex`).
   ObjectId add_content(std::shared_ptr<Content> content, std::uint64_t kind = 0);
   ObjectId add_layer(ObjectId content, const Affine& transform, double opacity = 1.0);
   void set_layer_transform(ObjectId layer, const Affine& transform);
@@ -114,6 +117,14 @@ public:
   // `Content*` (never null). The `Content` vtable stays in `runtime`, doc 17:66-72.
   void for_each_content(const std::function<void(Content*)>& fn) const;
 
+  // The document's editable-state multiplexer, for the behavioral counters doc 16
+  // asks the editable tests to assert: `unrouted_state_calls()` (zero in any
+  // correct document -- a state call that could not reach its owner would free the
+  // wrong content's pixels) and `seam_registrations()` (three, however many
+  // editable contents the document holds). Const: the mutating half is the
+  // writer's, driven from `add_content`.
+  const EditableBinding& editable_binding() const noexcept { return d_binding; }
+
 private:
   // The runtime load façade (`runtime.document_serialize`) installs a reconstructed
   // graph into `d_model` through the serialize reader, which needs the mutable
@@ -143,7 +154,8 @@ private:
   // opaque `{kind, StateHandle}`, so the model stays free of the `Content` vtable.
   // Writer-thread-owned; keyed by the record's `ObjectId`; `resolve()` reads it.
   std::unordered_map<ObjectId, std::shared_ptr<Content>> d_contents;
-  // The editable content's state sinks, forwarding to its `Editable` facet.
+  // The document's one state-sink trio, routing each seam call to the `Editable`
+  // facet of the content that owns the handle.
   EditableBinding d_binding;
   Model d_model;
   Journal d_journal{d_model};

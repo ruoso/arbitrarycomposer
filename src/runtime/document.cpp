@@ -26,11 +26,10 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
   // Register-on-instantiate, the state-sink analogue of the damage sink the core
   // connects on attach (doc 03:113-118). Through the `Editable` facet only, so the
   // runtime names no concrete kind (doc 17:66-72); non-editable content binds
-  // nothing. Bound INSIDE the transaction: the sinks must be live before the commit
-  // publishes the record, or the retain owed for the state it embeds is missed.
-  //
-  // A second editable content throws here (v1 binds one, `EditableBinding`); the
-  // transaction is then dropped un-committed, so the failed add publishes nothing.
+  // nothing. Routed INSIDE the transaction: the content's row must be live before
+  // the commit publishes the record, or the retain owed for the state it embeds
+  // would find no owner. Any number of editable contents may be added -- the
+  // document-wide sink trio dispatches by the owning id (`EditableBinding`).
   if (Editable* editable = d_binding.bind(id, live)) {
     // Close the `model.content_binding` gap: that task deliberately left the fresh
     // ContentRecord's StateHandle inert. An editable content already HAS state at

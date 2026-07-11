@@ -209,10 +209,45 @@ embeds its `capture()`d initial state, not an inert handle, published in the
 same transaction that mints it: a content that is editable already *has* state
 at instantiation, and a record naming no state would leave the first edit's
 journal entry with an inert *before* handle — an undo that restores the content
-to nothing. Non-editable content keeps the inert record. v1 binds one editable
-content per document (the seams are single-slot and a `StateHandle` does not
-name its owner); multiplexing many editable contents onto the shared journal is
-a later refinement.
+to nothing. Non-editable content keeps the inert record.
+
+**Every state seam names its owner.** A `StateHandle` is a bare slot index
+into the *owning content's* store — two editable contents both hold slot 3,
+and the handles are indistinguishable. So the model's state seams pass the
+owning `ObjectId` alongside the handle, exactly as `RestoreSink::on_restore`
+always did:
+
+```cpp
+class StateRefSink {   // on the Model
+  virtual void retain(ObjectId content, StateHandle handle) = 0;
+  virtual void release(ObjectId content, StateHandle handle) = 0;
+};
+class StateCostFn {    // on the Journal
+  virtual size_t cost(ObjectId content, const StateHandle& handle) const = 0;
+};
+class RestoreSink {    // on the Journal
+  virtual void on_restore(ObjectId content, StateHandle target) = 0;
+};
+```
+
+The owner is already in hand at every call site — the transaction that
+publishes a state knows which object it is publishing for, the reclaim path
+holds the `ObjectRecord` whose count hit zero, and each journal entry's
+`(before, after)` pair is stored per-content. Naming it costs nothing and is
+what lets the seams be shared. The `Editable` facet itself is unchanged: it
+still trades in bare `StateHandle`s, because by the time a call reaches a
+content, the routing has already picked *that* content.
+
+Given owner-tagged seams, the runtime installs **one sink trio per
+`Document`**, not per content — a multiplexer holding an
+`ObjectId → Editable*` routing table. Instantiating an editable content adds
+a row; releasing one drains the model and drops its row. So a document may
+hold **any number of editable contents**, all sharing the one document-wide
+journal, each retain/release/cost/restore dispatched to the content that owns
+the handle. Misrouting is not an accounting error but a correctness one — a
+handle released against the wrong content frees the wrong content's state —
+so a state call that finds no row is a defect, counted and asserted-zero, and
+never silently absorbed.
 
 ## History
 

@@ -17,18 +17,27 @@ namespace {
 // lifecycle balance. Extends the RecordingCommitSink/RecordingDamageSink pattern
 // (transactions.t.cpp:15-31). The sink is type-erased -- it never resolves a real
 // slot, it just tallies -- so the tests use arbitrary handle values.
+// Every state seam names its owner, so the sink records the owning `ObjectId`
+// alongside each handle: that is what a real multiplexing sink routes on
+// (`arbc::EditableRouter`), and recording it here is what pins the model's half of
+// that contract -- retain names the content the capture was published against,
+// release names the content whose record slot reclaimed.
 struct RecordingStateRefSink final : arbc::StateRefSink {
   int retains = 0;
   int releases = 0;
   std::vector<arbc::StateHandle> retained;
   std::vector<arbc::StateHandle> released;
-  void retain(arbc::StateHandle h) override {
+  std::vector<arbc::ObjectId> retained_owners;
+  std::vector<arbc::ObjectId> released_owners;
+  void retain(arbc::ObjectId content, arbc::StateHandle h) override {
     ++retains;
     retained.push_back(h);
+    retained_owners.push_back(content);
   }
-  void release(arbc::StateHandle h) override {
+  void release(arbc::ObjectId content, arbc::StateHandle h) override {
     ++releases;
     released.push_back(h);
+    released_owners.push_back(content);
   }
 };
 
@@ -109,6 +118,12 @@ TEST_CASE("a published content StateHandle retains once and releases once at slo
   REQUIRE(refsink.releases == 2);
   REQUIRE(refsink.released ==
           std::vector<arbc::StateHandle>{arbc::StateHandle{42}, arbc::StateHandle{43}});
+
+  // Every seam call named the content that owns the handle -- the fact a bare
+  // `StateHandle` (a slot index local to its content's own store) cannot carry,
+  // and the fact a multiplexing sink routes on.
+  REQUIRE(refsink.retained_owners == std::vector<arbc::ObjectId>{content, content});
+  REQUIRE(refsink.released_owners == std::vector<arbc::ObjectId>{content, content});
 }
 
 // enforces: 14-data-model-and-editing#pin-holds-content-state
@@ -240,28 +255,44 @@ TEST_CASE("a coalesced capture gesture keeps only first-before/last-after; undo 
   REQUIRE(journal.cursor() == 2);
 }
 
-// Concurrency smoke (doc 16 tier 6, asan lane): a reader pins a version and reads
-// content_state via peek while the writer publishes new captured handles by
-// undo/redo navigation. content_state resolves to a stable, self-consistent handle
-// (never garbage) under concurrent publishes. The full seeded schedule-perturbation
-// stress lives in quality.stress_harness (not duplicated here).
-TEST_CASE("concurrent pin + content_state peek against a writer publishing captures") {
+// Concurrency (doc 16 tier 6, asan/tsan lanes): readers pin a version and read
+// content_state via peek while the writer publishes new captured handles for TWO
+// editable contents by undo/redo navigation, and the drain thread releases the
+// superseded ones through the state sink. Each content's content_state resolves to
+// a stable, self-consistent handle (never garbage, never the OTHER content's) under
+// concurrent publishes.
+//
+// The two contents deliberately hold COLLIDING slot indices ({1} and {2} for both):
+// a `StateHandle` is a slot index local to its own content's store, so the handles
+// are indistinguishable by value and only the owning `ObjectId` on the seam tells
+// them apart. The routing that owner drives lives entirely on the writer/drain
+// thread; the reader touches nothing but the pinned `DocState`, which is what TSan
+// proves here. The full seeded schedule-perturbation stress lives in
+// quality.stress_harness (not duplicated here).
+TEST_CASE("concurrent pin + content_state peek against a writer publishing captures for two "
+          "editable contents") {
+  RecordingStateRefSink refsink;
   arbc::Model model;
   arbc::Journal journal(model);
   model.set_commit_sink(&journal);
+  model.set_state_ref_sink(&refsink);
   NoopDamageSink dsink;
   model.set_damage_sink(&dsink);
 
-  arbc::ObjectId content;
+  arbc::ObjectId a;
+  arbc::ObjectId b;
   {
-    auto txn = model.transact("seed"); // add + capture {1} in one version
-    content = txn.add_content(0);
-    txn.set_content_state(content, arbc::StateHandle{1});
+    auto txn = model.transact("seed"); // add both + capture {1} on each, in one version
+    a = txn.add_content(0);
+    b = txn.add_content(0);
+    txn.set_content_state(a, arbc::StateHandle{1});
+    txn.set_content_state(b, arbc::StateHandle{1});
     REQUIRE(txn.commit().has_value());
   }
   {
-    auto txn = model.transact("recapture");
-    txn.set_content_state(content, arbc::StateHandle{2});
+    auto txn = model.transact("recapture-both");
+    txn.set_content_state(a, arbc::StateHandle{2});
+    txn.set_content_state(b, arbc::StateHandle{2});
     REQUIRE(txn.commit().has_value());
   }
   model.drain();
@@ -271,7 +302,7 @@ TEST_CASE("concurrent pin + content_state peek against a writer publishing captu
   std::atomic<bool> stop{false};
   std::atomic<bool> bad{false};
 
-  std::thread reader([&] {
+  const auto peek = [&](arbc::ObjectId content) {
     while (!go.load(std::memory_order_acquire)) {
     }
     while (!stop.load(std::memory_order_acquire)) {
@@ -283,20 +314,35 @@ TEST_CASE("concurrent pin + content_state peek against a writer publishing captu
         bad.store(true, std::memory_order_relaxed);
       }
     }
-  });
+  };
+  std::thread reader_a([&] { peek(a); });
+  std::thread reader_b([&] { peek(b); });
 
   go.store(true, std::memory_order_release);
   for (int i = 0; i < writer_iterations; ++i) {
-    REQUIRE(journal.undo()); // rebind content to the {1} record
+    REQUIRE(journal.undo()); // rebind BOTH contents to their {1} records
     model.drain();
-    REQUIRE(journal.redo()); // rebind content to the {2} record
+    REQUIRE(journal.redo()); // rebind BOTH contents to their {2} records
     model.drain();
   }
   stop.store(true, std::memory_order_release);
-  reader.join();
+  reader_a.join();
+  reader_b.join();
 
   REQUIRE_FALSE(bad.load());
-  REQUIRE(model.current()->content_state(content) == arbc::StateHandle{2});
+  REQUIRE(model.current()->content_state(a) == arbc::StateHandle{2});
+  REQUIRE(model.current()->content_state(b) == arbc::StateHandle{2});
+
+  // Every retain/release the navigation churn drove named one of the two contents
+  // -- the seam never handed a handle to the wrong owner, which is the only thing
+  // standing between two colliding slot indices and a cross-content free.
+  REQUIRE(refsink.retains > 0);
+  for (const arbc::ObjectId owner : refsink.retained_owners) {
+    REQUIRE((owner == a || owner == b));
+  }
+  for (const arbc::ObjectId owner : refsink.released_owners) {
+    REQUIRE((owner == a || owner == b));
+  }
 }
 
 } // namespace
