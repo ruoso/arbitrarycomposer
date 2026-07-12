@@ -39,7 +39,7 @@ task quality "Quality infrastructure" {
     allocate team
     note "Clean the baseline against the curated profile, then promote tidy from nightly continue-on-error to per-push blocking. Doc 16."
   }
-  task claims_audit "Claims-register audit automation" {
+  task claims_liveness_check "Claims-register liveness check automation" {
     effort 1d
     allocate team
     note "Nightly audit: registered claims map to living doc anchors and passing tests; enforces-tags without registry entries already fail the gate. Doc 16."
