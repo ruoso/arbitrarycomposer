@@ -2,13 +2,12 @@
 
 namespace arbc {
 
-Housekeeper::Housekeeper(ReclamationQueue& queue, Checkpointer* checkpointer, Arena* arena,
-                         HousekeepingConfig config) noexcept
-    : d_queue(&queue), d_checkpointer(checkpointer), d_arena(arena), d_config(config) {}
+Housekeeper::Housekeeper(HousekeepingTarget& target, HousekeepingConfig config) noexcept
+    : d_target(&target), d_config(config) {}
 
-expected<std::monostate, WorkspaceFileError> Housekeeper::commit_tip() {
-  // Callers guard on a non-null checkpointer before reaching here.
-  expected<std::monostate, WorkspaceFileError> committed = d_checkpointer->commit(d_tip);
+expected<std::monostate, WorkspaceFileError> Housekeeper::commit_now() {
+  // Callers guard on a checkpointable target before reaching here.
+  expected<std::monostate, WorkspaceFileError> committed = d_target->checkpoint();
   if (!committed) {
     return unexpected(committed.error());
   }
@@ -17,34 +16,33 @@ expected<std::monostate, WorkspaceFileError> Housekeeper::commit_tip() {
   return std::monostate{};
 }
 
-expected<std::monostate, WorkspaceFileError> Housekeeper::after_commit(SlotIndex root) {
+expected<std::monostate, WorkspaceFileError> Housekeeper::after_commit() {
   if (d_config.drain_between_transactions) {
-    d_queue->drain();
+    d_target->drain();
     ++d_drains_run;
   }
-  d_tip = root;
   ++d_transactions_seen;
   ++d_transactions_since_checkpoint;
 
   // Trigger (a): commit every Nth transaction. The transaction proxy is never
   // clean at this point (the count just advanced), so this never skips-clean.
-  if (d_checkpointer != nullptr && d_config.checkpoint_every_n_transactions &&
+  if (d_target->checkpointable() && d_config.checkpoint_every_n_transactions &&
       d_transactions_since_checkpoint >= *d_config.checkpoint_every_n_transactions) {
-    return commit_tip();
+    return commit_now();
   }
   return std::monostate{};
 }
 
 expected<std::monostate, WorkspaceFileError> Housekeeper::tick(std::uint64_t monotonic_tick) {
-  d_queue->drain();
+  d_target->drain();
   ++d_drains_run;
 
   // Trigger (b): a handed tick past the interval, gated on dirtiness. The tick
   // is a handed monotonic value -- this reads no clock (doc 16:54-62).
-  if (d_checkpointer != nullptr && d_config.checkpoint_tick_interval &&
+  if (d_target->checkpointable() && d_config.checkpoint_tick_interval &&
       monotonic_tick - d_last_checkpoint_tick >= *d_config.checkpoint_tick_interval) {
     if (d_transactions_since_checkpoint >= 1) {
-      expected<std::monostate, WorkspaceFileError> committed = commit_tip();
+      expected<std::monostate, WorkspaceFileError> committed = commit_now();
       if (!committed) {
         return unexpected(committed.error());
       }
@@ -60,16 +58,16 @@ expected<std::monostate, WorkspaceFileError> Housekeeper::tick(std::uint64_t mon
 }
 
 expected<std::monostate, WorkspaceFileError> Housekeeper::request_checkpoint() {
-  if (d_checkpointer == nullptr) {
+  if (!d_target->checkpointable()) {
     return std::monostate{};
   }
   // The explicit host call is unconditional (autosave / export / quit). The
   // underlying commit still skips the data msync on a genuinely clean scene.
-  return commit_tip();
+  return commit_now();
 }
 
 void Housekeeper::drain_and_quiesce() {
-  d_queue->drain();
+  d_target->drain();
   ++d_drains_run;
 }
 
@@ -79,10 +77,10 @@ HousekeepingStats Housekeeper::stats() const noexcept {
   snapshot.drains_run = d_drains_run;
   snapshot.checkpoints_committed = d_checkpoints_committed;
   snapshot.checkpoints_skipped_clean = d_checkpoints_skipped_clean;
-  snapshot.live_slots = d_arena != nullptr ? d_arena->total_slots_live() : 0;
-  snapshot.slots_freed_to_list =
-      d_checkpointer != nullptr ? d_checkpointer->slots_freed_to_list() : 0;
-  snapshot.durable_epoch = d_checkpointer != nullptr ? d_checkpointer->durable_epoch() : 0;
+  snapshot.live_slots = d_target->live_slots();
+  snapshot.bytes_reserved = d_target->bytes_reserved();
+  snapshot.slots_freed_to_list = d_target->slots_freed_to_list();
+  snapshot.durable_epoch = d_target->durable_epoch();
   return snapshot;
 }
 

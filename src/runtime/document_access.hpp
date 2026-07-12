@@ -18,7 +18,7 @@
 namespace arbc {
 
 struct HostViewportDocumentAccess {
-  static Model& model(Document& doc) { return doc.d_model; }
+  static Model& model(Document& doc) { return *doc.d_model; }
 };
 
 } // namespace arbc

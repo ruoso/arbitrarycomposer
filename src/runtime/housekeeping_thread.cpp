@@ -4,10 +4,9 @@
 
 namespace arbc {
 
-HousekeepingThread::HousekeepingThread(ReclamationQueue& queue, Checkpointer* checkpointer,
-                                       Arena* arena, HousekeepingConfig policy,
+HousekeepingThread::HousekeepingThread(HousekeepingTarget& target, HousekeepingConfig policy,
                                        HousekeepingThreadConfig thread_config)
-    : d_housekeeper(queue, checkpointer, arena, policy), d_config(std::move(thread_config)) {
+    : d_housekeeper(target, policy), d_config(std::move(thread_config)) {
   // Default tick source: a monotonic counter of elapsed park-periods since
   // construction. Production reads a real clock here (clocks are runtime policy,
   // doc 17:80; a timer cadence is sanctioned, doc 15:213); tests inject their own
@@ -33,9 +32,9 @@ HousekeepingThread::~HousekeepingThread() {
   }
 }
 
-expected<std::monostate, WorkspaceFileError> HousekeepingThread::after_commit(SlotIndex root) {
+expected<std::monostate, WorkspaceFileError> HousekeepingThread::after_commit() {
   std::lock_guard<std::mutex> lock(d_mutex);
-  return d_housekeeper.after_commit(root);
+  return d_housekeeper.after_commit();
 }
 
 expected<std::monostate, WorkspaceFileError> HousekeepingThread::request_checkpoint() {

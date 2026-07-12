@@ -152,24 +152,30 @@ public:
 // plain `DeferredReclaimSink` would. This is what makes the `StateHandle`
 // lifecycle ride the record slot without a non-trivial `~ObjectRecord`
 // (records.hpp:12-19, refinement Decision 2). Reached only on the single drain
-// thread (every ObjectRecord count decrement is writer/drain-thread), so the
-// L3 `release` stays writer-thread-only.
+// thread. Since `runtime.housekeeping_document_wiring` that drain thread is NOT
+// the writer (doc 15 § Version reclamation, doc 14:168-181): a `Document`'s
+// background housekeeping thread reclaims while the writer transacts, so the sink
+// slot is read here off the writer's `set_state_ref_sink` store. Hence the
+// `std::atomic` indirection -- the pointer itself is the cross-thread datum; the
+// `Editable::release` it lands on is the L3 contract's drain-thread half.
 class ContentStateReclaimSink final : public ZeroCountSink {
 public:
-  ContentStateReclaimSink(RefStore<ObjectRecord>& records, StateRefSink** sink) noexcept
+  ContentStateReclaimSink(RefStore<ObjectRecord>& records,
+                          std::atomic<StateRefSink*>* sink) noexcept
       : d_records(&records), d_sink(sink) {}
 
   void on_zero(SlotIndex index) override {
     const ObjectRecord* r = d_records->peek_index(index);
-    if (r->kind == RecordKind::Content && r->as.content.state.has_state() && *d_sink != nullptr) {
-      (*d_sink)->release(r->id, r->as.content.state);
+    StateRefSink* const sink = d_sink->load(std::memory_order_acquire);
+    if (r->kind == RecordKind::Content && r->as.content.state.has_state() && sink != nullptr) {
+      sink->release(r->id, r->as.content.state);
     }
     d_records->enqueue_reclaim(index);
   }
 
 private:
   RefStore<ObjectRecord>* d_records;
-  StateRefSink** d_sink;
+  std::atomic<StateRefSink*>* d_sink;
 };
 
 // The versioned scene model (doc 14): single writer, lock-free pinned reads.
@@ -263,15 +269,23 @@ public:
   // Allocate a fresh, document-unique object id (doc 14 § Identity). Any thread.
   ObjectId allocate_id();
 
-  // Run deferred reclamation to quiescence. WRITER-ONLY / single-drainer (between
-  // transactions): publishes the reclamation context so node destructors can
-  // release their child edges, then drains the cascade iteratively.
+  // Run deferred reclamation to quiescence. SINGLE-DRAINER, any thread: publishes
+  // the reclamation context so node destructors can release their child edges,
+  // then drains the cascade iteratively. THE reclaim seam -- every drainer must
+  // come through here, never through the queue directly, or `~HamtNode` finds no
+  // context and silently drops its child edges (hamt.hpp:103-109). A `Document`
+  // enforces that by routing its background thread through
+  // `ModelHousekeepingTarget` (`runtime/housekeeping_targets.hpp`).
   void drain();
 
   // Total live record + node slots across the document arena (doc 15:149-154 --
   // the per-arena live count exposed for a host memory panel, and the behavioral
   // witness of structural sharing and reclamation, doc 16:54-62).
   std::size_t live_slots() const noexcept;
+
+  // Bytes the document arena has reserved from its chunk source -- the byte half
+  // of doc 15:164-169's memory-panel accounting, beside `live_slots()`.
+  std::size_t bytes_reserved() const noexcept;
 
   // Install the writer-owned commit / damage seams (single sink each; abstract,
   // model-defined per doc 02). A commit assembles the entry / damage union and
@@ -283,8 +297,11 @@ public:
   // Install the writer-owned content-state retain/release seam. Lifecycle rides
   // the record store the `Model` owns, so it registers here (not on `Journal`,
   // where cost/restore live -- refinement Decision 4). Null clears (inert).
-  // WRITER-THREAD ONLY.
-  void set_state_ref_sink(StateRefSink* sink) noexcept { d_state_ref_sink = sink; }
+  // WRITER-THREAD ONLY -- but the slot is READ on the drain thread (the reclaim
+  // sink's `release`), so the pointer is published atomically.
+  void set_state_ref_sink(StateRefSink* sink) noexcept {
+    d_state_ref_sink.store(sink, std::memory_order_release);
+  }
 
   // Direction of a navigation publish: undo restores each edit's *before* edge,
   // redo re-applies its *after* edge (doc 14:168-172).
@@ -576,8 +593,10 @@ private:
   // through these; the journal / damage-propagation consumers register above.
   CommitSink* d_commit_sink{nullptr};
   DamageSink* d_damage_sink{nullptr};
-  // L3 content-state retain/release seam (writer-thread only; null == inert).
-  StateRefSink* d_state_ref_sink{nullptr};
+  // L3 content-state retain/release seam (null == inert). Installed by the writer,
+  // read by the drainer -- which since `runtime.housekeeping_document_wiring` is a
+  // different thread, so the slot is atomic.
+  std::atomic<StateRefSink*> d_state_ref_sink{nullptr};
   // The ObjectRecord zero-count sink that releases a reclaimed content record's
   // embedded `StateHandle` before deferring the slot. Constructed with the record
   // store and the address of `d_state_ref_sink`, and installed over the plain

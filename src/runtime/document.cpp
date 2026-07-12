@@ -1,16 +1,83 @@
 #include <arbc/runtime/document.hpp>
 
+#include <memory>
 #include <utility>
 
 namespace arbc {
 
-Document::Document() {
-  // The document owns the single, document-wide history (doc 14:193-195): the
-  // journal IS the model's CommitSink, so every Document mutator's commit appends
-  // one entry and is undoable. The binding then has a live Model/Journal to
-  // register an editable content's state sinks onto (add_content, below).
-  d_model.set_commit_sink(&d_journal);
-  d_binding.attach(d_model, d_journal);
+HousekeepingConfig Document::policy_for(const DocumentHousekeepingConfig& config,
+                                        bool workspace_backed) {
+  HousekeepingConfig policy;
+  policy.drain_between_transactions = config.drain_between_transactions;
+  // The transaction-count trigger fires from `after_commit`, i.e. on the writer --
+  // the only thread a `Checkpointer::commit` may ever run on. Inert without a file.
+  if (workspace_backed && config.checkpoint_every_n_transactions > 0) {
+    policy.checkpoint_every_n_transactions = config.checkpoint_every_n_transactions;
+  }
+  // `checkpoint_tick_interval` is deliberately LEFT EMPTY, always: it is the one
+  // trigger that fires from the background thread's `tick()`, and a commit there
+  // races the writer's allocator (doc 15 § Version reclamation). The background
+  // thread drains; the writer checkpoints.
+  return policy;
+}
+
+Document::Document(DocumentHousekeepingConfig housekeeping)
+    : Document(std::make_unique<Model>(), std::move(housekeeping)) {}
+
+Document::Document(std::unique_ptr<Model> model, DocumentHousekeepingConfig housekeeping)
+    // `housekeeping.thread` is COPIED, not moved: two arguments of one call have
+    // unspecified evaluation order, and a move would leave `policy_for` reading a
+    // moved-from struct if it happened to run second.
+    : d_model(std::move(model)),
+      d_housekeeping(d_hk_target, policy_for(housekeeping, d_model->workspace_backed()),
+                     housekeeping.thread) {
+  // The document owns the single, document-wide history (doc 14:193-195): every
+  // Document mutator's commit appends one entry and is undoable. The relay -- not the
+  // journal itself -- is the model's CommitSink, so the same post-publish hook also
+  // drives the housekeeper's between-transaction drain and checkpoint cadence for
+  // EVERY commit, including one a host makes through a raw `transact()`.
+  d_model->set_commit_sink(&d_commit_relay);
+  d_binding.attach(*d_model, d_journal);
+  // The binding's teardown drains must go through the single drainer, not around it
+  // (Constraint 2): `unbind`/`unbind_all` would otherwise race the background loop.
+  d_binding.set_drain_hook([this] { d_housekeeping.drain_and_quiesce(); });
+}
+
+// Out-of-line so `~HousekeepingThread` (which joins the loop) is instantiated here,
+// with the whole member set complete -- the teardown contract in document.hpp.
+Document::~Document() = default;
+
+expected<std::unique_ptr<Document>, WorkspaceFileError>
+Document::create(const std::string& path, DocumentHousekeepingConfig housekeeping) {
+  expected<std::unique_ptr<Model>, WorkspaceFileError> model = Model::create(path);
+  if (!model) {
+    return unexpected(model.error());
+  }
+  return std::unique_ptr<Document>(new Document(std::move(*model), std::move(housekeeping)));
+}
+
+expected<std::unique_ptr<Document>, WorkspaceFileError>
+Document::open(const std::string& path, DocumentHousekeepingConfig housekeeping) {
+  expected<std::unique_ptr<Model>, WorkspaceFileError> model = Model::open(path);
+  if (!model) {
+    return unexpected(model.error());
+  }
+  return std::unique_ptr<Document>(new Document(std::move(*model), std::move(housekeeping)));
+}
+
+void Document::CommitRelay::on_commit(JournalEntry entry) {
+  d_doc->d_journal.on_commit(std::move(entry));
+
+  // The between-transaction drain + the transaction-count checkpoint cadence, on the
+  // writer thread, synchronized against the background loop by the thread's mutex.
+  expected<std::monostate, WorkspaceFileError> kept = d_doc->d_housekeeping.after_commit();
+  if (!kept) {
+    // A cadence commit's I/O failure has no caller to return a value to (the publish
+    // itself succeeded and is not being unwound): record it, never throw off a commit.
+    d_doc->d_last_checkpoint_error = kept.error();
+    return;
+  }
+  d_doc->d_last_checkpoint_error.reset();
 }
 
 ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t kind) {
@@ -20,7 +87,7 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
   // side-map keyed by that record's id (doc 17:66-72 keeps the model free of the
   // Content vtable). resolve(id) serves it; find_content(id) carries no pointer.
   Content& live = *content;
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   const ObjectId id = txn.add_content(kind);
 
   // Register-on-instantiate, the state-sink analogue of the damage sink the core
@@ -49,74 +116,91 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
 }
 
 Model::Transaction Document::transact(std::string name) {
-  return d_model.transact(std::move(name));
+  return d_model->transact(std::move(name));
 }
 
-void Document::drain() { d_model.drain(); }
+void Document::drain() { d_housekeeping.drain_and_quiesce(); }
+
+expected<std::monostate, WorkspaceFileError> Document::checkpoint() {
+  if (!d_model->workspace_backed()) {
+    // The anonymous document answers rather than asserting: there is no file, so there
+    // is nothing to make durable (Constraint 6). `Model::checkpoint()` says the same.
+    return unexpected(WorkspaceFileError{WorkspaceFileErrc::Unsupported, 0});
+  }
+  return d_housekeeping.request_checkpoint();
+}
+
+HousekeepingStats Document::memory_stats() const { return d_housekeeping.stats(); }
+
+std::uint64_t Document::background_ticks() const noexcept {
+  return d_housekeeping.background_ticks();
+}
+
+std::uint64_t Document::flush_housekeeping() { return d_housekeeping.flush(); }
 
 ObjectId Document::add_layer(ObjectId content, const Affine& transform, double opacity) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   const ObjectId id = txn.add_layer(content, transform, opacity);
   txn.commit();
   return id;
 }
 
 void Document::set_layer_transform(ObjectId layer, const Affine& transform) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   txn.set_transform(layer, transform);
   txn.commit();
 }
 
 void Document::set_layer_span(ObjectId layer, const TimeRange& span) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   txn.set_span(layer, span);
   txn.commit();
 }
 
 void Document::set_layer_time_map(ObjectId layer, const TimeMap& time_map) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   txn.set_time_map(layer, time_map);
   txn.commit();
 }
 
 void Document::attach_layer(ObjectId composition, ObjectId layer) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   txn.attach_layer(composition, layer);
   txn.commit();
 }
 
 void Document::set_layer_gain(ObjectId layer, double gain) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   txn.set_gain(layer, gain);
   txn.commit();
 }
 
 void Document::set_layer_audible(ObjectId layer, bool audible) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   txn.set_audible(layer, audible);
   txn.commit();
 }
 
 void Document::set_working_audio_format(ObjectId composition, const AudioFormat& format) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   txn.set_working_audio_format(composition, format);
   txn.commit();
 }
 
 ObjectId Document::add_composition(double canvas_w, double canvas_h) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   const ObjectId id = txn.add_composition(canvas_w, canvas_h);
   txn.commit();
   return id;
 }
 
 void Document::set_working_space(ObjectId composition, const SurfaceFormat& format) {
-  auto txn = d_model.transact();
+  auto txn = d_model->transact();
   txn.set_working_space(composition, format);
   txn.commit();
 }
 
-DocStatePtr Document::pin() const { return d_model.current(); }
+DocStatePtr Document::pin() const { return d_model->current(); }
 
 Content* Document::resolve(ObjectId content) const {
   const auto found = d_contents.find(content);

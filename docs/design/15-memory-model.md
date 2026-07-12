@@ -156,6 +156,21 @@ question, which is the goal:
   allocate only from pools/arenas warmed for them. The writer thread is
   the only structural allocator — which is what makes thread-local free
   pools effective: churn is concentrated where the free pool lives.
+- **The drainer is not the writer, and the checkpointer is.** These are
+  two separate consequences of the rule above, and both bite. *Draining*
+  may run on the low-priority thread concurrently with a writer
+  transaction: releases land in the drainer's own thread-local free pool
+  (or, when a durability fence is installed, in the quarantine the
+  drainer alone touches), so it never races the writer's allocation. But
+  every seam a record's destructor reaches *through* — the runtime's
+  content-state routing table above all (doc 14) — is therefore read on
+  the drain thread while the writer mutates it, and must be synchronized
+  for that. *Committing a checkpoint*, by contrast, is a **writer-thread
+  operation**: it reads the allocator's high-water, seals full chunks
+  read-only, and compacts the quarantine — all structures the writer
+  mutates lock-free. The housekeeping thread drains; it does not commit.
+  A commit issued while a transaction is in flight would seal a chunk out
+  from under the writer's next placement-new.
 - **Document teardown** is arena drop: O(live buffers), no per-object
   walk, no destructor storm on close (bulk-release path runs the
   reclamation queue to quiescence first for types with external
@@ -255,7 +270,13 @@ the root it selected — a crash mid-commit lands on the old root *and* the
 old high-water, never a mismatched pair. Checkpoint cadence is policy
 (timer, transaction count, explicit host call); the doc 14 autosave
 scenario becomes "msync + root flip" — cheaper than serializing, though
-the JSON autosave remains the belt to this suspender.
+the JSON autosave remains the belt to this suspender. Cadence decides
+*when*, never *where*: because the commit is a writer-thread operation
+(above), all three triggers are evaluated on the writer — the
+transaction-count and host-call triggers naturally, and a timer trigger
+by being *delivered* to the writer rather than fired on the housekeeping
+thread. Committing off the writer at all requires a writer↔checkpointer
+quiesce that the lock-free transaction path does not have today.
 
 Debug hardening gets stronger here too: published data chunks can be
 `mprotect`ed read-only between transactions in debug builds, making any

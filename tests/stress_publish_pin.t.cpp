@@ -27,6 +27,7 @@
 #include <arbc/pool/reclamation.hpp>
 #include <arbc/pool/refs.hpp>
 #include <arbc/pool/slot_store.hpp>
+#include <arbc/runtime/housekeeping_targets.hpp>
 #include <arbc/runtime/housekeeping_thread.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -170,11 +171,17 @@ void run_publish_pin_stress(std::uint32_t seed_begin, std::uint32_t seed_end, in
       });
     }
 
+    // The bare-pool housekeeping target: this substrate is a hand-rolled `RefStore`
+    // chain, not a `Model`, so it needs no HAMT reclaim context -- `queue.drain()` is
+    // the whole duty (`housekeeping_targets.hpp`). Declared outside the block so it
+    // outlives the thread that drains through it.
+    arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
+    target.set_root(sentinel.index()); // the writer's stable after_commit root
+
     {
       arbc::HousekeepingThreadConfig tc;
       tc.tick_period = kActiveTick;
-      arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{},
-                                   std::move(tc));
+      arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
 
       go.store(true, std::memory_order_release);
       arbc::test::Perturber wperturb(arbc::test::derive_seed(seed, kWriterSalt));
@@ -187,7 +194,7 @@ void run_publish_pin_stress(std::uint32_t seed_begin, std::uint32_t seed_end, in
         // The writer's between-transaction drain, serialized with the
         // background thread's tick through the wrapper mutex -> exactly one
         // drainer at a time (doc 15:129-136).
-        REQUIRE(hkt.after_commit(sentinel.index()).has_value());
+        REQUIRE(hkt.after_commit().has_value());
         wperturb.maybe_yield();
       }
 

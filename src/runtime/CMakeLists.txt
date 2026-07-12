@@ -20,6 +20,7 @@ arbc_add_component(
                  arbc/runtime/pull_identity.hpp
                  arbc/runtime/offline.hpp
                  arbc/runtime/offline_sequence.hpp arbc/runtime/housekeeping.hpp
+                 arbc/runtime/housekeeping_targets.hpp
                  arbc/runtime/housekeeping_thread.hpp arbc/runtime/worker_pool.hpp
                  arbc/runtime/interactive.hpp arbc/runtime/transport.hpp
                  arbc/runtime/host_viewport.hpp arbc/runtime/damage_router.hpp
@@ -44,7 +45,8 @@ target_link_libraries(arbc_runtime PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(arbc_runtime PRIVATE ${CMAKE_DL_LIBS})
 
 arbc_component_test(COMPONENT runtime
-                    SOURCES t/housekeeping.t.cpp t/housekeeping_thread.t.cpp t/worker_pool.t.cpp
+                    SOURCES t/housekeeping.t.cpp t/housekeeping_thread.t.cpp
+                            t/housekeeping_document.t.cpp t/worker_pool.t.cpp
                             t/interactive.t.cpp t/transport.t.cpp t/host_viewport.t.cpp
                             t/damage_router.t.cpp
                             t/playback_hints.t.cpp

@@ -768,6 +768,8 @@ void Model::drain() {
 
 std::size_t Model::live_slots() const noexcept { return d_arena.total_slots_live(); }
 
+std::size_t Model::bytes_reserved() const noexcept { return d_arena.total_bytes_reserved(); }
+
 Model::Transaction Model::transact(std::string name) { return Transaction(*this, std::move(name)); }
 
 expected<std::monostate, PoolError>
@@ -1471,8 +1473,9 @@ void Model::Transaction::set_content_state(ObjectId content, StateHandle after) 
   // below fails, `rec` drops here and its zero-count reclaim releases it -- so the
   // pairing holds even on the error path. The `before` handle keeps the retain it
   // took when the base record was created; this call touches only `after`.
-  if (after.has_state() && d_model->d_state_ref_sink != nullptr) {
-    d_model->d_state_ref_sink->retain(content, after);
+  StateRefSink* const ref_sink = d_model->d_state_ref_sink.load(std::memory_order_acquire);
+  if (after.has_state() && ref_sink != nullptr) {
+    ref_sink->retain(content, after);
   }
 
   expected<Ref<HamtNode>, PoolError> next =

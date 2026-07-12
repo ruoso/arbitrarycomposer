@@ -17,6 +17,14 @@ void EditableBinding::attach(Model& model, Journal& journal) noexcept {
   d_registrations += 3;
 }
 
+void EditableBinding::drain_through_owner() {
+  if (d_drain_hook) {
+    d_drain_hook();
+    return;
+  }
+  d_model->drain();
+}
+
 Editable* EditableBinding::bind(ObjectId id, Content& content) {
   Editable* const editable = content.editable();
   if (editable == nullptr) {
@@ -34,8 +42,9 @@ void EditableBinding::unbind(ObjectId id) {
   // releases for records embedding this content's handles, and each must land on
   // the content that owns it. Dropping the row first would strand those releases
   // (the version refcount never reaches zero, so the content's pool blocks leak)
-  // and trip the unrouted-call counter besides. Drain, then drop.
-  d_model->drain();
+  // and trip the unrouted-call counter besides. Drain, then drop. The drain goes
+  // through the owner's single drainer, never the model directly (Constraint 2).
+  drain_through_owner();
   d_router.erase(id);
 }
 
@@ -43,7 +52,7 @@ void EditableBinding::unbind_all() {
   if (d_model == nullptr) {
     return;
   }
-  d_model->drain(); // the same ordering, document-wide: every row is still live here
+  drain_through_owner(); // the same ordering, document-wide: every row is still live here
 
   d_model->set_state_ref_sink(nullptr);
   d_journal->set_state_cost_fn(nullptr);

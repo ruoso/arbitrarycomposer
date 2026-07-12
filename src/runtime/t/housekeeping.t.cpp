@@ -4,6 +4,7 @@
 #include <arbc/pool/slot_store.hpp>
 #include <arbc/pool/workspace_file.hpp>
 #include <arbc/runtime/housekeeping.hpp>
+#include <arbc/runtime/housekeeping_targets.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -78,7 +79,8 @@ TEST_CASE("housekeeper drains the reclamation queue between transactions") {
 
   SECTION("drain_between_transactions = true reclaims to the no-garbage baseline") {
     arbc::HousekeepingConfig config; // drain_between_transactions defaults true
-    arbc::Housekeeper hk(queue, nullptr, &arena, config);
+    arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
+    arbc::Housekeeper hk(target, config);
 
     arbc::Ref<Rec> chain = build_chain(store, 5);
     const arbc::SlotIndex root = chain.index();
@@ -86,7 +88,8 @@ TEST_CASE("housekeeper drains the reclamation queue between transactions") {
     chain = arbc::Ref<Rec>{}; // drop the root: enqueued, nothing destroyed yet
     REQUIRE(store.slots_live() == baseline + 5);
 
-    REQUIRE(hk.after_commit(root).has_value());
+    target.set_root(root);
+    REQUIRE(hk.after_commit().has_value());
     REQUIRE(store.slots_live() == baseline); // drained to quiescence
     REQUIRE(hk.stats().drains_run == 1);
   }
@@ -94,13 +97,15 @@ TEST_CASE("housekeeper drains the reclamation queue between transactions") {
   SECTION("drain_between_transactions = false defers to an explicit quiesce") {
     arbc::HousekeepingConfig config;
     config.drain_between_transactions = false;
-    arbc::Housekeeper hk(queue, nullptr, &arena, config);
+    arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
+    arbc::Housekeeper hk(target, config);
 
     arbc::Ref<Rec> chain = build_chain(store, 5);
     const arbc::SlotIndex root = chain.index();
     chain = arbc::Ref<Rec>{};
 
-    REQUIRE(hk.after_commit(root).has_value());
+    target.set_root(root);
+    REQUIRE(hk.after_commit().has_value());
     REQUIRE(store.slots_live() == baseline + 5); // left un-drained on the queue
     REQUIRE(hk.stats().drains_run == 0);
 
@@ -121,13 +126,15 @@ TEST_CASE("housekeeper checkpoint triggers are inert on an anonymous arena") {
   arbc::HousekeepingConfig config;
   config.checkpoint_every_n_transactions = 1;
   config.checkpoint_tick_interval = 10;
-  arbc::Housekeeper hk(queue, nullptr, &arena, config); // no checkpointer
+  arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
+  arbc::Housekeeper hk(target, config); // no checkpointer
 
   arbc::Ref<Rec> chain = build_chain(store, 3);
   const arbc::SlotIndex root = chain.index();
   chain = arbc::Ref<Rec>{};
 
-  REQUIRE(hk.after_commit(root).has_value());
+  target.set_root(root);
+  REQUIRE(hk.after_commit().has_value());
   REQUIRE(hk.tick(1000).has_value());
   REQUIRE(hk.request_checkpoint().has_value());
 
@@ -230,7 +237,8 @@ TEST_CASE("housekeeper commits on the transaction-count trigger") {
   WsFixture fx;
   arbc::HousekeepingConfig config;
   config.checkpoint_every_n_transactions = 3;
-  arbc::Housekeeper hk(fx.queue, &fx.ckpt, &fx.arena, config);
+  arbc::PoolHousekeepingTarget target(fx.queue, &fx.ckpt, &fx.arena);
+  arbc::Housekeeper hk(target, config);
 
   std::vector<arbc::Ref<Rec>> live; // kept alive so each transaction dirties the arena
   for (int i = 0; i < 7; ++i) {
@@ -238,7 +246,8 @@ TEST_CASE("housekeeper commits on the transaction-count trigger") {
     node->value = static_cast<std::uint32_t>(i);
     const arbc::SlotIndex root = node.index();
     live.push_back(std::move(node));
-    REQUIRE(hk.after_commit(root).has_value());
+    target.set_root(root);
+    REQUIRE(hk.after_commit().has_value());
   }
 
   REQUIRE(fx.ckpt.commit_count() == 2); // fired at the 3rd and 6th transaction
@@ -251,10 +260,12 @@ TEST_CASE("housekeeper commits on the tick-interval trigger and skips a still sc
   WsFixture fx;
   arbc::HousekeepingConfig config;
   config.checkpoint_tick_interval = 100;
-  arbc::Housekeeper hk(fx.queue, &fx.ckpt, &fx.arena, config);
+  arbc::PoolHousekeepingTarget target(fx.queue, &fx.ckpt, &fx.arena);
+  arbc::Housekeeper hk(target, config);
 
   arbc::Ref<Rec> node = *fx.store.create();
-  REQUIRE(hk.after_commit(node.index()).has_value()); // one transaction since checkpoint
+  target.set_root(node.index());
+  REQUIRE(hk.after_commit().has_value()); // one transaction since checkpoint
 
   REQUIRE(hk.tick(50).has_value()); // interval not yet elapsed
   REQUIRE(fx.ckpt.commit_count() == 0);
@@ -272,10 +283,12 @@ TEST_CASE("housekeeper commits on the tick-interval trigger and skips a still sc
 TEST_CASE("explicit request_checkpoint is unconditional and skips the data msync when clean") {
   WsFixture fx;
   arbc::HousekeepingConfig config; // no automatic triggers
-  arbc::Housekeeper hk(fx.queue, &fx.ckpt, &fx.arena, config);
+  arbc::PoolHousekeepingTarget target(fx.queue, &fx.ckpt, &fx.arena);
+  arbc::Housekeeper hk(target, config);
 
   arbc::Ref<Rec> node = *fx.store.create();
-  REQUIRE(hk.after_commit(node.index()).has_value());
+  target.set_root(node.index());
+  REQUIRE(hk.after_commit().has_value());
 
   REQUIRE(hk.request_checkpoint().has_value());
   REQUIRE(fx.ckpt.commit_count() == 1);
@@ -292,10 +305,12 @@ TEST_CASE("explicit request_checkpoint is unconditional and skips the data msync
 TEST_CASE("a workspace sync failure surfaces from request_checkpoint as a value") {
   WsFixture fx;
   arbc::HousekeepingConfig config;
-  arbc::Housekeeper hk(fx.queue, &fx.ckpt, &fx.arena, config);
+  arbc::PoolHousekeepingTarget target(fx.queue, &fx.ckpt, &fx.arena);
+  arbc::Housekeeper hk(target, config);
 
   arbc::Ref<Rec> node = *fx.store.create();
-  REQUIRE(hk.after_commit(node.index()).has_value());
+  target.set_root(node.index());
+  REQUIRE(hk.after_commit().has_value());
   REQUIRE(hk.request_checkpoint().has_value()); // reach a clean, durable state
 
   ErrnoInjector inj(arbc::WorkspaceSyscall::Msync, EIO);
@@ -315,19 +330,23 @@ TEST_CASE("housekeeper stats aggregate the driven counts and underlying counters
   WsFixture fx;
   arbc::HousekeepingConfig config;
   config.checkpoint_every_n_transactions = 2;
-  arbc::Housekeeper hk(fx.queue, &fx.ckpt, &fx.arena, config);
+  arbc::PoolHousekeepingTarget target(fx.queue, &fx.ckpt, &fx.arena);
+  arbc::Housekeeper hk(target, config);
 
   // Two transactions whose records stay live (grow the arena)...
   arbc::Ref<Rec> a = *fx.store.create();
-  REQUIRE(hk.after_commit(a.index()).has_value());
+  target.set_root(a.index());
+  REQUIRE(hk.after_commit().has_value());
   arbc::Ref<Rec> b = *fx.store.create();
-  REQUIRE(hk.after_commit(b.index()).has_value()); // 2nd transaction -> commit
+  target.set_root(b.index());
+  REQUIRE(hk.after_commit().has_value()); // 2nd transaction -> commit
 
   // ...plus a released chain the between-transaction drain reclaims.
   arbc::Ref<Rec> chain = build_chain(fx.store, 4);
   const arbc::SlotIndex root = chain.index();
   chain = arbc::Ref<Rec>{};
-  REQUIRE(hk.after_commit(root).has_value());
+  target.set_root(root);
+  REQUIRE(hk.after_commit().has_value());
 
   const arbc::HousekeepingStats stats = hk.stats();
   REQUIRE(stats.transactions_seen == 3);
@@ -336,6 +355,10 @@ TEST_CASE("housekeeper stats aggregate the driven counts and underlying counters
   REQUIRE(stats.checkpoints_skipped_clean == 0);
   REQUIRE(stats.live_slots == fx.arena.total_slots_live());
   REQUIRE(stats.live_slots == 2); // a and b remain; the chain was reclaimed
+  // The byte half of the memory panel (doc 15:164-169), beside the live count: the
+  // arena has reserved real chunks, and the snapshot reports exactly what it holds.
+  REQUIRE(stats.bytes_reserved == fx.arena.total_bytes_reserved());
+  REQUIRE(stats.bytes_reserved > 0);
   REQUIRE(stats.slots_freed_to_list == fx.ckpt.slots_freed_to_list());
   REQUIRE(stats.durable_epoch == fx.ckpt.durable_epoch());
 }

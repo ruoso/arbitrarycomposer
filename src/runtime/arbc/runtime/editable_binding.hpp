@@ -6,9 +6,14 @@
 #include <arbc/model/model.hpp>   // Model, StateRefSink
 #include <arbc/model/records.hpp> // StateHandle
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
+#include <utility>
 
 namespace arbc {
 
@@ -31,9 +36,24 @@ namespace arbc {
 // contents on one document-wide journal. Plain per-`Document` state, never a
 // static or global registry (doc 15:73-76, doc 17:96-101).
 //
-// WRITER/DRAIN-THREAD ONLY. Render workers read pinned handles off `DocState`
-// (`DocRoot::content_state`) and never touch this table, which is what keeps the
-// render path lock-free.
+// WRITER + DRAIN THREAD, AND THEY ARE NOT THE SAME THREAD (doc 14:168-181, the
+// `runtime.housekeeping_document_wiring` delta). `retain`/`state_cost`/`restore`
+// arrive on the writer, and so do `insert`/`erase`/`clear`; `release` arrives on
+// whichever thread drained the record -- which, for a live `Document`, is its
+// background housekeeping thread. A `find` racing a rehashing `insert` on a bare
+// `std::unordered_map` is UB whose failure mode is not benign: a torn read yields a
+// stale `Editable*`, and since `kinds.raster_pool_backing` a raster `StateHandle`
+// transitively owns its tile blobs, releasing through it frees ANOTHER content's
+// pixels. Hence the `shared_mutex`: shared for the read-dominated `route()`, unique
+// for the rare table mutation.
+//
+// A copy-on-write snapshot would suit the read/write ratio better, but it needs a
+// reclamation scheme for the retired snapshots (hazard pointers or epochs) that this
+// table -- a handful of entries, routed once per reclaimed record, never per pixel --
+// does not remotely earn. The lock is behind the interface; COW is a clean later swap.
+//
+// Render workers read pinned handles off `DocState` (`DocRoot::content_state`) and
+// never touch this table, which is what keeps the RENDER path lock-free.
 class EditableRouter {
 public:
   // Dispatch `content` to its facet, or NULLPTR if it has no row.
@@ -54,32 +74,52 @@ public:
   // inert handle and whose journal entries stay byte-identical to the
   // pre-binding runtime (doc 14:176-182).
   Editable* route(ObjectId content, const StateHandle& handle) const noexcept {
-    const auto it = d_table.find(content);
-    if (it != d_table.end()) {
-      return it->second;
+    {
+      const std::shared_lock<std::shared_mutex> lock(d_mutex);
+      const auto it = d_table.find(content);
+      if (it != d_table.end()) {
+        return it->second;
+      }
     }
     if (handle.has_state()) {
-      ++d_unrouted;
+      d_unrouted.fetch_add(1, std::memory_order_relaxed);
     }
     return nullptr;
   }
 
   void insert(ObjectId content, Editable& editable) {
+    const std::unique_lock<std::shared_mutex> lock(d_mutex);
     d_table.insert_or_assign(content, &editable);
   }
-  void erase(ObjectId content) noexcept { d_table.erase(content); }
-  void clear() noexcept { d_table.clear(); }
+  void erase(ObjectId content) noexcept {
+    const std::unique_lock<std::shared_mutex> lock(d_mutex);
+    d_table.erase(content);
+  }
+  void clear() noexcept {
+    const std::unique_lock<std::shared_mutex> lock(d_mutex);
+    d_table.clear();
+  }
 
-  bool contains(ObjectId content) const noexcept { return d_table.contains(content); }
-  std::size_t size() const noexcept { return d_table.size(); }
+  bool contains(ObjectId content) const noexcept {
+    const std::shared_lock<std::shared_mutex> lock(d_mutex);
+    return d_table.contains(content);
+  }
+  std::size_t size() const noexcept {
+    const std::shared_lock<std::shared_mutex> lock(d_mutex);
+    return d_table.size();
+  }
 
   // The Constraint-4 tripwire (doc 16: behavioral counters, never wall-clock).
-  std::uint64_t unrouted_state_calls() const noexcept { return d_unrouted; }
+  // Atomic: a miss can now be counted from the drain thread and the writer at once.
+  std::uint64_t unrouted_state_calls() const noexcept {
+    return d_unrouted.load(std::memory_order_relaxed);
+  }
 
 private:
+  mutable std::shared_mutex d_mutex;
   std::unordered_map<ObjectId, Editable*> d_table;
   // Mutable because `StateCostFn::cost` is const and can miss like any other seam.
-  mutable std::uint64_t d_unrouted{0};
+  mutable std::atomic<std::uint64_t> d_unrouted{0};
 };
 
 // Retain/release a version's state handle as its embedding `ContentRecord` is
@@ -180,6 +220,21 @@ public:
   // constructor references). WRITER-THREAD ONLY.
   void attach(Model& model, Journal& journal) noexcept;
 
+  // Route this binding's teardown drains (`unbind`, `unbind_all`) through the
+  // owner's SINGLE drainer instead of calling `Model::drain()` directly.
+  //
+  // `pool/reclamation.hpp:57-62` admits exactly one drainer at a time, and a
+  // `Document`'s is its `HousekeepingThread` -- whose mutex delivers that guarantee
+  // only if every drain entry point goes through the thread object. A bare
+  // `d_model->drain()` here would be a second, unsynchronized drainer racing the
+  // background loop (`runtime.housekeeping_document_wiring` Constraint 2). `Document`
+  // installs `[this]{ d_housekeeping.drain_and_quiesce(); }`.
+  //
+  // Unset, the binding falls back to `Model::drain()`, which is correct for a
+  // standalone `EditableBinding` with no background drainer at all (its component
+  // tests). WRITER-THREAD ONLY.
+  void set_drain_hook(std::function<void()> hook) { d_drain_hook = std::move(hook); }
+
   // Route `id` to `content`'s state through the already-installed trio, and return
   // its `Editable` facet -- or NULLPTR for a content that has none (every leaf/live
   // kind), which routes NOTHING and keeps the byte-identical inert path
@@ -222,8 +277,13 @@ public:
   std::uint64_t seam_registrations() const noexcept { return d_registrations; }
 
 private:
+  // The one drain seam this binding uses: the injected hook when the owner has a
+  // single drainer, else the model's own drain.
+  void drain_through_owner();
+
   Model* d_model{nullptr};
   Journal* d_journal{nullptr};
+  std::function<void()> d_drain_hook;
 
   EditableRouter d_router;
   EditableStateRefSink d_ref_sink{d_router};

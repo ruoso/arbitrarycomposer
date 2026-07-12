@@ -38,7 +38,7 @@ namespace arbc {
 // façade reaches `Document`'s internal `Model` to install the reconstructed
 // version-0 baseline, without widening `Document`'s public shape (Constraint 4).
 struct DocumentSerializeAccess {
-  static Model& model(Document& doc) { return doc.d_model; }
+  static Model& model(Document& doc) { return *doc.d_model; }
   static Journal& journal(Document& doc) { return doc.d_journal; }
   // The mutable half of `Document::unknown_fields()`: the load path hands this to the
   // serialize reader, which replaces it wholesale on a successful load (doc 08

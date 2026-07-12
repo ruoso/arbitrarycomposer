@@ -11,6 +11,9 @@
 #include <arbc/model/journal.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/editable_binding.hpp>
+#include <arbc/runtime/housekeeping.hpp>         // HousekeepingConfig / HousekeepingStats
+#include <arbc/runtime/housekeeping_targets.hpp> // ModelHousekeepingTarget
+#include <arbc/runtime/housekeeping_thread.hpp>
 #include <arbc/runtime/pending_external_loads.hpp> // names no JSON type
 #include <arbc/serialize/unknown_fields.hpp>       // names no JSON type (doc 08:61-63)
 
@@ -18,17 +21,64 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <variant>
 
 namespace arbc {
 
-// Host-facing document: the versioned model, the document-wide history, and the
-// content binding. Records hold opaque content ids; the id-to-Content binding
-// lives here, keeping the model free of the contract vtable (doc 17).
+// A `Document`'s housekeeping knobs (`runtime.housekeeping_document_wiring`
+// Decision 5). Deliberately NOT a bare `HousekeepingConfig`: that struct carries
+// `checkpoint_tick_interval`, the trigger that makes the BACKGROUND thread commit
+// a checkpoint -- which on a live document, concurrently with a writer transaction,
+// is memory-unsafe (doc 15 § Version reclamation; the four races are enumerated in
+// the refinement's Constraint 3). By not exposing the knob, a `Document` cannot be
+// configured into that hazard: cadence decides WHEN a checkpoint happens, never
+// WHERE. Idle-timer autosave waits on `runtime.background_checkpoint_quiesce`.
+struct DocumentHousekeepingConfig {
+  // Drain the reclamation queue to quiescence after each transaction commit, on the
+  // writer (doc 15:129-136). The background thread drains too; this is the prompt
+  // path that keeps an actively-edited document from accumulating a queue at all.
+  bool drain_between_transactions = true;
+
+  // Auto-checkpoint a WORKSPACE-BACKED document every Nth transaction -- the
+  // writer-thread cadence trigger (doc 15:213-216; doc 14's autosave). Zero disables
+  // the automatic cadence, leaving `Document::checkpoint()` as the only trigger. It
+  // is inert on an anonymous document, which has nothing to make durable.
+  std::uint64_t checkpoint_every_n_transactions = k_default_checkpoint_every_n;
+  static constexpr std::uint64_t k_default_checkpoint_every_n = 64;
+
+  // The background thread's lifecycle knobs: park period, injectable monotonic tick
+  // source, background-checkpoint-error callback (`housekeeping_thread.hpp`).
+  HousekeepingThreadConfig thread;
+};
+
+// Host-facing document: the versioned model, the document-wide history, the content
+// binding, and the housekeeping thread that manages the model's memory. Records hold
+// opaque content ids; the id-to-Content binding lives here, keeping the model free of
+// the contract vtable (doc 17).
 class Document {
 public:
-  Document();
+  // The ANONYMOUS document (doc 15:158-160): process memory, no file, no
+  // checkpointer. Its housekeeper is drain-only -- every checkpoint trigger is inert
+  // and `checkpoint()` answers `Unsupported`.
+  explicit Document(DocumentHousekeepingConfig housekeeping = {});
+  ~Document();
+
+  Document(const Document&) = delete;
+  Document& operator=(const Document&) = delete;
+
+  // Mint a fresh WORKSPACE-BACKED document over a newly created file at `path`, or
+  // recover one from an existing file's last durable root (doc 15:156-166). Forwards
+  // to `Model::create` / `Model::open`, so a workspace file this build cannot map --
+  // a platform with no workspace-file support, a truncated file, an I/O fault -- comes
+  // back as a `WorkspaceFileError` value, never a throw (doc 10). The returned document
+  // is checkpointable: `checkpoint()` commits, and the transaction-count cadence fires.
+  static expected<std::unique_ptr<Document>, WorkspaceFileError>
+  create(const std::string& path, DocumentHousekeepingConfig housekeeping = {});
+  static expected<std::unique_ptr<Document>, WorkspaceFileError>
+  open(const std::string& path, DocumentHousekeepingConfig housekeeping = {});
 
   // Mint a versioned content object: commits a `Transaction::add_content(kind)`,
   // publishing a `ContentRecord` (opaque `kind` id + inert `StateHandle`) into a
@@ -116,12 +166,68 @@ public:
   // child arriving LATE is the first change a document publishes that the host did not ask
   // for, and doc 02 step 1's "no damage -> no work" means it is invisible unless its damage
   // can reach a frame loop. This is how it does.
-  void set_damage_sink(DamageSink* sink) noexcept { d_model.set_damage_sink(sink); }
+  void set_damage_sink(DamageSink* sink) noexcept { d_model->set_damage_sink(sink); }
 
-  // Run deferred reclamation to quiescence (the model's drain, doc 15:129-136):
-  // superseded records whose last reference is gone are reclaimed, releasing any
-  // content state they pinned. WRITER-ONLY / single-drainer.
+  // Run deferred reclamation to quiescence (doc 15:129-136): superseded records whose
+  // last reference is gone are reclaimed, releasing any content state they pinned.
+  //
+  // Routed through this document's `HousekeepingThread`, whose mutex makes it the
+  // SINGLE drainer -- so this is a synchronization point against the background loop,
+  // not a second, racing drainer (Constraint 2). Any thread; blocks on an in-flight
+  // background tick.
   void drain();
+
+  // Make the currently published version durable (doc 15:205-216) -- the explicit
+  // host trigger (autosave / export / quit), beside the transaction-count cadence
+  // `DocumentHousekeepingConfig::checkpoint_every_n_transactions` drives.
+  //
+  // WRITER-THREAD ONLY. Every checkpoint this engine commits originates on the writer:
+  // `Checkpointer::commit` racing a writer transaction is memory-unsafe, so the
+  // background thread drains and NEVER commits (doc 15 § Version reclamation). An
+  // anonymous document has no file and nothing to make durable: `Unsupported`. A
+  // request with no transaction since the last checkpoint still commits, but the
+  // underlying `Checkpointer` skips the data msync -- so an idle document issues no
+  // redundant durable writes.
+  expected<std::monostate, WorkspaceFileError> checkpoint();
+
+  // Whether this document is workspace-file-backed (and so checkpointable).
+  bool workspace_backed() const noexcept { return d_model->workspace_backed(); }
+
+  // The document's checkpointer, or null when anonymous -- the pass-through of
+  // `Model::checkpointer()` (model.hpp:252) and, like it, the seam whose behavioral
+  // counters a test asserts over instead of a wall clock (doc 16:54-62):
+  // `commit_count`, `data_msyncs`, `header_msyncs`, `generation`. It is how "an idle
+  // document issues no redundant durable writes" is witnessed -- a clean-scene commit
+  // advances `commit_count` but NOT `data_msyncs`.
+  Checkpointer* checkpointer() noexcept { return d_model->checkpointer(); }
+
+  // The wall-clock-free memory-panel snapshot (doc 15:164-169 -- "per-arena live
+  // counts and byte accounting exposed through the API (hosts will want a memory
+  // panel)"): the arena's live slots and reserved bytes, the drain/commit event
+  // counters, and the checkpointer's durable epoch. Any thread.
+  HousekeepingStats memory_stats() const;
+
+  // Background housekeeping loop iterations completed -- the behavioral counter that
+  // says the idle drainer is actually running (doc 16:54-62: counters, never a wall
+  // clock). Any thread.
+  std::uint64_t background_ticks() const noexcept;
+
+  // Wake the background loop and BLOCK until it completes one further tick, returning
+  // the new background-tick count. Unlike `drain()` -- which drains on the CALLING
+  // thread -- this makes the BACKGROUND thread do the work, so it is how a host (or a
+  // test) says "the idle drainer has now run" without reading a clock: it waits on the
+  // tick counter, a condition, never a duration (doc 16:54-62). Any thread.
+  std::uint64_t flush_housekeeping();
+
+  // The last checkpoint error a WRITER-side cadence trigger produced. A commit fired
+  // from inside `Transaction::commit`'s post-publish hook has no caller to return a
+  // value to (the transaction's own result is about the publish, which succeeded), so
+  // it lands here instead of being lost. `Document::checkpoint()` returns its error
+  // directly and does not touch this. Reset by the next successful cadence commit.
+  // WRITER-THREAD ONLY.
+  const std::optional<WorkspaceFileError>& last_checkpoint_error() const noexcept {
+    return d_last_checkpoint_error;
+  }
 
   // Pin the current version for rendering (doc 14).
   DocStatePtr pin() const;
@@ -184,6 +290,39 @@ private:
   // captured-initial-state record.
   friend struct HostViewportDocumentAccess;
 
+  // The two file-backed factories construct through this; a workspace `Document` is
+  // not default-constructible, because a file open can fail and a constructor cannot
+  // return a value (the shape `Model::create`/`open` already established).
+  Document(std::unique_ptr<Model> model, DocumentHousekeepingConfig housekeeping);
+
+  // Translate the document-level knobs into the policy object, enforcing the two
+  // invariants a `Document` may never violate: the tick-interval checkpoint trigger
+  // stays EMPTY (the background thread must never commit -- Decision 2), and the
+  // transaction-count trigger is inert on an anonymous model (nothing to commit to).
+  static HousekeepingConfig policy_for(const DocumentHousekeepingConfig& config,
+                                       bool workspace_backed);
+
+  // The post-publish hook every transaction commit rides (`Model::CommitSink` fires
+  // once, on the writer, immediately after the atomic publish). It chains the two
+  // consumers a commit owes: the document-wide journal gets its entry, and the
+  // housekeeper gets its `after_commit` -- which is what makes the between-transaction
+  // drain and the transaction-count checkpoint cadence fire for EVERY commit, whether
+  // it came from a `Document` mutator or from a host-held `transact()`.
+  //
+  // The drain here reclaims the PREVIOUS transaction's garbage, not this one's: the
+  // still-live `Transaction` pins its base version until it is destroyed. That is
+  // exactly doc 15's "between transactions" -- every transaction's garbage is reclaimed
+  // before the next one begins.
+  class CommitRelay final : public CommitSink {
+  public:
+    explicit CommitRelay(Document& doc) noexcept : d_doc(&doc) {}
+    void on_commit(JournalEntry entry) override;
+
+  private:
+    Document* d_doc;
+  };
+  friend class CommitRelay;
+
   // DECLARATION ORDER IS THE TEARDOWN CONTRACT (destruction runs in reverse).
   //
   // `~Model` drops the current version and drains, which reclaims every content
@@ -208,8 +347,14 @@ private:
   // The document's one state-sink trio, routing each seam call to the `Editable`
   // facet of the content that owns the handle.
   EditableBinding d_binding;
-  Model d_model;
-  Journal d_journal{d_model};
+  // The model's `CommitSink`: it forwards to `d_journal` and then to the housekeeper.
+  // Declared before the model so it outlives the model's use of it.
+  CommitRelay d_commit_relay{*this};
+  // By `unique_ptr`, not by value: `Model::create`/`open` return an owning pointer
+  // (a file open can fail), so a file-backed document is only expressible this way
+  // (Decision 4). The anonymous ctor makes one eagerly, so it is NEVER null.
+  std::unique_ptr<Model> d_model;
+  Journal d_journal{*d_model};
   // The unknown-field stash (doc 08 Principle 4). Deliberately declared AFTER the
   // teardown-contract members above: it is plain maps of `std::string`, owns no record
   // edge and no state handle, so its destruction order is immaterial and it perturbs
@@ -224,6 +369,27 @@ private:
   // and no state handle, so its position here perturbs the teardown contract not at all --
   // the callbacks simply observe the queue's expiry.
   std::shared_ptr<PendingExternalLoads> d_pending_loads{std::make_shared<PendingExternalLoads>()};
+
+  // The last writer-side cadence checkpoint error (see `last_checkpoint_error()`).
+  std::optional<WorkspaceFileError> d_last_checkpoint_error;
+
+  // The housekeeping seam, declared LAST -- so it is destroyed FIRST (Constraint 5).
+  //
+  // `~HousekeepingThread` stops the background loop and runs one final drain to
+  // quiescence (doc 15:144-147), and that drain RELEASES content state through the
+  // sink trio: it reaches `d_binding`'s router, which hands each release to a
+  // `Content` in `d_contents`. Every one of those must still be alive while it runs.
+  // Reverse-declaration destruction gives exactly that: housekeeping thread, target,
+  // ..., journal, model, binding, contents. `~Model` then drains again; a
+  // drain-to-quiescence is idempotent, so the second one is free and harmless.
+  //
+  // ONE THREAD PER DOCUMENT, always on. It parks on a condition variable and costs a
+  // few tens of microseconds to spawn; the alternative -- opt-in, defaulting to
+  // writer-only drains -- would leave the default `Document` with exactly the
+  // idle-reclamation hole this wiring exists to close, and would leave the
+  // concurrent-drain path exercised by one stress test instead of by the whole suite.
+  ModelHousekeepingTarget d_hk_target{*d_model};
+  HousekeepingThread d_housekeeping;
 };
 
 } // namespace arbc

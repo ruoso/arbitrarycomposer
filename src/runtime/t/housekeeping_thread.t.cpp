@@ -3,6 +3,7 @@
 #include <arbc/pool/refs.hpp>
 #include <arbc/pool/slot_store.hpp>
 #include <arbc/pool/workspace_file.hpp>
+#include <arbc/runtime/housekeeping_targets.hpp>
 #include <arbc/runtime/housekeeping_thread.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -82,7 +83,8 @@ TEST_CASE("background tick drains the reclamation queue") {
 
   arbc::HousekeepingThreadConfig tc;
   tc.tick_period = kNoTimeout;
-  arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{}, std::move(tc));
+  arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
+  arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
 
   arbc::Ref<Rec> chain = build_chain(store, 5);
   chain = arbc::Ref<Rec>{}; // drop the root: enqueued, nothing destroyed yet
@@ -102,6 +104,7 @@ TEST_CASE("stop wakes the parked loop, runs a final drain, and joins cleanly") {
   arbc::DeferredReclaimSink<Rec> sink(store);
   arbc::ReclamationQueue queue;
   queue.register_store(store, sink);
+  arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
 
   const std::size_t baseline = arena.total_slots_live();
 
@@ -113,8 +116,7 @@ TEST_CASE("stop wakes the parked loop, runs a final drain, and joins cleanly") {
     {
       arbc::HousekeepingThreadConfig tc;
       tc.tick_period = kNoTimeout; // no timeout tick can drain first
-      arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{},
-                                   std::move(tc));
+      arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
       hkt.request_stop(); // stop WITHOUT a prior flush
     } // destructor joins -> the stop path's final drain_and_quiesce ran
 
@@ -125,8 +127,7 @@ TEST_CASE("stop wakes the parked loop, runs a final drain, and joins cleanly") {
     arbc::HousekeepingThreadConfig tc;
     tc.tick_period = kNoTimeout;
     {
-      arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{},
-                                   std::move(tc));
+      arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
     }
     SUCCEED("destructor returned -- the join did not hang");
   }
@@ -143,14 +144,16 @@ TEST_CASE("the writer's after_commit drains through the wrapper mutex") {
 
   arbc::HousekeepingThreadConfig tc;
   tc.tick_period = kNoTimeout; // loop parked; the writer path does the draining
-  arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{}, std::move(tc));
+  arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
+  arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
 
   arbc::Ref<Rec> chain = build_chain(store, 5);
   const arbc::SlotIndex root = chain.index();
   chain = arbc::Ref<Rec>{};
   REQUIRE(arena.total_slots_live() == baseline + 5);
 
-  REQUIRE(hkt.after_commit(root).has_value()); // synchronized writer entry
+  target.set_root(root);
+  REQUIRE(hkt.after_commit().has_value()); // synchronized writer entry
   REQUIRE(arena.total_slots_live() == baseline);
 }
 
@@ -248,10 +251,12 @@ TEST_CASE("the background tick drives the tick-interval checkpoint trigger deter
   arbc::HousekeepingThreadConfig tc;
   tc.tick_period = kNoTimeout; // ticks come only from flush(), never a timeout
   tc.tick_source = [&tick_value] { return tick_value.load(std::memory_order_acquire); };
-  arbc::HousekeepingThread hkt(fx.queue, &fx.ckpt, &fx.arena, policy, std::move(tc));
+  arbc::PoolHousekeepingTarget target(fx.queue, &fx.ckpt, &fx.arena);
+  arbc::HousekeepingThread hkt(target, policy, std::move(tc));
 
   arbc::Ref<Rec> node = *fx.store.create();
-  REQUIRE(hkt.after_commit(node.index()).has_value()); // one dirty transaction
+  target.set_root(node.index());
+  REQUIRE(hkt.after_commit().has_value()); // one dirty transaction
 
   tick_value.store(50, std::memory_order_release);
   hkt.flush(); // tick(50): interval not yet elapsed
@@ -281,14 +286,17 @@ TEST_CASE("a background checkpoint failure is captured and surfaced, never abort
   tc.on_checkpoint_error = [&callback_hits](const arbc::WorkspaceFileError&) {
     callback_hits.fetch_add(1, std::memory_order_release);
   };
-  arbc::HousekeepingThread hkt(fx.queue, &fx.ckpt, &fx.arena, policy, std::move(tc));
+  arbc::PoolHousekeepingTarget target(fx.queue, &fx.ckpt, &fx.arena);
+  arbc::HousekeepingThread hkt(target, policy, std::move(tc));
 
   // Reach a clean, durable state so the tick's failing commit does ONLY the
   // header msync (a clean scene skips the data msync) -> HeaderIoFailed.
   arbc::Ref<Rec> node = *fx.store.create();
-  REQUIRE(hkt.after_commit(node.index()).has_value());
-  REQUIRE(hkt.request_checkpoint().has_value());       // commit -> clean, durable
-  REQUIRE(hkt.after_commit(node.index()).has_value()); // a dirty-count txn, scene still clean
+  target.set_root(node.index());
+  REQUIRE(hkt.after_commit().has_value());
+  REQUIRE(hkt.request_checkpoint().has_value()); // commit -> clean, durable
+  target.set_root(node.index());
+  REQUIRE(hkt.after_commit().has_value()); // a dirty-count txn, scene still clean
 
   ErrnoInjector inj(arbc::WorkspaceSyscall::Msync, EIO);
   fx.source->set_syscall_injector(&inj);
@@ -343,7 +351,8 @@ TEST_CASE("stress: RT producers enqueue while the background thread and writer b
   {
     arbc::HousekeepingThreadConfig tc;
     tc.tick_period = std::chrono::microseconds(50); // an active low-priority drainer
-    arbc::HousekeepingThread hkt(queue, nullptr, &arena, arbc::HousekeepingConfig{}, std::move(tc));
+    arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
+    arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
 
     for (int p = 0; p < producer_count; ++p) {
       producers.emplace_back([&, p] {
@@ -366,7 +375,8 @@ TEST_CASE("stress: RT producers enqueue while the background thread and writer b
     // serialized against the background thread's tick by the wrapper mutex.
     int spins = 0;
     while (done.load(std::memory_order_acquire) < producer_count) {
-      REQUIRE(hkt.after_commit(sentinel.index()).has_value());
+      target.set_root(sentinel.index());
+      REQUIRE(hkt.after_commit().has_value());
       if ((++spins % 8) == 0) {
         std::this_thread::yield();
       }

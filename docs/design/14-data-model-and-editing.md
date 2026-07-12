@@ -169,7 +169,13 @@ public:
   // StateRefSink seam: retain when a published version pins the handle,
   // release when its record is reclaimed, so "a pinned version pins content
   // state too" and "version GC releases unreferenced state handles by
-  // refcount" both hold. Writer/drain-thread only.
+  // refcount" both hold. `retain` runs on the writer thread; `release` runs
+  // on whichever thread drains the reclamation queue, which doc 15 permits
+  // to be the low-priority housekeeping thread. So the two are *not* the
+  // same thread: a kind's state store must admit a `release` concurrent
+  // with a `retain`, and the runtime's id-to-content routing table between
+  // them must admit a lookup concurrent with a bind/unbind. Never the audio
+  // callback or a render thread.
   virtual void retain(StateHandle) = 0;
   virtual void release(StateHandle) = 0;
 };

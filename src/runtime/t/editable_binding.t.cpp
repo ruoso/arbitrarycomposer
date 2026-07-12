@@ -48,23 +48,23 @@ TEST_CASE("instantiating an editable content auto-registers its state sinks") {
     REQUIRE(txn.commit().has_value());
   }
   const StateHandle v1 = content->base();
-  CHECK(content->retains == 1);
-  CHECK(content->refcount[v1.slot] == 1);
+  CHECK(content->retains.load() == 1);
+  CHECK(content->refcount_of(v1.slot) == 1);
   CHECK(doc.pin()->content_state(cid) == v1);
 
   // The journal consulted the registered StateCostFn: the budget accounts more
   // than record sizes alone (doc 14:120-122).
-  CHECK(content->costs > 0);
+  CHECK(content->costs.load() > 0);
   CHECK(doc.journal().byte_cost() >= FakeEditable::k_state_cost);
 
   // Undo/redo run through the document's own Journal and rebase the live content
   // through the registered RestoreSink (doc 14:117).
   REQUIRE(doc.journal().undo());
-  CHECK(content->restores == 1);
+  CHECK(content->restores.load() == 1);
   CHECK(content->base() != v1); // rebased to the pre-edit (inert) handle
 
   REQUIRE(doc.journal().redo());
-  CHECK(content->restores == 2);
+  CHECK(content->restores.load() == 2);
   CHECK(content->base() == v1);
   CHECK(doc.pin()->content_state(cid) == v1);
 
@@ -100,8 +100,8 @@ TEST_CASE("a pinned version keeps resolving its own state across a later edit") 
   REQUIRE(v2 != v1);
   CHECK(pinned->content_state(cid) == v1);    // frozen: the pin's own state
   CHECK(doc.pin()->content_state(cid) == v2); // live: the newest
-  CHECK(content->refcount[v1.slot] == 1);     // still held: the pin (and journal)
-  CHECK(content->refcount[v2.slot] == 1);
+  CHECK(content->refcount_of(v1.slot) == 1);  // still held: the pin (and journal)
+  CHECK(content->refcount_of(v2.slot) == 1);
   CHECK(doc.editable_binding().unrouted_state_calls() == 0);
 }
 
@@ -171,8 +171,8 @@ TEST_CASE("a second editable content in one document binds cleanly and keeps its
   // Both contents minted slot 0, so their handles are EQUAL by value and only the
   // owner on the seam distinguishes them. Each retained its own, exactly once.
   REQUIRE(first->base() == second->base());
-  CHECK(first->retains == 1);
-  CHECK(second->retains == 1);
+  CHECK(first->retains.load() == 1);
+  CHECK(second->retains.load() == 1);
   CHECK(doc.pin()->content_state(a) == first->base());
   CHECK(doc.pin()->content_state(b) == second->base());
   CHECK(doc.editable_binding().unrouted_state_calls() == 0);
@@ -202,18 +202,18 @@ TEST_CASE("document teardown releases each bound content's state exactly once pe
       handles.push_back(first->base());
     }
     doc.drain();
-    CHECK(first->retains == 3);
-    CHECK(second->retains == 3);
+    CHECK(first->retains.load() == 3);
+    CHECK(second->retains.load() == 3);
     CHECK(doc.editable_binding().unrouted_state_calls() == 0);
   }
 
   // Every retain has been matched by exactly one release, per content -- nothing
   // leaked, nothing was released twice, and nothing crossed over.
-  CHECK(first->releases == first->retains);
-  CHECK(second->releases == second->retains);
+  CHECK(first->releases.load() == first->retains.load());
+  CHECK(second->releases.load() == second->retains.load());
   for (const StateHandle h : handles) {
-    CHECK(first->refcount[h.slot] == 0);
-    CHECK(second->refcount[h.slot] == 0);
+    CHECK(first->refcount_of(h.slot) == 0);
+    CHECK(second->refcount_of(h.slot) == 0);
   }
 }
 
@@ -259,8 +259,8 @@ TEST_CASE("unbinding one content releases its state and leaves the others routin
     REQUIRE(txn.commit().has_value());
   }
   model.drain();
-  REQUIRE(first->retains == 1);
-  REQUIRE(second->retains == 1);
+  REQUIRE(first->retains.load() == 1);
+  REQUIRE(second->retains.load() == 1);
 
   // Remove `a` from the document, then unbind it: the drain inside `unbind` flushes
   // a's reclaims through its still-installed row, so its retained version is
@@ -274,8 +274,8 @@ TEST_CASE("unbinding one content releases its state and leaves the others routin
   CHECK_FALSE(binding.bound(a));
   CHECK(binding.bound(b)); // b's row is untouched
   CHECK(binding.bound_count() == 1);
-  CHECK(first->releases == first->retains);
-  CHECK(second->releases == 0); // b never lost a version: the unbind did not cross over
+  CHECK(first->releases.load() == first->retains.load());
+  CHECK(second->releases.load() == 0); // b never lost a version: the unbind did not cross over
 
   // b still routes: a fresh edit reaches its facet through the same installed trio.
   {
@@ -284,7 +284,7 @@ TEST_CASE("unbinding one content releases its state and leaves the others routin
     REQUIRE(txn.commit().has_value());
   }
   model.drain();
-  CHECK(second->retains == 2);
+  CHECK(second->retains.load() == 2);
   CHECK(binding.unrouted_state_calls() == 0);
 
   binding.unbind_all();

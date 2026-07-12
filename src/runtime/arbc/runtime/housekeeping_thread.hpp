@@ -1,9 +1,6 @@
 #pragma once
 
 #include <arbc/base/expected.hpp>
-#include <arbc/pool/checkpoint.hpp>
-#include <arbc/pool/reclamation.hpp>
-#include <arbc/pool/slot_store.hpp>
 #include <arbc/pool/workspace_file.hpp>
 #include <arbc/runtime/housekeeping.hpp>
 
@@ -66,12 +63,17 @@ struct HousekeepingThreadConfig {
 
 class HousekeepingThread {
 public:
-  // Constructs the owned `Housekeeper{queue, checkpointer, arena, policy}` and
-  // launches the background loop (started last). `checkpointer`/`arena` follow
-  // the Housekeeper contract (null for anonymous, live-only arenas). Non-copyable
-  // and non-movable: it owns a thread, a mutex, and condition variables.
-  HousekeepingThread(ReclamationQueue& queue, Checkpointer* checkpointer, Arena* arena,
-                     HousekeepingConfig policy, HousekeepingThreadConfig thread_config);
+  // Constructs the owned `Housekeeper{target, policy}` and launches the background
+  // loop (started last). `target` must OUTLIVE this object -- the loop drains
+  // through it until the dtor joins. Non-copyable and non-movable: it owns a
+  // thread, a mutex, and condition variables.
+  //
+  // `policy.checkpoint_tick_interval` makes the BACKGROUND thread commit, which is
+  // memory-unsafe against a concurrent writer on a live document
+  // (`runtime.housekeeping_document_wiring` Decision 2). Leave it empty unless the
+  // target has no concurrent writer.
+  HousekeepingThread(HousekeepingTarget& target, HousekeepingConfig policy,
+                     HousekeepingThreadConfig thread_config);
 
   // Requests stop then joins; the loop's stop path runs a final
   // `drain_and_quiesce()` so nothing is left on the queue at teardown.
@@ -84,7 +86,7 @@ public:
 
   // The synchronized writer entry: holds the same mutex the background loop holds
   // while it ticks, which is what serializes the two drainers into one.
-  expected<std::monostate, WorkspaceFileError> after_commit(SlotIndex root);
+  expected<std::monostate, WorkspaceFileError> after_commit();
 
   // The explicit host-call checkpoint trigger, synchronized.
   expected<std::monostate, WorkspaceFileError> request_checkpoint();

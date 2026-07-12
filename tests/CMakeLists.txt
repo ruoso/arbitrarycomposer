@@ -692,6 +692,27 @@ target_link_libraries(arbc_stress_reclamation_queue_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_stress_reclamation_queue_t)
 
+# runtime.housekeeping_document_wiring: the two cross-component legs of wiring the
+# Housekeeper onto a live Document's arenas.
+#
+# The checkpoint cadence over a real workspace file (runtime Document + pool
+# workspace file): the every-Nth-transaction writer trigger, the explicit host
+# request, the still-document data-msync skip, and the open() durable-root round trip.
+add_executable(arbc_document_workspace_checkpoint_t document_workspace_checkpoint.t.cpp)
+target_link_libraries(arbc_document_workspace_checkpoint_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_document_workspace_checkpoint_t)
+
+# The concurrency stress (tier-6, tsan lane): a live workspace-backed Document whose
+# background housekeeping thread drains while a writer churns editable RASTER contents
+# through the router's table and readers pin. It names a concrete kind (kind_raster --
+# FakeEditable is not the production shape for this), so like the binding tests above
+# it must live here rather than src/runtime/t/.
+add_executable(arbc_stress_document_housekeeping_t stress_document_housekeeping.t.cpp)
+target_link_libraries(arbc_stress_document_housekeeping_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_stress_document_housekeeping_t)
+
 add_executable(arbc_arena_growth_litmus_t arena_growth_litmus.t.cpp)
 target_link_libraries(arbc_arena_growth_litmus_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)

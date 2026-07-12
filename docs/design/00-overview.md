@@ -200,6 +200,18 @@ Initially-open questions, now decided in their own docs:
   and cache invalidation on one namespace cannot evict the other's entries.
   Synthesized ids never persist — they are render-time state, never
   journaled or serialized. Decided in doc 14 (§ Identity).
+- **The housekeeping thread drains; the writer checkpoints.** Deferred
+  reclamation and durable checkpointing are both "housekeeping", but they
+  do not share a thread. A drain may run on the low-priority thread
+  concurrently with a writer transaction — which makes every seam a
+  record's destructor reaches through (the runtime's content-state routing
+  table, a kind's state store) a concurrent-read surface that must be
+  synchronized. A `Checkpointer::commit` may not: it reads the allocator's
+  high-water, seals full chunks read-only, and compacts the durability
+  quarantine, all of which the writer mutates lock-free. Checkpoint cadence
+  therefore decides *when* a commit happens, never *where* — every trigger,
+  timer included, is evaluated on the writer thread. Decided in doc 15
+  (§ Version reclamation, § File-backed arenas) and doc 14 (§ Editable).
 
 ## Open questions
 

@@ -66,8 +66,8 @@ TEST_CASE("each editable content's state calls reach that content and no other")
 
   // A retained its version and was priced into the journal budget. B and C saw
   // NOTHING: not a retain, not a release, not a cost, not a restore.
-  CHECK(a->retains == 1);
-  CHECK(a->costs > 0);
+  CHECK(a->retains.load() == 1);
+  CHECK(a->costs.load() > 0);
   CHECK(b->touches() == 0);
   CHECK(c->touches() == 0);
 
@@ -78,16 +78,16 @@ TEST_CASE("each editable content's state calls reach that content and no other")
   }
   doc.drain();
 
-  CHECK(b->retains == 1);
-  CHECK(a->retains == 1); // unmoved by B's edit
+  CHECK(b->retains.load() == 1);
+  CHECK(a->retains.load() == 1); // unmoved by B's edit
   CHECK(c->touches() == 0);
 
   // The handles COLLIDE: both contents minted slot 0, so `a`'s version and `b`'s
   // version are equal by value. Only the owner on the seam told them apart, and the
   // document resolves each content to its own.
   REQUIRE(a->base() == b->base());
-  CHECK(a->refcount[a->base().slot] == 1);
-  CHECK(b->refcount[b->base().slot] == 1);
+  CHECK(a->refcount_of(a->base().slot) == 1);
+  CHECK(b->refcount_of(b->base().slot) == 1);
   CHECK(doc.pin()->content_state(ia) == a->base());
   CHECK(doc.pin()->content_state(ib) == b->base());
 
@@ -96,14 +96,14 @@ TEST_CASE("each editable content's state calls reach that content and no other")
   // though A holds an identically-valued handle.
   const StateHandle a_before_undo = a->base();
   REQUIRE(doc.journal().undo());
-  CHECK(b->restores == 1);
-  CHECK(a->restores == 0);
-  CHECK(c->restores == 0);
+  CHECK(b->restores.load() == 1);
+  CHECK(a->restores.load() == 0);
+  CHECK(c->restores.load() == 0);
   CHECK(a->base() == a_before_undo);
 
   REQUIRE(doc.journal().redo());
-  CHECK(b->restores == 2);
-  CHECK(a->restores == 0);
+  CHECK(b->restores.load() == 2);
+  CHECK(a->restores.load() == 0);
   CHECK(c->touches() == 0); // C was never edited, so no seam call ever named it
 
   // --- the whole run routed cleanly, on ONE registration ---
@@ -144,16 +144,16 @@ TEST_CASE("document teardown balances retains and releases per content, with col
     }
     doc.drain();
 
-    CHECK(a->retains == 4);
-    CHECK(b->retains == 4);
-    CHECK(c->retains == 4);
+    CHECK(a->retains.load() == 4);
+    CHECK(b->retains.load() == 4);
+    CHECK(c->retains.load() == 4);
     CHECK(doc.editable_binding().unrouted_state_calls() == 0);
   } // ~Document: journal entries drop, records reclaim, release fires per retain
 
   for (const auto& content : {a, b, c}) {
-    CHECK(content->releases == content->retains);
+    CHECK(content->releases.load() == content->retains.load());
     for (const StateHandle h : handles) {
-      CHECK(content->refcount[h.slot] == 0); // no version left pinned, none freed twice
+      CHECK(content->refcount_of(h.slot) == 0); // no version left pinned, none freed twice
     }
   }
 }
@@ -222,10 +222,10 @@ TEST_CASE("readers pin content state while the writer publishes and mutates the 
 
   // Every publish retained, for the right content, on both sides -- and the journal
   // (unbudgeted, so it never trims) still holds every version, so nothing released.
-  CHECK(a->retains == writer_iterations + 1);
-  CHECK(b->retains == writer_iterations + 1);
-  CHECK(a->releases == 0);
-  CHECK(b->releases == 0);
+  CHECK(a->retains.load() == writer_iterations + 1);
+  CHECK(b->retains.load() == writer_iterations + 1);
+  CHECK(a->releases.load() == 0);
+  CHECK(b->releases.load() == 0);
   CHECK(doc.editable_binding().unrouted_state_calls() == 0);
   CHECK(doc.editable_binding().seam_registrations() == 3);
 }

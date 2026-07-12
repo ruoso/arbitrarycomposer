@@ -36,12 +36,12 @@
 #include <arbc/cache/keyed_store.hpp>
 #include <arbc/compositor/compositor.hpp>
 #include <arbc/contract/content.hpp>
+#include <arbc/contract/registry.hpp>
 #include <arbc/kind_crossfade/crossfade_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/model/damage.hpp>
 #include <arbc/model/records.hpp>
-#include <arbc/contract/registry.hpp>
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/document_serialize.hpp>
 #include <arbc/runtime/interactive.hpp>
@@ -55,9 +55,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <string>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -136,7 +136,7 @@ struct Fixture {
   std::vector<ObjectId> model_ids; // every ObjectId the model allocated
   ObjectId op_c_id;
   ObjectId op_x_id;
-  ObjectId c_id;      // C's MODEL id
+  ObjectId c_id; // C's MODEL id
   ObjectId op_c_layer;
 
   Fixture() {
@@ -289,8 +289,7 @@ TEST_CASE("no synthesized identity escapes into the model or the file format") {
   const ObjectId b_id = doc.add_content(in_b, bridge.intern(SolidContent::kind_id, k_version));
 
   auto op = std::make_shared<CrossfadeContent>(in_a.get(), in_b.get(), window_params());
-  const ObjectId op_id =
-      doc.add_content(op, bridge.intern(CrossfadeContent::kind_id, k_version));
+  const ObjectId op_id = doc.add_content(op, bridge.intern(CrossfadeContent::kind_id, k_version));
   const ObjectId layer = doc.add_layer(op_id, Affine::identity(), 1.0);
   doc.attach_layer(comp, layer);
 
