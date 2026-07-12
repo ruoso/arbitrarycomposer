@@ -117,10 +117,13 @@ private:
 // A one-input operator that RENDERS (it is not an identity pass-through), so its own
 // output tiles land in the cache under its layer id -- the second key an edit to its
 // input has to drop. It paints by delegating straight to its input rather than pulling
-// through a `PullService`, because `bind_operators` does not yet run on the interactive
-// path (`runtime.interactive_binder_wiring`) and an unattached `CrossfadeContent` cannot
-// render there. It leaves `map_input_damage` at the contract default (the identity,
-// `content.cpp:11`), which is exactly what a pixel-local effect reports.
+// through a `PullService`: `bind_operators` now runs on the interactive path
+// (`runtime.interactive_binder_wiring`), but only for a frame given a `FrameBinding`, and
+// these frames drive the renderer against a bare `Model` with none -- and a hand-rolled
+// test operator is of no registered kind, so no binder would attach it in any case. Damage
+// routing is a property of the operator GRAPH, not of the binding, which is exactly the
+// separation this file wants. It leaves `map_input_damage` at the contract default (the
+// identity, `content.cpp:11`), which is what a pixel-local effect reports.
 class DelegatingOperator final : public Content {
 public:
   explicit DelegatingOperator(ContentRef input) : d_inputs{input} {}

@@ -64,8 +64,7 @@ public:
   // `checkpointer` is null for anonymous, live-only arenas (doc 15:160-162): its
   // checkpoint triggers become inert. `arena` is the observability source, null when
   // no arena is bound (the memory-panel numbers then read 0).
-  PoolHousekeepingTarget(ReclamationQueue& queue, Checkpointer* checkpointer,
-                         Arena* arena) noexcept
+  PoolHousekeepingTarget(ReclamationQueue& queue, Checkpointer* checkpointer, Arena* arena) noexcept
       : d_queue(&queue), d_checkpointer(checkpointer), d_arena(arena) {}
 
   // The root a checkpoint commits at -- the caller's published tip.

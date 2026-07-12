@@ -67,13 +67,21 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Model& model, ContentR
 // the damage-sink install (`Document::set_damage_sink` forwards to exactly the same
 // `Model::set_damage_sink` this reaches), the router branch, the whole of `step()` -- is the
 // one code path the `Model&` constructor has always run, unchanged.
+//
+// It additionally RETAINS the document (`runtime.interactive_binder_wiring` Decision 3): the
+// fourth seam a document supplies -- the content graph each frame binds -- is the one that
+// cannot be reduced to a `std::function`, because `bind_operators` walks
+// `Document::for_each_content`. A delegating constructor may not carry mem-initializers, so
+// the retention is a body assignment.
 HostViewport::HostViewport(InteractiveRenderer& renderer, Document& doc, DocumentBinding binding,
                            Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target,
                            Clock clock, Config config)
     : HostViewport(
           renderer, HostViewportDocumentAccess::model(doc),
           [&doc](ObjectId id) { return doc.resolve(id); }, backend, pool, cache, target,
-          std::move(clock), derive_document_config(doc, binding, std::move(config))) {}
+          std::move(clock), derive_document_config(doc, binding, std::move(config))) {
+  d_document = &doc;
+}
 
 HostViewport::~HostViewport() {
   // Router path: `d_registration`'s destructor unregisters from the router (which
@@ -153,9 +161,19 @@ HostViewport::StepOutcome HostViewport::step() {
     return outcome; // idle: a still scene costs nothing
   }
 
+  // 4. Hand the frame the document + the pin it is compositing, so it can bind its
+  //    operators to its own frame-local pull service (`runtime.interactive_binder_wiring`,
+  //    doc 13). This viewport holds the pin (step 2) but no `PullService` -- the only one
+  //    that exists is `render_frame`'s frame-local one -- so the BIND happens there and
+  //    this is the plumbing. Null document (the `Model&` constructor) => a default
+  //    `FrameBinding` => no binding, byte-for-byte today's frame.
+  FrameBinding frame_binding;
+  if (d_document != nullptr) {
+    frame_binding = FrameBinding{d_document, state};
+  }
   const InteractiveRenderer::FrameOutcome frame =
       d_renderer.render_frame(*state, d_resolve, d_viewport, d_cache, d_backend, d_pool, d_target,
-                              damage, composition_time, d_budget);
+                              damage, composition_time, d_budget, frame_binding);
   ++d_frames_issued;
   d_follow_up_owed = frame.schedule_follow_up;
   d_rendered_once = true;

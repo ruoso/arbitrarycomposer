@@ -1,8 +1,11 @@
 #include <arbc/base/transform.hpp>          // Affine::max_scale
 #include <arbc/compositor/pull_service.hpp> // PullServiceImpl, PullConfig, direct_dispatch
 #include <arbc/model/records.hpp>           // LayerRecord
+#include <arbc/runtime/document.hpp>        // Document (bind_operators' graph walk)
 #include <arbc/runtime/interactive.hpp>
+#include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
 
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <utility>
@@ -35,7 +38,13 @@ int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept {
 
 InteractiveRenderer::InteractiveRenderer(WorkerPoolConfig pool_config, Clock clock)
     : d_pool(std::move(pool_config)),
-      d_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}) {}
+      d_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}) {
+  // Populate the operator-binder registry once (thread-safe, idempotent) so a bound
+  // frame's `bind_operators` finds a thunk for each built-in kind. `SequenceRenderer`
+  // and `ExportMonitor` do the same in their constructors: a driver that binds without
+  // registering binds nothing, silently.
+  register_builtin_operator_binders();
+}
 
 void InteractiveRenderer::refresh_identity_memo(const DocRoot& state,
                                                 const ContentResolver& resolve,
@@ -134,12 +143,19 @@ std::vector<Damage> InteractiveRenderer::route_model_damage(std::span<const Dama
   return routed;
 }
 
-InteractiveRenderer::FrameOutcome
-InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& resolve,
-                                  const Viewport& viewport, TileCache& cache, Backend& backend,
-                                  SurfacePool& pool, Surface& target,
-                                  std::span<const Damage> model_damage, Time composition_time,
-                                  std::chrono::steady_clock::duration budget) {
+InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
+    const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
+    TileCache& cache, Backend& backend, SurfacePool& pool, Surface& target,
+    std::span<const Damage> model_damage, Time composition_time,
+    std::chrono::steady_clock::duration budget, const FrameBinding& binding) {
+  // The pair is atomic (Decision 6): a document with no pin has nothing to inject, a pin
+  // with no document has nothing to walk, and a pin that is VALID but is not the snapshot
+  // this frame composites would have the operators pull from a different revision than
+  // the compositor walks -- a stale-pixel bug with no crash.
+  assert((binding.document == nullptr) == (binding.pin == nullptr) &&
+         "FrameBinding: document and pin are set together or not at all");
+  assert((binding.pin == nullptr || &*binding.pin == &state) &&
+         "FrameBinding: the pin must be the very snapshot this frame renders");
   const std::uint64_t revision = state.revision();
   // The very first frame has no previous time, so a clock advance is a no-op and
   // the frame plans the WHOLE viewport (null `DirtyRegion`) rather than gating on
@@ -236,6 +252,32 @@ InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& r
   config.id_of = d_id_of;
   config.contribution = [revision](const Content*) { return revision; };
   PullServiceImpl pulls(cache, backend, direct_dispatch(), std::move(config));
+
+  // Bind the document's content graph to THIS frame's services
+  // (`runtime.interactive_binder_wiring`, doc 13 § "Binding is the render driver's
+  // obligation"). Serving `pulls` to the frame driver only covers the identity endpoints
+  // the DRIVER pulls for; an interior weight (a fade at envelope 0.5, a crossfade at
+  // w 0.5) and every nesting run the operator's OWN `render`, which pulls through the
+  // service it received at attach -- unattached it asserts, or in a release build
+  // composites nothing, and `NestedContent::inputs()` stays the empty pre-attach memo so
+  // a nested scene shows nothing at all.
+  //
+  // Declared AFTER `pulls` so it destructs BEFORE it (`operator_binding.hpp:95-96`): the
+  // scope injects a `PullService&` pointing at that stack object, so a binding that
+  // outlived it would leave every bound content holding a dangling pointer. Function
+  // scope, not statement scope, so it is still live through Step 5's park and Step 6's
+  // arrival composite, which re-drive operator layers whose inputs settled late. Caching
+  // it across frames as a member is a use-after-free, not an optimization (Constraint 2).
+  //
+  // Per RENDERING frame, mirroring the offline driver (`offline_sequence.cpp:126`): the
+  // still-scene early-out above is the only throttle, and re-binding a stable pin is free
+  // -- nested re-keys its metadata memo only on an actually-new snapshot
+  // (`kinds.nested_runtime_binding` Decision 3).
+  OperatorBindingScope operator_binding;
+  if (binding.document != nullptr) {
+    operator_binding = bind_operators(*binding.document, pulls, backend, binding.pin);
+    ++d_operator_binds;
+  }
 
   // --- Step 4: plan + render misses within budget (doc 02:61-65). ----------
   // One frame deadline instant `d`, sampled from the injected clock exactly once:

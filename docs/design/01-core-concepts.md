@@ -110,13 +110,15 @@ viewports may observe the same composition simultaneously (an editor with an
 overview and a detail view), which is again free under pull-based rendering.
 
 A viewport observes a **document**, and binding it to one is the host's single
-wiring step. The document is what holds the three things a frame needs, so it is
+wiring step. The document is what holds the things a frame needs, so it is
 the document that supplies them — not the host, by hand: the id→content
 resolution the compositor's walk performs, the damage seam that wakes the frame
-(doc 02 step 1), and the settle point at which a late external child (doc 05)
-is installed on a new revision. A host that owns a document therefore constructs
-a viewport directly against it; it never assembles those seams itself, and never
-needs a reference to the versioned model underneath. Several viewports bound to
+(doc 02 step 1), the settle point at which a late external child (doc 05)
+is installed on a new revision, and the content graph each frame binds to give
+its operators their render-time services (doc 13). A host that owns a document
+therefore constructs a viewport directly against it; it never assembles those
+seams itself, never attaches an operator by hand, and never needs a reference to
+the versioned model underneath. Several viewports bound to
 one document each observe every damage batch it publishes (above).
 
 The offline renderer is just a viewport with no deadline: "this rectangle of

@@ -139,8 +139,9 @@ task runtime "Runtime" {
   task interactive_binder_wiring "Wire bind_operators into the interactive frame path" {
     effort 1d
     allocate team
+    complete 100
     depends !interactive_pull_wiring, kinds.nested_runtime_binding
-    note "Call bind_operators per interactive frame on the interactive path (host_viewport.cpp pins a DocStatePtr but never calls bind_operators, and interactive.cpp passes null pulls), so fade, crossfade, and nested all render attached interactively. Blocked on interactive_pull_wiring supplying the PullService. Source-of-debt: tasks/refinements/kinds/nested_runtime_binding.md. Docs 02/13/17."
+    note "Call bind_operators per interactive frame on the interactive path (host_viewport.cpp pins a DocStatePtr but never calls bind_operators, and interactive.cpp passes null pulls), so fade, crossfade, and nested all render attached interactively. Blocked on interactive_pull_wiring supplying the PullService. Source-of-debt: tasks/refinements/kinds/nested_runtime_binding.md. Docs 02/13/17. Refinement: tasks/refinements/runtime/interactive_binder_wiring.md"
   }
   task worker_dispatch_leaf_only "Hoist leaf-only worker-dispatch rule into a shared helper" {
     effort 1d

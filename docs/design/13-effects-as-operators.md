@@ -88,6 +88,20 @@ any content. The nested kind reimplements on top of it; third-party
 operators get the proof (doc 05's closing argument) that plugins can do
 anything the core can.
 
+**Binding is the render driver's obligation, and every driver discharges
+it.** An unattached content holds no `PullService` and therefore cannot
+pull, so a driver that renders an operator must first bind the document's
+content graph — attaching each content before descending its `inputs()`,
+because a nesting's input edges do not exist until it is attached (doc 08).
+This is the driver's job and not the host's: doc 01 makes binding a viewport
+to a document the host's *single* wiring step, so no host hand-attaches an
+operator. The interactive frame loop therefore binds per frame against its
+frame-local pull service exactly as the offline and export drivers do, and
+an operator renders the same under a deadline as it does in an exact export
+(doc 02's two-drivers-over-one-core). A binding is scoped to the frame that
+uses it — it borrows that frame's pull service — and holds the driver's
+pinned snapshot alive for as long as any content it was injected into.
+
 **A pull delivers into the caller's target.** `pull` writes the pulled
 input's pixels into the request's `target` surface — the visual analog of
 `pull_audio` writing samples into `AudioRequest.target` — on every path

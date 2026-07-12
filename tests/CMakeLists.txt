@@ -404,6 +404,21 @@ target_link_libraries(arbc_interactive_operator_identity_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_interactive_operator_identity_golden_t)
 
+# runtime.interactive_binder_wiring: the interactive driver BINDS its operators, per
+# frame, against the frame-local pull service (doc 13 § "Binding is the render driver's
+# obligation"). Pinned byte-exact against the export driver: a fade at an interior
+# envelope and a crossfade at an interior weight -- neither an identity endpoint, so each
+# runs its OWN render and pulls through the injected service -- and a nested scene, which
+# has no input edges at all until attach. Also: the per-frame re-bind does not thrash
+# nested's metadata memo, and a nesting's child layers carry distinct pull identities.
+# Cross-component (runtime + compositor + kind_fade/kind_crossfade/kind_nested/kind_solid
+# + backend_cpu), so it links the umbrella `arbc`.
+add_executable(arbc_interactive_operator_binding_golden_t
+               interactive_operator_binding_golden.t.cpp)
+target_link_libraries(arbc_interactive_operator_binding_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_interactive_operator_binding_golden_t)
+
 # runtime.interactive_pull_wiring, Constraint 6: an operator INPUT that answers
 # asynchronously emits damage under its synthesized (non-layer-root) id, which only
 # `route_operator_damage` can turn into a follow-up frame that re-drives the endpoint.

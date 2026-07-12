@@ -18,12 +18,15 @@
 // specified deterministic, doc 16 tier 3, and an unpressured `BestEffort` frame
 // degrades nowhere). Pre-task every interactive frame below is fully transparent.
 //
-// Constraint 5: `bind_operators` is `runtime.interactive_binder_wiring`'s, not this
-// task's, so interactive operator coverage is confined to identity ENDPOINTS over
-// leaf inputs -- an endpoint needs no attach (`identity()` reads params only,
-// `inputs()` is core-owned structure, and the DRIVER issues the pull), where an
-// interior weight would call the operator's own `render` and trip its
-// "rendered before attach" assert exactly as it does today.
+// This file stays confined to identity ENDPOINTS over leaf inputs, and deliberately so:
+// an endpoint needs no attach at all (`identity()` reads params only, `inputs()` is
+// core-owned structure, and the DRIVER, not the operator, issues the pull), so every
+// frame below calls `render_frame` with the default -- UNBOUND -- `FrameBinding`. That is
+// exactly what makes it the regression test for the driver-side delivery path in
+// isolation: it would still pass if the binder were reverted. Interior weights, which run
+// the operator's OWN `render` and can only pull through a service they received at attach,
+// belong to `runtime.interactive_binder_wiring` and are covered in
+// `interactive_operator_binding_golden.t.cpp`.
 
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/geometry.hpp>

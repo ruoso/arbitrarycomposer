@@ -14,6 +14,7 @@
 #include <arbc/compositor/pull_service.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/contract/registry.hpp>
+#include <arbc/kind_fade/fade_content.hpp>
 #include <arbc/kind_nested/nested_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/kind_tone/tone_content.hpp>
@@ -21,18 +22,24 @@
 #include <arbc/runtime/builtin_codecs.hpp>
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/document_serialize.hpp>
+#include <arbc/runtime/host_viewport.hpp> // the real interactive frame loop (the A7 lane)
+#include <arbc/runtime/interactive.hpp>
 #include <arbc/runtime/operator_binding.hpp>
 #include <arbc/runtime/pull_identity.hpp>
 #include <arbc/serialize/codec.hpp>        // CodecTable (to hold builtin_codecs() by value)
 #include <arbc/serialize/load_context.hpp> // AssetSource (the external-child lane)
+#include <arbc/surface/surface.hpp>
+#include <arbc/surface/surface_pool.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -746,4 +753,148 @@ TEST_CASE("an external arrival racing document TEARDOWN installs nothing and fau
 
   // And a callback firing long AFTER the document is gone is equally benign.
   REQUIRE_NOTHROW(callbacks[0](k_child));
+}
+
+// enforces: 08-serialization#nesting-inputs-are-derived-not-persisted
+TEST_CASE("an autosave races a live INTERACTIVE frame loop's binding, benignly") {
+  // `runtime.interactive_binder_wiring` A7. The two lanes above hold a hand-rolled
+  // `OperatorBindingScope` on the render thread, standing in for a driver. Until now that
+  // stand-in was all there was interactively: the interactive frame loop never called
+  // `bind_operators` at all, so the only live scopes in the tree were offline and export
+  // ones. Registry row 246 nonetheless claims the interactive session is exactly where a
+  // nesting's derived `inputs()` are non-empty -- "the state every rendered frame of an
+  // interactive session leaves it in" -- and that a save taken while such a binding is
+  // held, "even concurrently, on another thread, TSan clean and with no new lock", is
+  // byte-identical to the unbound save.
+  //
+  // This lane drives the REAL thing: a `Document`-bound `HostViewport::step()` loop, which
+  // per frame takes the pin, builds its frame-local `PullServiceImpl`, binds the whole
+  // content graph onto it, renders, and tears the binding down -- while the writer thread
+  // autosaves the very same document, over and over, at an arbitrary point in that cycle.
+  // The bytes must not depend on which point.
+  using arbc::Affine;
+  using arbc::Content;
+  using arbc::Document;
+  using arbc::FadeContent;
+  using arbc::KindBridge;
+  using arbc::NestedContent;
+  using arbc::ObjectId;
+  using arbc::Rgba;
+  using arbc::SolidContent;
+  using arbc::Time;
+
+  constexpr int k_dim = 16;
+
+  KindBridge bridge;
+  Document doc;
+  const ObjectId root = doc.add_composition(k_dim, k_dim); // the parent, created FIRST
+  const ObjectId child = doc.add_composition(k_dim, k_dim);
+  auto nested = std::make_shared<NestedContent>(child);
+  const ObjectId nest_layer = doc.add_layer(
+      doc.add_content(nested, bridge.intern(NestedContent::kind_id, arbc::k_nested_kind_version)),
+      Affine::identity(), 1.0);
+  doc.attach_layer(root, nest_layer);
+
+  // The child layer is a FADE over a solid, not a bare solid: a fade is `Timed`, so the
+  // nesting that aggregates it is Timed too, so every clock advance damages it and every
+  // `step()` below genuinely renders -- and therefore genuinely BINDS. A Static child would
+  // let the still-scene early-out fire and the lane would race nothing at all. At t == 500
+  // the envelope is interior (0.5), so the fade runs its own `render` and pulls its input
+  // through the frame's service: the fully-bound path, not an identity short-circuit.
+  const ObjectId leaf =
+      doc.add_content(std::make_shared<SolidContent>(Rgba{0.0F, 1.0F, 0.0F, 1.0F},
+                                                     arbc::Rect{0.0, 0.0, k_dim, k_dim}),
+                      bridge.intern(SolidContent::kind_id, arbc::k_solid_kind_version));
+  const arbc::FadeParams fade_params{arbc::FadeShape::Linear, std::nullopt,
+                                     arbc::FadeWindow{Time{0}, Time{1000}}};
+  doc.attach_layer(
+      child,
+      doc.add_layer(doc.add_content(std::make_shared<FadeContent>(doc.resolve(leaf), fade_params),
+                                    bridge.intern(FadeContent::kind_id, arbc::k_fade_kind_version)),
+                    Affine::identity(), 1.0));
+
+  arbc::CpuBackend backend;
+  arbc::TileCache cache(64U * 1024 * 1024);
+  arbc::SurfacePool surfaces(backend);
+  const arbc::DocStatePtr initial = doc.pin();
+  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
+      backend.make_surface(k_dim, k_dim, initial->working_space());
+  REQUIRE(target.has_value());
+
+  // Every clock either driver reads is injected and fixed at the steady_clock epoch, and
+  // the playhead is a deterministic per-frame function -- no wall clock, no sleep (doc 16).
+  const arbc::InteractiveRenderer::Clock epoch = [] {
+    return std::chrono::steady_clock::time_point{};
+  };
+  arbc::InteractiveRenderer renderer({}, epoch);
+  arbc::HostViewport::Config cfg;
+  cfg.viewport = arbc::Viewport{k_dim, k_dim, Affine::identity(), root};
+  cfg.budget = std::chrono::hours(1); // no deadline pressure: nothing degrades
+  arbc::HostViewport view(renderer, doc, arbc::HostViewport::DocumentBinding{}, backend, surfaces,
+                          cache, **target, epoch, cfg);
+  std::atomic<std::int64_t> tick{0};
+  view.set_playhead_source([&tick] { return Time{500 + tick.fetch_add(1)}; });
+
+  // A fresh viewport has no damage, no owed follow-up and an unmoved scene, so its first
+  // step would issue zero frames (doc 01:140). Re-setting the nesting layer's transform to
+  // the identity it already carries damages it -- bootstrapping the first render -- without
+  // changing a single serialized byte.
+  doc.set_layer_transform(nest_layer, Affine::identity());
+
+  // The reference: the save of the document with NO binding live anywhere. Every racing
+  // save below must land on exactly these bytes.
+  const arbc::expected<std::string, arbc::SerializeError> reference =
+      arbc::save_document(doc, bridge);
+  REQUIRE(reference.has_value());
+  const std::string expected_bytes = *reference;
+  REQUIRE(expected_bytes.find("\"composition\": \"1\"") != std::string::npos);
+
+  std::atomic<bool> stop{false};
+  std::atomic<int> frames{0};
+
+  // The RENDER thread: a real interactive frame loop. Each step binds the graph onto that
+  // frame's pull service, renders the nesting through it, and releases -- the bind/detach
+  // cycle a 60Hz session runs, not a stand-in for one.
+  std::thread render([&] {
+    while (!stop.load()) {
+      view.step();
+      frames.fetch_add(1);
+    }
+  });
+
+  // The WRITER thread (this one): a full autosave per round -- `capture_snapshot`'s
+  // reverse-map walk AND the emit -- taken at an arbitrary point in the render thread's
+  // per-frame bind/render/detach cycle.
+  constexpr int k_rounds = 200;
+  std::atomic<bool> serialize_error{false};
+  std::atomic<bool> mismatch{false};
+  int saved = 0;
+  for (int i = 0; i < k_rounds; ++i) {
+    const arbc::expected<std::string, arbc::SerializeError> out = arbc::save_document(doc, bridge);
+    if (!out.has_value()) {
+      serialize_error.store(true);
+    } else if (*out != expected_bytes) {
+      mismatch.store(true);
+    } else {
+      ++saved;
+    }
+  }
+  stop.store(true);
+  render.join();
+
+  CHECK_FALSE(serialize_error.load());
+  // Every save landed on the unbound bytes: no `inputs` array, no `contents` table entry
+  // for the child's own layers, no `$ref` -- the output is a pure function of the DOCUMENT,
+  // not of where in the frame loop the autosave happened to land. And no new lock was
+  // needed to say so: the writer touches only the immutable child `ObjectId`.
+  CHECK_FALSE(mismatch.load());
+  CHECK(saved == k_rounds);
+  // The loop really did run frames, and they really did bind -- otherwise the byte-equality
+  // above would be vacuous and this lane would be proving nothing.
+  CHECK(frames.load() >= 1);
+  CHECK(view.frames_issued() >= 1);
+  CHECK(renderer.operator_binds() >= 1);
+  // ...and the binding really did populate the derived edges the writer skipped. The memo
+  // survives `detach`, so the projection the last frame built is still the honest answer.
+  CHECK_FALSE(nested->inputs().empty());
 }

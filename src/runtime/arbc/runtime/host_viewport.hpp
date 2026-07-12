@@ -156,12 +156,22 @@ public:
   //     *binding.registry)`, run at the top of every `step()` (doc 02 step 1: an arrival IS
   //     damage). Derived only when `binding` carries both; an explicitly-set
   //     `Config::settle_external_loads` WINS over the derived one, so a host with a bespoke
-  //     settle policy keeps its escape hatch.
+  //     settle policy keeps its escape hatch;
+  //   * the CONTENT GRAPH each frame binds, to give its operators their render-time services
+  //     (doc 01 § Viewport, doc 13; `runtime.interactive_binder_wiring`). This one is NOT
+  //     derivable into a `std::function` like the other three, which is why this constructor
+  //     retains the document (`d_document`): `bind_operators` walks
+  //     `Document::for_each_content`, reaching contents-table contents no `DocRoot` layer
+  //     walk sees. `step()` hands it, with the pin it already takes, to `render_frame`, so a
+  //     fade at an interior envelope, a crossfade at an interior weight, and a nesting all
+  //     render attached -- and the host "never attaches an operator by hand" (doc 01:112-120).
   //
-  // It DELEGATES to the `Model&` constructor above -- there is no `Document` member, no mode
-  // flag, and exactly one code path through a frame (Constraint 2). `doc` must outlive this
-  // viewport: the derived resolver and settle hook capture it, the same lifetime contract the
-  // other reference collaborators already carry.
+  // It DELEGATES to the `Model&` constructor above: one mode flag (`d_document`, null on the
+  // `Model&` path, which has no document to bind and binds nothing) and exactly one code path
+  // through a frame (Constraint 2). `doc` must outlive this viewport: the derived resolver,
+  // the settle hook and the retained pointer all reference it -- the same lifetime contract
+  // the other reference collaborators already carry, and no stronger one, since the `Model&`
+  // this viewport already stores IS that document's own model.
   HostViewport(InteractiveRenderer& renderer, Document& doc, DocumentBinding binding,
                Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target, Clock clock,
                Config config);
@@ -255,6 +265,12 @@ private:
 
   InteractiveRenderer& d_renderer;
   Model& d_model;
+  // The document this viewport is bound to, or null under the `Model&` constructor -- the
+  // one thing the document supplies that cannot be reduced to a `std::function` (see the
+  // `Document&` constructor). Set => every rendering frame binds its operators against the
+  // frame's pull service; null => `render_frame` gets a default `FrameBinding` and behaves
+  // exactly as it always has.
+  const Document* d_document{nullptr};
   ContentResolver d_resolve;
   Backend& d_backend;
   SurfacePool& d_pool;

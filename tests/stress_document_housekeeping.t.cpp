@@ -145,7 +145,7 @@ TEST_CASE("stress: a live workspace-backed Document drains in the background whi
   TempPath path;
 
   DocumentHousekeepingConfig config;
-  config.thread.tick_period = kActiveTick;              // an active background drainer
+  config.thread.tick_period = kActiveTick;                   // an active background drainer
   config.checkpoint_every_n_transactions = kCheckpointEvery; // a WRITER-side trigger
 
   auto made = Document::create(path.str(), config);

@@ -7,12 +7,12 @@
 // that distinguishes an async design from a synchronous one wearing an async signature.
 //
 // The proof rides the OFFLINE render path (`render_frame` over a real `OperatorBindingScope` +
-// `PullServiceImpl`), exactly as its sibling does, because that is the path that is wired: the
-// interactive frame passes a null `PullService` and never calls `bind_operators`, so nested
-// renders blank there regardless of this task (`runtime.interactive_pull_wiring` /
-// `runtime.interactive_binder_wiring` are the gaps that close it). The settle seam itself is
-// the same seam and the same damage either way, so the interactive path inherits this behavior
-// with no further work here (Decision 7).
+// `PullServiceImpl`), exactly as its sibling does. It is now the SAME wiring the interactive
+// frame runs -- `runtime.interactive_pull_wiring` gave that loop a real `PullService` and
+// `runtime.interactive_binder_wiring` made it call `bind_operators` per frame -- and the settle
+// seam was always the same seam and the same damage either way, so the interactive path
+// inherits this behavior with no further work here (Decision 7). It stays offline because the
+// offline driver is the exact-evaluation oracle, which is what a pixel golden wants.
 //
 // CROSS-COMPONENT (tests/, linking the umbrella `arbc`): needs a real `CpuBackend` and a real
 // `OperatorBindingScope`, which a runtime component test may not name (doc 17).

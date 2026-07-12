@@ -7,9 +7,11 @@
 #include <arbc/cache/keyed_store.hpp>
 #include <arbc/compositor/compositor.hpp>
 #include <arbc/contract/content.hpp>
+#include <arbc/kind_fade/fade_content.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/damage.hpp>
 #include <arbc/model/model.hpp>
+#include <arbc/runtime/document.hpp>
 #include <arbc/runtime/interactive.hpp>
 #include <arbc/runtime/transport.hpp>
 #include <arbc/surface/backend.hpp>
@@ -463,6 +465,77 @@ TEST_CASE("interactive: a still frame builds no identity map and constructs no p
   CHECK(renderer.counters().requests_issued() == requests);
   CHECK(renderer.counters().composites() == composites);
   CHECK(renderer.counters().follow_up_frames() == 0);
+}
+
+// --- The per-frame operator binding (runtime.interactive_binder_wiring) --------
+
+TEST_CASE("interactive: a still scene binds no operators") {
+  MarkBackend backend;
+  SyncSolid input(Stability::Static);
+
+  // A fade with an INTERIOR envelope at the instant every frame below renders: at
+  // t == 500 the fade-out has ramped half-way, so this is not an identity endpoint and
+  // the operator's own `render` runs -- the case that needs the attach. The input
+  // outlives the document, which borrows it non-owningly through the fade.
+  arbc::Document doc;
+  const arbc::FadeParams params{arbc::FadeShape::Linear, std::nullopt,
+                                arbc::FadeWindow{arbc::Time{0}, arbc::Time{1000}}};
+  doc.add_layer(doc.add_content(std::make_shared<arbc::FadeContent>(&input, params)),
+                arbc::Affine::identity());
+
+  const arbc::DocStatePtr state = doc.pin();
+  const arbc::ContentResolver resolve = [&doc](arbc::ObjectId id) { return doc.resolve(id); };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+  const arbc::FrameBinding binding{&doc, state};
+
+  // Frame 1 is the first frame: it plans the whole viewport, renders the fade, and so
+  // binds exactly once. It really did have to bind -- the fade's `render` asserts on an
+  // unattached pull service -- so reaching the second frame at all is the proof.
+  renderer.render_frame(*state, resolve, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{500}, k_budget, binding);
+  REQUIRE(renderer.operator_binds() == 1);
+
+  // Eight further frames at the SAME instant on the SAME revision: no model damage, an
+  // empty clock advance, an empty refinement queue. Each takes the still-scene early-out,
+  // which precedes the pull service the binding borrows -- so no frame binds, and the
+  // 60Hz idle path costs no graph walk (Decision 4).
+  for (int i = 0; i < 8; ++i) {
+    const auto out = renderer.render_frame(*state, resolve, viewport, cache, backend, pool,
+                                           **target, {}, arbc::Time{500}, k_budget, binding);
+    CHECK_FALSE(out.schedule_follow_up);
+  }
+  CHECK(renderer.operator_binds() == 1); // the still frames bound nothing
+}
+
+TEST_CASE("interactive: an unbound frame binds nothing and renders as it always has") {
+  MarkBackend backend;
+  SyncSolid content(Stability::Static);
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  // The default `FrameBinding{}` -- what every `Model&`-constructed viewport and every
+  // direct-driver call site passes -- is no binding at all: the frame does its full
+  // pre-task work and binds zero times. This is what keeps the eleven `Model&` viewports
+  // and every existing golden byte-for-byte unmoved (Constraint 5).
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{0}, k_budget);
+  CHECK(renderer.counters().composites() == 1);
+  CHECK(renderer.operator_binds() == 0);
 }
 
 // enforces: 05-recursive-composition#graph-walk-bounds-cycles

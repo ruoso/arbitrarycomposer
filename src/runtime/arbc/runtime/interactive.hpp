@@ -89,8 +89,30 @@
 // under that, not under its model id (doc 13:145-149). Clock-advance damage is NOT
 // routed: an operator over a moving input is itself non-`Static` and already carries
 // whole-footprint damage under its own object (doc 13:108-112).
+//
+// BINDING (`runtime.interactive_binder_wiring`, doc 13 § "Binding is the render
+// driver's obligation, and every driver discharges it"). Serving the pull service was
+// only half the operator contract: a non-endpoint operator layer -- a fade at envelope
+// 0.5, a crossfade at w 0.5, a nesting -- runs its OWN `render`, which pulls through a
+// service it can only have received at ATTACH. So a frame that actually renders binds
+// the document's whole content graph (`bind_operators`) against the frame-local
+// `PullServiceImpl` before it plans, and tears the binding down with the frame. The
+// scope is function-local and declared AFTER `pulls` (so it detaches before the service
+// it borrows dies) and it survives the deadline park and the arrival composite, which
+// re-drive operator layers whose inputs settled late. Caching it across frames is a
+// use-after-free, not an optimization: it holds a `PullService&` into the frame's stack.
+//
+// The binding is OPT-IN, through the trailing `FrameBinding` (a `const Document*` plus
+// the caller's pin). `bind_operators` needs `Document::for_each_content` to reach
+// contents-table contents no `DocRoot` layer walk sees, and the frame signature carries
+// only the `DocRoot`. A default `FrameBinding{}` binds nothing and is today's behavior
+// exactly, so a `Model&`-constructed `HostViewport` (and every direct-renderer test)
+// is untouched. A still scene never gets that far: it early-outs ahead of the pull
+// service, so it binds ZERO times (`operator_binds()`).
 
 namespace arbc {
+
+class Document;
 
 // The zoom-gesture sign the interactive loop feeds `prime_prefetch` (Decision 5,
 // doc 04:99-101): the sign of the frame-over-frame camera scale-magnitude delta.
@@ -101,6 +123,24 @@ namespace arbc {
 // (`prev_scale <= 0`, the pre-first-frame sentinel) -- "no gesture -> no zoom
 // speculation". A free function so the derivation is directly unit-testable.
 int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept;
+
+// What a frame needs to BIND its operators, and the only thing the frame signature does
+// not already carry (`runtime.interactive_binder_wiring` Decision 2): the `Document` whose
+// content graph `bind_operators` walks, and the pin the frame is compositing -- the SAME
+// snapshot, so a nested content reads its child's membership from the version being
+// rendered (doc 05:71-75).
+//
+// One struct rather than two loose parameters because a document without a pin (or a pin
+// without a document) is not a meaningful state: the pair is atomic, and one assert in
+// `render_frame` covers it. Trailing and defaulted because the default -- bind nothing --
+// is what every `Model&`-constructed viewport and every direct-driver test already does,
+// so none of them move. At namespace scope rather than nested in `InteractiveRenderer`
+// because a nested class's default member initializers are not available to a default
+// argument of the enclosing class, which is still incomplete there.
+struct FrameBinding {
+  const Document* document{nullptr};
+  DocStatePtr pin{nullptr};
+};
 
 // The deadline-bounded, damage-driven interactive frame loop (doc 02:49-71).
 // Owns the frame-to-frame state doc 17:88-95 assigns to runtime and threads it
@@ -135,11 +175,18 @@ public:
   // whether a follow-up frame is owed. Never blocks past the deadline; a failed
   // or cancelled render degrades to the placeholder policy, never thrown through
   // the loop.
+  //
+  // `binding` is the document + pin this frame binds its operators against (see
+  // `FrameBinding`); the default binds nothing. When set, its `pin` MUST be the very
+  // snapshot `state` names -- asserted, because a valid-but-different pin would have the
+  // compositor walk one snapshot while the operators pulled from another, a stale-pixel
+  // bug with no crash.
   FrameOutcome render_frame(const DocRoot& state, const ContentResolver& resolve,
                             const Viewport& viewport, TileCache& cache, Backend& backend,
                             SurfacePool& pool, Surface& target,
                             std::span<const Damage> model_damage, Time composition_time,
-                            std::chrono::steady_clock::duration budget);
+                            std::chrono::steady_clock::duration budget,
+                            const FrameBinding& binding = {});
 
   // The persistent behavioral counters accumulated across frames (doc 16:54-62).
   const CompositorCounters& counters() const noexcept { return d_counters; }
@@ -159,6 +206,12 @@ public:
   // set before the early-out) or that actually renders a frame; a still frame carries
   // neither, early-outs, and builds nothing.
   std::uint64_t identity_map_builds() const noexcept { return d_identity_map_builds; }
+  // How many times this driver has bound the document's content graph: once per frame
+  // that actually RENDERS with a `FrameBinding` set, and never on a frame that takes the
+  // still-scene early-out (which precedes the pull service the binding borrows). The
+  // behavioral counter (doc 16:54-62, never wall-clock) that pins "a still scene binds
+  // nothing" -- the case that runs at 60Hz doing nothing.
+  std::uint64_t operator_binds() const noexcept { return d_operator_binds; }
 
   // The async-completion park/wake substrate. Exposed so externally-async content
   // (or, in M4, `compositor.pull_service`'s dispatch) can `poke()` a render
@@ -231,6 +284,7 @@ private:
   std::unordered_map<ObjectId, const Content*> d_content_by_id; // the inverse, for routing
   std::vector<OperatorLayer> d_operator_layers;                 // the visible operator layers
   std::uint64_t d_identity_map_builds{0};                       // memo (re)builds, a counter
+  std::uint64_t d_operator_binds{0};                            // per-rendering-frame binds
 };
 
 } // namespace arbc
