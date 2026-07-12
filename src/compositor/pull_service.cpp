@@ -70,6 +70,17 @@ void PullServiceImpl::dispatch(Content* content, const RenderRequest& request,
   d_dispatch(content, request, std::move(done));
 }
 
+std::size_t PullServiceImpl::unmet_mark() const noexcept { return d_unmet.size(); }
+
+std::vector<TileKey> PullServiceImpl::unmet_since(std::size_t mark) const {
+  if (mark >= d_unmet.size()) {
+    return {};
+  }
+  return std::vector<TileKey>(d_unmet.begin() + static_cast<std::ptrdiff_t>(mark), d_unmet.end());
+}
+
+void PullServiceImpl::unmet_clear() noexcept { d_unmet.clear(); }
+
 namespace {
 
 // Settle `done` with the placeholder policy (doc 05:66-70, doc 13:134-138): a
@@ -250,8 +261,48 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
       if (d_config.counters != nullptr) {
         d_config.counters->note_request_suppressed();
       }
+      d_unmet.push_back(key);
       any_async = true;
       continue;
+    }
+
+    // And a THIRD thing behind the pending set: the refinement WAVE
+    // (`compositor.operator_refinement_wave_amplification`,
+    // `13-effects-as-operators#operator-defers-to-its-pending-inputs`). A covering tile
+    // that is an OPERATOR's transient output -- resident under this exact key but
+    // flagged inexact, so the hit gate above rejected it -- whose recorded unmet inputs
+    // are still pending is NOT re-rendered by a partial arrival. Its chain is re-driven
+    // at most once per wave, when the last input it is waiting on lands.
+    //
+    // Unlike the in-flight join above, this arm DELIVERS. It must: the caller is an
+    // operator that is about to composite this tile NOW, and an undelivered target is a
+    // transparent hole in its placeholder. The resident transient tile is exactly the
+    // right thing to hand it -- same content, same revision, same rung, same coord, and
+    // merely not final -- so the frame that defers paints exactly what the previous frame
+    // painted for this tile and no pixels move. It is still TRANSIENT: `any_async` leaves
+    // the caller's `done` unsettled and the region inexact, so the parent degrades this
+    // pass exactly as it did before, and the wave's arrival re-drives it.
+    //
+    // The caller inherits the child's OUTSTANDING inputs (not the child's own output key,
+    // which is an operator tile and so never appears in `queue.tiles`) -- that is what
+    // keeps the parent's wait in leaf-key space and opens both gates on the same wave.
+    if (operator_wave_pending(d_config.pending, key)) {
+      if (std::optional<CacheHold<TileValue>> transient = d_cache.lookup(key);
+          transient.has_value() && transient->get().meta.achieved_scale == rung_px) {
+        deliver_tile(d_backend, *transient->get().surface, coord, rung_px, request);
+        if (d_config.counters != nullptr) {
+          d_config.counters->note_render_coalesced();
+        }
+        const std::vector<TileKey> still = operator_wave_unmet(d_config.pending, key);
+        d_unmet.insert(d_unmet.end(), still.begin(), still.end());
+        region_exact = false;
+        any_async = true;
+        continue;
+      }
+      // The transient tile was evicted under memory pressure, so there is nothing to
+      // deliver and deferring would blank the caller's target. Fall through and render:
+      // coalescing is an optimization, and stranding a tile behind a hole to buy it is
+      // not a trade this gate is allowed to make (Constraint 3).
     }
 
     // Miss: build the render descriptor and dispatch it. The tile pixels are owned
@@ -306,6 +357,10 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
 
     // The descent depth is in effect across the dispatch so an operator whose
     // `render` recursively pulls its own input re-enters `pull` at `d_depth + 1`.
+    // The unmet MARK is taken across it too (Decision 2): whatever this render's own
+    // (possibly recursive) pulls leave unmet is the tail past this point, and it is
+    // the wave the tile below is waiting on.
+    const std::size_t mark = unmet_mark();
     ++d_depth;
     d_dispatch(input, render_request, inner);
     --d_depth;
@@ -338,6 +393,16 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
         d_cache.insert(key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
                        bytes, PriorityClass::Visible);
         region_exact = region_exact && result.exact;
+        // Record the wave this render opened (Decision 2). An INEXACT result whose
+        // render left input tiles unmet is an operator that painted a transient
+        // placeholder while its inputs are still in flight -- the tile just inserted
+        // above. Naming the inputs it is waiting on is what lets the next plan defer
+        // its re-render instead of driving the whole chain again. An inexact LEAF
+        // pulled nothing, so its tail is empty and `record_operator_wait` records
+        // nothing: it has no wave and keeps re-rendering exactly as it does today.
+        if (!result.exact && d_config.pending != nullptr) {
+          record_operator_wait(*d_config.pending, key, unmet_since(mark));
+        }
       } else {
         // A settled-via-fail inline render: no insert, no pending. Fail the WHOLE
         // region to the placeholder and stop -- a partially filled region is not a
@@ -362,6 +427,7 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
       const std::size_t bytes = tile_byte_cost(tile_surface);
       d_config.pending->tiles.push_back(PendingTile{key, request.region, id, stability, bytes,
                                                     std::move(*owned), std::move(inner)});
+      d_unmet.push_back(key);
       any_async = true;
     } else {
       // Async dispatch with no reap sink (Decision 3, `pull-retains-render-surface-

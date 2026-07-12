@@ -97,10 +97,25 @@ std::vector<TileCoord> tiles_covering(ScaleRung rung, const Rect& local_region);
 // remainder, rotation, shear) is applied at composite time, not baked here.
 Rect tile_local_rect(ScaleRung rung, TileCoord coord);
 
-// The source chosen for a tile after the cache lookup and the doc 02:63-65
-// degradation order (fresh -> stale-revision -> coarser-rung-rescaled ->
-// checkerboard/transparent).
-enum class TileSource { Fresh, Stale, Coarser, Placeholder };
+// The source chosen for a tile after the cache lookup and the doc 02:62-67
+// degradation order (fresh -> resident-transient -> stale-revision ->
+// coarser-rung-rescaled -> checkerboard/transparent).
+//
+// `Transient` is the first DEGRADED entry (`compositor.operator_refinement_wave_
+// amplification` Decision 3): a tile resident under its OWN fresh key at the
+// current rung, but flagged `exact = false` -- an operator's placeholder composite,
+// painted while one or more of its inputs were still in flight
+// (`13-effects-as-operators#transient-placeholder-is-never-exact`). It is not a hit
+// (the render is still owed, so `is_miss` stays set), but it is strictly better than
+// everything below it: same content, same revision, same rung, same coord, right
+// geometry -- it is simply not final. Without it a tile whose re-render the wave gate
+// defers would step over the perfectly good placeholder sitting in the cache and paint
+// a stale-revision or transparent one instead, and on a cold cache there IS no stale
+// or coarser tile, so the operator would blink to transparent for every frame of the
+// wave and then pop in. It costs no cache change at all: `TileMeta::exact` is VALUE
+// metadata, not part of the key (`key_shapes.hpp:105-115`), so the entry is resident
+// and findable under the exact key even though it is not a hit.
+enum class TileSource { Fresh, Transient, Stale, Coarser, Placeholder };
 
 // A single planned tile (a pure, target-free value). `key` is the tile's
 // *fresh* cache key `(content, current revision, rung, coord[, achieved_time])`.

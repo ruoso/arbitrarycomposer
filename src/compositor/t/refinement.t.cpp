@@ -394,6 +394,211 @@ TEST_CASE("tile_in_flight suppresses only a live, uncancelled, unsettled pending
   }
 }
 
+// --- The refinement wave (compositor.operator_refinement_wave_amplification) --
+
+// The gate predicate, one case per arm. It is the SECOND predicate over this queue,
+// and it differs from `tile_in_flight` in exactly one clause -- the `cancelled()` one
+// -- which is the arm that carries the design and the arm that would silently void the
+// coalescing if it were copied from its sibling. The two answer two different
+// questions: "is someone rendering this?" (a cancelled render: no) and "is more coming
+// for this?" (a cancelled render: yes -- `cancel` is advisory, the content is free to
+// ignore it, and it usually lands). Copy `tile_in_flight`'s clause here and the
+// interactive driver's deadline sweep -- which cancels EVERY unsettled tile on expiry
+// -- opens every gate at every frame boundary, and the coalescing evaporates in exactly
+// the regime it exists for, while every unit test still passes.
+//
+// enforces: 02-architecture#refinement-wave-coalesces-chain-rerender
+TEST_CASE("operator_wave_pending holds while any recorded unmet input is still pending") {
+  RefinementQueue queue;
+  const TileKey output = tile_key(ScaleRung{0}, TileCoord{0, 0});
+  const TileKey input_a = tile_key(ScaleRung{0}, TileCoord{1, 0});
+  const TileKey input_b = tile_key(ScaleRung{0}, TileCoord{2, 0});
+
+  auto record = [&queue](const TileKey& k, const std::shared_ptr<RenderCompletion>& done) {
+    PendingTile pending;
+    pending.key = k;
+    pending.local_rect = arbc::tile_local_rect(k.rung, k.coord);
+    pending.content = k.content;
+    pending.bytes = 1;
+    pending.surface = std::make_unique<StubSurface>();
+    pending.done = done;
+    queue.tiles.push_back(std::move(pending));
+  };
+
+  SECTION("a null queue has no wave (the offline first pass, the null-path rule)") {
+    CHECK_FALSE(arbc::operator_wave_pending(nullptr, output));
+    CHECK(arbc::operator_wave_unmet(nullptr, output).empty());
+  }
+
+  SECTION("no wait recorded for the key -- the ordinary miss, which still renders") {
+    record(input_a, std::make_shared<RenderCompletion>());
+    CHECK_FALSE(arbc::operator_wave_pending(&queue, output));
+  }
+
+  SECTION("an empty unmet set records no wait at all -- an inexact LEAF has no wave") {
+    arbc::record_operator_wait(queue, output, {});
+    CHECK(queue.waits.empty());
+    CHECK_FALSE(arbc::operator_wave_pending(&queue, output));
+  }
+
+  SECTION("a recorded wait whose input is pending and unsettled IS a running wave") {
+    record(input_a, std::make_shared<RenderCompletion>());
+    arbc::record_operator_wait(queue, output, {input_a});
+    CHECK(arbc::operator_wave_pending(&queue, output));
+    CHECK(arbc::operator_wave_unmet(&queue, output) == std::vector<TileKey>{input_a});
+  }
+
+  SECTION("a CANCELLED-but-unsettled input keeps the wave running -- the opposite of "
+          "tile_in_flight") {
+    auto done = std::make_shared<RenderCompletion>();
+    record(input_a, done);
+    arbc::record_operator_wait(queue, output, {input_a});
+    done->cancel();
+    // `cancel` is advisory: it does not settle. Nobody is guaranteed to be RENDERING
+    // this tile any more -- so `tile_in_flight` says no, and a dispatch against it must
+    // proceed or the tile is stranded. But something is still COMING for it (the render
+    // usually lands anyway), so the wave is still running and the chain must not be
+    // re-driven yet. Copy `tile_in_flight`'s clause into this gate and the deadline
+    // sweep -- which cancels EVERY unsettled tile on expiry -- opens every gate at every
+    // frame boundary, and the coalescing evaporates under exactly the deadline pressure
+    // it exists for, while this file still passes.
+    CHECK_FALSE(done->settled());
+    CHECK(done->cancelled());
+    CHECK_FALSE(arbc::tile_in_flight(&queue, input_a)); // the dispatch gate: open
+    CHECK(arbc::operator_wave_pending(&queue, output)); // the re-render gate: shut
+  }
+
+  SECTION("a SETTLED-but-undrained input keeps the wave running -- its pixels are not in "
+          "the cache yet") {
+    auto done = std::make_shared<RenderCompletion>();
+    record(input_a, done);
+    arbc::record_operator_wait(queue, output, {input_a});
+    done->complete(RenderResult{1.0, true});
+    // The worker finished, but the INSERT happens in `poll_refinements`, on the frame
+    // thread -- so the tile is settled and still absent from the cache. A chain
+    // re-rendered against it now would miss it, re-dispatch a render that has already
+    // completed, and throw the result away. That window is not hypothetical: a trivial
+    // leaf on a worker routinely settles before the operator above it is even pulled.
+    CHECK(done->settled());
+    CHECK(arbc::operator_wave_pending(&queue, output));
+  }
+
+  SECTION("an input no longer in the queue at all ends the wave -- the fail-drop") {
+    arbc::record_operator_wait(queue, output, {input_a});
+    // `poll_refinements` drops a failed arrival with no insert and no damage, so its key
+    // simply leaves `queue.tiles`. Nothing re-plans the operator on its own account, but
+    // the gate MUST be open when something else does, or the placeholder is permanent --
+    // strictly worse than the waste it replaces (Constraint 3).
+    CHECK_FALSE(arbc::operator_wave_pending(&queue, output));
+  }
+
+  SECTION("two unmet inputs: the wave ends only when the LAST one leaves the queue") {
+    auto done_a = std::make_shared<RenderCompletion>();
+    auto done_b = std::make_shared<RenderCompletion>();
+    record(input_a, done_a);
+    record(input_b, done_b);
+    arbc::record_operator_wait(queue, output, {input_a, input_b});
+    CHECK(arbc::operator_wave_pending(&queue, output));
+
+    // The partial arrival -- the thing that used to re-drive the whole chain. It is
+    // drained (and only then does its key leave the queue), and the wave runs on,
+    // because the other input has not landed.
+    done_a->complete(RenderResult{1.0, true});
+    queue.tiles.erase(queue.tiles.begin());
+    CHECK(arbc::operator_wave_pending(&queue, output));
+    CHECK(arbc::operator_wave_unmet(&queue, output) == std::vector<TileKey>{input_b});
+
+    done_b->complete(RenderResult{1.0, true});
+    queue.tiles.clear();
+    CHECK_FALSE(arbc::operator_wave_pending(&queue, output));
+    CHECK(arbc::operator_wave_unmet(&queue, output).empty());
+  }
+
+  SECTION("a re-render of the same output replaces its predecessor's unmet set") {
+    record(input_a, std::make_shared<RenderCompletion>());
+    record(input_b, std::make_shared<RenderCompletion>());
+    arbc::record_operator_wait(queue, output, {input_a});
+    arbc::record_operator_wait(queue, output, {input_b});
+    REQUIRE(queue.waits.size() == 1);
+    CHECK(arbc::operator_wave_unmet(&queue, output) == std::vector<TileKey>{input_b});
+  }
+}
+
+// Liveness, and the pruning that keeps `waits` bounded. Both routes out of the pending
+// queue -- a settled arrival that inserts and damages, and a `fail`ed one that is
+// dropped with NO insert and NO damage -- must end the wave, or a deferred operator
+// tile keeps its placeholder forever. A gate that can stay shut after its wave is over
+// is a permanent hole, which is strictly worse than the redundant renders it replaces.
+//
+// enforces: 02-architecture#coalescing-never-strands-an-operator-tile
+TEST_CASE("poll_refinements ends and prunes a wave whose inputs have all left the queue") {
+  TileCache cache(64u * 1024 * 1024);
+  RefinementQueue queue;
+  const TileKey output = tile_key(ScaleRung{0}, TileCoord{0, 0});
+  const TileKey input_a = tile_key(ScaleRung{0}, TileCoord{1, 0});
+  const TileKey input_b = tile_key(ScaleRung{0}, TileCoord{2, 0});
+
+  auto record = [&queue](const TileKey& k, const std::shared_ptr<RenderCompletion>& done) {
+    PendingTile pending;
+    pending.key = k;
+    pending.local_rect = arbc::tile_local_rect(k.rung, k.coord);
+    pending.content = k.content;
+    pending.bytes = 1;
+    pending.surface = std::make_unique<StubSurface>();
+    pending.done = done;
+    queue.tiles.push_back(std::move(pending));
+  };
+
+  SECTION("a partial arrival leaves the wave (and its wait) running") {
+    auto done_a = std::make_shared<RenderCompletion>();
+    auto done_b = std::make_shared<RenderCompletion>();
+    record(input_a, done_a);
+    record(input_b, done_b);
+    arbc::record_operator_wait(queue, output, {input_a, input_b});
+
+    done_a->complete(RenderResult{1.0, true});
+    CHECK(arbc::poll_refinements(queue, cache).size() == 1); // one arrival, one damage
+    CHECK(queue.waits.size() == 1);                          // ...but the wave is not over
+    CHECK(arbc::operator_wave_pending(&queue, output));
+
+    done_b->complete(RenderResult{1.0, true});
+    CHECK(arbc::poll_refinements(queue, cache).size() == 1);
+    CHECK(queue.waits.empty()); // the last input landed: pruned
+    CHECK_FALSE(arbc::operator_wave_pending(&queue, output));
+  }
+
+  SECTION("an input that settles via FAIL is dropped with no damage -- and the gate opens") {
+    auto done = std::make_shared<RenderCompletion>();
+    record(input_a, done);
+    arbc::record_operator_wait(queue, output, {input_a});
+    REQUIRE(arbc::operator_wave_pending(&queue, output));
+
+    done->fail(arbc::RenderError::ContentFailed);
+    // No insert, no damage -- so nothing re-plans the operator on this tile's account.
+    // The gate must still be OPEN, so that the next plan driven by anything else renders
+    // the operator rather than deferring on an input that is never coming.
+    CHECK(arbc::poll_refinements(queue, cache).empty());
+    CHECK(queue.tiles.empty());
+    CHECK(queue.waits.empty());
+    CHECK_FALSE(arbc::operator_wave_pending(&queue, output));
+  }
+
+  SECTION("a wait keyed on a superseded revision is unmatchable, and is pruned anyway") {
+    auto done = std::make_shared<RenderCompletion>();
+    record(input_a, done);
+    arbc::record_operator_wait(queue, output, {input_a});
+
+    TileKey next_revision = output;
+    next_revision.revision = k_revision + 1;
+    // The edit re-keys the operator's tile, so the stale wait cannot gate the new one...
+    CHECK_FALSE(arbc::operator_wave_pending(&queue, next_revision));
+    // ...and it leaves with its inputs on the next drain, rather than accumulating.
+    done->complete(RenderResult{1.0, true});
+    arbc::poll_refinements(queue, cache);
+    CHECK(queue.waits.empty());
+  }
+}
+
 // --- Driver seam: record vs. drop -------------------------------------------
 
 TEST_CASE("render_frame_interactive records async misses only when a queue is supplied") {

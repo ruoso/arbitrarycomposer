@@ -167,6 +167,44 @@ private:
   std::vector<arbc::ContentRef> d_inputs;
 };
 
+// An operator over N inputs -- the nested-chain shape, which `PullOperator` (one
+// input) cannot express. It pulls every input over the tile it was asked for and,
+// when any of them answers asynchronously, reports the TRANSIENT, INEXACT placeholder
+// the contract requires (doc 13:117-120). Stacked -- a top operator over two
+// mid operators, each over one async leaf -- this is `nested_deep` in miniature: three
+// operators, two leaves, and the chain that used to re-render once per independently
+// arriving leaf.
+class ChainOperator : public arbc::Content {
+public:
+  arbc::PullServiceImpl* service{nullptr};
+
+  explicit ChainOperator(std::vector<arbc::ContentRef> inputs) : d_inputs(std::move(inputs)) {}
+
+  std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
+  arbc::Stability stability() const override { return arbc::Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
+  std::span<const arbc::ContentRef> inputs() const override { return d_inputs; }
+  std::optional<RenderResult> render(const arbc::RenderRequest& request,
+                                     std::shared_ptr<arbc::RenderCompletion> /*done*/) override {
+    ++d_renders;
+    bool exact = true;
+    for (const arbc::ContentRef input : d_inputs) {
+      auto inner = std::make_shared<arbc::RenderCompletion>();
+      service->pull(input, request, inner);
+      const std::optional<arbc::expected<RenderResult, arbc::RenderError>> settled = inner->take();
+      if (!(settled.has_value() && settled->has_value() && (*settled)->exact)) {
+        exact = false; // this input is still coming: degrade to the placeholder
+      }
+    }
+    return RenderResult{request.scale, exact};
+  }
+  int renders() const { return d_renders; }
+
+private:
+  std::vector<arbc::ContentRef> d_inputs;
+  int d_renders{0};
+};
+
 // A single-layer document over `content_id`; the resolver binds the id to a
 // concrete `Content` the caller owns (the runtime binding, kept out of L4).
 arbc::ObjectId add_single_layer(arbc::Model& model) {
@@ -359,6 +397,10 @@ TEST_CASE("counters: counters_snapshot composes the compositor and cache counts"
   CHECK(stats.cache_misses == cache.misses());
   CHECK(stats.cache_evictions == cache.evictions());
   CHECK(stats.requests_suppressed == counters.requests_suppressed());
+  // Appended last, after the cache block, so every existing positional aggregate init
+  // keeps its meaning -- and asserted, because a mis-ordered positional init is exactly
+  // the kind of mistake that compiles clean and reports the wrong number forever.
+  CHECK(stats.renders_coalesced == counters.renders_coalesced());
 }
 
 // --- In-flight dedup, at the driver seam (compositor.in_flight_tile_dedup) ----
@@ -456,4 +498,134 @@ TEST_CASE("counters: two operator layers sharing an input dispatch its tiles onc
   // (The operators settled inexact transient placeholders inline, so they queue
   // nothing.)
   CHECK(queue.tiles.size() == k_tiles_covered);
+}
+
+// --- The refinement wave, at the driver seam ---------------------------------
+// (compositor.operator_refinement_wave_amplification)
+
+// `nested_deep` in miniature, and the whole of the 2x worker slowdown: a 3-deep operator
+// chain (a top operator over two mids, each over one leaf) whose two leaves are dispatched
+// to workers and arrive in DIFFERENT frames. Without the gate the chain is re-driven once
+// per arrival -- twice here, and N times for N leaves, which is what makes the recursive
+// case cost more than the flat one it is supposed to match (doc 05:151-153).
+//
+// The identity is derived, not copied (Decision 1): the inline oracle is the WRONG
+// right-hand side and no coalescing scheme can reach it, because the operator's first
+// render is HOW its inputs get requested at all -- the driver does not know an operator's
+// input tiles, it discovers them by rendering it and watching it pull. So on a cold cache
+// with a worker pool, every operator renders exactly TWICE (once to request its inputs and
+// paint the placeholder, once to compose when the wave lands) and every leaf exactly once.
+// Two is the floor, not the waste.
+//
+// And it is asserted POSITIVELY: `renders_coalesced() > 0` is the witness that the gate is
+// on the live path at all. Without it every assertion here is "a number did not grow",
+// which is equally what you observe when the gate never fires -- the exact failure mode
+// `compositor.in_flight_tile_dedup` shipped and was bitten by.
+//
+// enforces: 02-architecture#refinement-wave-coalesces-chain-rerender
+// enforces: 16-sdlc-and-quality#compositor-exposes-behavioral-counters
+TEST_CASE("counters: a nested chain over two async leaves re-renders once per wave, not once "
+          "per arrival") {
+  MarkBackend backend;
+
+  AsyncContent leaf_a;
+  AsyncContent leaf_b;
+  ChainOperator mid_a({&leaf_a});
+  ChainOperator mid_b({&leaf_b});
+  ChainOperator top({&mid_a, &mid_b});
+
+  arbc::Model model;
+  const arbc::ObjectId top_id = add_single_layer(model);
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == top_id ? &top : nullptr;
+  };
+
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(512, 512, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+
+  CompositorCounters counters;
+  RefinementQueue queue;
+
+  // `direct_dispatch` reproduces the shipped leaf-only rule exactly for this scene: the
+  // operators render inline on the frame thread (so each pulls its inputs from inside its
+  // own render), while `AsyncContent` -- the leaves -- return nullopt and leave their
+  // completions live, which is precisely the state a worker-dispatched leaf is in.
+  const std::unordered_map<const arbc::Content*, arbc::ObjectId> ids{{&top, top_id},
+                                                                     {&mid_a, arbc::ObjectId{51}},
+                                                                     {&mid_b, arbc::ObjectId{52}},
+                                                                     {&leaf_a, arbc::ObjectId{53}},
+                                                                     {&leaf_b, arbc::ObjectId{54}}};
+  arbc::PullConfig config;
+  config.counters = &counters;
+  config.pending = &queue;
+  config.id_of = [&ids](const arbc::Content* c) {
+    const auto it = ids.find(c);
+    return it != ids.end() ? it->second : arbc::ObjectId{};
+  };
+  config.contribution = [rev = state->revision()](const arbc::Content*) { return rev; };
+  arbc::PullServiceImpl pulls(cache, backend, arbc::direct_dispatch(), config);
+  top.service = &pulls;
+  mid_a.service = &pulls;
+  mid_b.service = &pulls;
+
+  const auto frame = [&] {
+    arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
+                                   arbc::Deadline::none(), std::nullopt, &queue, &counters, nullptr,
+                                   arbc::Time::zero(), nullptr, nullptr, &pulls);
+  };
+  // Settle exactly the pending tiles of one leaf -- the independently-arriving input.
+  const auto settle = [&](const arbc::ObjectId leaf) {
+    for (arbc::PendingTile& pending : queue.tiles) {
+      if (pending.key.content == leaf && !pending.done->settled()) {
+        pending.done->complete(RenderResult{1.0, /*exact=*/true});
+      }
+    }
+  };
+
+  // Frame 1: the whole chain renders once, top-down, and bottoms out on two async leaves.
+  // Three operators over four tiles each, plus one dispatch per leaf tile -- exactly the
+  // five renders per tile the inline oracle needs, and no more.
+  constexpr std::uint64_t k_chain_depth = 3; // top, mid_a, mid_b
+  constexpr std::uint64_t k_oracle_operator_renders = k_chain_depth * k_tiles_covered;
+  constexpr std::uint64_t k_oracle_requests = k_oracle_operator_renders + 2 * k_tiles_covered;
+  frame();
+  REQUIRE(counters.requests_issued() == k_oracle_requests);
+  REQUIRE(counters.operator_renders() == k_oracle_operator_renders);
+  REQUIRE(counters.renders_coalesced() == 0); // nothing has arrived yet -- nothing to coalesce
+  REQUIRE(queue.tiles.size() == 2 * k_tiles_covered); // both leaves, all tiles, in flight
+  REQUIRE(queue.waits.size() == k_chain_depth * k_tiles_covered); // one wave per operator tile
+
+  // The FIRST leaf lands. Its damage would re-drive the chain -- and used to. The top's
+  // recorded wave still names leaf_b's tiles, so the gate holds: the chain is not
+  // re-rendered, and the frame composites the transient placeholder it already has.
+  settle(arbc::ObjectId{53});
+  arbc::poll_refinements(queue, cache, &counters);
+  const std::uint64_t issued_after_first = counters.requests_issued();
+  frame();
+  CHECK(counters.requests_issued() == issued_after_first); // the partial arrival drove NOTHING
+  CHECK(counters.operator_renders() == k_oracle_operator_renders);
+  CHECK(counters.renders_coalesced() == k_tiles_covered); // one per deferred top tile
+  CHECK(top.renders() == static_cast<int>(k_tiles_covered));
+
+  // The LAST leaf lands: the wave is over, and the chain renders exactly once more.
+  settle(arbc::ObjectId{54});
+  arbc::poll_refinements(queue, cache, &counters);
+  frame();
+  CHECK(queue.tiles.empty()); // quiesced: nothing left in flight
+  CHECK(queue.waits.empty()); // ...and every wave pruned
+
+  // The coalescing identity, at quiescence. Every leaf rendered exactly once; every
+  // operator exactly twice -- once to request, once to compose.
+  CHECK(counters.operator_renders() == 2 * k_oracle_operator_renders);
+  CHECK(counters.requests_issued() == k_oracle_requests + k_oracle_operator_renders);
+  CHECK(leaf_a.renders() == static_cast<int>(k_tiles_covered));
+  CHECK(leaf_b.renders() == static_cast<int>(k_tiles_covered));
+  // The gate fired, and it is not the dedup: these operators share no input tile, so
+  // there is nothing in flight for the in-flight guard to suppress.
+  CHECK(counters.renders_coalesced() > 0);
+  CHECK(counters.requests_suppressed() == 0);
 }

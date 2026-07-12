@@ -197,6 +197,46 @@ private:
   int d_renders{0};
 };
 
+// The operator shape doc 13 actually mandates, which `GraphContent` deliberately is
+// not: a pull that answers ASYNCHRONOUSLY does not fail the operator's completion --
+// the operator paints a placeholder and reports it TRANSIENT and INEXACT
+// (`13-effects-as-operators#transient-placeholder-is-never-exact`), because flagging
+// it exact would freeze the empty tile into the cache as a final answer. That is the
+// tile the wave gate defers the re-render of, and it is the tile a deferred pull
+// delivers, so the wave tests need a double that produces one.
+class WaveOperator : public arbc::Content {
+public:
+  PullServiceImpl* service{nullptr};
+
+  explicit WaveOperator(std::vector<ContentRef> inputs) : d_inputs(std::move(inputs)) {}
+
+  std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
+  arbc::Stability stability() const override { return arbc::Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
+  std::span<const ContentRef> inputs() const override { return d_inputs; }
+
+  std::optional<RenderResult> render(const RenderRequest& request,
+                                     std::shared_ptr<RenderCompletion> /*done*/) override {
+    ++d_renders;
+    bool exact = true;
+    for (const ContentRef input : d_inputs) {
+      auto inner = std::make_shared<RenderCompletion>();
+      service->pull(input, request, inner);
+      const std::optional<arbc::expected<RenderResult, arbc::RenderError>> settled = inner->take();
+      if (!(settled.has_value() && settled->has_value() && (*settled)->exact)) {
+        exact = false; // the input is still coming: degrade to the placeholder
+      }
+    }
+    return RenderResult{request.scale, exact};
+  }
+
+  int renders() const { return d_renders; }
+
+private:
+  std::vector<ContentRef> d_inputs;
+  int d_renders{0};
+};
+
 // A recording / deferrable `RenderDispatch`: records the exact request fields of
 // every dispatch (so a test can witness snapshot/deadline carried verbatim), and
 // either runs `content->render` inline (folding a returned result through `done`)
@@ -235,6 +275,27 @@ arbc::RenderDispatch recording_dispatch(const std::shared_ptr<DispatchRecorder>&
   return [rec](Content* content, const RenderRequest& request,
                std::shared_ptr<RenderCompletion> done) {
     rec->run(content, request, std::move(done));
+  };
+}
+
+// The shipped leaf-only dispatch rule (`02-architecture#worker-dispatch-is-leaf-only`,
+// doc 02:220-233) in miniature: an operator (`inputs()` non-empty) renders INLINE on
+// this thread, so it pulls its own inputs from inside its own render; a LEAF is
+// deferred -- its completion is left live, exactly the state a worker-dispatched leaf
+// is in. This is what `DispatchRecorder::defer` cannot express (it defers everything,
+// operators included), and it is the only regime the refinement wave exists in.
+arbc::RenderDispatch leaf_only_dispatch(const std::shared_ptr<DispatchRecorder>& rec) {
+  return [rec](Content* content, const RenderRequest& request,
+               std::shared_ptr<RenderCompletion> done) {
+    ++rec->calls;
+    if (!content->inputs().empty()) {
+      const std::optional<RenderResult> result = content->render(request, done);
+      if (result.has_value()) {
+        done->complete(*result);
+      }
+      return;
+    }
+    // A leaf: dispatched to the "worker" and still rendering. `done` stays live.
   };
 }
 
@@ -872,6 +933,126 @@ TEST_CASE("pull_service: a pull whose covering tile is already in flight joins i
   CHECK(counters.requests_issued() == 1);
   CHECK(counters.requests_suppressed() == 1); // the hit is not a suppression
   CHECK(third->settled());
+}
+
+// --- The refinement wave (compositor.operator_refinement_wave_amplification) ---
+
+// The deferred pull, end to end, on the shape the tree actually produces: an operator
+// whose leaf goes to a worker paints a TRANSIENT placeholder and reports it INEXACT,
+// so its tile is resident under its exact key but is not a hit -- and every later plan
+// re-drives the whole chain, once per independently-arriving input, which is the
+// amplification.
+//
+// The gate sits BETWEEN the miss and the render, not in the hit predicate: the tile
+// stays inexact (`transient-placeholder-is-never-exact` is untouched), and the second
+// pull is still a miss. It simply does not RENDER it while the wave it recorded is
+// still running -- it delivers the resident transient tile into the caller's target
+// instead. That is what makes deferring free: the frame paints exactly what the
+// previous frame painted for this tile.
+//
+// enforces: 13-effects-as-operators#operator-defers-to-its-pending-inputs
+// enforces: 02-architecture#coalescing-never-strands-an-operator-tile
+TEST_CASE("pull_service: an operator tile still waiting on its wave delivers the resident "
+          "transient tile, drives no render, and stays TRANSIENT") {
+  CaptureBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  BufferSurface caller_target(256, 256);
+
+  GraphContent leaf;
+  WaveOperator op({&leaf});
+  const arbc::ObjectId op_id{41};
+  const arbc::ObjectId leaf_id{42};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&op, op_id}, {&leaf, leaf_id}};
+
+  CompositorCounters counters;
+  RefinementQueue queue;
+  PullConfig config;
+  config.counters = &counters;
+  config.pending = &queue;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  auto rec = std::make_shared<DispatchRecorder>();
+  PullServiceImpl service(cache, backend, leaf_only_dispatch(rec), config);
+  op.service = &service;
+
+  // The operator's own tile key: it folds the aggregate revision over its reachable
+  // graph, exactly as `pull` does (`operator_graph.hpp`), so the test can look up the
+  // transient tile the first pass leaves resident.
+  const TileKey op_key =
+      tile_key(op_id, arbc::aggregate_revision(&op, [](const Content*) { return k_rev; }));
+
+  // Pass 1: the operator renders, its leaf is dispatched to a worker and answers
+  // asynchronously, and the operator paints the inexact placeholder.
+  auto first = std::make_shared<RenderCompletion>();
+  service.pull(&op, one_tile_request(caller_target, StateHandle{}, Deadline::none()), first);
+  REQUIRE(op.renders() == 1);
+  REQUIRE(counters.operator_renders() == 1);
+  REQUIRE(queue.tiles.size() == 1); // the leaf, in flight
+  // The operator answered INLINE with an inexact placeholder -- it painted something,
+  // so the region settles, but it settles NOT EXACT and so is not a hit next time.
+  {
+    const std::optional<arbc::expected<RenderResult, arbc::RenderError>> settled = first->take();
+    REQUIRE(settled.has_value());
+    REQUIRE(settled->has_value());
+    CHECK_FALSE((*settled)->exact);
+  }
+
+  // The wave was recorded against the operator's OUTPUT tile, naming the input it is
+  // waiting on -- and the placeholder is resident, inexact, under that exact key.
+  REQUIRE(queue.waits.size() == 1);
+  CHECK(queue.waits.front().output == op_key);
+  CHECK(queue.waits.front().unmet == std::vector<TileKey>{queue.tiles.front().key});
+  CHECK(arbc::operator_wave_pending(&queue, op_key));
+  std::optional<arbc::CacheHold<TileValue>> transient = cache.lookup(op_key);
+  REQUIRE(transient.has_value());
+  CHECK_FALSE(transient->get().meta.exact); // never exact -- doc 13:135-146, untouched
+  const arbc::Surface* const placeholder = transient->get().surface.get();
+  transient.reset();
+
+  // Pass 2 -- the partial arrival that used to re-drive the chain. The leaf is still
+  // pending, so the gate holds: no render, no dispatch, no pull, no new pending tile.
+  const std::uint64_t issued = counters.requests_issued();
+  const int dispatches = rec->calls;
+  backend.composites = 0;
+  backend.all.clear();
+  auto second = std::make_shared<RenderCompletion>();
+  service.pull(&op, one_tile_request(caller_target, StateHandle{}, Deadline::none()), second);
+  CHECK(op.renders() == 1);                    // the chain did NOT re-render
+  CHECK(counters.operator_renders() == 1);     // ...and the counters say so
+  CHECK(counters.requests_issued() == issued); // no pull was issued
+  CHECK(rec->calls == dispatches);             // nothing was dispatched
+  CHECK(counters.renders_coalesced() == 1);    // the gate fired -- a POSITIVE witness
+  CHECK(counters.requests_suppressed() == 0);  // and it is not the dedup
+  CHECK(queue.tiles.size() == 1);              // no second surface, no second record
+  CHECK_FALSE(second->settled());              // still TRANSIENT, not a settled FINAL
+
+  // ...but it DELIVERED, unlike the in-flight join: exactly one composite, of the
+  // resident transient tile, into the caller's target. An undelivered target would be
+  // a transparent hole in the parent's placeholder, which is how coalescing would trade
+  // a performance bug for a visual one (Constraint 2).
+  REQUIRE(backend.composites == 1);
+  CHECK(backend.last.src == placeholder);
+  CHECK(backend.last.dst == &caller_target);
+
+  // The wave lands. The poll inserts the leaf, emits its damage, and prunes the wait it
+  // drained -- so the gate opens on the very next plan of the operator tile.
+  queue.tiles.front().done->complete(RenderResult{1.0, /*exact=*/true});
+  CHECK(arbc::poll_refinements(queue, cache, &counters).size() == 1);
+  CHECK(queue.waits.empty()); // pruned: its unmet set has fully drained
+  CHECK_FALSE(arbc::operator_wave_pending(&queue, op_key));
+
+  // Pass 3: the chain renders ONCE, on the wave, with everything it needs -- and the
+  // operator's tile is finally exact. Two operator renders total, for two passes of a
+  // wave that used to cost one per arrival.
+  auto third = std::make_shared<RenderCompletion>();
+  service.pull(&op, one_tile_request(caller_target, StateHandle{}, Deadline::none()), third);
+  CHECK(op.renders() == 2);
+  CHECK(counters.operator_renders() == 2);
+  CHECK(counters.renders_coalesced() == 1); // it fired once, for the one partial arrival
+  REQUIRE(third->settled());
+  const std::optional<arbc::CacheHold<TileValue>> final_tile = cache.lookup(op_key);
+  REQUIRE(final_tile.has_value());
+  CHECK(final_tile->get().meta.exact);
 }
 
 // The carve-out, and the difference between removing waste and stranding a tile.

@@ -63,8 +63,16 @@
    a deadline, *unless the tile's render is already in flight* (below).
    Layers may answer synchronously, or asynchronously with a placeholder
    policy (see doc 03). When the deadline nears, the frame proceeds with what
-   it has: stale-revision tiles, coarser-scale tiles rescaled, or
-   checkerboard/transparent, in that preference order.
+   it has: a **resident but inexact tile** under the tile's own key,
+   stale-revision tiles, coarser-scale tiles rescaled, or
+   checkerboard/transparent, in that preference order. The first entry is an
+   operator's *transient placeholder* — a tile it painted while its inputs
+   were still in flight, and which is therefore resident under the current
+   revision at the current rung but flagged inexact, so it is not a hit and a
+   render is still owed. It is nonetheless strictly better than everything
+   below it (same content, same revision, same rung, right geometry — simply
+   not final), and it is what a tile whose re-render the refinement wave gate
+   defers composites, which is why deferring changes no pixels.
 5. **Composite.** Draw tiles bottom-to-top onto the target surface with each
    layer's composed transform and opacity. Tiles rendered at a ladder rung
    are resampled by the ≤1-octave remainder during this pass.
@@ -156,6 +164,47 @@ the cache, gone from the pending set, and never damaged, it would show a
 placeholder until some unrelated edit happened to repaint the region. A
 cancelled entry is therefore re-dispatched, and only a live, uncancelled
 in-flight render is joined.
+
+**A refinement wave re-drives an operator chain at most once.** The term is
+used above as a unit of accounting; here is its boundary. When an operator
+renders and one or more of its input tiles answer asynchronously, it paints a
+placeholder and must report it *inexact* (doc 13) — flagging it exact would
+freeze the empty tile into the cache as the final answer. That transient tile
+is resident under its exact key but is not a hit, so the next plan is a miss
+and the whole chain renders again. Once, that is correct and necessary: the
+re-render is how the real pixels finally get composed. The **refinement wave**
+of an operator's transient output tile is the *set of input tiles that render
+left unmet*, and it ends when the last of them leaves the pending set. So a
+miss is checked against a third thing, after the cache and the pending set:
+while its wave is still running, the tile is **not re-rendered**. The frame
+composites the transient tile it already has (step 4's new first fallback), no
+render is driven and no pull is issued, and when the wave ends the chain
+renders exactly once, with everything it needs.
+
+Without this, the chain is re-driven once per *independently arriving input
+tile* rather than once per wave, and a chain is not cheap: it is what made a
+nested composition cost more with a worker pool than without one, and it is
+what made doc 05's "only the spine re-renders" and "the recursive case must
+cost what an equivalent flat scene would" false in the async case. The wave is
+a **set**, never a duration — no timer, no wall clock, no frame counter; its
+only input is which tiles are still pending.
+
+Two asymmetries with the in-flight rule above are deliberate, because the two
+gates answer different questions — *"is someone rendering this?"* versus *"is
+more coming for this?"* An input still in the pending set holds the wave open
+whether or not it has been **cancelled** (cancellation is advisory, and the
+render usually lands anyway; were it otherwise, the deadline sweep — which
+cancels every unsettled tile on expiry — would open every gate at every frame
+boundary and the coalescing would evaporate under exactly the deadline
+pressure it exists for), and whether or not it has **settled** (a settled tile's
+pixels are not in the *cache* until step 6 drains it, so a chain re-rendered
+against it would re-dispatch a render that has already finished). Neither can
+strand a tile, which is the failure the in-flight carve-out guards against: a
+deferred operator tile is *already resident and already composited*, so the
+user sees the placeholder they were going to see anyway, and every route out of
+the pending set — settled and drained, failed and dropped — opens the gate on
+the very next plan. Step 6 runs unconditionally every frame, before any
+re-plan, so no wave is held past the drain it is about to get.
 
 ## The frame, offline
 

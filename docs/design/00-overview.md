@@ -253,6 +253,33 @@ Initially-open questions, now decided in their own docs:
   against one would strand its tile behind a placeholder forever. Decided in
   doc 02 (§ The frame, interactively) and doc 13
   (`compositor.in_flight_tile_dedup`).
+- **An operator chain renders at most twice on a cold cache: once to request
+  its inputs and paint the placeholder, once when the wave lands.** Two is
+  the *floor*, not the waste, and saying so is what finally bounds a cost doc
+  02 had explicitly declined to bound. The driver does not know an operator's
+  input tiles; it discovers them by rendering the operator and watching it
+  pull. So with a worker pool an operator *must* render once to dispatch its
+  inputs — and that render necessarily produces a placeholder, because the
+  inputs it just dispatched have not landed — and must render again, once they
+  have, to compose the real pixels. (At zero workers the floor is one, because
+  `submit` *is* the render and the first render is already exact. An inline
+  oracle is therefore the wrong thing to demand equality against: it measures
+  a regime that structurally cannot have a placeholder pass.) What is *not* on
+  the floor is re-rendering the chain once per **independently arriving input
+  tile**, which is what a nested composition used to do — and it is why the
+  recursive case cost more with workers than without, making doc 05's "only the
+  spine re-renders" and "the recursive case must cost what an equivalent flat
+  scene would" false in the async case. So an operator's transient tile records
+  the inputs its render left unmet, and the chain is not re-driven until the
+  last of them lands. The alternative that would reach the inline oracle's count
+  — enumerate an operator's input tiles *without* rendering it — deadlocks: the
+  input tiles are not knowable without the pull, and the pull does not happen
+  without the render. Making them knowable means a new plugin-ABI entry point
+  imposed on every operator author, to save the placeholder pass that *is* the
+  first paint of the scene — which doc 02 sells as a feature ("progressively
+  sharper content rather than blocking"). Decided in doc 02 (§ The frame,
+  interactively) and doc 13
+  (`compositor.operator_refinement_wave_amplification`).
 - **The interactive driver ships with real threads, and the deadline is
   what buys them.** This is the first shipped configuration with a worker
   pool under the frame loop, and the argument for it is *correctness*, not

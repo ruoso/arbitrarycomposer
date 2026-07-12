@@ -89,13 +89,116 @@ struct PendingTile {
   std::shared_ptr<RenderCompletion> done;
 };
 
+// One operator output tile's REFINEMENT WAVE
+// (`compositor.operator_refinement_wave_amplification`, doc 02 § The frame,
+// interactively). When an operator renders and one or more of its input tiles
+// answer asynchronously it paints a placeholder and reports `exact = false`
+// (doc 13:135-146 -- it MUST, or the empty tile freezes into the cache as a final
+// answer). That transient tile is resident under its exact key but is not a hit,
+// so the next plan is a miss and the whole chain renders again -- once per
+// INDEPENDENTLY ARRIVING input tile, which is the amplification.
+//
+// `output` is that transient tile; `unmet` is the set of input tiles its render
+// left unmet -- its UNMET SET, and the wave's boundary. The wave is a SET, not a
+// duration: it ends when the last of `unmet` leaves `RefinementQueue::tiles`
+// (settled, failed, or dropped), and no timer, wall-clock, or frame counter is
+// consulted anywhere.
+//
+// The set is TRANSITIVE through a nested chain for free, because worker dispatch
+// is leaf-only (doc 02:220-233): an operator renders INLINE on the driver thread,
+// so a nested composition's render pulls its child fades, each of which pulls its
+// own leaf within the same call. The pull service accumulates every unmet input
+// tile as it goes, and each render site takes the tail since its own mark -- so a
+// fade waits on just its leaf, and the nested tile above it waits on the union of
+// the whole subtree.
+struct OperatorWait {
+  TileKey output;             // the transient tile whose render left inputs unmet
+  std::vector<TileKey> unmet; // the input tiles it is waiting on
+};
+
 // The caller-owned pending-completion registry (doc 02:69-71). A plain value the
 // runtime loop holds across frames; not compositor-global state (which would be
 // hidden L4 frame-to-frame state and would make two viewports share a queue --
 // see Decisions).
+//
+// `waits` rides beside `tiles` because a wave spans frames and so is persistent
+// state, which doc 17:118-128 puts in `runtime`, not in the stateless per-frame
+// compositor library -- and `RefinementQueue` is the caller-owned struct runtime
+// already holds and already threads to BOTH gate sites (the driver's tile loop and
+// `PullServiceImpl`). Putting the waits beside the tiles they name costs zero new
+// plumbing and zero new levelization edges. It is bounded by the number of distinct
+// operator output tiles with work in flight -- the same order as `tiles` itself --
+// and `poll_refinements` prunes a wait whose unmet set has fully drained.
 struct RefinementQueue {
   std::vector<PendingTile> tiles;
+  std::vector<OperatorWait> waits;
 };
+
+// Record (or replace) the wave `output` is waiting on. Called by the two RENDER
+// sites -- the driver's tile loop and `PullServiceImpl::pull`'s dispatch -- with
+// the input tiles the pull service left unmet during that render, whenever the
+// render came back INEXACT. An empty `unmet` records nothing (an inexact leaf
+// pulled no inputs and is waiting on nobody, so it has no wave and must keep
+// re-rendering as it does today). A re-render of the same `output` REPLACES its
+// predecessor's wait: the fresh render's unmet set is the current truth.
+void record_operator_wait(RefinementQueue& queue, const TileKey& output,
+                          std::vector<TileKey> unmet);
+
+// Is `output`'s refinement wave still running -- i.e. is any input tile its last
+// render left unmet still pending? (`compositor.operator_refinement_wave_amplification`,
+// doc 02 § The frame, interactively.) The THIRD thing a miss is checked against,
+// after the cache and the pending set, at the same two dispatch sites. A `true`
+// answer means "more is genuinely coming for this tile -- do not re-render the chain
+// yet"; the frame composites the resident transient tile instead (see
+// `TileSource::Transient`), drives no render, and issues no pull.
+//
+// A null `queue` is "no wave" (the offline driver's exact first pass plans with no
+// queue), so the null path stays byte-identical.
+//
+// AN UNMET INPUT IS "STILL PENDING" IFF IT IS STILL IN `queue.tiles` -- presence, and
+// nothing else. NOT `!settled()`, and NOT `!cancelled()`. Both omissions are
+// load-bearing, and both are where this predicate deliberately parts company with
+// `tile_in_flight`:
+//
+//  * `tile_in_flight` excludes CANCELLED entries because suppressing a DISPATCH against
+//    one risks a permanent hole: `cancel` is advisory, a conformant content may honor it
+//    and settle via `fail`, and `poll_refinements` drops a failed arrival with no insert
+//    and no damage -- so the tile would be in neither the cache nor the queue, with
+//    nothing to re-plan it. Deferring a RE-RENDER against one cannot do that: the
+//    operator's tile is already resident and already composited, so the user sees the
+//    placeholder they were going to see anyway, and both futures of a cancelled entry
+//    open the gate (it lands and `poll_refinements` drains it, or it fails and
+//    `poll_refinements` drops it -- either way it leaves `queue.tiles`). If this gate
+//    used `tile_in_flight` instead, the interactive driver's deadline sweep -- which
+//    cancels EVERY unsettled tile on expiry -- would open every gate at every frame
+//    boundary, and the coalescing would evaporate in exactly the regime it exists for.
+//
+//  * A SETTLED-but-not-yet-drained entry likewise keeps the wave open, because its
+//    pixels are not in the CACHE yet: the insert happens in `poll_refinements`, on the
+//    frame thread, not on the worker that settled it. A chain re-rendered against it
+//    right now would miss it in the cache and re-dispatch a render that has already
+//    finished. More IS coming for that tile -- from the next poll, which also emits the
+//    damage that re-drives the chain properly.
+//
+// So the wave ends when its inputs leave the QUEUE, which is the same event
+// `poll_refinements`' prune keys on (Constraint 3: settled, failed, or dropped). That
+// poll runs unconditionally every frame, before any re-plan, so no entry is held past
+// the drain it is about to get and the gate cannot stall.
+//
+// A linear scan, for the same reason `tile_in_flight` is one: `queue.tiles` is bounded
+// by the frame's outstanding misses, and this is paid only on the miss path (a warm
+// frame never calls it), so the seam is here to hide an index behind if it ever
+// profiles hot.
+bool operator_wave_pending(const RefinementQueue* queue, const TileKey& output) noexcept;
+
+// The still-pending members of `output`'s recorded unmet set (empty iff
+// `operator_wave_pending` is false). This is what makes the unmet set transitive
+// through a WAVE-DEFERRED pull: when a parent operator pulls a child operator tile
+// whose wave is still running, the child delivers its transient tile and the parent
+// inherits the child's outstanding inputs as its own unmet keys -- so the parent's
+// wait names leaf tiles that are really in `queue.tiles`, and its gate opens on the
+// same wave the child's does, not one frame later.
+std::vector<TileKey> operator_wave_unmet(const RefinementQueue* queue, const TileKey& output);
 
 // Is `key`'s render already in flight? (`compositor.in_flight_tile_dedup`, doc 02
 // § The frame, interactively.) The pending set is the second suppression key
@@ -193,6 +296,16 @@ std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
 // exactly as the inline consumption sites do; an ordinary arrival that filled
 // its target ignores it, so a null `backend` (the default) is behavior-identical
 // for every arrival that did not provide a surface.
+//
+// It also PRUNES the refinement waves the drain ended: after the retain/insert
+// pass, every `OperatorWait` whose `unmet` set names no tile still pending in
+// `queue.tiles` is erased. One pass, and it handles every expiry route at once --
+// inputs that settled (removed by the retain), inputs that failed and were dropped
+// (likewise), and waits whose output key is superseded by a revision bump (their
+// inputs drain out like any others, and the stale output key is unmatchable
+// anyway). Pruning is what keeps `waits` bounded; it is not what makes the gate
+// open, since `operator_wave_pending` already answers `false` for a fully-drained
+// unmet set (Constraint 3: a wave that ends always releases what it gated).
 std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
                                      CompositorCounters* counters = nullptr,
                                      Backend* backend = nullptr);

@@ -83,6 +83,25 @@ public:
   // from both, and the frame's total ask is `requests_issued + requests_suppressed`
   // against `requests_issued` distinct tile keys.
   std::uint64_t requests_suppressed() const noexcept { return d_requests_suppressed; }
+  // Chain re-renders NOT driven because the operator tile's refinement WAVE is
+  // still running (`compositor.operator_refinement_wave_amplification`, doc 02 §
+  // The frame, interactively): one bump per fresh-key miss on an operator tile
+  // whose recorded unmet inputs are still pending, at either gate site (the
+  // driver's tile loop, `PullService::pull`'s per-covering-tile loop). The frame
+  // composites the resident TRANSIENT tile instead and drives nothing.
+  //
+  // It is DISJOINT from `requests_suppressed`, and the two are not merged even
+  // though both count "a render we declined to drive", because the mechanisms are
+  // different and conflating them destroys the assertion that made the previous
+  // task's failure legible: `requests_suppressed == 0` on the operator benchmark
+  // scenes is what proved the residual waste was the wave and not duplicate
+  // dispatch. A suppressed render is a DUPLICATE of one in flight; a coalesced one
+  // is a SECOND render of a tile whose inputs have not all landed yet. A coalesced
+  // render bumps neither `requests_issued` nor `operator_renders` -- that is the
+  // entire observable point -- so this counter is the POSITIVE witness that the
+  // gate is on the live path. Its absence is not one: "`requests_issued` did not
+  // grow" is equally what you observe when the gate never fires at all.
+  std::uint64_t renders_coalesced() const noexcept { return d_renders_coalesced; }
 
   void note_request_issued() noexcept { ++d_requests_issued; }
   void note_composite() noexcept { ++d_composites; }
@@ -91,6 +110,7 @@ public:
   void note_degraded_composite() noexcept { ++d_degraded_composites; }
   void note_audio_dispatch() noexcept { ++d_audio_dispatches; }
   void note_request_suppressed() noexcept { ++d_requests_suppressed; }
+  void note_render_coalesced() noexcept { ++d_renders_coalesced; }
 
 private:
   std::uint64_t d_requests_issued{0};
@@ -100,6 +120,7 @@ private:
   std::uint64_t d_degraded_composites{0};
   std::uint64_t d_audio_dispatches{0};
   std::uint64_t d_requests_suppressed{0};
+  std::uint64_t d_renders_coalesced{0};
 };
 
 // The composed observability record a host debug panel / downstream
@@ -116,8 +137,10 @@ struct CompositorStats {
   std::uint64_t cache_misses{0};
   std::uint64_t cache_evictions{0};
   // Appended last, after the cache block, so every existing positional aggregate
-  // init of this struct keeps its meaning.
+  // init of this struct keeps its meaning. Same rule for every later addition:
+  // append, never insert.
   std::uint64_t requests_suppressed{0};
+  std::uint64_t renders_coalesced{0};
 };
 
 // Compose `counters`' own counts with `cache`'s published hit/miss/eviction
@@ -131,7 +154,8 @@ inline CompositorStats counters_snapshot(const CompositorCounters& counters,
                          cache.hits(),
                          cache.misses(),
                          cache.evictions(),
-                         counters.requests_suppressed()};
+                         counters.requests_suppressed(),
+                         counters.renders_coalesced()};
 }
 
 } // namespace arbc

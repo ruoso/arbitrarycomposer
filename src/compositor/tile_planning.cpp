@@ -225,10 +225,11 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 
     // Fresh probe (doc 02:63): a hit qualifies only if exact at this rung (the
     // consumer's read of the value metadata, keyed_store contract).
-    if (std::optional<CacheHold<TileValue>> hit = cache.lookup(tile.key);
-        hit.has_value() && hit->get().meta.exact && hit->get().meta.achieved_scale == rung_px) {
+    std::optional<CacheHold<TileValue>> resident = cache.lookup(tile.key);
+    if (resident.has_value() && resident->get().meta.exact &&
+        resident->get().meta.achieved_scale == rung_px) {
       tile.display_source = TileSource::Fresh;
-      tile.hold = std::move(*hit);
+      tile.hold = std::move(*resident);
       tile.is_miss = false;
       plan.tiles.push_back(std::move(tile));
       continue;
@@ -236,6 +237,22 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 
     // Fresh exact absent -> a render is owed regardless of the fallback shown.
     tile.is_miss = true;
+
+    // Transient probe (doc 02:62-67's new first degraded entry,
+    // `compositor.operator_refinement_wave_amplification` Decision 3): the SAME probe
+    // already done above may have found the tile resident and merely INEXACT -- an
+    // operator's transient placeholder, painted while its inputs are still in flight.
+    // Same content, same revision, same rung, same coord: strictly better than a
+    // stale-revision tile and better still than transparent, and it is what a tile
+    // whose re-render the wave gate defers must composite so the layer does not blink.
+    // No second lookup: `resident` is the fresh probe's own hold, re-read for its
+    // value metadata rather than discarded.
+    if (resident.has_value() && resident->get().meta.achieved_scale == rung_px) {
+      tile.display_source = TileSource::Transient;
+      tile.hold = std::move(*resident);
+      plan.tiles.push_back(std::move(tile));
+      continue;
+    }
 
     // Stale probe: a deliberate prior-revision lookup (doc 02:64,:94). Once
     // cache.invalidation drops the prior tile this simply misses and falls
@@ -502,13 +519,35 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       if (in_flight && counters != nullptr) {
         counters->note_request_suppressed();
       }
+      // Doc 02 step 3/4, the THIRD thing a miss is checked against: the refinement
+      // WAVE (`compositor.operator_refinement_wave_amplification`,
+      // `02-architecture#refinement-wave-coalesces-chain-rerender`). An operator tile
+      // whose last render came back inexact recorded the input tiles it was waiting
+      // on; while ANY of them is still pending, a partial arrival does not re-drive
+      // the chain. The tile keeps its `Transient` display source -- the placeholder
+      // it already painted, resident under this very key -- so the frame composites
+      // exactly what the previous frame composited for it and no pixels move; and no
+      // `content->render`, no pull, and no surface allocation happen. When the LAST
+      // unmet input leaves the queue (settled, failed, or dropped) the gate opens on
+      // the very next plan and the chain renders once, with everything it needs.
+      //
+      // This is not the dedup one line up, and the counters are disjoint so the two
+      // stay distinguishable: `in_flight` is a DUPLICATE of a render someone else is
+      // already driving, while this is a SECOND render of a tile whose inputs have not
+      // all landed. A leaf never enters it -- a leaf's render pulls nothing, leaves
+      // nothing unmet, and so records no wait.
+      const bool wave_pending =
+          tile.is_miss && !in_flight && operator_wave_pending(pending, tile.key);
+      if (wave_pending && counters != nullptr) {
+        counters->note_render_coalesced();
+      }
       // Doc 02 step 4: a miss becomes a BestEffort deadline-carrying request
       // targeting exactly the tile footprint, driven inline this pass. The
       // rendered pixels are owned by the cache (TileValue owns its Surface), so
       // the tile target is a cache-owned surface (not a transient pool temp);
       // the pool serves the coarser-fallback upscale. On success the tile
       // becomes its own fresh display source.
-      if (tile.is_miss && !in_flight) {
+      if (tile.is_miss && !in_flight && !wave_pending) {
         expected<std::unique_ptr<Surface>, SurfaceError> owned =
             backend.make_surface(k_tile_size, k_tile_size, target.format());
         if (owned.has_value()) {
@@ -575,8 +614,19 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
             // `done->settled()` -- a worker leaves the completion live to settle
             // off-thread. Only the render call differs; the insert and async
             // recording below are shared.
+            //
+            // The render is bracketed by the pull service's unmet MARK
+            // (`compositor.operator_refinement_wave_amplification` Decision 2): an
+            // operator renders INLINE on this thread (worker dispatch is leaf-only,
+            // doc 02:220-233), so whatever its own -- possibly deeply recursive --
+            // pulls leave unmet accumulates past this mark, and the tail is exactly
+            // the wave this output tile is waiting on. The accumulator is cleared per
+            // driven output tile so it never grows across the frame.
             bool inline_settled = false;
+            std::size_t unmet_mark = 0;
             if (pulls != nullptr) {
+              pulls->unmet_clear();
+              unmet_mark = pulls->unmet_mark();
               pulls->dispatch(content, request, done);
               inline_settled = done->settled();
             } else {
@@ -614,6 +664,15 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                     bytes, PriorityClass::Visible);
                 tile.display_source = TileSource::Fresh;
                 tile.source_rung = selection.rung;
+                // Record the wave this render opened (Decision 2). An INEXACT operator
+                // render is a transient placeholder painted while its inputs are still
+                // in flight -- the tile just inserted above. Naming the inputs it is
+                // waiting on is what lets the next plan DEFER its re-render rather than
+                // re-drive the whole chain per arrival. An inexact leaf pulled nothing,
+                // so its tail is empty and `record_operator_wait` records nothing.
+                if (!result.exact && pending != nullptr && pulls != nullptr) {
+                  record_operator_wait(*pending, tile.key, pulls->unmet_since(unmet_mark));
+                }
               }
             } else if (pending != nullptr) {
               // Doc 02:69-71 step 6: the content answered asynchronously (the
@@ -682,6 +741,27 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
                                 layer.opacity, clips, counters);
+        }
+        break;
+      case TileSource::Transient:
+        // A degraded display: the tile's OWN resident-but-inexact entry -- an
+        // operator's transient placeholder -- shown while the final render is still
+        // owed (doc 02:62-67's first degraded entry,
+        // `compositor.operator_refinement_wave_amplification` Decision 3). Shown
+        // instead of a stale/coarser/transparent fallback because it is strictly
+        // better: same content, same revision, same rung, right geometry, merely not
+        // final. It is what a tile whose re-render the wave gate deferred composites,
+        // which is why deferring changes no pixels. Still NOT final, so it is counted
+        // degraded, exactly as `Stale` and `Coarser` are -- an offline frame that
+        // composited one left the final render undone, which the no-degrade guarantee
+        // forbids.
+        if (tile.hold.valid()) {
+          composite_onto_target(backend, target, *tile.hold->surface,
+                                surface_to_device(composed, tile.local_rect, rung_px),
+                                layer.opacity, clips, counters);
+          if (counters != nullptr) {
+            counters->note_degraded_composite();
+          }
         }
         break;
       case TileSource::Stale:

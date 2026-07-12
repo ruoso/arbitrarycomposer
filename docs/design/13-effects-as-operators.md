@@ -117,7 +117,19 @@ covering tile is exact at the selected rung. The operator then composites a
 `target` that actually holds its input's pixels. A pull whose input answers
 *asynchronously* — any covering tile — delivers nothing usable this pass:
 the completion is left unsettled, the operator degrades for this frame, and
-each async tile's arrival re-drives it (below).
+the arrival of the **last** input tile it is waiting on re-drives it (below).
+The operator's transient output tile records the set of input tiles that render
+left unmet — its *refinement wave* (doc 02 § The frame, interactively) — and a
+**partial** arrival does not re-drive it: while any of them is still pending
+the tile is not re-rendered at all. A pull for an operator tile still waiting
+on its wave delivers the **resident transient tile** into the caller's target,
+dispatches nothing, and stays TRANSIENT (unsettled, inexact), so the parent
+degrades this pass exactly as it did before. It must deliver, unlike the
+in-flight join below: the caller is about to composite this tile *now*, and an
+undelivered target is a transparent hole in its placeholder. This narrows the
+re-drive promise; it does not touch cache-first below, the TRANSIENT/FINAL
+split, or the rule that the placeholder is never exact — the gate sits between
+the miss and the render, never in the hit predicate.
 
 Cache-first has a second suppression key behind it: a covering tile whose
 render is **already in flight** (doc 02 § The frame, interactively) is not

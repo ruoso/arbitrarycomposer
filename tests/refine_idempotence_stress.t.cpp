@@ -485,6 +485,27 @@ TEST_CASE("a quiesced refine loop composites each tile once per frame, never twi
   const std::vector<float> worker_pixels = quiesced_pixels(backend, 2, nullptr, &worker_counters);
   CHECK(byte_identical(worker_pixels, inline_pixels));
   CHECK(worker_counters.composites() > 0);
+
+  // The coalescing identity, under a LIVE worker pool and real arrival races
+  // (`compositor.operator_refinement_wave_amplification`). This scene is a nested chain,
+  // so its operators pull each other's tiles: on a cold cache with workers, each operator
+  // renders exactly TWICE -- once to request its inputs and paint the transient
+  // placeholder (which is how the driver discovers the input tiles at all), once when the
+  // wave lands and it can compose the real pixels. The inline oracle renders each exactly
+  // once, because `submit` IS the render there and every leaf settles into the cache
+  // before the pull returns, so its first render is already exact.
+  //
+  // This is a COUNTER identity and not a race, at any worker count, because the gate's
+  // only input is which `TileKey`s are still IN the refinement queue -- a frame-thread
+  // fact. A leaf enters the queue when its render is dispatched and leaves it only in
+  // `poll_refinements`, at the end of the frame, so whether the worker has finished it in
+  // the meantime cannot move any number here. That is the whole reason the gate reads
+  // presence rather than `settled()`.
+  REQUIRE(inline_counters.operator_renders() > 0);
+  CHECK(worker_counters.operator_renders() == 2 * inline_counters.operator_renders());
+  // ...and it is the gate that put it there, not an accident: the positive witness.
+  CHECK(worker_counters.renders_coalesced() > 0);
+  CHECK(inline_counters.renders_coalesced() == 0);
 }
 
 // enforces: 02-architecture#gated-frame-equals-single-pass

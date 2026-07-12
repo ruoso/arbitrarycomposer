@@ -7,6 +7,7 @@
 #include <cassert>
 #include <span>
 #include <utility>
+#include <vector>
 
 namespace arbc {
 
@@ -86,6 +87,89 @@ bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept {
   return false;
 }
 
+namespace {
+
+// Is `key` an input tile the queue still owes? PRESENCE in `queue.tiles`, and nothing
+// else -- not `settled()`, not `cancelled()`. The question the wave gate asks is "is
+// more coming for this tile?", and everything still in this queue answers yes:
+//
+//  * UNSETTLED -- a worker is rendering it. Obviously more is coming.
+//  * CANCELLED but unsettled -- `cancel` is advisory (`content.hpp:161-163`) and the
+//    render usually lands anyway. Nobody is GUARANTEED to be rendering it, which is
+//    why `tile_in_flight` (the DISPATCH gate) excludes it, but something is still
+//    coming for it, which is what this gate asks.
+//  * SETTLED but not yet drained -- its pixels exist, but they are not in the CACHE:
+//    the insert happens in `poll_refinements`, not on the worker. So a chain
+//    re-rendered against it right now would miss it in the cache, re-dispatch a render
+//    that has already completed, and throw the result away. More is genuinely coming
+//    for this tile -- from the very next poll -- and that poll also emits the damage
+//    that re-drives the chain properly.
+//
+// So a tile leaves the wave exactly when it leaves the QUEUE, which is what Constraint
+// 3 says and what `poll_refinements`' prune already keys on: settled-and-inserted,
+// failed-and-dropped, or already-taken. `poll_refinements` runs unconditionally every
+// frame, before any re-plan, so a settled entry is never held for more than the poll
+// it is about to be drained by -- the gate cannot stall on one.
+bool input_pending(const RefinementQueue& queue, const TileKey& key) noexcept {
+  for (const PendingTile& pending : queue.tiles) {
+    if (pending.key == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+void record_operator_wait(RefinementQueue& queue, const TileKey& output,
+                          std::vector<TileKey> unmet) {
+  if (unmet.empty()) {
+    return; // nothing was left unmet -> no wave, and nothing to gate on
+  }
+  for (OperatorWait& wait : queue.waits) {
+    if (wait.output == output) {
+      wait.unmet = std::move(unmet); // the fresh render's unmet set supersedes
+      return;
+    }
+  }
+  queue.waits.push_back(OperatorWait{output, std::move(unmet)});
+}
+
+bool operator_wave_pending(const RefinementQueue* queue, const TileKey& output) noexcept {
+  if (queue == nullptr) {
+    return false;
+  }
+  for (const OperatorWait& wait : queue->waits) {
+    if (!(wait.output == output)) {
+      continue;
+    }
+    for (const TileKey& key : wait.unmet) {
+      if (input_pending(*queue, key)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+std::vector<TileKey> operator_wave_unmet(const RefinementQueue* queue, const TileKey& output) {
+  std::vector<TileKey> still;
+  if (queue == nullptr) {
+    return still;
+  }
+  for (const OperatorWait& wait : queue->waits) {
+    if (!(wait.output == output)) {
+      continue;
+    }
+    for (const TileKey& key : wait.unmet) {
+      if (input_pending(*queue, key)) {
+        still.push_back(key);
+      }
+    }
+  }
+  return still;
+}
+
 std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
                                      CompositorCounters* counters, Backend* backend) {
   std::vector<Damage> damage;
@@ -142,6 +226,23 @@ std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
   }
 
   queue.tiles = std::move(retained);
+
+  // Prune the waves this drain ended. A wait whose unmet set names no tile still
+  // pending in the (just-rebuilt) queue is over: its inputs settled and landed in
+  // the cache, or failed and were dropped, or its output key was superseded by a
+  // revision bump and its inputs drained out like any others. Erasing it is
+  // bookkeeping, not liveness -- `operator_wave_pending` already answers `false`
+  // for a drained set, so the gate is open either way; this is what keeps `waits`
+  // bounded by the operator tiles with work genuinely outstanding.
+  std::erase_if(queue.waits, [&queue](const OperatorWait& wait) {
+    for (const TileKey& key : wait.unmet) {
+      if (input_pending(queue, key)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
   return damage;
 }
 

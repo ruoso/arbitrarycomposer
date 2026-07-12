@@ -200,11 +200,42 @@ public:
   void dispatch(Content* content, const RenderRequest& request,
                 std::shared_ptr<RenderCompletion> done);
 
+  // The UNMET-INPUT accumulator (`compositor.operator_refinement_wave_amplification`,
+  // Decision 2). Only the pull service knows which input tiles an operator's render
+  // is waiting on: they are exactly the tiles the pull left unmet. Each `pull`
+  // appends to `d_unmet` at the three places it fails to deliver a covering tile --
+  // the async dispatch record, the in-flight join, and the wave-deferral arm -- and
+  // a RENDER site brackets its `render` call with these:
+  //
+  //     const std::size_t mark = pulls->unmet_mark();
+  //     ... drive content->render ...
+  //     if (!result.exact) record_operator_wait(*pending, key, pulls->unmet_since(mark));
+  //
+  // `unmet_since` COPIES without erasing, and that is what makes the set transitive
+  // through a nested chain with no graph walk and no `inputs()` traversal. Because
+  // worker dispatch is leaf-only (doc 02:220-233) an operator renders inline on this
+  // thread, so a nested composition's render pulls its child fades, each of which
+  // renders inline and pulls its own leaf: the fade's own wait -- recorded by the
+  // pull's render site -- gets the tail since ITS mark (just its leaf), while the
+  // nested tile's wait -- recorded by the driver -- gets the tail since ITS mark (the
+  // union of the whole subtree). Each level waits on exactly the leaves beneath it.
+  //
+  // Frame-thread-confined by that same leaf-only rule (Constraint 5): a worker only
+  // ever runs a leaf `render` into a thread-confined target and never re-enters
+  // `pull`, so this needs no lock, no atomic, and no new shared state.
+  std::size_t unmet_mark() const noexcept;
+  std::vector<TileKey> unmet_since(std::size_t mark) const;
+  // Drop the accumulated tail. The driver calls this at the top of each output tile
+  // it drives, so the accumulator never grows across the frame's tiles.
+  void unmet_clear() noexcept;
+
 private:
   TileCache& d_cache;
   Backend& d_backend;
   RenderDispatch d_dispatch;
   PullConfig d_config;
+  // The frame-scoped unmet-input tail (see `unmet_mark`). Frame-thread-only.
+  std::vector<TileKey> d_unmet;
   // The synchronous operator-descent depth (Decision 4/5): operator recursion is
   // evaluated on the frame/calling thread within `budget`, so this is frame-
   // thread-confined (never touched by a worker -- workers only run a leaf

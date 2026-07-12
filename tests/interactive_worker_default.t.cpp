@@ -41,6 +41,7 @@
 #include <arbc/base/transform.hpp>
 #include <arbc/cache/keyed_store.hpp>
 #include <arbc/compositor/compositor.hpp>
+#include <arbc/compositor/counters.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/kind_crossfade/crossfade_content.hpp>
 #include <arbc/kind_fade/fade_content.hpp>
@@ -637,45 +638,55 @@ WorkerPoolConfig pool_of(std::size_t workers) {
 //     `02-architecture#worker-dispatch-is-leaf-only`'s byte-identity clause, and what
 //     makes the shipped default safe for every golden in the tree.
 //
-// What is deliberately NOT asserted, for the operator scenes, is that the RENDER COUNT is
-// invariant across worker counts -- because on the shipped compositor it is not, and this
-// file is not the place to pretend otherwise.
+// And, for the operator scenes, the render count IS now pinned -- but not against the
+// inline oracle, which is the wrong right-hand side and always was.
 //
-// `compositor.in_flight_tile_dedup` landed the check this comment used to name as the fix:
-// both dispatch sites now consult the refinement queue as well as the cache, so a tile
-// whose render is IN FLIGHT is no longer re-dispatched. It did not move these numbers, and
-// the reason is worth recording, because the intuition that it should is very strong.
+// The WBS chartered two prior tasks against `requests_issued() == oracle_requests`, and it
+// is unachievable: no coalescing scheme can reach it, because the operator's FIRST render
+// is how its inputs get requested at all. The driver does not know an operator's input
+// tiles; it discovers them by rendering the operator and watching it pull (doc 13:69-83).
+// So on a cold cache with a worker pool an operator MUST render once to dispatch its
+// inputs, and that render necessarily produces a placeholder -- the inputs it just
+// dispatched have not landed -- and MUST then render a second time, once they have, to
+// compose the real pixels. Two renders per operator is the FLOOR, not the waste. At
+// `worker_count == 0` the floor is one, because `submit` IS the render: the dispatched leaf
+// settles inline into the cache before the pull returns, so the operator's first and only
+// render is already exact. The inline oracle measures a regime that structurally cannot
+// have a placeholder pass, and demanding equality against it is asking the threaded run to
+// be synchronous.
 //
-// Duplicate dispatch needs a tile that TWO askers want while it is in flight. These two
+// So the honest identity, derived from the mechanism: every LEAF renders exactly once (the
+// cache and the in-flight guard between them ensure that), and every OPERATOR renders
+// exactly twice. It is falsifiable, and it was already confirmed before this task landed:
+// `operator_heavy` has 2 operators and 3 leaves, so it predicts 5 + 2 = 7 -- which is what
+// the threaded run measured. `nested_deep` has 3 operators and 2 leaves, so it predicts
+// 5 + 3 = 8 against 12 measured, and 12 -> 8 is what
+// `compositor.operator_refinement_wave_amplification` delivers.
+//
+// The excess it removed was the refinement WAVE, not duplicate dispatch. An operator whose
+// input answers asynchronously must still paint something this frame, so it composites a
+// placeholder and reports it INEXACT (doc 13:117-120 -- flagging it exact would freeze the
+// empty tile into the cache as a fresh hit). An inexact tile is not a hit, so the arrival
+// re-drives the operator and it re-renders -- correctly, once: that re-render is how the
+// real pixels finally get composed. The bug was that it happened once per INDEPENDENTLY
+// ARRIVING input tile rather than once per wave, and a 3-deep chain is not cheap. The gate
+// now defers the re-render while any input the operator's last render left unmet is still
+// pending, and `renders_coalesced() > 0` is the POSITIVE witness that it is on the live
+// path -- because "a number did not grow" is equally what you observe when a guard never
+// fires at all, which is exactly how `in_flight_tile_dedup` shipped a guard that provably
+// never fired on either of these scenes (`requests_suppressed() == 0`, below, still).
+//
+// Duplicate dispatch needs a tile that TWO askers want while it is in flight, and these two
 // scenes have none: every layer is full-canvas at a 256px viewport, so each covers exactly
 // one tile, and no leaf is shared -- the fade owns `under`, the crossfade owns `from`/`to`,
-// and the nested chain's two fades own a leaf each. Nothing overlaps, so nothing is
-// suppressed, and the `requests_suppressed() == 0` assertion below states exactly that.
+// and the nested chain's two fades own a leaf each.
 //
-// The excess is a different mechanism: the refinement WAVE. An operator whose input answers
-// asynchronously must still paint something this frame, so it composites a placeholder and
-// reports it INEXACT (doc 13:117-120 -- flagging it exact would freeze the empty tile into
-// the cache as a fresh hit). An inexact tile is not a hit (`tile_planning.cpp:192-204`), so
-// when the input's arrival re-drives the layer, the operator re-renders -- correctly: that
-// re-render is how the real pixels finally get composed. It is not a duplicate of a render
-// in flight; it is a second render, after the first one settled, of a tile whose input has
-// changed underneath it. Measured: `operator_heavy` issues 5 renders inline and 7 threaded,
-// `nested_deep` 5 and 12 -- one chain re-render per independently-arriving input tile,
-// which is what makes `nested_deep` slower with workers than without.
-//
-// Collapsing that is `compositor.operator_refinement_wave_amplification`, and it is a
-// coalescing problem (one wave should re-render a chain once, not once per arrival), not a
-// dedup problem. Until it lands, `>=` is the honest bound here.
-//
-// It costs redundant work on a cold cache; it does not cost correctness -- every render is
-// deterministic and targets its own surface, which is why the byte-identity assertion
-// below passes at every worker count.
-//
-// The flat scene's leaves are DISJOINT (see `build_leaf_heavy`), so its render count IS
-// invariant -- asserted below, where it is true and where it is a real guard.
+// The flat scene has no operator layer at all, so it has no placeholder pass and no wave:
+// its count is invariant against the oracle outright, and nothing is ever coalesced.
 //
 // enforces: 02-architecture#worker-dispatch-is-leaf-only
 // enforces: 02-architecture#worker-pool-degenerates-to-inline
+// enforces: 02-architecture#refinement-wave-coalesces-chain-rerender
 TEST_CASE("the interactive frame loop is byte-identical and duplicate-free at every "
           "worker count") {
   CpuBackend backend;
@@ -693,6 +704,12 @@ TEST_CASE("the interactive frame loop is byte-identical and duplicate-free at ev
   REQUIRE_FALSE(all_transparent(pixels));
   const std::uint64_t oracle_requests = oracle.renderer().counters().requests_issued();
   REQUIRE(oracle_requests >= 1);
+  // The chain's operator count -- the whole right-hand side of the coalescing identity.
+  const std::uint64_t oracle_operator_renders = oracle.renderer().counters().operator_renders();
+  REQUIRE((flat ? oracle_operator_renders == 0 : oracle_operator_renders >= 1));
+  // The inline oracle never coalesces: nothing is ever in flight when `submit` IS the
+  // render, so the gate has nothing to hold and provably does not fire.
+  REQUIRE(oracle.renderer().counters().renders_coalesced() == 0);
 
   for (const std::size_t workers : swept_worker_counts()) {
     INFO("worker_count = " << workers);
@@ -704,21 +721,55 @@ TEST_CASE("the interactive frame loop is byte-identical and duplicate-free at ev
     CHECK(byte_identical(view.pixels(), pixels));
     CHECK(view.renderer().worker_pool().max_in_flight_per_content() <= 1);
     CHECK(view.renderer().frames_rendered() >= 1);
+    const arbc::CompositorCounters& counters = view.renderer().counters();
     if (flat) {
-      // No operator layer => no degrade-and-re-drive path => exactly the inline renders.
-      CHECK(view.renderer().counters().requests_issued() == oracle_requests);
-      CHECK(view.renderer().counters().operator_renders() == 0);
+      // No operator layer => no placeholder pass, no wave => exactly the inline renders.
+      CHECK(counters.requests_issued() == oracle_requests);
+      CHECK(counters.operator_renders() == 0);
+      CHECK(counters.renders_coalesced() == 0);
+    } else if (workers == 0) {
+      // `submit` IS the render: every dispatched leaf settles inline into the cache
+      // before the pull returns, so the operator's first and only render is already
+      // exact. Nothing is ever in flight, so nothing is ever coalesced -- the positive
+      // witness that the gate does not fire where it has no business firing.
+      CHECK(counters.requests_issued() == oracle_requests);
+      CHECK(counters.operator_renders() == oracle_operator_renders);
+      CHECK(counters.renders_coalesced() == 0);
     } else {
-      // The operator re-drive, pinned rather than hidden (see the note above): never
-      // FEWER renders than inline -- a run issuing fewer would be dropping work.
-      CHECK(view.renderer().counters().requests_issued() >= oracle_requests);
-      // And the excess is NOT duplicate dispatch. These two scenes share no tile
-      // between their operators, so there is nothing for the in-flight guard to
-      // suppress and it provably never fires here -- which is what identifies the
-      // residual gap above as the placeholder re-render wave and not this task's
-      // duplicate. A future scene that DOES share a tile will trip this line, and
-      // should: it is the signal to assert the identity, not to relax the bound.
-      CHECK(view.renderer().counters().requests_suppressed() == 0);
+      // THE COALESCING IDENTITY. Every leaf renders exactly once; every operator
+      // exactly twice -- once to request its inputs and paint the placeholder, once
+      // when the wave lands. That is what "at most one chain re-render per wave" means
+      // when the wave is singular, which on a cold-cache scene it is.
+      CHECK(counters.requests_issued() == oracle_requests + oracle_operator_renders);
+      CHECK(counters.operator_renders() == 2 * oracle_operator_renders);
+      // And it is still NOT duplicate dispatch. These two scenes share no tile between
+      // their operators, so there is nothing for the in-flight guard to suppress and it
+      // provably never fires here -- which is what identified the residual gap as the
+      // wave in the first place, and what keeps the two mechanisms distinguishable.
+      CHECK(counters.requests_suppressed() == 0);
+
+      // The gate fires exactly where there is a CHAIN to coalesce, and nowhere else --
+      // asserted in both directions, because a gate provable only by a number that
+      // failed to grow is indistinguishable from a gate that never fires (which is how
+      // `in_flight_tile_dedup` shipped).
+      //
+      // `nested_deep` is a chain: `nested` consumes the two fades, so it pulls their
+      // tiles while the leaves beneath them are still in flight, finds them resident but
+      // TRANSIENT, and used to re-drive each fade -- which in turn re-dispatched a leaf
+      // whose render had already completed but had not yet been drained into the cache.
+      // The gate holds those pulls, and `renders_coalesced() > 0` is the positive
+      // witness that it is on the live path.
+      //
+      // `operator_heavy`'s two operators are SIBLINGS -- a fade and a crossfade, neither
+      // an input to the other -- so no operator ever pulls another's transient tile and
+      // there is no chain to re-drive. It was already at the coalesced floor before this
+      // task, and its `== 0` is the guard that the gate does not start firing somewhere
+      // it has no business firing.
+      if (kind == SceneKind::NestedDeep) {
+        CHECK(counters.renders_coalesced() > 0);
+      } else {
+        CHECK(counters.renders_coalesced() == 0);
+      }
     }
   }
 }

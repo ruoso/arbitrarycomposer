@@ -284,12 +284,22 @@ TEST_CASE("plan_layer: a best-effort or wrong-scale hit at the fresh key is not 
   const TileCoord coord{0, 0};
   const TileKey fresh_key{k_content, k_revision, sel.rung, coord, std::nullopt};
 
-  SECTION("exact == false falls through to placeholder") {
+  SECTION("exact == false is not a hit -- it is the TRANSIENT fallback, and a render is owed") {
     TileCache cache(64u * 1024 * 1024);
     put_tile(cache, fresh_key, arbc::rung_scale(sel.rung), /*exact=*/false);
     const LayerTilePlan plan = plan_static(cache, sel, region);
     REQUIRE(plan.tiles.size() == 1);
-    CHECK(plan.tiles[0].display_source == TileSource::Placeholder);
+    // The load-bearing half is unchanged and is what the hit gate is for: an inexact
+    // entry is NOT a hit, so the render is still owed
+    // (`13-effects-as-operators#transient-placeholder-is-never-exact`). What
+    // `compositor.operator_refinement_wave_amplification` (Decision 3) changed is only
+    // what gets SHOWN meanwhile: doc 02:62-67's degraded-fallback order gained a new
+    // first entry, and a resident, current-revision, current-rung, merely-inexact tile
+    // -- an operator's transient placeholder -- is strictly better than the transparent
+    // one this used to fall through to. It is the same content at the same revision and
+    // the same rung, simply not final; painting transparent over it would blink the
+    // layer for every frame of the refinement wave and then pop in.
+    CHECK(plan.tiles[0].display_source == TileSource::Transient);
     CHECK(plan.tiles[0].is_miss);
   }
 
