@@ -91,6 +91,46 @@ InteractiveRenderer::route_arrival_damage(std::span<const Damage> arrival) const
   return routed;
 }
 
+std::vector<Damage> InteractiveRenderer::route_model_damage(std::span<const Damage> model_damage,
+                                                            const ContentResolver& resolve) const {
+  std::vector<Damage> routed(model_damage.begin(), model_damage.end());
+  for (const Damage& d : model_damage) {
+    // Model damage names the EDITED OBJECT'S OWN model id (`model.cpp:1567-1579`), so
+    // the id space here is the MODEL'S, not the pull identities' -- resolve it through
+    // the document's own inverse (Decision 2). `d_content_by_id` would be at best a miss
+    // and at worst an ALIAS: a non-layer input carries a synthesized id whose range is
+    // guaranteed disjoint only from the LAYER-ROOT ids (`pull_identity.cpp:45`), so a
+    // `contents`-table content's model id can collide with an unrelated content's
+    // synthesized one (`runtime.pull_identity_disjoint_ids`).
+    const Content* const content = resolve(d.object);
+    if (content == nullptr) {
+      continue;
+    }
+    // The damaged content's own tiles cache under its PULL identity (doc 13:145-149),
+    // which for an operator's `$ref`'d input is NOT its model id -- so the model-id
+    // record alone drops nothing. Emit the pull-identity twin into the SAME set
+    // (Decision 3): a synthesized id matches no layer root, so it contributes zero
+    // device rects and one routed set serves both `map_damage_to_device` and
+    // `invalidate_damage`. For a content that is also a layer root the two ids
+    // coincide and `damage_add` folds them into one record.
+    if (d_identity_map != nullptr) {
+      if (const auto it = d_identity_map->find(content); it != d_identity_map->end()) {
+        damage_add(routed, Damage{it->second, d.rect, d.range});
+      }
+    }
+    // Fold the input damage up to every operator layer that reaches it. Unrouted, an
+    // edit to a content that is only an operator's input matches no layer root
+    // (`damage_planning.cpp:39`), maps to zero device rects, and the frame that should
+    // have repainted the operator never happens -- the under-approximation doc
+    // 13:124-128 calls a correctness bug. An operator that does not reach the damaged
+    // content emits nothing.
+    for (const Damage& up : route_operator_damage(d_operator_layers, content, d.rect, d.range)) {
+      damage_add(routed, up);
+    }
+  }
+  return routed;
+}
+
 InteractiveRenderer::FrameOutcome
 InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& resolve,
                                   const Viewport& viewport, TileCache& cache, Backend& backend,
@@ -109,22 +149,41 @@ InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& r
   // CONTENT-changing damage: what actually invalidates cached tiles.
   const TimeRange advanced{d_prev_time.value_or(composition_time), composition_time};
   const std::vector<Damage> clock_damage = clock_advance_damage(state, resolve, viewport, advanced);
-  std::vector<Damage> content_damage(model_damage.begin(), model_damage.end());
+  // Route the model damage up the operator graph BEFORE either consumer sees it
+  // (`runtime.operator_model_damage_routing`): an edit to a content an operator consumes
+  // by `$ref` -- and which is not itself a layer -- must re-plan and invalidate the
+  // operator layers that reach it. Routing needs `d_operator_layers`, so the memo must be
+  // warm HERE, ahead of Step 2's mapping and of the no-damage early-out -- but only when
+  // there IS model damage: a still frame carries none, takes no walk, and leaves
+  // `identity_map_builds()` where it was (claim
+  // `02-architecture#interactive-still-scene-schedules-no-frame`). The unconditional
+  // refresh in Step 3 is memoized on the revision, so it stays a no-op after this one.
+  //
+  // Clock-advance damage is deliberately NOT routed (Decision 4): `clock_advance_damage`
+  // already emits whole-footprint damage for every visible non-`Static` layer, and an
+  // operator over a moving input is itself non-`Static` by stability composition (doc
+  // 13:108-112), so it is already in that set under its own object. Routing it would be a
+  // strictly redundant walk on every frame of playback rather than once per edit.
+  if (!model_damage.empty()) {
+    refresh_identity_memo(state, resolve, revision);
+  }
+  const std::vector<Damage> routed_model = route_model_damage(model_damage, resolve);
+  std::vector<Damage> content_damage(routed_model.begin(), routed_model.end());
   for (const Damage& d : clock_damage) {
     damage_add(content_damage, d);
   }
 
   // --- Step 2: map to device (doc 02:51,57-60). ----------------------------
   // The dirty region unions three sources, each gated at the instant it applies:
-  //  * model damage + the arrival damage carried from the previous frame's poll,
-  //    gated at the displayed instant `composition_time` (carried damage re-plans
-  //    the refined tiles WITHOUT invalidating them -- see Step 3);
+  //  * the ROUTED model damage (Step 1) + the arrival damage carried from the previous
+  //    frame's poll, gated at the displayed instant `composition_time` (carried damage
+  //    re-plans the refined tiles WITHOUT invalidating them -- see Step 3);
   //  * clock-advance damage, which is THIS frame's moving layers and therefore
   //    present-frame by construction. Its range is the half-open advance interval
   //    `[prev, now)`, which EXCLUDES the endpoint `now`, so gating it at
   //    `composition_time` would drop it; gate it at `advanced.start` instead --
   //    an instant the advance range provably covers -- so a moving layer re-plans.
-  std::vector<Damage> present_damage(model_damage.begin(), model_damage.end());
+  std::vector<Damage> present_damage(routed_model.begin(), routed_model.end());
   for (const Damage& d : d_carried_damage) {
     damage_add(present_damage, d);
   }
@@ -151,7 +210,11 @@ InteractiveRenderer::render_frame(const DocRoot& state, const ContentResolver& r
 
   // --- Step 3: invalidate (doc 02:63). -------------------------------------
   // Drop the damaged tiles across rungs so the re-plan sees a miss where content
-  // changed. Only content damage invalidates (see the carried-damage note above).
+  // changed. Only content damage invalidates (see the carried-damage note above). The
+  // routed set carries three record kinds per edit and each drops a different key: the
+  // edited object's model id (its own layer tiles, if it is a layer root), its PULL
+  // identity (the input tiles every operator consuming it shares, doc 13:145-149), and
+  // each reaching operator layer's id (that operator's cached OUTPUT tiles).
   invalidate_damage(cache, content_damage);
 
   // The frame's pull service (`runtime.interactive_pull_wiring`). Frame-local by

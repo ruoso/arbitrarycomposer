@@ -76,6 +76,19 @@
 // ROUTED set, so frame N+1 re-plans the operator's footprint and re-enters the
 // identity delivery branch -- the interactive analog of the export driver's
 // re-composite pass.
+//
+// MODEL damage is routed the same way and for the same reason
+// (`runtime.operator_model_damage_routing`), but through a sibling entry point: an
+// edit's `Damage.object` is the edited object's own MODEL id, so it resolves through
+// the `ContentResolver` rather than the inverse identity map (the two are different id
+// spaces), and unlike an arrival it INVALIDATES as well as re-plans. Without it, an
+// edit to a content that an operator consumes by `$ref` and that is not itself a layer
+// matches no layer root, maps to an empty dirty region, early-outs, and never repaints
+// -- the under-approximation doc 13:124-128 calls a correctness bug. The routed set
+// additionally carries the damaged input's PULL identity, because its tiles are cached
+// under that, not under its model id (doc 13:145-149). Clock-advance damage is NOT
+// routed: an operator over a moving input is itself non-`Static` and already carries
+// whole-footprint damage under its own object (doc 13:108-112).
 
 namespace arbc {
 
@@ -142,8 +155,9 @@ public:
   // How many times the per-revision pull-identity memo has been (re)built: the
   // behavioral counter that pins the wiring's per-frame cost at O(1) rather than
   // O(graph) (doc 16:54-62 -- never a wall-clock assertion). Bumps once per
-  // revision that actually renders a frame; a still frame early-outs and builds
-  // nothing.
+  // revision that CARRIES MODEL DAMAGE (model-damage routing needs the operator-layer
+  // set before the early-out) or that actually renders a frame; a still frame carries
+  // neither, early-outs, and builds nothing.
   std::uint64_t identity_map_builds() const noexcept { return d_identity_map_builds; }
 
   // The async-completion park/wake substrate. Exposed so externally-async content
@@ -156,7 +170,9 @@ private:
   // memo's (a no-op otherwise): the `Content* -> ObjectId` map, the `id_of` functor
   // over it, its inverse (which arrival routing resolves a damaged `ObjectId` back
   // through), and the visible operator-layer set `route_operator_damage` walks.
-  // Called only from a frame that does work, so a still frame's memo never grows.
+  // Called from a frame that carries model damage (Step 1 -- routing needs the
+  // operator-layer set BEFORE the no-damage early-out) or that does work (Step 3), so a
+  // still frame's memo never grows.
   void refresh_identity_memo(const DocRoot& state, const ContentResolver& resolve,
                              std::uint64_t revision);
 
@@ -167,6 +183,22 @@ private:
   // correctness bug (doc 13:124-128), so every arrival is routed -- an operator that
   // does not reach the damaged content emits nothing.
   std::vector<Damage> route_arrival_damage(std::span<const Damage> arrival) const;
+
+  // Fold each MODEL-damage record forward through the operator layers that reach it
+  // (doc 13:124-128, doc 05:141-144): the returned set is the edits themselves PLUS, for
+  // each damaged content, a record under its PULL identity (the key its shared input
+  // tiles cache under, doc 13:145-149) and one under every operator layer that consumes
+  // it. Sibling of `route_arrival_damage`, deliberately not merged with it (Decision 1):
+  // the two classes differ in how a `Damage.object` becomes a `const Content*` -- an
+  // arrival names a pull identity and inverts through `d_content_by_id`, an edit names a
+  // MODEL id and inverts through the `ContentResolver` -- and in what they do to the
+  // cache: an arrival re-plans without invalidating, an edit invalidates.
+  //
+  // One set, two consumers (Decision 3): `map_damage_to_device` contributes zero rects
+  // for the pull-identity records (a synthesized id matches no layer root), so the same
+  // set feeds the device mapping and the invalidation without a second loop.
+  std::vector<Damage> route_model_damage(std::span<const Damage> model_damage,
+                                         const ContentResolver& resolve) const;
 
   RefinementQueue d_pending;                     // the frame-to-frame registry of async renders
   CompositorCounters d_counters;                 // persistent behavioral counts across frames

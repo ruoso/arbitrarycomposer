@@ -412,6 +412,17 @@ target_link_libraries(arbc_interactive_operator_identity_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_interactive_operator_identity_t)
 
+# runtime.operator_model_damage_routing: an EDIT to a content an operator consumes by
+# `$ref` -- and which is not itself a layer -- matches no layer root, so unrouted it maps
+# to an empty dirty region and the repaint frame never happens (doc 13:124-128's
+# correctness bug). Routing it up the operator graph, and dropping the input's tiles under
+# its PULL identity, is what makes a shared component editable. Cross-component (runtime +
+# compositor + cache + kind_crossfade/kind_solid + backend_cpu), so it links `arbc`.
+add_executable(arbc_interactive_model_damage_routing_t interactive_model_damage_routing.t.cpp)
+target_link_libraries(arbc_interactive_model_damage_routing_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_interactive_model_damage_routing_t)
+
 # operators.crossfade_runtime_binding end-to-end: builds a Document with a crossfade
 # over two inputs and drives it through the real offline (SequenceRenderer, inline +
 # parallel) and export (ExportMonitor) drivers with the PRODUCTION attach injection,

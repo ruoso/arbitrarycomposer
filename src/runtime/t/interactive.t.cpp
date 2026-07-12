@@ -20,6 +20,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -131,6 +132,29 @@ public:
 
 private:
   Stability d_stability;
+};
+
+// An operator whose one `inputs()` edge the test wires after construction, so two of them
+// can point at each other and form the `inputs()` CYCLE doc 05:66-70's backstop must
+// terminate on. It renders like `SyncSolid` (it never descends into its input), so the
+// only thing that walks its edges is the graph machinery under test: the identity map's
+// frontier walk and `route_operator_damage`'s `map_damage_up`. `map_input_damage` stays
+// at the contract default (the identity, `content.cpp:11`).
+class CycleOperator : public arbc::Content {
+public:
+  void set_input(arbc::ContentRef input) { d_inputs[0] = input; }
+  std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
+  std::span<const arbc::ContentRef> inputs() const override { return d_inputs; }
+  std::optional<RenderResult> render(const RenderRequest& request,
+                                     std::shared_ptr<RenderCompletion> /*done*/) override {
+    fill_solid(request.target);
+    return RenderResult{request.scale, /*exact=*/true};
+  }
+
+private:
+  std::array<arbc::ContentRef, 1> d_inputs{nullptr};
 };
 
 // Content that answers asynchronously and whose result arrives WITHIN the frame:
@@ -400,6 +424,7 @@ TEST_CASE("interactive: the pull-identity map is built once per revision") {
 }
 
 // enforces: 02-architecture#interactive-still-scene-schedules-no-frame
+// enforces: 02-architecture#idle-viewport-issues-no-frames
 TEST_CASE("interactive: a still frame builds no identity map and constructs no pull service") {
   MarkBackend backend;
   SyncSolid content(Stability::Static);
@@ -423,9 +448,12 @@ TEST_CASE("interactive: a still frame builds no identity map and constructs no p
   const std::uint64_t requests = renderer.counters().requests_issued();
   const std::uint64_t composites = renderer.counters().composites();
 
-  // The still-scene early-out precedes ALL of the wiring's new work (it returns before
-  // the memo refresh and before the `PullServiceImpl` is constructed), so N still
-  // frames stay exactly free: no walk, no pull, no render, no composite, no frame.
+  // The still-scene early-out precedes ALL of the wiring's new work: the
+  // `PullServiceImpl` is constructed after it, and the memo hoist that model-damage
+  // routing needs (`runtime.operator_model_damage_routing` Constraint 4) is guarded on
+  // there BEING model damage -- a still frame carries none, so it still takes no O(graph)
+  // walk. N still frames therefore stay exactly free: no walk, no pull, no render, no
+  // composite, no frame.
   for (int i = 0; i < 8; ++i) {
     const auto out = renderer.render_frame(*state, resolver, viewport, cache, backend, pool,
                                            **target, {}, arbc::Time{0}, k_budget);
@@ -434,6 +462,63 @@ TEST_CASE("interactive: a still frame builds no identity map and constructs no p
   CHECK(renderer.identity_map_builds() == 1); // the memo did not grow
   CHECK(renderer.counters().requests_issued() == requests);
   CHECK(renderer.counters().composites() == composites);
+  CHECK(renderer.counters().follow_up_frames() == 0);
+}
+
+// enforces: 05-recursive-composition#graph-walk-bounds-cycles
+// enforces: 05-recursive-composition#operator-damage-routes-through-map-input-damage
+TEST_CASE("interactive: model damage inside an operator CYCLE routes once and terminates") {
+  MarkBackend backend;
+  // A -> B -> A: `head` is the layer's content, `tail` is the `contents`-table content the
+  // edit names, and `tail`'s own input points back at `head`. Both the identity-map walk
+  // and `route_operator_damage`'s `map_damage_up` must bottom out on their visited sets
+  // rather than recurse forever (doc 05:66-70).
+  CycleOperator head;
+  CycleOperator tail;
+  head.set_input(&tail);
+  tail.set_input(&head);
+
+  arbc::Model model;
+  arbc::ObjectId head_id;
+  arbc::ObjectId tail_id;
+  {
+    auto txn = model.transact();
+    head_id = txn.add_content(0);
+    tail_id = txn.add_content(0); // in the `contents` table, placed as no layer
+    txn.add_layer(head_id, arbc::Affine::identity());
+    REQUIRE(txn.commit().has_value());
+  }
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    if (id == head_id) {
+      return &head;
+    }
+    return id == tail_id ? &tail : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // one rung-0 tile
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  // Frame 1 warms the cache over the whole viewport.
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{0}, k_budget);
+  REQUIRE(renderer.counters().requests_issued() == 1);
+  REQUIRE(renderer.counters().composites() == 1);
+
+  // Frame 2: edit `tail`, which no layer shows and which sits ON the cycle. Routing walks
+  // head -> tail (hit) and tail -> head (a back-edge onto the descent stack, contributing
+  // nothing), emitting exactly ONE record -- `Damage{head_id, ...}` -- so the one operator
+  // layer re-plans its single tile once. Terminating at all is half the assertion; the
+  // other half is that the damage set stays bounded (one composite, not a storm).
+  const std::vector<Damage> edit{Damage{tail_id, arbc::Rect::infinite(), arbc::TimeRange::all()}};
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, edit,
+                        arbc::Time{0}, k_budget);
+  CHECK(renderer.counters().requests_issued() == 2); // + exactly one: the re-planned tile
+  CHECK(renderer.counters().composites() == 2);      // + exactly one
+  CHECK(renderer.identity_map_builds() == 1);        // one revision, one walk
 }
 
 // enforces: 02-architecture#interactive-still-scene-schedules-no-frame

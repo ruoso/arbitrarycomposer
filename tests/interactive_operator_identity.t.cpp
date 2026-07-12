@@ -52,7 +52,7 @@ using namespace arbc;
 
 namespace {
 
-constexpr int k_dim = 256;                            // one rung-0 tile at scale 1.0
+constexpr int k_dim = 256; // one rung-0 tile at scale 1.0
 constexpr auto k_budget = std::chrono::milliseconds(16);
 constexpr Rgba k_from_color{0.5F, 0.25F, 0.125F, 1.0F};
 constexpr Rgba k_to_color{0.125F, 0.375F, 0.75F, 1.0F};
@@ -203,7 +203,7 @@ TEST_CASE("interactive: an async operator-input arrival schedules the follow-up 
   CHECK(out2.schedule_follow_up);
   CHECK(renderer.counters().follow_up_frames() == 1U); // reaped + inserted under the input's id
   CHECK(renderer.pending().tiles.empty());
-  CHECK(renderer.counters().composites() == 0U);       // an empty dirty region paints nothing
+  CHECK(renderer.counters().composites() == 0U); // an empty dirty region paints nothing
   CHECK(byte_identical(placeholder, snapshot(**target)));
 
   // --- Frame 3: the follow-up frame re-drives the endpoint. -------------------
