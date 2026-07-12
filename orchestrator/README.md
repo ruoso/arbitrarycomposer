@@ -72,6 +72,45 @@ The default CLI is Claude Code. Use Codex CLI with:
 AGENT_CLI=codex python3 driver.py
 ```
 
+### Replaying a step
+
+`--resume <log>` re-runs the step recorded in an `iter-NNNN-<phase>.log`,
+**continuing that agent session** (the CLI is invoked with `--resume` /
+`exec resume`) so partial work is preserved, then rejoins the normal loop at
+the next iteration. The prior log is kept as `.attempt-N`.
+
+```
+python3 driver.py --resume logs/iter-0031-implementer.log
+python3 driver.py --resume logs/iter-0031-implementer.log --note "you were mid-refactor"
+```
+
+`--fresh` replays the same step in a **brand-new session** instead — the step,
+its model and its prompt are still recovered from the log and the dispatch
+manifest, so the same work is re-dispatched, but with no memory of the recorded
+attempt:
+
+```
+python3 driver.py --resume logs/iter-0031-implementer.log --fresh
+python3 driver.py --resume logs/iter-0031-implementer.log --fresh --note "the previous attempt tried X; don't"
+```
+
+Use `--fresh` when the session is the *problem* rather than the victim — it
+wedged, thrashed, or talked itself into a bad approach, and resuming would only
+carry the mistake forward. Use a plain `--resume` when the session was merely
+interrupted and its partial work is worth keeping.
+
+Note what a fresh replay does *not* discard: only the agent's conversation is
+thrown away. The recorded prompt is a snapshot of the rendered **template**, and
+every substantive input it points at — the refinement, the design docs, the WBS,
+the working tree — is re-read from disk by the sub-agent. So a fresh replay picks
+those up at their *current* state, which is what makes it the right tool after
+you have edited a refinement or the task graph underneath a failing run.
+
+Everything downstream is unchanged, so a fresh replay is a drop-in for a
+session-resuming one: same log path and archival, same model resolution, and an
+`implementer` replay still runs the post-implementer verify → fixer → closer
+chain.
+
 No dependencies beyond stdlib (plus `tj3`, the C++ toolchain the gate
 needs, and `docker` + `act` for the CI-replay verification steps). Stop with Ctrl-C; in-flight sub-agent processes get SIGTERM'd
 cleanly. Prompt files are loaded immediately before each dispatch, so edits

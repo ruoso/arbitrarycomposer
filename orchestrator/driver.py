@@ -1821,21 +1821,42 @@ def parse_args(argv: list[str]) -> "argparse.Namespace":
         ),
     )
     parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help=(
+            "With --resume: replay the step in a BRAND-NEW agent session "
+            "instead of continuing the one recorded in the log (i.e. do not "
+            "pass --resume/exec resume to the CLI). The step, its model and "
+            "its prompt are still recovered from the log + dispatch manifest, "
+            "so the same work is re-dispatched — but with no memory of the "
+            "recorded attempt. Use when that session is the problem rather "
+            "than the victim: it wedged, thrashed, or talked itself into a bad "
+            "approach, and carrying its context forward would only carry the "
+            "mistake forward. Prefer a plain --resume when the session was "
+            "merely interrupted and its partial work is worth keeping."
+        ),
+    )
+    parser.add_argument(
         "--note",
         type=str,
         default="",
         help=(
             "Optional operator note prepended to the resumed sub-agent's "
             "prompt. Useful for telling the sub-agent it is continuing "
-            "work that was interrupted."
+            "work that was interrupted, or (with --fresh) for warning it off "
+            "whatever the discarded attempt got wrong."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.fresh and args.resume is None:
+        parser.error("--fresh only makes sense with --resume")
+    return args
 
 
 def replay_step(
     log_path: Path,
     note: str,
+    fresh: bool = False,
 ) -> tuple[int, str, str, dict]:
     """Re-run the sub-agent recorded in `log_path` using its persisted
     prompt (optionally with a leading operator note). Archives the
@@ -1844,7 +1865,13 @@ def replay_step(
     `template_vars` dict is loaded from the persisted dispatch manifest
     so callers can drive the post-implementer chain; it is empty if no
     manifest exists for this iteration (e.g. resuming an orchestrator
-    step)."""
+    step).
+
+    When `fresh` is set, the recorded agent session is NOT resumed: the step is
+    re-dispatched into a new session carrying the recorded prompt. Everything
+    downstream (log path, archival, model resolution, the post-implementer
+    verification chain) is unchanged, so a fresh replay is a drop-in for a
+    session-resuming one."""
     iteration, phase = parse_resume_target(log_path)
     original_prompt = read_prompt_from_log(log_path)
 
@@ -1853,7 +1880,19 @@ def replay_step(
     # before the log is archived below. When resuming, the session already
     # holds the original prompt + its work, so the new turn carries only the
     # operator note (or a continuation nudge) rather than re-sending it.
-    resume_session = AGENT.extract_session_id(log_path)
+    #
+    # `fresh` suppresses that: the step is still recovered from the log (its
+    # prompt, and its model via the dispatch manifest below), but it runs in a
+    # NEW session, so the recorded attempt's context is discarded rather than
+    # built upon. Re-sending the recorded prompt is what makes this work for
+    # every phase -- the dispatch manifest holds the ORCHESTRATOR's dispatch
+    # (`refinement_writer` / `implementer`), so it cannot re-render a `closer`
+    # or `fixer` prompt, whereas the log's `---PROMPT---` section is whatever
+    # was actually sent. Note the recorded prompt is a snapshot of the rendered
+    # TEMPLATE only: every substantive input it points at (the refinement, the
+    # design docs, the WBS, the tree) is re-read from disk by the sub-agent, so
+    # a fresh replay picks those up at their current state.
+    resume_session = None if fresh else AGENT.extract_session_id(log_path)
     if resume_session:
         replay_prompt = (
             f"## Note from operator (resume)\n\n{note}" if note else RESUME_NUDGE
@@ -1903,6 +1942,10 @@ def replay_step(
     )
     if resume_session:
         print_wrapped(f"  {DIM}↻ resuming session {resume_session}{RESET}")
+    elif fresh:
+        print_wrapped(
+            f"  {DIM}✦ --fresh: new session, recorded context discarded{RESET}"
+        )
     else:
         print_wrapped(
             f"  {DIM}↳ no session id in log — re-running fresh{RESET}"
@@ -1936,7 +1979,7 @@ def main() -> int:
 
     if args.resume is not None:
         resume_iter, phase, sub_stdout, template_vars = replay_step(
-            args.resume, args.note
+            args.resume, args.note, args.fresh
         )
         # If the resumed step is the implementer, the post-implementer
         # chain (verify → fixer → closer) still needs to run for that
