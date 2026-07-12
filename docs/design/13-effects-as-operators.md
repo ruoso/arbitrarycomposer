@@ -119,6 +119,30 @@ covering tile is exact at the selected rung. The operator then composites a
 the completion is left unsettled, the operator degrades for this frame, and
 each async tile's arrival re-drives it (below).
 
+**A transient placeholder is never exact.** The degraded pass an async pull
+forces — the transparent tile, the silent block — is *not* an answer to the
+request; it is a stand-in for one that is still being rendered. The
+operator must report it inexact: `exact = false` on the `RenderResult`, and
+on the `AudioResult` one dimension down (doc 12's twin field). This is not
+cosmetic. Exactness is what the caller caches on: an exact-flagged
+placeholder is cached as a fresh, final answer, and the `Exactness::Exact`
+pass that would otherwise re-request the input serves the placeholder back
+instead — permanently freezing the deferred input out of the frame, or out
+of the mix. A cold-cache parallel render of an operator that lies here
+exports blank frames and silence, and does so *deterministically*, because
+nothing ever re-drives the render whose arrival was supposed to fix it.
+
+The rule splits the two placeholders an operator can produce, and the split
+is the whole of it. A pull the service **dispatched** — completion left
+unsettled — is TRANSIENT: something more is coming for this revision, so
+this pass is inexact. A pull that **failed** or exceeded its budget is
+FINAL: nothing more is coming, the placeholder is the honest answer for
+this revision, and it is reported exact (the doc 09 cull, arrived at by a
+different road). Both facets of every operator — fade, crossfade, nested —
+make this split at every pull, and an operator that aggregates (a
+crossfade's two inputs, a nested composition's child layers) folds the
+transient bits with the same AND that folds its inputs' own exactness.
+
 Metadata composes synchronously: an operator computes `bounds()`,
 `time_extent()`, `scale_range()`, `stability()` by querying its inputs and
 applying its own contribution — a blur inflates bounds by its radius; a

@@ -234,18 +234,28 @@ FadeContent::FadeAudioFacet::render_audio(const AudioRequest& request,
   auto done = std::make_shared<AudioCompletion>();
   self.d_pull->pull_audio(self.d_input, request, done);
   if (!done->settled()) {
+    // NOT exact: this silent block is a TRANSIENT placeholder, the audio twin of the
+    // transparent tile the visual branches above return. The input's render went to a
+    // worker, will land in the block cache, and a later pass mixes the real samples.
+    // Reporting `true` here would let the caller cache the silence as a fresh exact
+    // hit, which an `Exactness::Exact` second pass then serves instead of re-rendering
+    // -- a cold-cache parallel audio render would export silence forever (doc
+    // 13:122-144; `nested_content.cpp` states the same rule on both facets).
     done->cancel(); // worker-dispatched miss: silence for this block (constraint 3)
     for (std::size_t i = 0; i < n; ++i) {
       request.target.samples[i] = 0.0F;
     }
-    return AudioResult{request.sample_rate, true};
+    return AudioResult{request.sample_rate, /*exact=*/false};
   }
   const std::optional<expected<AudioResult, RenderError>> settled = done->take();
   if (!settled.has_value() || !settled->has_value()) {
     for (std::size_t i = 0; i < n; ++i) {
       request.target.samples[i] = 0.0F; // budget-exceeded / unavailable pull: silence
     }
-    return AudioResult{request.sample_rate, true};
+    // A FINAL placeholder, not a transient one: the pull failed or exceeded its budget,
+    // nothing more is coming for this revision, so the silence is the honest exact
+    // answer (doc 13:122-144, the same split the visual paths make).
+    return AudioResult{request.sample_rate, /*exact=*/true};
   }
   const AudioResult ar = **settled;
 

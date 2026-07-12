@@ -767,6 +767,17 @@ target_link_libraries(arbc_refine_idempotence_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_refine_idempotence_golden_t)
 
+# kinds.operator_async_placeholder_inexact: the transient-placeholder rule of the operator
+# contract (doc 13) -- a placeholder rendered because a pull was DISPATCHED is inexact, a
+# placeholder rendered because a pull FAILED is exact -- driven per operator kind (fade,
+# crossfade, nested) and per facet against a pull double that leaves the completion
+# unsettled. Names all three kinds plus the solid/tone leaves and a real CpuBackend, so it
+# is cross-component and links the umbrella `arbc`.
+add_executable(arbc_operator_async_placeholder_inexact_t operator_async_placeholder_inexact.t.cpp)
+target_link_libraries(arbc_operator_async_placeholder_inexact_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_operator_async_placeholder_inexact_t)
+
 add_executable(arbc_refine_idempotence_stress_t refine_idempotence_stress.t.cpp)
 target_link_libraries(arbc_refine_idempotence_stress_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)

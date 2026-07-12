@@ -113,7 +113,8 @@ task kinds "Reference kinds" {
   task operator_async_placeholder_inexact "Fix audio-facet async-placeholder exact=true bug in fade and crossfade" {
     effort 1d
     allocate team
+    complete 100
     depends operators.fade_runtime_binding, operators.crossfade_runtime_binding
-    note "FadeContent (fade_content.cpp:227-231) and CrossfadeContent (crossfade_content.cpp:332) return exact=true for the silence placeholder they render when an input audio pull goes async — the audio-facet twin of the visual bug fixed in runtime.worker_dispatch_leaf_only (commit 2026-07-12). The compositor caches the placeholder as exact and never re-requests the real audio, so a cold-cache parallel audio render produces silence. Fix to return exact=false, matching NestedContent's already-correct behavior; promote the transient-placeholder rule (currently a comment in nested only) into a doc-13 delta and a claims-register row. Source-of-debt: tasks/refinements/runtime/worker_dispatch_leaf_only.md (implementer follow-up). Docs 12/13."
+    note "FadeContent (fade_content.cpp:227-231) and CrossfadeContent (crossfade_content.cpp:332) return exact=true for the silence placeholder they render when an input audio pull goes async — the audio-facet twin of the visual bug fixed in runtime.worker_dispatch_leaf_only (commit 2026-07-12). The compositor caches the placeholder as exact and never re-requests the real audio, so a cold-cache parallel audio render produces silence. Fix to return exact=false, matching NestedContent's already-correct behavior; promote the transient-placeholder rule (currently a comment in nested only) into a doc-13 delta and a claims-register row. Source-of-debt: tasks/refinements/runtime/worker_dispatch_leaf_only.md (implementer follow-up). Docs 12/13. Refinement: tasks/refinements/kinds/operator_async_placeholder_inexact.md"
   }
 }

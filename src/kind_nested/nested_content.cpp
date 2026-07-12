@@ -638,8 +638,13 @@ void NestedContent::mix_child_layer(const LayerRecord& layer, const CompositionR
   d_pull->pull_audio(content, child_req, done);
   if (!done->settled()) {
     // The service deferred to a worker (a miss): this pass mixes silence for the
-    // layer (doc 05:50-52), exactly as the visual descent shows the placeholder.
+    // layer (doc 05:50-52), exactly as the visual descent shows the placeholder --
+    // and, exactly as the visual descent does (`compose_child_layer` returns false),
+    // it marks the composed block INEXACT. The silence is TRANSIENT: the child's
+    // samples land in the block cache and a later pass must mix them, which an
+    // exact-flagged block would prevent forever (doc 13:122-144).
     done->cancel();
+    exact = false;
     return;
   }
   const std::optional<expected<AudioResult, RenderError>> settled = done->take();

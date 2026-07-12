@@ -323,33 +323,53 @@ CrossfadeContent::CrossfadeAudioFacet::render_audio(const AudioRequest& request,
 
   // Pull input 0 into the caller's block (window, rate, layout, snapshot,
   // exactness VERBATIM -- constraint 2); on failure the block is silence.
+  //
+  // `transient` is the audio twin of the visual `PullOutcome::transient` above, and
+  // the two placeholder classes split exactly as they do there: a pull the service
+  // DISPATCHED to a worker leaves its completion unsettled, so the silence this pass
+  // mixes for that input is TRANSIENT -- the real samples land in the block cache and
+  // a later pass must mix them, which only happens if this pass reports itself inexact
+  // (doc 13:122-144). A pull that FAILED or exceeded its budget is FINAL: nothing more
+  // is coming for this revision and the silence is the honest exact answer.
+  bool transient = false;
   auto done0 = std::make_shared<AudioCompletion>();
   self.d_pull->pull_audio(self.d_inputs[0], request, done0);
-  bool s0_ok = false;
+  std::optional<AudioResult> r0;
   if (done0->settled()) {
     const std::optional<expected<AudioResult, RenderError>> settled0 = done0->take();
-    s0_ok = settled0.has_value() && settled0->has_value();
+    if (settled0.has_value() && settled0->has_value()) {
+      r0 = **settled0;
+    }
   } else {
     done0->cancel();
+    transient = true;
   }
-  if (!s0_ok) {
+  if (!r0.has_value()) {
     for (std::size_t i = 0; i < n; ++i) {
       request.target.samples[i] = 0.0F;
     }
   }
 
   // Pull input 1 into a separate local block (same request but our target), so
-  // the two signals can be mixed per frame. On failure it stays silence.
+  // the two signals can be mixed per frame. On failure it stays silence. BOTH inputs
+  // are pulled on EVERY pass even when input 0 came back a placeholder, for the reason
+  // the visual dissolve does it (`render` above): a pull is what DISPATCHES a cold
+  // input's render, so short-circuiting would leave input 1 undispatched forever.
   std::vector<float> buf1(n, 0.0F);
   AudioBlock block1{buf1.data(), request.target.frames, request.layout, request.sample_rate};
   const AudioRequest req1{request.window, request.sample_rate, request.layout,
                           block1,         request.exactness,   request.snapshot};
   auto done1 = std::make_shared<AudioCompletion>();
   self.d_pull->pull_audio(self.d_inputs[1], req1, done1);
+  std::optional<AudioResult> r1;
   if (done1->settled()) {
-    done1->take();
+    const std::optional<expected<AudioResult, RenderError>> settled1 = done1->take();
+    if (settled1.has_value() && settled1->has_value()) {
+      r1 = **settled1;
+    }
   } else {
     done1->cancel();
+    transient = true;
   }
 
   // Per-frame complementary-weight additive mix `s0*(1-w) + s1*w` (Decision 1):
@@ -367,7 +387,23 @@ CrossfadeContent::CrossfadeAudioFacet::render_audio(const AudioRequest& request,
       request.target.samples[idx] = request.target.samples[idx] * w0 + buf1[idx] * w1;
     }
   }
-  return AudioResult{request.sample_rate, true};
+
+  // achieved_rate / exact honesty, the audio twin of the visual fold
+  // (`r0.exact && r1->exact && !transient`): the mix is exact only if BOTH inputs
+  // answered exactly and NEITHER pull deferred, and it carries the lower of the two
+  // achieved rates -- crossfade adds only a per-frame weight, so it invents no
+  // temporal resolution its inputs did not deliver (doc 12 rate-honesty). A FINAL
+  // placeholder (a failed pull, no result) contributes silence without lowering
+  // exactness, exactly as nested's failed child pull does.
+  std::uint32_t achieved = request.sample_rate;
+  bool exact = !transient;
+  for (const std::optional<AudioResult>& r : {r0, r1}) {
+    if (r.has_value()) {
+      achieved = std::min(achieved, r->achieved_rate);
+      exact = exact && r->exact;
+    }
+  }
+  return AudioResult{achieved, exact};
 }
 
 } // namespace arbc
