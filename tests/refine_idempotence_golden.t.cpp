@@ -352,3 +352,80 @@ TEST_CASE("refine golden: a gated frame touches no pixel outside its repaint reg
   const std::span<const float> inside = pixel_at(after, 8, 8);
   CHECK(inside[3] > 0.0F);
 }
+
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 02-architecture#disjoint-repaint-equals-bbox-repaint
+TEST_CASE("refine golden: a disjoint-rect gated frame is byte-identical to a bbox gated frame") {
+  CpuBackend backend;
+
+  // The WBS note's scenario: two small damages at opposite corners, each inside its own
+  // rung-0 tile. The disjoint repaint set is those two rects; their BOUNDING BOX is the
+  // whole viewport -- so the bbox frame also re-composites the two tiles between them.
+  const DirtyRegion dirty{
+      {Rect{0.0, 0.0, 32.0, 32.0},
+       Rect{static_cast<double>(k_dim) - 32.0, static_cast<double>(k_dim) - 32.0,
+            static_cast<double>(k_dim), static_cast<double>(k_dim)}}};
+  // The bbox path, forced: a one-rect `DirtyRegion` holding exactly `repaint_region`'s
+  // box normalizes to itself, so that frame IS the pre-task, bounding-box behavior --
+  // and is also what `repaint_regions` returns over its rect-count cap.
+  const DirtyRegion boxed{{repaint_region(dirty, viewport())}};
+  REQUIRE(repaint_regions(dirty, viewport()).size() == 2);
+  REQUIRE(repaint_regions(boxed, viewport()).size() == 1);
+  REQUIRE(repaint_regions(boxed, viewport())[0] ==
+          Rect{0.0, 0.0, static_cast<double>(k_dim), static_cast<double>(k_dim)});
+
+  // Two separately-persisted targets, each warmed by the same un-gated full pass, then
+  // each given the same damage -- one as the disjoint set, one as its bounding box.
+  TranslucentScene split_scene;
+  Frames split_frames(backend, split_scene);
+  split_frames.pass(nullptr);
+  CompositorCounters split;
+  split_frames.pass(&dirty, &split);
+
+  TranslucentScene boxed_scene;
+  Frames boxed_frames(backend, boxed_scene);
+  boxed_frames.pass(nullptr);
+  CompositorCounters box;
+  boxed_frames.pass(&boxed, &box);
+
+  // The oracle, and it is not a tautology: it holds BECAUSE the gap pixels the bbox
+  // repaints are undamaged, so by the persisted-target contract they already hold
+  // exactly what it repaints into them. Skipping them is therefore byte-free -- which
+  // also means no existing golden needs a new baseline, and that is itself an assertion
+  // this task makes.
+  CHECK(byte_identical(split_frames.pixels(), boxed_frames.pixels()));
+
+  // ... and the disjoint frame reached those pixels doing strictly less work (doc
+  // 16:54-62, counters, never wall clock): it composites only the tiles its two repaint
+  // rects overlap, where the bbox composites every tile of every layer between them.
+  CHECK(split.composites() > 0);
+  CHECK(split.composites() < box.composites());
+  // Both re-composite from the warm cache -- the win is in the COMPOSITE, not in
+  // skipping renders that were owed.
+  CHECK(split.requests_issued() == 0);
+  CHECK(box.requests_issued() == 0);
+}
+
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 02-architecture#gated-frame-equals-single-pass
+TEST_CASE("refine golden: a translucent layer under two OVERLAPPING damages lands exactly once") {
+  CpuBackend backend;
+  TranslucentScene scene;
+  Frames frames(backend, scene);
+
+  frames.pass(nullptr);
+  const std::vector<float> full_pass = frames.pixels();
+
+  // The rects `map_damage_to_device` really emits: one per (damage, layer) pair, and
+  // they OVERLAP. This is the regression guard for the bug the predecessor's bounding
+  // box was dodging -- clipping each tile once per RAW dirty rect would composite it
+  // twice in the overlap, landing this deliberately translucent stack's contribution a
+  // second time there. Normalized to a disjoint set, the overlap belongs to exactly one
+  // repaint rect, so it is cleared once and repainted once, and the frame lands back on
+  // exactly what the full pass put there.
+  const DirtyRegion dirty{{Rect{0.0, 0.0, 300.0, 300.0}, Rect{200.0, 200.0, 512.0, 512.0}}};
+  REQUIRE(repaint_regions(dirty, viewport()).size() > 1); // it really did decompose
+
+  frames.pass(&dirty);
+  CHECK(byte_identical(frames.pixels(), full_pass));
+}

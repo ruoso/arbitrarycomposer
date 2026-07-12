@@ -219,19 +219,23 @@ Initially-open questions, now decided in their own docs:
   so it is structural rather than advisory: the rule lives in one runtime
   helper that every worker-backed dispatch is obtained from, and a
   grep-lint keeps it the only one. Decided in doc 02 (§ Threading model).
-- **A damage-gated frame clears and clips its repaint region.** The target
-  surface is the caller's and persists across frames, so a gated frame
-  re-composites onto pixels a previous frame already painted — and
-  source-over is not idempotent for translucent content. The frame therefore
-  *clears* its device repaint region before re-compositing it, and *clips*
-  every composite to that region so a tile straddling the edge cannot spill
-  onto un-cleared pixels. This buys the frame loop its central invariant —
-  a gated frame's repaint region equals what one full pass would have put
-  there — at the cost of two clip-scoped operations (`clear_rect`,
-  `composite_clipped`) on the backend contract that every backend, CPU and
-  GPU, must implement. It is a scissor rect; GPU command lists already have
-  one. Decided in doc 02 (§ The frame, interactively) and doc 09 (§ Backend
-  contract).
+- **A damage-gated frame clears and clips its repaint region, and that
+  region is a disjoint rect set.** The target surface is the caller's and
+  persists across frames, so a gated frame re-composites onto pixels a
+  previous frame already painted — and source-over is not idempotent for
+  translucent content. The frame therefore *clears* its device repaint
+  region before re-compositing it, and *clips* every composite to that
+  region so a tile straddling the edge cannot spill onto un-cleared pixels.
+  The region is a set of **pairwise-disjoint** rects, normalized from the
+  raw (overlapping) per-(damage, layer) dirty rects: disjointness is what
+  makes "cleared once, repainted once" true per pixel, and it is what keeps
+  two far-apart damages from repainting everything between them. This buys
+  the frame loop its central invariant — a gated frame's repaint region
+  equals what one full pass would have put there — at the cost of two
+  clip-scoped operations (`clear_rect`, `composite_clipped`) on the backend
+  contract that every backend, CPU and GPU, must implement. It is a scissor
+  rect; GPU command lists already have one. Decided in doc 02 (§ The frame,
+  interactively) and doc 09 (§ Backend contract).
 - **The pending set is a suppression key, exactly like the cache.** A tile
   whose render is in flight is absent from the cache, so a cache-only miss
   test cannot tell it apart from a tile nobody has ever asked for — and

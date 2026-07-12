@@ -49,6 +49,7 @@
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/media/surface_format.hpp>
+#include <arbc/model/damage.hpp>
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/interactive.hpp>
 #include <arbc/runtime/operator_binding.hpp>
@@ -120,9 +121,13 @@ struct NestedTranslucentScene {
   std::shared_ptr<NestedContent> nested;
 
   Document doc;
+  // The background's content id, so a test can damage two far-apart sub-regions of it
+  // in ONE frame -- the multi-rect repaint set (`compositor.disjoint_dirty_repaint`).
+  ObjectId back_id{};
 
   NestedTranslucentScene() {
-    doc.add_layer(doc.add_content(back), Affine::identity());
+    back_id = doc.add_content(back);
+    doc.add_layer(back_id, Affine::identity());
 
     const ObjectId child =
         doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
@@ -314,6 +319,71 @@ std::vector<float> quiesced_pixels(Backend& backend, std::size_t worker_count,
   return {};
 }
 
+// The loop driven to quiescence, then RE-DAMAGED at two far-apart sub-regions of the
+// background in one frame, then driven to quiescence again.
+//
+// That second sequence is the path this task opens, and it is why re-running the
+// single-damage cases above would not have covered it. Two far-apart damages normalize
+// to a genuinely DISJOINT two-rect repaint set, so within one frame every layer is
+// planned TWICE -- once per rect -- and every layer's tile straddles both rects. That is
+// a new way for two plans of the same `TileKey` to meet inside a single frame, which is
+// precisely what the pending-set guard and the per-rect plan merge exist for, and
+// precisely what a single-damage frame cannot exercise. Under a real worker pool the
+// re-rendered tiles arrive across frame boundaries while the disjoint rects are being
+// re-composited, so the interleaving is real.
+//
+// The assertion stays the one that matters: byte-exactness against the single-pass
+// oracle at quiescence, schedule-independently. Two clipped composites of a straddling
+// tile are correct exactly because the rects do not overlap; a bug there is a doubled
+// translucent blend inside one of the rects, and it moves the bytes.
+std::vector<float> quiesced_after_split_damage(Backend& backend, std::size_t worker_count) {
+  NestedTranslucentScene scene;
+  WorkerPoolConfig pool_config;
+  pool_config.worker_count = worker_count;
+  InteractiveRenderer renderer(std::move(pool_config), InteractiveRenderer::Clock{});
+
+  SurfacePool pool(backend);
+  TileCache cache(64U * 1024 * 1024);
+  expected<std::unique_ptr<Surface>, SurfaceError> target =
+      backend.make_surface(k_dim, k_dim, k_working_rgba32f);
+  REQUIRE(target.has_value());
+
+  const auto frame = [&](std::span<const Damage> damage) {
+    const DocStatePtr pin = scene.doc.pin();
+    const ContentResolver resolve = [&scene](ObjectId id) { return scene.doc.resolve(id); };
+    const FrameBinding binding{&scene.doc, pin};
+    return renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, damage,
+                                 k_interior, k_frame_budget, binding);
+  };
+
+  constexpr int k_max_frames = 64; // a convergence bound, never a timing assumption
+  const auto settle = [&](std::span<const Damage> first) {
+    std::span<const Damage> damage = first;
+    for (int i = 0; i < k_max_frames; ++i) {
+      const InteractiveRenderer::FrameOutcome outcome = frame(damage);
+      damage = {}; // the injected damage rides exactly one frame; the rest are refines
+      if (!outcome.schedule_follow_up && renderer.pending().tiles.empty()) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  REQUIRE(settle({})); // the ordinary loop, to a clean fixed point
+
+  // Opposite corners of the canvas, far enough apart that their bounding box is the
+  // whole viewport but their disjoint cover is two small rects.
+  const std::vector<Damage> split{
+      Damage{scene.back_id, Rect{0.0, 0.0, 32.0, 32.0}, TimeRange::all()},
+      Damage{scene.back_id,
+             Rect{static_cast<double>(k_dim) - 32.0, static_cast<double>(k_dim) - 32.0,
+                  static_cast<double>(k_dim), static_cast<double>(k_dim)},
+             TimeRange::all()}};
+  REQUIRE(settle(split));
+
+  return snapshot(**target);
+}
+
 } // namespace
 
 // enforces: 02-architecture#gated-frame-equals-single-pass
@@ -415,6 +485,26 @@ TEST_CASE("a quiesced refine loop composites each tile once per frame, never twi
   const std::vector<float> worker_pixels = quiesced_pixels(backend, 2, nullptr, &worker_counters);
   CHECK(byte_identical(worker_pixels, inline_pixels));
   CHECK(worker_counters.composites() > 0);
+}
+
+// enforces: 02-architecture#gated-frame-equals-single-pass
+TEST_CASE("a refine sequence whose damage is two far-apart rects is byte-exact under a worker "
+          "pool") {
+  CpuBackend backend;
+  const std::vector<float> oracle = single_pass_oracle(backend);
+  REQUIRE_FALSE(all_transparent(oracle));
+
+  // The same shape as the single-damage sweep above, over the multi-rect repaint path:
+  // a fresh scene and a fresh pool per iteration, so each really does drive misses
+  // through workers and refine them on follow-up frames -- but with a frame whose
+  // repaint region is a two-rect disjoint set that every layer's tile straddles.
+  constexpr int k_iterations = 30;
+  for (const std::size_t workers : {std::size_t{1}, std::size_t{2}, std::size_t{4}}) {
+    for (int i = 0; i < k_iterations; ++i) {
+      CAPTURE(workers, i);
+      REQUIRE(byte_identical(quiesced_after_split_damage(backend, workers), oracle));
+    }
+  }
 }
 
 // enforces: 02-architecture#gated-frame-equals-single-pass

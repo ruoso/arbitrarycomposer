@@ -78,10 +78,11 @@ surface to every frame, and the pixels a frame does not repaint are the
 pixels the previous frame left there. That is what makes step 1's "no damage
 → no work" a *visual* no-op and not a black screen.
 
-**A damage-gated frame repaints exactly one device region — clearing it
-first.** Step 1's damage maps to a device **repaint region**; the frame
-clears that region, then re-composites *every* layer that intersects it,
-each layer's tiles clipped to it. Both halves are load-bearing:
+**A damage-gated frame repaints a device repaint region — clearing it
+first.** Step 1's damage maps to a device **repaint region**: a set of
+**pairwise-disjoint**, integer-aligned device rects. The frame clears that
+region, then re-composites *every* layer that intersects it, each layer's
+tiles clipped to it. Three parts are load-bearing:
 
 - *Clear first.* Compositing is source-over, which is not idempotent for
   anything but fully-opaque content. Re-compositing a translucent layer onto
@@ -95,15 +96,30 @@ each layer's tiles clipped to it. Both halves are load-bearing:
   contribution, narrowed to a fringe. Every composite onto the target is
   therefore clipped to the repaint region (doc 09 § Backend contract), which
   makes the painted set and the cleared set the same set.
+- *Disjoint rects, not a bounding box.* Damage maps to one device rect per
+  (damage, layer) pair, and those rects may overlap. Clearing and clipping
+  per raw rect would clear a pixel in an overlap twice — harmless — but also
+  composite the tiles covering it **once per overlapping rect**, landing a
+  translucent layer's contribution more than once: exactly the double-blend
+  the clear exists to prevent. The rects are therefore **normalized into a
+  disjoint set** before any of them is cleared or clipped to, so every pixel
+  of the region belongs to exactly one repaint rect and is cleared once and
+  repainted once. The bounding box of the damage is the degenerate
+  one-rect normalization: always *correct*, but it repaints everything
+  between two far-apart damages, so it is the fallback (for a pathological
+  rect count), not the rule.
 
 Together these give the frame loop its correctness invariant: **a gated
 frame's repaint region is byte-identical to what a single full pass would
 have put there, and the rest of the target is untouched** — so compositing
 the same frame twice is a no-op, and a scene refined over N follow-up frames
-lands on exactly the pixels one un-gated pass would have produced. A tile
-that is still un-rendered when the deadline arrives paints step 4's fallback
-(stale → coarser → transparent) into the cleared region, as it would in a
-full pass; it does not leave the previous frame's pixels showing.
+lands on exactly the pixels one un-gated pass would have produced. The
+invariant is per-rect and the rects are disjoint, so it composes: it holds
+of the region as a whole exactly because it holds of each rect and no pixel
+is in two. A tile that is still un-rendered when the deadline arrives paints
+step 4's fallback (stale → coarser → transparent) into the cleared region,
+as it would in a full pass; it does not leave the previous frame's pixels
+showing.
 
 **A tile already in flight is not dispatched twice.** The cache is not the
 only thing a miss must be checked against: a tile whose render was dispatched

@@ -48,38 +48,103 @@ struct DirtyRegion {
   std::vector<Rect> device_rects;
 };
 
-// The single device **repaint rect** a damage-gated frame is defined by (doc 02
-// § The frame, interactively; `refine_frame_composite_idempotence` Decision 2):
-// the bounding box of `dirty.device_rects` -- each first intersected with the
-// viewport, so a structural `Rect::infinite()` rect saturates rather than
-// poisoning the box -- rounded **out** to whole device pixels. Empty (the
-// default `Rect{}`) iff the region is empty or maps entirely outside the
-// viewport, which is the concrete "no damage -> no work".
+// The **degenerate one-rect normalization** of the frame's damage: the bounding
+// box of `dirty.device_rects` -- each first intersected with the viewport, so a
+// structural `Rect::infinite()` rect saturates rather than poisoning the box --
+// rounded **out** to whole device pixels. Empty (the default `Rect{}`) iff the
+// region is empty or maps entirely outside the viewport, which is the concrete
+// "no damage -> no work".
 //
-// The gated frame uses this ONE value three times: it gates each layer's plan
-// (mapped back through the layer's inverse into local space), it is the
-// `Backend::clear_rect` argument, and it is the `device_clip` on every composite
-// onto the target. Deriving all three from one value is what makes the
-// idempotence proof trivial -- the planned set, the cleared set and the painted
-// set are the same set, so within the region every layer that covers a pixel
-// repaints it exactly once onto transparent (a single full pass, restricted to
-// the region), and outside it nothing is written.
+// This is no longer what a gated frame repaints -- `repaint_regions` below is
+// (doc 02 § The frame, interactively) -- but it remains load-bearing in two
+// places, which is why it stays a published, tested seam:
 //
-// *Why the bounding box and not the individual rects:* the per-layer gate was
-// already bbox-granular, and `map_damage_to_device` emits one rect per (damage,
-// layer) pair, which may OVERLAP -- clipping each tile once per dirty rect would
-// composite it twice in the overlap, re-introducing the very double-blend this
-// clears. One rect means one composite per tile, unambiguously. The precision
-// (a disjoint rect set, repainted per rect) is `compositor.disjoint_dirty_repaint`;
-// the bbox is byte-exact, just wider than it needs to be, and it re-composites
-// from cache (no extra renders).
+//   1. it is the **fallback** `repaint_regions` returns when a pathological rect
+//      count blows past `k_max_repaint_rects` (`disjoint_dirty_repaint` Decision
+//      3): not an approximation but the shipped, byte-exact behavior, whose union
+//      is a superset of the disjoint set's, so no damage is ever missed;
+//   2. it is the **bounding box** of `repaint_regions`' output, always -- because
+//      `floor`/`ceil` distribute over `min`/`max`, so rounding out each rect and
+//      then boxing equals boxing and then rounding out. That identity is what ties
+//      the two functions together and makes (1) coherent rather than a special
+//      case.
+//
+// *Why the bounding box is not enough:* the per-layer gate, the clear and the clip
+// all derive from the repaint region, so a one-rect region makes the idempotence
+// proof trivial -- the planned set, the cleared set and the painted set are the
+// same set. But `map_damage_to_device` emits one rect per (damage, layer) pair,
+// which may OVERLAP, and clipping each tile once per *raw* dirty rect would
+// composite it twice in the overlap: the very double-blend the clear exists to
+// prevent. The bbox dodged that by collapsing the rects to one -- at the cost of
+// repainting everything between two far-apart damages. `repaint_regions` solves it
+// properly, by making the rects genuinely disjoint first.
 //
 // *Why round out:* the dirty rects are `map_rect` outputs -- arbitrary doubles.
 // Rounding in would leave a sub-pixel fringe of the true damage unpainted (a
 // stale seam); rounding out is conservative in the safe direction, and because
-// the same rounded rect gates the plan, the extra pixels are covered by every
+// the same rounded rects gate the plan, the extra pixels are covered by every
 // layer that covers them.
 Rect repaint_region(const DirtyRegion& dirty, const Viewport& viewport);
+
+// The rect-count cap on a frame's repaint set (`disjoint_dirty_repaint` Decision
+// 3). A band sweep over *n* input rects can emit O(n^2) output rects in the worst
+// case (a diagonal staircase: ~n bands x ~n runs), and the input is
+// one-rect-per-(damage, layer) -- a 30-damage commit over 10 visible layers is 300
+// input rects, a plausible number whose worst-case decomposition is far worse than
+// the bbox it would replace. Over the cap, `repaint_regions` returns the bbox, so a
+// pathological input degrades gracefully to today's behavior instead of off a
+// performance cliff in a loop that has a deadline. 64 is comfortably above any
+// realistic interactive frame (a handful of damages x a handful of layers, most of
+// which overlap and collapse) and comfortably below the point where per-rect frame
+// overhead -- N plan-gate `map_rect`s per layer, N `clear_rect` calls -- would
+// exceed the blend work it saves.
+inline constexpr std::size_t k_max_repaint_rects = 64;
+
+// The frame's device **repaint region**: a set of **pairwise-disjoint**,
+// integer-aligned rects inside the viewport whose union is EXACTLY the union of
+// the (viewport-clipped, rounded-out) device dirty rects (doc 02 § The frame,
+// interactively; `compositor.disjoint_dirty_repaint`). Empty iff the region is
+// empty or maps entirely outside the viewport -- "no damage -> no work" (doc
+// 02:51), realized as a vector whose emptiness makes every per-rect loop in the
+// frame run zero times.
+//
+// The gated frame uses this ONE set three times, per rect: it gates each layer's
+// plan (each rect mapped back through the layer's inverse into local space), each
+// rect is a `Backend::clear_rect` argument, and each rect is the `device_clip` on
+// every composite of a tile that rect planned. The planned set, the cleared set and
+// the painted set are therefore the same set -- and **disjointness** is what keeps
+// that statement true now that the set is more than one rect, because it is what
+// guarantees no pixel belongs to two rects and so no pixel is cleared twice or
+// composited twice. A tile straddling two rects is planned twice and composited
+// once *per rect*, each composite clipped to its own rect: the pixels are still
+// written exactly once each.
+//
+// Three properties are the whole contract, and all three fall out of the
+// construction rather than being checked:
+//
+//   - **Pairwise disjoint.** The band sweep emits one rect per (y-band, merged
+//     x-run), and bands are half-open and runs within a band are disjoint by the
+//     merge.
+//   - **Integer-aligned.** Each input rect is clipped to the viewport and rounded
+//     OUT *before* the decomposition, so the sweep runs on integer rects and its
+//     outputs -- whose edges are all input edges -- are integer by construction.
+//     (Rounding in would leave a sub-pixel stale seam; see `repaint_region`.)
+//   - **Union-exact.** Not a superset (that is the waste this replaces) and
+//     emphatically not a subset (that leaves an undamaged-looking pixel that is in
+//     fact damaged). The sweep partitions the input union and re-emits every part.
+//
+// Clipping to the viewport BEFORE the sweep is also what keeps a structural
+// `Rect::infinite()` damage rect from poisoning it: infinite saturates to the
+// viewport rect, exactly as it does in `repaint_region`.
+//
+// The algorithm (Decision 2), the classic scanline region decomposition: clip and
+// round out each input rect; collect the distinct y-edges into half-open y-bands;
+// within each band merge the x-intervals of every rect spanning it into disjoint
+// x-runs; emit one rect per (band, run); coalesce vertically-adjacent bands whose
+// runs are identical, so two plainly non-overlapping rects come back out as two
+// rects rather than three bands. Over `k_max_repaint_rects` output rects the
+// decomposition is abandoned for `{repaint_region(dirty, viewport)}`.
+std::vector<Rect> repaint_regions(const DirtyRegion& dirty, const Viewport& viewport);
 
 // Project model/refinement `Damage` onto per-viewport device dirty rects (doc
 // 02:51,57-60). For each `Damage`: (a) a temporal gate -- skip unless

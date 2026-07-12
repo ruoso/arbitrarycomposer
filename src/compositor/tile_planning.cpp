@@ -7,10 +7,14 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace arbc {
 
@@ -54,21 +58,51 @@ Affine surface_to_device(const Affine& local_to_device, const Rect& local_rect, 
                                           Affine::scaling(1.0 / scale, 1.0 / scale)));
 }
 
-// Composite onto the frame target, honoring the gated frame's device repaint
-// clip (`refine_frame_composite_idempotence`). `clip` is null on the un-gated
-// (null-`dirty`) path, which routes to the plain `Backend::composite` -- so that
-// path is byte-identical and the existing goldens are untouched. On the gated
-// path every composite onto the target carries the SAME repaint rect the frame
-// cleared and planned against, so the painted set equals the cleared set: a tile
-// straddling the region's edge cannot spill its overhang source-over onto
-// un-cleared pixels. The counter contract is unchanged -- this is one composite
-// call either way, counted at the call sites exactly as before.
+// Pack a tile coord into a hash key. Every per-rect plan of ONE layer shares the
+// layer's content, revision, rung and achieved_time -- only the covered coords
+// differ, since the rung is selected from the layer's scale, not from its plan
+// region -- so within a layer the coord IS the `TileKey` identity, and this is the
+// dedup key the per-rect plans merge on.
+std::uint64_t coord_key(TileCoord coord) {
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(coord.col)) << 32U) |
+         static_cast<std::uint64_t>(static_cast<std::uint32_t>(coord.row));
+}
+
+// Composite onto the frame target, once per repaint rect the tile was planned from
+// (`refine_frame_composite_idempotence`, generalized by
+// `compositor.disjoint_dirty_repaint`).
+//
+// `clips` holds exactly one NULL entry on the un-gated (null-`dirty`) path, which
+// routes to the plain `Backend::composite` -- so that path is one unclipped call,
+// byte-identical, and the existing goldens are untouched. On the gated path it holds
+// one non-null entry per repaint rect whose plan covered this tile: every composite
+// onto the target carries a rect the frame CLEARED and PLANNED against, so the
+// planned set, the cleared set and the painted set are the same set, and a tile
+// straddling a rect's edge cannot spill its overhang source-over onto un-cleared
+// pixels.
+//
+// A tile straddling two repaint rects therefore composites TWICE -- and that is not
+// a double-blend, because the repaint rects are pairwise DISJOINT: each blend is
+// scissored to its own rect, so each device pixel is still written exactly once, by
+// exactly one of them. That disjointness is `repaint_regions`' whole contract, and
+// it is why the raw (overlapping) dirty rects could not be clipped to directly.
+//
+// The composite count follows the clip list, so it is bumped here rather than at the
+// call sites: `composites` honestly reports two clipped blends for a straddling tile
+// (Decision 4). At one clip -- every un-gated frame, every single-rect gated frame --
+// it is one bump, exactly as before.
 void composite_onto_target(Backend& backend, Surface& target, const Surface& src,
-                           const Affine& src_to_dst, double opacity, const Rect* clip) {
-  if (clip != nullptr) {
-    backend.composite_clipped(target, src, src_to_dst, opacity, *clip);
-  } else {
-    backend.composite(target, src, src_to_dst, opacity);
+                           const Affine& src_to_dst, double opacity,
+                           std::span<const Rect* const> clips, CompositorCounters* counters) {
+  for (const Rect* clip : clips) {
+    if (clip != nullptr) {
+      backend.composite_clipped(target, src, src_to_dst, opacity, *clip);
+    } else {
+      backend.composite(target, src, src_to_dst, opacity);
+    }
+    if (counters != nullptr) {
+      counters->note_composite();
+    }
   }
 }
 
@@ -77,10 +111,13 @@ void composite_onto_target(Backend& backend, Surface& target, const Surface& src
 // overpaint abutting tiles. Instead upscale just this fine tile's footprint
 // into a transient pool temp (never cached), then composite that temp through
 // the fine per-tile affine -- bounding the paint to the tile so neighbouring
-// fallbacks never double-blend.
+// fallbacks never double-blend. The upscale into the temp happens ONCE even for a
+// tile straddling several repaint rects: only the final paint onto the target is
+// per-rect, since that is the only step the clip scopes.
 void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
                        const PlannedTile& tile, const Affine& local_to_device, ScaleRung rung,
-                       double opacity, CompositorCounters* counters, const Rect* clip) {
+                       double opacity, CompositorCounters* counters,
+                       std::span<const Rect* const> clips) {
   const double rung_px = rung_scale(rung);
   const int octave = rung.index - tile.source_rung.index;
   const std::int32_t factor = std::int32_t{1} << octave;
@@ -112,10 +149,7 @@ void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
 
   composite_onto_target(backend, target, temp_surface,
                         surface_to_device(local_to_device, tile.local_rect, rung_px), opacity,
-                        clip);
-  if (counters != nullptr) {
-    counters->note_composite();
-  }
+                        clips, counters);
 }
 
 } // namespace
@@ -259,33 +293,41 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
 
   // The frame's device **repaint region** (doc 02 § The frame, interactively;
-  // `refine_frame_composite_idempotence` Decision 2). The null-`dirty` path clears
-  // and re-plans the WHOLE viewport, unclipped -- byte-identical to today, which is
-  // what keeps every landed golden un-rebaselined. A gated frame instead repaints
-  // exactly one region: the bounding box of the device dirty rects, rounded out.
+  // `refine_frame_composite_idempotence` Decision 2, generalized by
+  // `compositor.disjoint_dirty_repaint`): a set of PAIRWISE-DISJOINT, integer-aligned
+  // device rects whose union is exactly the union of the (viewport-clipped,
+  // rounded-out) dirty rects. The null-`dirty` path clears and re-plans the WHOLE
+  // viewport, unclipped -- byte-identical to today, which is what keeps every landed
+  // golden un-rebaselined.
   //
-  // That ONE value is used three times below -- it gates each layer's plan, it is
-  // what gets cleared, and it is the clip on every composite onto the target -- so
-  // the planned set, the cleared set and the painted set are the same set. That is
-  // the whole idempotence proof: within the region every layer that covers a pixel
-  // repaints it exactly once onto transparent (a single full pass, restricted to
-  // the region), and outside it nothing is written.
+  // That ONE set is used three times below, PER RECT -- each rect gates each layer's
+  // plan, each rect is cleared, and each rect is the clip on every composite of a
+  // tile it planned -- so the planned set, the cleared set and the painted set are
+  // the same set. That is the whole idempotence proof, and DISJOINTNESS is what keeps
+  // it true now that the set is more than one rect: no pixel is in two rects, so no
+  // pixel is cleared twice or composited twice. Within the region every layer that
+  // covers a pixel repaints it exactly once onto transparent (a single full pass,
+  // restricted to the region), and outside it nothing is written. The invariant is
+  // per-rect and it composes precisely because the rects do not overlap.
   //
-  // The clear is gated on a NON-EMPTY region, not merely on `dirty != nullptr`: a
-  // non-null but empty `DirtyRegion` clears nothing, plans nothing, composites
-  // nothing, and leaves `target` byte-identical -- "no damage -> no work" (doc
-  // 02:51). `repaint` stays empty on the null path and `repaint_clip` stays null
-  // there, which is what routes the un-gated composites to the unclipped
-  // `Backend::composite`.
-  const Rect repaint = (dirty != nullptr) ? repaint_region(*dirty, viewport) : Rect{};
-  const Rect* const repaint_clip = (dirty != nullptr) ? &repaint : nullptr;
+  // An empty set -- a non-null but empty `DirtyRegion`, or one mapping entirely
+  // outside the viewport -- clears nothing, plans nothing, composites nothing, and
+  // leaves `target` byte-identical: "no damage -> no work" (doc 02:51) falls out of
+  // every per-rect loop below running zero times.
+  const std::vector<Rect> repaint =
+      (dirty != nullptr) ? repaint_regions(*dirty, viewport) : std::vector<Rect>{};
   if (dirty == nullptr) {
     backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
-  } else if (!repaint.empty()) {
+  } else {
     // Clear FIRST: source-over is not idempotent for anything but fully-opaque
     // content, so re-compositing a translucent layer onto the pixels the previous
     // frame left in place would land its contribution twice (doc 02, "Clear first").
-    backend.clear_rect(target, repaint, 0.0F, 0.0F, 0.0F, 0.0F);
+    // One `clear_rect` per repaint rect -- and because the rects are disjoint, no
+    // pixel is cleared twice, and the gap between two far-apart damages is not
+    // cleared at all.
+    for (const Rect& rect : repaint) {
+      backend.clear_rect(target, rect, 0.0F, 0.0F, 0.0F, 0.0F);
+    }
   }
 
   // The opt-in plan sink is emptied at entry so it holds exactly this frame's
@@ -349,20 +391,10 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     if (const std::optional<Rect> bounds = content->bounds(); bounds.has_value()) {
       region = region.intersect(*bounds);
     }
-    // Damage gating (damage_planning Decision 2): narrow this layer's plan region
-    // to the frame's device repaint region mapped into layer-local space (reusing
-    // the inverse the cull already computed), so only tiles intersecting it are
-    // planned. This is the SAME rect the frame cleared and clips every composite
-    // to (`refine_frame_composite_idempotence` Decision 2) -- previously this loop
-    // bounding-boxed the dirty rects itself, which is exactly what `repaint_region`
-    // now computes once, hoisted out of the per-layer walk. An empty repaint region
-    // (a non-null but empty `DirtyRegion`) skips every layer, realizing "no damage
-    // -> no work" as zero renders and zero composites.
-    if (dirty != nullptr) {
-      if (repaint.empty()) {
-        return;
-      }
-      region = region.intersect(inv->map_rect(repaint));
+    // An empty repaint set skips every layer, realizing "no damage -> no work" as
+    // zero renders and zero composites (doc 02:51).
+    if (dirty != nullptr && repaint.empty()) {
+      return;
     }
     if (region.empty()) {
       return;
@@ -372,15 +404,84 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       return; // sub-pixel / degenerate: cull (doc 04)
     }
 
-    // Doc 02 step 3: quantize to the ladder, split into tiles, look each up.
+    // Doc 02 step 3: quantize to the ladder, split into tiles, look each up. The rung
+    // is selected from the layer's SCALE, not from its plan region, so every per-rect
+    // plan below shares it -- which is what makes the coord the tile's identity here.
     const RungSelection selection = select_rung(scale);
-    LayerTilePlan plan =
-        plan_layer(cache, layer.content, layer_revision, prior_revision, selection, region,
-                   composed, content->stability(), local_time, StateHandle{}, deadline, content);
-
     const double rung_px = rung_scale(selection.rung);
 
-    for (PlannedTile& tile : plan.tiles) {
+    // Damage gating (damage_planning Decision 2; `disjoint_dirty_repaint` Decision 2):
+    // plan this layer ONCE PER REPAINT RECT, each rect mapped into layer-local space
+    // through the inverse the cull already computed, and merge the per-rect plans by
+    // tile coord. Rect-inner planning is what actually buys the win -- a tile in the
+    // gap between two far-apart damages is never planned, never looked up, never
+    // composited, where the bounding-box gate planned every tile between them.
+    //
+    // The merge is what keeps the rest of the frame's contracts intact. A tile
+    // straddling two repaint rects is PLANNED twice (idempotent and cheap -- a cache
+    // and pending-set lookup) but appears ONCE in the merged plan, so it is rendered
+    // once: `requests_issued` does not grow. It carries the list of rects that planned
+    // it, and composites once per rect, each scissored to that rect -- so its pixels
+    // still land exactly once (the rects are disjoint). And one merged plan per layer
+    // is what keeps `visible_plans` at one entry per planned layer, in composite order
+    // (`compositor.expose_visible_plan`), rather than one entry per (layer, rect).
+    //
+    // `tile_clips` is parallel to `plan.tiles`: the clip rects each tile composites
+    // under. On the un-gated path it is a single null per tile -- one unclipped
+    // composite, byte-for-byte the pre-task path.
+    LayerTilePlan plan;
+    std::vector<std::vector<const Rect*>> tile_clips;
+    const auto plan_region = [&](const Rect& local_region) {
+      return plan_layer(cache, layer.content, layer_revision, prior_revision, selection,
+                        local_region, composed, content->stability(), local_time, StateHandle{},
+                        deadline, content);
+    };
+    if (dirty == nullptr) {
+      plan = plan_region(region);
+      tile_clips.assign(plan.tiles.size(), std::vector<const Rect*>{nullptr});
+    } else {
+      std::unordered_map<std::uint64_t, std::size_t> tile_at;
+      for (const Rect& rect : repaint) {
+        const Rect rect_region = region.intersect(inv->map_rect(rect));
+        if (rect_region.empty()) {
+          continue; // this layer does not meet this repaint rect
+        }
+        LayerTilePlan part = plan_region(rect_region);
+        if (tile_at.empty()) {
+          // The per-rect plans of one layer agree on every scalar field (same content,
+          // rung, remainder, affine, key time, snapshot, deadline) and differ only in
+          // which tiles they cover, so the first non-empty part seeds the merged plan
+          // wholesale and later parts merge their tiles into it.
+          plan = std::move(part);
+          tile_clips.assign(plan.tiles.size(), std::vector<const Rect*>{&rect});
+          for (std::size_t at = 0; at < plan.tiles.size(); ++at) {
+            tile_at.emplace(coord_key(plan.tiles[at].coord), at);
+          }
+          continue;
+        }
+        for (PlannedTile& tile : part.tiles) {
+          const auto [entry, fresh] = tile_at.emplace(coord_key(tile.coord), plan.tiles.size());
+          if (fresh) {
+            plan.tiles.push_back(std::move(tile));
+            tile_clips.push_back(std::vector<const Rect*>{&rect});
+          } else {
+            // The straddle: already planned from an earlier rect, so it renders once
+            // and gains one more clip to composite under.
+            tile_clips[entry->second].push_back(&rect);
+          }
+        }
+      }
+    }
+    if (plan.tiles.empty()) {
+      // A layer lying wholly in the gap between the repaint rects: not planned, not
+      // composited, and -- decisively -- not pushed to `visible_plans`, which holds
+      // this frame's PLANNED layers.
+      return;
+    }
+
+    for (std::size_t at = 0; at < plan.tiles.size(); ++at) {
+      PlannedTile& tile = plan.tiles[at];
+      const std::span<const Rect* const> clips{tile_clips[at]};
       // Doc 02 step 3/4: a miss is checked against the PENDING SET as well as the
       // cache. A tile whose render is already in flight -- this frame dispatched it
       // for another layer, or an operator's pull did -- is absent from the cache and
@@ -558,10 +659,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                 // counted degraded (offline no-degrade guarantee).
                 composite_onto_target(backend, target, tile_surface,
                                       surface_to_device(composed, tile.local_rect, rung_px),
-                                      layer.opacity, repaint_clip);
-                if (counters != nullptr) {
-                  counters->note_composite();
-                }
+                                      layer.opacity, clips, counters);
                 tile.hold = CacheHold<TileValue>{};
                 tile.display_source = TileSource::Fresh;
               }
@@ -583,22 +681,22 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, repaint_clip);
-          if (counters != nullptr) {
-            counters->note_composite();
-          }
+                                layer.opacity, clips, counters);
         }
         break;
       case TileSource::Stale:
         // A degraded display: a prior-revision tile shown while the fresh render is
         // owed (doc 02:64). Counted as degraded so the offline no-degrade guarantee
         // is a behavioral zero (`02-architecture#offline-frame-renders-exactly-no-degrade`).
+        // Degradation is a property of the tile's DISPLAY SOURCE, not of how many
+        // repaint rects it lands in, so it is counted once per tile even when the tile
+        // straddles several -- exactly as the `Placeholder` arm below counts one
+        // degraded display against zero composites.
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, repaint_clip);
+                                layer.opacity, clips, counters);
           if (counters != nullptr) {
-            counters->note_composite();
             counters->note_degraded_composite();
           }
         }
@@ -607,7 +705,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         // A degraded display: a coarser-rung tile rescaled up (doc 02:64).
         if (tile.hold.valid()) {
           composite_coarser(backend, pool, target, tile, composed, selection.rung, layer.opacity,
-                            counters, repaint_clip);
+                            counters, clips);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }
@@ -615,9 +713,9 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         break;
       case TileSource::Placeholder:
         // Transparent placeholder: the pixels this tile covers were cleared to
-        // transparent -- the whole target on the un-gated path, the repaint region
-        // on the gated one, and a planned tile lies inside the region it was gated
-        // to by construction -- so "nothing yet" is a no-op paint (doc 02:64
+        // transparent -- the whole target on the un-gated path, the repaint rects on
+        // the gated one, and a planned tile intersects every rect that planned it by
+        // construction -- so "nothing yet" is a no-op paint (doc 02:64
         // checkerboard/transparent). On the gated path this is a HOLE for one frame
         // until the arrival refines it, not the previous frame's pixels showing
         // through: that is what a full pass would have shown (doc 02 step 4's

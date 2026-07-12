@@ -124,7 +124,8 @@ task compositor "Compositor" {
   task disjoint_dirty_repaint "Normalize damage rects to a disjoint set before clear/clip/repaint" {
     effort 2d
     allocate team
+    complete 100
     depends !refine_frame_composite_idempotence
-    note "The repaint region is currently the bounding box of the frame's device dirty rects (Decision 2 of refine_frame_composite_idempotence): two small damages at opposite corners of the viewport repaint everything between them. Normalize the DirtyRegion into a disjoint rect set and clear/clip/repaint per rect instead. Waste, not incorrectness — the bbox repaint is byte-exact and re-composites from cache. Source-of-debt: tasks/refinements/compositor/refine_frame_composite_idempotence.md. Docs 02/09."
+    note "The repaint region is currently the bounding box of the frame's device dirty rects (Decision 2 of refine_frame_composite_idempotence): two small damages at opposite corners of the viewport repaint everything between them. Normalize the DirtyRegion into a disjoint rect set and clear/clip/repaint per rect instead. Waste, not incorrectness — the bbox repaint is byte-exact and re-composites from cache. Source-of-debt: tasks/refinements/compositor/refine_frame_composite_idempotence.md. Docs 02/09. Refinement: tasks/refinements/compositor/disjoint_dirty_repaint.md"
   }
 }

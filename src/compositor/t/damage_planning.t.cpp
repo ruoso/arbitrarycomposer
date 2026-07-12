@@ -17,10 +17,12 @@
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
 #include <arbc/surface/surface_pool.hpp>
+#include <arbc/surface/testing/counting_backend.hpp>
 #include <arbc/surface/testing/stub_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -136,6 +138,94 @@ void put_tile(TileCache& cache, arbc::ObjectId content, ScaleRung rung, TileCoor
 bool resident(TileCache& cache, arbc::ObjectId content, ScaleRung rung, TileCoord coord) {
   const TileKey key{content, /*revision=*/1, rung, coord, /*achieved_time=*/std::nullopt};
   return cache.lookup(key).has_value();
+}
+
+// Rasterize a rect set into a per-device-pixel coverage COUNT over the viewport: how
+// many rects of the set contain each pixel. Disjointness is then "no cell above 1",
+// and union-equality is "the same cells are non-zero".
+//
+// Asserting on the cover rather than on a particular rect list is deliberate. The
+// contract `repaint_regions` makes is about the set of PIXELS, not about the band
+// sweep's particular seams -- a test that pinned the seams would over-fit the
+// decomposition and fail the next time it is improved without anything having gone
+// wrong.
+std::vector<int> coverage(const std::vector<Rect>& rects, int dim) {
+  const Rect device_rect = Rect::from_size(static_cast<double>(dim), static_cast<double>(dim));
+  std::vector<int> grid(static_cast<std::size_t>(dim) * static_cast<std::size_t>(dim), 0);
+  for (const Rect& r : rects) {
+    const Rect clipped = r.intersect(device_rect);
+    if (clipped.empty()) {
+      continue;
+    }
+    for (int y = static_cast<int>(clipped.y0); y < static_cast<int>(clipped.y1); ++y) {
+      for (int x = static_cast<int>(clipped.x0); x < static_cast<int>(clipped.x1); ++x) {
+        ++grid[(static_cast<std::size_t>(y) * static_cast<std::size_t>(dim)) +
+               static_cast<std::size_t>(x)];
+      }
+    }
+  }
+  return grid;
+}
+
+// The reference cover: the pixels the (viewport-clipped, rounded-out) INPUT rects
+// cover. `repaint_regions`' union must equal this EXACTLY -- not a superset (that is
+// the waste the task is paying down) and emphatically not a subset (that is a stale
+// seam: a pixel that looks undamaged and is not).
+std::vector<int> input_coverage(const DirtyRegion& dirty, int dim) {
+  const Rect device_rect = Rect::from_size(static_cast<double>(dim), static_cast<double>(dim));
+  std::vector<Rect> rounded;
+  for (const Rect& r : dirty.device_rects) {
+    const Rect clipped = r.intersect(device_rect);
+    if (clipped.empty()) {
+      continue;
+    }
+    rounded.push_back(Rect{std::floor(clipped.x0), std::floor(clipped.y0), std::ceil(clipped.x1),
+                           std::ceil(clipped.y1)});
+  }
+  return coverage(rounded, dim);
+}
+
+// Every promise `repaint_regions` makes, asserted at once on whatever it returned
+// (`compositor.disjoint_dirty_repaint` Constraints 1-3): the rects are pairwise
+// disjoint, integer-aligned and inside the viewport; their union is exactly the input
+// union; and their bounding box is `repaint_region`, which is what ties the new
+// function to the old one and makes the cap fallback coherent rather than a special
+// case.
+std::vector<Rect> checked_regions(const DirtyRegion& dirty, const arbc::Viewport& viewport) {
+  const std::vector<Rect> regions = arbc::repaint_regions(dirty, viewport);
+  const int dim = viewport.width;
+  const Rect device_rect = Rect::from_size(static_cast<double>(dim), static_cast<double>(dim));
+
+  Rect box{}; // empty accumulator (empty = identity under rect_union)
+  for (const Rect& r : regions) {
+    CHECK_FALSE(r.empty());
+    CHECK(r.x0 == std::floor(r.x0));
+    CHECK(r.y0 == std::floor(r.y0));
+    CHECK(r.x1 == std::floor(r.x1));
+    CHECK(r.y1 == std::floor(r.y1));
+    CHECK(r == r.intersect(device_rect)); // inside the viewport
+    box = arbc::rect_union(box, r);
+  }
+  CHECK(box == arbc::repaint_region(dirty, viewport));
+
+  const std::vector<int> got = coverage(regions, dim);
+  const std::vector<int> want = input_coverage(dirty, dim);
+  std::size_t overlapped = 0;
+  std::size_t mismatched = 0;
+  for (std::size_t at = 0; at < got.size(); ++at) {
+    if (got[at] > 1) {
+      ++overlapped;
+    }
+    if ((got[at] > 0) != (want[at] > 0)) {
+      ++mismatched;
+    }
+  }
+  // Disjoint: no device pixel is cleared twice or composited twice.
+  CHECK(overlapped == 0);
+  // Union-exact: every damaged pixel is in exactly one repaint rect, and no undamaged
+  // pixel is in any of them.
+  CHECK(mismatched == 0);
+  return regions;
 }
 
 } // namespace
@@ -386,4 +476,245 @@ TEST_CASE("repaint_region is the rounded-out bbox of the dirty rects, viewport-c
     const DirtyRegion structural{{arbc::Rect{4.0, 4.0, 8.0, 8.0}, arbc::Rect::infinite()}};
     CHECK(arbc::repaint_region(structural, viewport) == arbc::Rect{0.0, 0.0, 512.0, 512.0});
   }
+}
+
+// enforces: 02-architecture#disjoint-repaint-covers-damage-exactly-once
+TEST_CASE("repaint_regions normalizes the dirty rects into a disjoint integer cover") {
+  const arbc::Viewport viewport{64, 64, arbc::Affine::identity()};
+
+  SECTION("an empty DirtyRegion yields an empty vector -- the no-damage-no-work root") {
+    CHECK(arbc::repaint_regions(DirtyRegion{}, viewport).empty());
+  }
+
+  SECTION("rects outside the viewport contribute nothing") {
+    const DirtyRegion dirty{{Rect{600.0, 600.0, 700.0, 700.0}}};
+    CHECK(checked_regions(dirty, viewport).empty());
+  }
+
+  SECTION("disjoint rects pass through unchanged (up to round-out)") {
+    // The common case must not pay for the band machinery: two separated damages come
+    // back out as two rects, not as the three bands the sweep passes through (the
+    // vertical coalesce is what collapses the middle gap band away).
+    const DirtyRegion dirty{{Rect{2.0, 2.0, 6.0, 6.0}, Rect{10.0, 10.0, 14.0, 14.0}}};
+    const std::vector<Rect> regions = checked_regions(dirty, viewport);
+    REQUIRE(regions.size() == 2);
+    CHECK(regions[0] == Rect{2.0, 2.0, 6.0, 6.0});
+    CHECK(regions[1] == Rect{10.0, 10.0, 14.0, 14.0});
+  }
+
+  SECTION("overlapping rects are split into a disjoint cover") {
+    // The classic L-shape. The overlap belongs to exactly ONE output rect, which is
+    // what keeps a translucent tile covering it from being composited -- and blended
+    // -- twice. `checked_regions` asserts the coverage grid, not a particular set of
+    // cuts.
+    const DirtyRegion dirty{{Rect{0.0, 0.0, 10.0, 10.0}, Rect{5.0, 5.0, 15.0, 15.0}}};
+    const std::vector<Rect> regions = checked_regions(dirty, viewport);
+    CHECK(regions.size() > 1); // it really decomposed rather than boxing
+  }
+
+  SECTION("a contained rect is absorbed") {
+    const DirtyRegion dirty{{Rect{0.0, 0.0, 20.0, 20.0}, Rect{5.0, 5.0, 10.0, 10.0}}};
+    const std::vector<Rect> regions = checked_regions(dirty, viewport);
+    REQUIRE(regions.size() == 1);
+    CHECK(regions[0] == Rect{0.0, 0.0, 20.0, 20.0});
+  }
+
+  SECTION("identical rects collapse -- the (damage, layer) duplicate") {
+    // `map_damage_to_device` emits one rect per (damage, layer) pair, so two layers
+    // showing the same damaged content emit the SAME device rect. This is the most
+    // common real overlap, and it must not become two repaint rects (which would clear
+    // and composite those pixels twice).
+    const DirtyRegion dirty{{Rect{4.0, 4.0, 12.0, 12.0}, Rect{4.0, 4.0, 12.0, 12.0}}};
+    const std::vector<Rect> regions = checked_regions(dirty, viewport);
+    REQUIRE(regions.size() == 1);
+    CHECK(regions[0] == Rect{4.0, 4.0, 12.0, 12.0});
+  }
+
+  SECTION("a structural infinite rect saturates to the viewport") {
+    // Clipping to the viewport BEFORE the sweep is what keeps `Rect::infinite()` from
+    // taking the round-out to a non-representable integer.
+    const DirtyRegion structural{{Rect::infinite()}};
+    const std::vector<Rect> saturated = checked_regions(structural, viewport);
+    REQUIRE(saturated.size() == 1);
+    CHECK(saturated[0] == Rect{0.0, 0.0, 64.0, 64.0});
+
+    // ... and mixed with a small rect it SUBSUMES it, rather than being cut by it.
+    const DirtyRegion mixed{{Rect{4.0, 4.0, 8.0, 8.0}, Rect::infinite()}};
+    const std::vector<Rect> regions = checked_regions(mixed, viewport);
+    REQUIRE(regions.size() == 1);
+    CHECK(regions[0] == Rect{0.0, 0.0, 64.0, 64.0});
+  }
+
+  SECTION("rects are rounded OUT, not in") {
+    // The dirty rects are `Affine::map_rect` outputs -- arbitrary doubles. Rounding in
+    // would leave a sub-pixel fringe of the true damage unpainted: a stale seam.
+    const DirtyRegion dirty{{Rect{10.25, 20.75, 30.5, 40.1}}};
+    const std::vector<Rect> regions = checked_regions(dirty, viewport);
+    REQUIRE(regions.size() == 1);
+    CHECK(regions[0] == Rect{10.0, 20.0, 31.0, 41.0}); // strictly contains the input
+  }
+}
+
+// enforces: 02-architecture#disjoint-repaint-covers-damage-exactly-once
+TEST_CASE("repaint_regions falls back to the bbox over the rect-count cap") {
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+
+  // A diagonal staircase of mutually-overlapping rects: every y-band's merged x-run is
+  // shifted one pixel from the band below it, so nothing coalesces and the sweep emits
+  // one rect per band -- the O(n^2) shape Decision 3's cap exists for. The input is not
+  // exotic: one rect per (damage, layer) pair over a many-damage, many-layer commit
+  // reaches these counts.
+  DirtyRegion dirty;
+  for (int at = 0; at < 70; ++at) {
+    const double edge = static_cast<double>(at);
+    dirty.device_rects.push_back(Rect{edge, edge, edge + 2.0, edge + 2.0});
+  }
+
+  // The fallback is not an approximation: it is the shipped, byte-exact bounding-box
+  // behavior, whose union is a SUPERSET of the disjoint set's -- so a pathological
+  // input degrades to the status quo, never to missed damage.
+  const std::vector<Rect> regions = arbc::repaint_regions(dirty, viewport);
+  REQUIRE(regions.size() == 1);
+  CHECK(regions[0] == arbc::repaint_region(dirty, viewport));
+  CHECK(regions[0] == Rect{0.0, 0.0, 71.0, 71.0});
+}
+
+// enforces: 02-architecture#disjoint-repaint-skips-the-undamaged-gap
+// enforces: 02-architecture#interactive-still-scene-schedules-no-frame
+TEST_CASE("a disjoint repaint set skips the undamaged gap (counter-backed)") {
+  MarkBackend mark;
+  arbc::testing::CountingBackend backend(mark); // tallies the clip-scoped ops
+  StubContent content(Stability::Static);
+  arbc::Model model;
+  const arbc::ObjectId content_id = add_layer(model, arbc::Affine::identity());
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == content_id ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+
+  // The cache is the CALLER's: a `LayerTilePlan` surfaced through `visible_plans`
+  // retains its tiles' cache holds, so a sink outliving the cache it was planned
+  // against would dangle. Each call gets a cold cache -- every planned tile a miss --
+  // but the caller owns its lifetime.
+  auto drive = [&](TileCache& cache, const DirtyRegion* dirty, CompositorCounters& counters,
+                   std::vector<arbc::LayerTilePlan>* plans = nullptr) {
+    backend.reset();
+    arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
+        backend.make_surface(512, 512, arbc::k_working_rgba32f);
+    REQUIRE(target.has_value());
+    arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
+                                   arbc::Deadline::none(), std::nullopt, nullptr, &counters, dirty,
+                                   arbc::Time::zero(), plans);
+  };
+
+  SECTION("two far-apart damages do not repaint the gap between them") {
+    // The headline scenario from the WBS note: two small damages at opposite corners of
+    // the viewport. Their bounding box is the WHOLE viewport, so the pre-task gate
+    // re-planned and re-composited every tile between them to refresh 512 pixels of
+    // actual damage.
+    const DirtyRegion dirty{{Rect{0.0, 0.0, 16.0, 16.0}, Rect{496.0, 496.0, 512.0, 512.0}}};
+    TileCache split_cache(64u * 1024 * 1024);
+    CompositorCounters split;
+    drive(split_cache, &dirty, split);
+    const int split_clears = backend.clear_rect_calls;
+
+    // The same damage forced through the bounding box: a one-rect `DirtyRegion` holding
+    // exactly `repaint_region`'s box normalizes to itself, so this frame IS the pre-task
+    // behavior -- which is also what `repaint_regions` returns over the cap.
+    const DirtyRegion boxed{{arbc::repaint_region(dirty, viewport)}};
+    REQUIRE(arbc::repaint_regions(boxed, viewport).size() == 1);
+    TileCache box_cache(64u * 1024 * 1024);
+    CompositorCounters box;
+    drive(box_cache, &boxed, box);
+    const int box_clears = backend.clear_rect_calls;
+
+    CHECK(split.composites() == 2);               // the two corner tiles, nothing between
+    CHECK(box.composites() == k_tiles_covered);   // every tile of the 2x2 grid
+    CHECK(split.composites() < box.composites()); // strictly less work, same pixels
+    CHECK(split.requests_issued() == 2);          // and it renders only what it paints
+    CHECK(box.requests_issued() == k_tiles_covered);
+    CHECK(split_clears == 2); // one clear_rect per repaint rect ...
+    CHECK(box_clears == 1);   // ... where the bbox clears the whole viewport, once
+  }
+
+  SECTION("a tile straddling two repaint rects renders once and composites once per rect") {
+    // Two damages inside ONE tile: the repaint set is two disjoint rects and the tile is
+    // planned from both. Planning is idempotent and cheap (a cache and pending-set
+    // lookup); the merge by tile coord is what makes it RENDER once. Compositing must
+    // happen once per rect -- that is how the tile's pixels reach both -- and each
+    // composite is scissored to its own rect, so no pixel is written twice.
+    const DirtyRegion dirty{{Rect{10.0, 10.0, 20.0, 20.0}, Rect{10.0, 100.0, 20.0, 110.0}}};
+    REQUIRE(arbc::repaint_regions(dirty, viewport).size() == 2);
+
+    TileCache cache(64u * 1024 * 1024);
+    CompositorCounters counters;
+    std::vector<arbc::LayerTilePlan> plans; // destroyed before `cache`: it holds cache pins
+    drive(cache, &dirty, counters, &plans);
+
+    CHECK(counters.requests_issued() == 1); // planned twice, rendered ONCE
+    CHECK(counters.composites() == 2);      // ... and composited once per repaint rect
+    // Not by the pending-set guard: the per-rect plans are merged by tile coord BEFORE
+    // dispatch, so the duplicate plan never reaches a dispatch site to be suppressed.
+    // (The guard is still the backstop for a tile two LAYERS want in one frame.)
+    CHECK(counters.requests_suppressed() == 0);
+    CHECK(backend.clear_rect_calls == 2);
+    // Per-rect planning naturally produces N plans for one layer. They are merged, so
+    // `visible_plans` keeps its contract: one entry per planned layer, in composite
+    // order -- not one per (layer, rect) (`compositor.expose_visible_plan`).
+    REQUIRE(plans.size() == 1);
+    CHECK(plans[0].tiles.size() == 1);
+  }
+
+  SECTION("an empty DirtyRegion clears nothing, plans nothing, composites nothing") {
+    // The invariant the whole idle-viewport story rests on (doc 02:51). The empty rect
+    // vector makes every per-rect loop in the frame run zero times -- including the
+    // clear, which must not degenerate into a whole-target one.
+    const DirtyRegion dirty{};
+    TileCache cache(64u * 1024 * 1024);
+    CompositorCounters counters;
+    drive(cache, &dirty, counters);
+    CHECK(counters.requests_issued() == 0);
+    CHECK(counters.composites() == 0);
+    CHECK(backend.clear_rect_calls == 0);
+    CHECK(backend.clear_calls == 0);
+  }
+}
+
+// enforces: 02-architecture#disjoint-repaint-skips-the-undamaged-gap
+TEST_CASE("a layer lying in the undamaged gap is not planned and not exposed") {
+  MarkBackend backend;
+  StubContent content(Stability::Static);
+  arbc::Model model;
+  const arbc::ObjectId near_id = add_layer(model, arbc::Affine::identity());
+  const arbc::ObjectId far_id = add_layer(model, arbc::Affine::translation(300.0, 300.0));
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return (id == near_id || id == far_id) ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+
+  TileCache cache(64u * 1024 * 1024);
+  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
+      backend.make_surface(512, 512, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+
+  // Damage the top-left corner only. The near layer covers it; the far layer, offset by
+  // 300 device pixels, meets NO repaint rect -- so it is not planned, not composited,
+  // and not pushed to `visible_plans`, which holds this frame's *planned* layers. Under
+  // the bounding-box gate a layer could only ever miss the one rect; now it must miss
+  // every rect, and that is the branch under test.
+  const DirtyRegion dirty{{Rect{0.0, 0.0, 16.0, 16.0}}};
+  CompositorCounters counters;
+  std::vector<arbc::LayerTilePlan> plans;
+  arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
+                                 arbc::Deadline::none(), std::nullopt, nullptr, &counters, &dirty,
+                                 arbc::Time::zero(), &plans);
+
+  CHECK(counters.requests_issued() == 1);
+  CHECK(counters.composites() == 1);
+  REQUIRE(plans.size() == 1);
+  CHECK(plans[0].content == near_id);
 }
