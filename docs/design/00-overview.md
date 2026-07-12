@@ -191,6 +191,15 @@ Initially-open questions, now decided in their own docs:
   shared-mapping process isolation); records are index-only /
   position-independent; JSON (doc 08) remains the interchange format.
   Decided in doc 15.
+- **Object identity namespaces**: the 64-bit `ObjectId` space is split by
+  its top bit. The model allocator issues only bit-63-clear ids; the
+  reserved half is the runtime's *synthesized-identity* namespace, used for
+  graph nodes the model never named (an operator's inline input children,
+  doc 13). Disjointness is therefore structural, not incidental: a
+  synthesized cache identity can never alias a model object's id, so damage
+  and cache invalidation on one namespace cannot evict the other's entries.
+  Synthesized ids never persist — they are render-time state, never
+  journaled or serialized. Decided in doc 14 (§ Identity).
 
 ## Open questions
 

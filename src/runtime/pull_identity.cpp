@@ -16,18 +16,12 @@ build_pull_identity_map(const DocRoot& state, const std::function<Content*(Objec
 
   // Seed the layer roots (each bound to a model `ObjectId`) in `for_each_layer`
   // order -- captured into a vector so the child walk below runs in a deterministic
-  // order (Constraint 3), not the process-dependent hash order of the map. Track the
-  // maximum seeded id value so synthesized child ids can start strictly above it
-  // (Decision 4).
-  std::uint64_t max_seeded = 0;
+  // order (Constraint 3), not the process-dependent hash order of the map.
   std::vector<const Content*> roots;
   state.for_each_layer([&](const LayerRecord& layer) {
     if (Content* c = resolve(layer.content)) {
       if (ids->emplace(c, layer.content).second) {
         roots.push_back(c);
-      }
-      if (layer.content.value > max_seeded) {
-        max_seeded = layer.content.value;
       }
     }
   });
@@ -35,14 +29,18 @@ build_pull_identity_map(const DocRoot& state, const std::function<Content*(Objec
   // Transitive `Content::inputs()` walk over the pinned graph, mirroring the
   // serializer's frontier walk (`document_serialize.cpp:174-202`): a `walked` guard
   // stops cycles and shared re-encounters, and every newly-reached, un-mapped child
-  // gets the next synthesized id. `1 + max_seeded` is provably disjoint from every
-  // seeded layer id (all synthetics exceed the max), never `ObjectId{}` (max_seeded
-  // is a valid id >= its own value, and even an all-empty document starts at 1),
-  // and injective across children because `next` increments per emplace. The walk
-  // order is deterministic (layer order, then a LIFO frontier over the immutable
-  // graph), so the same child yields the same id on every frame of one render
-  // sequence (Constraint 3, cross-frame stability).
-  std::uint64_t next = max_seeded + 1;
+  // gets the next synthesized id. Synthesized ids are minted from the RESERVED half
+  // of the id space (`synthetic_id`, bit 63 set -- `base/ids.hpp`, doc 14 § Identity),
+  // which the model allocator never issues. So a synthesized id is disjoint from
+  // every model `ObjectId` in the document STRUCTURALLY -- not from the layer roots
+  // only, and with no dependence on allocation order or on what the model allocates
+  // after this map is built. It is never `ObjectId{}` (the counter starts at 1
+  // *within* the half, so the bare bit is never minted) and injective across children
+  // because `next` increments per emplace. The walk order is deterministic (layer
+  // order, then a LIFO frontier over the immutable graph), so the same child yields
+  // the same id on every frame of one render sequence (Constraint 3, cross-frame
+  // stability).
+  std::uint64_t next = 1;
   std::vector<const Content*> frontier = roots;
   std::unordered_set<const Content*> walked(roots.begin(), roots.end());
   while (!frontier.empty()) {
@@ -53,9 +51,10 @@ build_pull_identity_map(const DocRoot& state, const std::function<Content*(Objec
         continue; // null slot, or a shared child already reached (keyed once)
       }
       frontier.push_back(child);
-      // A child already carrying a layer-root identity (shared root+input) keeps it.
+      // A child already carrying a layer-root identity (shared root+input) keeps it:
+      // that content IS a model object and should key under its real identity.
       if (ids->find(child) == ids->end()) {
-        ids->emplace(child, ObjectId{next++});
+        ids->emplace(child, synthetic_id(next++));
       }
     }
   }

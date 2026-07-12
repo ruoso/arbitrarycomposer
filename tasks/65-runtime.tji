@@ -132,8 +132,9 @@ task runtime "Runtime" {
   task pull_identity_disjoint_ids "Allocate synthesized pull identities from a namespace disjoint from every model ObjectId" {
     effort 1d
     allocate team
+    complete 100
     depends !operator_model_damage_routing
-    note "build_pull_identity_map seeds next = max(layer-root ids) + 1 (pull_identity.cpp:45), so a synthesized id can collide with the model id of a contents-table content that is not a layer. Consequence: invalidate_damage on a model id can drop an unrelated content's tiles (sound over-approximation but a silent cache-hygiene bug), and the disjointness claim in interactive_operator_identity.t.cpp:5 is stronger than what the code guarantees. Seed above the model's maximum allocated ObjectId (or tag a high bit) and tighten claim registry:177's wording to match. Source-of-debt: tasks/refinements/runtime/operator_model_damage_routing.md Constraint 1 / Decision 2. Docs 02/13."
+    note "build_pull_identity_map seeds next = max(layer-root ids) + 1 (pull_identity.cpp:45), so a synthesized id can collide with the model id of a contents-table content that is not a layer. Consequence: invalidate_damage on a model id can drop an unrelated content's tiles (sound over-approximation but a silent cache-hygiene bug), and the disjointness claim in interactive_operator_identity.t.cpp:5 is stronger than what the code guarantees. Seed above the model's maximum allocated ObjectId (or tag a high bit) and tighten claim registry:177's wording to match. Source-of-debt: tasks/refinements/runtime/operator_model_damage_routing.md Constraint 1 / Decision 2. Docs 02/13. Refinement: tasks/refinements/runtime/pull_identity_disjoint_ids.md"
   }
   task interactive_binder_wiring "Wire bind_operators into the interactive frame path" {
     effort 1d

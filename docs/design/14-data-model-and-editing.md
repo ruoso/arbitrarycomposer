@@ -83,6 +83,22 @@ format already references it (`$ref` targets). If real-time collaboration
 ever lands, per-object ids plus the journal are its hooks (deferred, out
 of scope, but deliberately not precluded).
 
+The 64-bit id space is **split in two halves by the top bit**. The model's
+allocator issues only ids with bit 63 *clear* (it counts up from 1, so the
+reserved half is unreachable in practice — 2^63 allocations away). The
+reserved half — bit 63 *set* — is the **synthesized-identity namespace**:
+identities the runtime mints for graph nodes the model never named, today
+the operator input children an operator owns inline (doc 13's `inputs()`
+children that are not `contents`-table entries, and so have no model id of
+their own). Because the two halves are disjoint by construction, a
+synthesized identity can never collide with the `ObjectId` of any object in
+the document, and damage or cache invalidation naming one id can never
+touch the other's entries — the "document-unique" promise above holds
+across *both* namespaces, not just within the model's. Synthesized ids are
+render-time state only: they are keyed by pointer over a pinned revision,
+never stored in a record, never journaled, and never serialized (a document
+that round-trips carries no bit-63 id).
+
 ## Transactions
 
 All mutation flows through a transaction on the writer thread:

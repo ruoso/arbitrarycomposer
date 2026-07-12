@@ -2,8 +2,9 @@
 // Constraint 6 / Decision 4). Wiring `PullConfig::pending` into the interactive
 // frame's pull service makes the driver capable, for the first time, of an operator
 // INPUT answering asynchronously -- and that arrival's damage names the input's
-// identity, which for an operator's `$ref`'d child is a SYNTHESIZED id
-// (`pull_identity.hpp:26-30`), disjoint from every model id by construction.
+// identity, which for an operator's `$ref`'d child is a SYNTHESIZED id: one drawn from
+// the reserved half of the `ObjectId` space that the model allocator never issues (doc
+// 14 § Identity), and so disjoint from every model id by construction.
 //
 // `map_damage_to_device` matches damage against LAYER ROOTS only
 // (`damage_planning.cpp:39`: `layer.content == d.object`), and an operator's input

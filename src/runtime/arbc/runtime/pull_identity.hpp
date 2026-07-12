@@ -23,10 +23,15 @@ using PullIdentityMap = std::unordered_map<const Content*, ObjectId>;
 // Seeds from `state.for_each_layer` (layer roots carry a model `ObjectId`), then
 // walks `Content::inputs()` transitively (mirroring `document_serialize.cpp`'s
 // frontier walk with a `walked` guard) and assigns every reachable, un-mapped
-// operator input child a freshly-synthesized `ObjectId` -- distinct from every
-// seeded layer id (`1 + max(seeded values)`, incrementing in walk order, Decision 4)
-// and from every sibling child. So two same-stability inputs of one operator no
-// longer both fall to `ObjectId{}` and alias one cache key. `resolve` maps a layer
+// operator input child a freshly-synthesized `ObjectId` from the RESERVED half of
+// the id space (`synthetic_id`, `base/ids.hpp` -- doc 14 § Identity). The model
+// allocator never issues a reserved id, so a synthesized identity is disjoint from
+// EVERY model `ObjectId` in the document -- not merely from the seeded layer roots,
+// and not merely from the ids allocated so far. It is also distinct from every
+// sibling child (the counter increments per emplace). So two same-stability inputs
+// of one operator no longer both fall to `ObjectId{}` and alias one cache key, and
+// no synthesized id can be evicted by damage naming a model object (doc 02:94-95
+// invalidates by content id alone, revision-agnostic). `resolve` maps a layer
 // record's `ObjectId` to its live `Content*` (the driver's document resolver). The
 // map is built over the immutable pinned graph on the driver thread; the returned
 // `const` map is safe to share read-only across parallel render workers (Constraint 7).

@@ -6,4 +6,5 @@ arbc_add_component(
                  arbc/base/transform.hpp)
 
 arbc_component_test(COMPONENT base SOURCES t/transform.t.cpp t/expected.t.cpp
-                                          t/rational_time.t.cpp t/rt_safety.t.cpp)
+                                          t/rational_time.t.cpp t/rt_safety.t.cpp
+                                          t/ids.t.cpp)

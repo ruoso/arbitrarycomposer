@@ -639,6 +639,15 @@ expected<std::unique_ptr<Model>, WorkspaceFileError> Model::open(const std::stri
   // Ids are never reused (doc 14 § Identity), and spill-chunk records draw from the
   // same counter -- so the counter must resume PAST every id in the file, or the
   // next transaction would mint an id that aliases a recovered record.
+  //
+  // Tripwire: `max_id` is read from the file, so a corrupt workspace could name a
+  // reserved (bit-63-set) id and reseed the counter into the runtime's
+  // synthesized-identity namespace, which the model allocator must never issue
+  // (doc 14 § Identity, `base/ids.hpp`). A well-formed file cannot contain one --
+  // nothing writes them.
+  // GCOV_EXCL_BR_LINE: the false branch needs a corrupt file naming a reserved id.
+  assert(!synthetic(ObjectId{recovered.max_id}) &&
+         "recovered max_id lies in the reserved synthesized-identity half");
   model->d_next_id.store(recovered.max_id + 1, std::memory_order_relaxed);
 
   if (root_index != k_no_root) {
@@ -740,7 +749,17 @@ Model::~Model() {
 
 DocStatePtr Model::current() const { return d_current.load(); }
 
-ObjectId Model::allocate_id() { return ObjectId{d_next_id.fetch_add(1)}; }
+ObjectId Model::allocate_id() {
+  const ObjectId id{d_next_id.fetch_add(1)};
+  // Tripwire (doc 14 § Identity): the model allocator owns the bit-63-CLEAR half of
+  // the id space; the reserved half is the runtime's synthesized-identity namespace
+  // (`base/ids.hpp`), which the model must never issue. The counter starts at 1, so
+  // reaching bit 63 takes 2^63 allocations -- this does not guard exhaustion, it
+  // guards a counter seeded from untrusted data (a corrupt recovered `max_id`).
+  // GCOV_EXCL_BR_LINE: the false branch needs 2^63 allocations; unreachable in a test.
+  assert(!synthetic(id) && "Model::allocate_id must never issue a reserved synthesized id");
+  return id;
+}
 
 void Model::drain() {
   ReclaimContextGuard guard(d_reclaim_ctx);

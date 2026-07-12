@@ -1,8 +1,33 @@
+#include <arbc/base/ids.hpp>
 #include <arbc/model/model.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
+
 namespace {
+
+// enforces: 14-data-model-and-editing#synthesized-identities-never-collide-with-model-ids
+TEST_CASE("the model allocator never issues an id from the reserved synthesized half") {
+  // The model's side of the two-sided contract (doc 14 § Identity): `allocate_id`
+  // counts up from 1, so every id it issues has bit 63 CLEAR. That is what makes the
+  // runtime's reserved-half synthesized ids (`base/ids.hpp`, `synthetic_id`) disjoint
+  // from every model `ObjectId` STRUCTURALLY -- no high-water mark, no allocation
+  // order, no assumption about what the model allocates next.
+  arbc::Model model;
+
+  arbc::ObjectId previous{};
+  for (std::size_t i = 0; i < 1024; ++i) {
+    const arbc::ObjectId id = model.allocate_id();
+    REQUIRE(id.valid());                // zero stays the only invalid id (Constraint 3)
+    REQUIRE_FALSE(arbc::synthetic(id)); // ...and the reserved half stays the runtime's
+    REQUIRE(id != previous);            // monotonic: ids are never reused
+    previous = id;
+  }
+
+  // The tripwire in `Model::allocate_id` guards the 2^63 case (a counter reseeded from
+  // a corrupt recovered `max_id`), which no test can reach by allocating.
+}
 
 // enforces: 14-data-model-and-editing#pinned-version-never-observes-later-edit
 TEST_CASE("a pinned version never observes a later edit") {

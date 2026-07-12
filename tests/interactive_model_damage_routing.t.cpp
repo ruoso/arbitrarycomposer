@@ -275,9 +275,9 @@ TEST_CASE("interactive: an edit to an operator's $ref input repaints every opera
                         k_budget);
   const std::vector<float> repainted = snapshot(**target);
 
-  CHECK(renderer.counters().composites() > composites_1);      // the frame happened...
-  CHECK(renderer.counters().requests_issued() > requests_1);    // ...and re-rendered misses
-  CHECK_FALSE(byte_identical(stale, repainted));               // the stale pixels are gone
+  CHECK(renderer.counters().composites() > composites_1);    // the frame happened...
+  CHECK(renderer.counters().requests_issued() > requests_1); // ...and re-rendered misses
+  CHECK_FALSE(byte_identical(stale, repainted));             // the stale pixels are gone
   // Structural infinite damage routes to non-finite damage on each operator layer, which
   // `map_damage_to_device` takes to the WHOLE-VIEWPORT branch (`damage_planning.cpp:43-47`)
   // -- never clamped to `bounds()`, never NaN-degenerate into an empty region. So every
@@ -373,8 +373,8 @@ TEST_CASE("interactive: an edit no operator reaches routes to nothing") {
       *after, resolve, viewport(), cache, backend, pool, **target, edit, k_when, k_budget);
 
   CHECK_FALSE(out.schedule_follow_up);
-  CHECK(renderer.counters().requests_issued() == requests);   // delta 0
-  CHECK(renderer.counters().composites() == composites);      // delta 0
-  CHECK(renderer.counters().follow_up_frames() == follow_ups);// delta 0
-  CHECK(byte_identical(painted, snapshot(**target)));         // the frame did not happen
+  CHECK(renderer.counters().requests_issued() == requests);    // delta 0
+  CHECK(renderer.counters().composites() == composites);       // delta 0
+  CHECK(renderer.counters().follow_up_frames() == follow_ups); // delta 0
+  CHECK(byte_identical(painted, snapshot(**target)));          // the frame did not happen
 }

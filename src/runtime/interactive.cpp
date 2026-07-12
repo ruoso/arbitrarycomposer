@@ -97,11 +97,14 @@ std::vector<Damage> InteractiveRenderer::route_model_damage(std::span<const Dama
   for (const Damage& d : model_damage) {
     // Model damage names the EDITED OBJECT'S OWN model id (`model.cpp:1567-1579`), so
     // the id space here is the MODEL'S, not the pull identities' -- resolve it through
-    // the document's own inverse (Decision 2). `d_content_by_id` would be at best a miss
-    // and at worst an ALIAS: a non-layer input carries a synthesized id whose range is
-    // guaranteed disjoint only from the LAYER-ROOT ids (`pull_identity.cpp:45`), so a
-    // `contents`-table content's model id can collide with an unrelated content's
-    // synthesized one (`runtime.pull_identity_disjoint_ids`).
+    // the document's own inverse (Decision 2). `d_content_by_id` is keyed in the PULL
+    // id space, and a model id looked up there is a GUARANTEED MISS: synthesized ids
+    // come from the reserved half of the id space the model allocator never issues
+    // (doc 14 § Identity, `base/ids.hpp`), and a non-layer input carrying only a
+    // synthesized id is filed under that id, not its model one. A guaranteed miss is a
+    // benign lookup failure -- never a silent mis-route to an unrelated content -- but
+    // it is still a miss, so the `ContentResolver` (the model id space's own inverse)
+    // remains the correct seam.
     const Content* const content = resolve(d.object);
     if (content == nullptr) {
       continue;

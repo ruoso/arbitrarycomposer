@@ -423,6 +423,17 @@ target_link_libraries(arbc_interactive_model_damage_routing_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_interactive_model_damage_routing_t)
 
+# runtime.pull_identity_disjoint_ids: synthesized pull identities are drawn from a reserved
+# half of the ObjectId space the model allocator never issues, so damage naming a model id
+# cannot evict a synthesized id's tiles (the cross-namespace eviction the old
+# `1 + max(layer-root id)` seed allowed), and no synthesized id ever reaches the file
+# format. Cross-component (runtime + compositor + cache + serialize + kind_crossfade/
+# kind_solid + backend_cpu), so it links `arbc`.
+add_executable(arbc_pull_identity_disjoint_ids_t pull_identity_disjoint_ids.t.cpp)
+target_link_libraries(arbc_pull_identity_disjoint_ids_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_pull_identity_disjoint_ids_t)
+
 # operators.crossfade_runtime_binding end-to-end: builds a Document with a crossfade
 # over two inputs and drives it through the real offline (SequenceRenderer, inline +
 # parallel) and export (ExportMonitor) drivers with the PRODUCTION attach injection,
