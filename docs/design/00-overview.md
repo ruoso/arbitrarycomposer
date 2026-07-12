@@ -40,6 +40,14 @@ Everything else follows from taking that contract seriously:
    core library, including by third parties.
 3. Built-in reference layer kinds: solid color, raster image, and nested
    composition. These exercise the contract and serve as plugin examples.
+   Two further reference kinds — a still image and an image sequence — ship
+   *outside* the core library because they carry decoders (doc 17's "codec
+   line"). The split between the editable, codec-free `raster` and the
+   read-only, file-referencing `image` is load-bearing rather than
+   cosmetic: it is what lets a document reference the photographs it was
+   built from instead of copying them (doc 08 Principles 3 and 8), and it
+   makes non-destructive editing structural — you retouch by stacking an
+   editable raster over a referenced image.
 4. An interactive render loop with tile caching, damage tracking, and
    progressive refinement.
 5. An offline renderer producing exact frames at arbitrary resolution.
@@ -249,6 +257,26 @@ Initially-open questions, now decided in their own docs:
   therefore decides *when* a commit happens, never *where* — every trigger,
   timer included, is evaluated on the writer thread. Decided in doc 15
   (§ Version reclamation, § File-backed arenas) and doc 14 (§ Editable).
+- **Imported images are referenced; painted pixels are stored — and the two
+  are different kinds.** A document is a `.arbc` file plus a sibling asset
+  directory. An *imported* photograph has a file it came from, so it
+  serializes as a URI and nothing else: that is `org.arbc.image`, which
+  carries a decoder and therefore lives outside `libarbc`, is read-only, and
+  stores not one pixel in the project. *Painted* pixels have no such file —
+  they are irreplaceable document state — so `org.arbc.raster` stays
+  codec-free and editable and persists its copy-on-write tile table as
+  content-addressed blobs in the asset directory, mips rebuilt on load. The
+  split is not taxonomy. Storing an imported photograph as raster tiles costs
+  roughly 490 MB where referencing it costs 32 MB (30-layer, 24 MP
+  composition), and no compressor closes that gap: after content-addressed
+  dedup, photographic tiles are 93% of the bytes and compress about 2.1x,
+  because sensor noise is incompressible. Compression is the *weakest* lever
+  here — dedup beats it — and the only lever that works is not copying the
+  photograph in at all. The split also makes non-destructive editing
+  structural rather than conventional: an `image` has no `Editable` facet, so
+  retouching *must* stack a raster over it. Decided in doc 08 (§ The asset
+  directory, Principles 3 and 8), doc 03 (§ Reference kinds) and doc 17
+  (§ The codec line).
 
 ## Open questions
 

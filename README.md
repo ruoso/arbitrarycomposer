@@ -18,6 +18,15 @@ The same scene model drives two rendering modes:
   progressive refinement as layers catch up.
 - **Offline**: exact frames at arbitrary resolution, for export and video.
 
+A document is a small, diffable `.arbc` JSON graph plus a sibling asset
+directory. Imported images are *referenced*, never copied in — so a project
+does not re-store the photographs it was built from. Pixels that were
+*painted*, and therefore exist nowhere else, are stored as content-addressed
+tiles: identical tiles collapse to one blob, and a save writes only the tiles
+that changed. The two cases are different layer kinds, which is what makes
+non-destructive editing structural — a referenced image cannot be painted on,
+so you retouch by stacking an editable raster over it.
+
 ## Status
 
 Design phase. No code yet. See the design documents:

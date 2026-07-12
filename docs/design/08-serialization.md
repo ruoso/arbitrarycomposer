@@ -18,6 +18,33 @@ and demand paging. The JSON document is the interchange, archival, and
 version-control format; the workspace is the database file to JSON's dump,
 and never a substitute for it.
 
+### The asset directory
+
+A document is a **`.arbc` file plus a sibling asset directory**, not a single
+container:
+
+```
+project.arbc            # the JSON graph: small, diffable, hand-inspectable
+project.assets/
+  bg.png                # imported encoded images  (org.arbc.image, Principle 3)
+  tiles/
+    3f/3fa91c….tile     # painted raster tile blobs (org.arbc.raster, Principle 8)
+```
+
+Everything inside is addressed by relative URI and resolved through the same
+`LoadContext` asset hook that external nested projects use (Principle 3), so
+one resolution seam serves both and a project directory stays relocatable.
+
+A directory rather than a single file is the deliberate choice. It is what makes
+content-addressed blobs work as *files* — an incremental save writes only the
+new tiles and touches nothing else, which a monolithic container cannot do
+without rewriting itself. It also keeps the bulk out of the diffable artifact,
+which is doc 08's posture from the first line ("bulk assets stay external"), and
+it lets a host reuse ordinary filesystem tooling. Bundling the directory into a
+branded zip is a plausible later *packaging* convenience for transport; it is
+explicitly **not** the storage model, and nothing in the format may come to
+depend on single-file-ness.
+
 ```jsonc
 {
   "arbc": { "format": 1 },                 // format major version
@@ -27,13 +54,20 @@ and never a substitute for it.
     "canvas": [0, 0, 1920, 1080],                  // optional hint (doc 01)
     "layers": [                                     // bottom to top
       {
-        "kind": "org.arbc.raster",                 // registry id (doc 03)
+        "kind": "org.arbc.image",                  // registry id (doc 03)
         "kind_version": "1.2",                     // producer's plugin version
         "transform": [1, 0, 0, 1, 100.5, 20],      // a b c d tx ty (doc 04)
         "opacity": 1.0,
         "visible": true,
         "name": "backdrop",                        // authoring metadata
         "params": { "source": "assets/bg.png" }    // kind-owned, opaque to core
+      },
+      {
+        "kind": "org.arbc.raster",                 // PAINTED pixels: document state,
+        "name": "retouch",                         // not an import (Principle 8)
+        "params": { "tiles": "assets/tiles/",      // content-addressed blob store
+                    "edge": 256, "format": "rgba16f",
+                    "levels": [["3fa91c…", "0091ab…", …]] }
       },
       {
         "kind": "org.arbc.nested",
@@ -98,6 +132,16 @@ These are core-owned placement, not `params`.
    self-inconsistent bytes are a malformed document, whereas a missing
    external file is a condition of the environment that may resolve later, and
    doc 05 already assigns that state the placeholder.
+   **Imported images are references; painted pixels are not.** An *imported*
+   image has a file it came from, so it serializes as a URI and nothing more —
+   that is `org.arbc.image` (doc 03), which carries the decode dependency and
+   therefore lives outside `libarbc`, behind doc 17's codec line. *Painted*
+   pixels have no such file: they exist only inside the document, and a
+   reference has nothing to point at. They are handled by Principle 8. Keeping
+   these two in separate kinds is what makes non-destructive editing structural
+   rather than a convention — you retouch by stacking an editable
+   `org.arbc.raster` **over** a referenced `org.arbc.image`, and the photograph
+   is never copied into the project.
 4. **Versioning is boring on purpose.** `arbc.format` is a major version;
    readers reject majors they don't know. Within a major, unknown *fields*
    are preserved-and-ignored (same discipline as unknown kinds) — and that
@@ -237,12 +281,86 @@ These are core-owned placement, not `params`.
    error surfaced as a value on load — rejecting it beats silently preferring
    one.
 
+8. **Painted pixels are source, not results — and they persist as a
+   content-addressed tile store.** Principle 3 sends every *imported* asset out
+   of the document as a URI. Painted pixels cannot follow it: they have no
+   source file, and they are not a cached render either (see "Deliberately not
+   in the format" below) — they are the irreplaceable state of an editable
+   `org.arbc.raster`. They serialize into the document's **asset directory**.
+
+   The design rule is: **persist the tile table, not the image.** In memory the
+   raster kind is already a copy-on-write sparse store — a paint copies only the
+   tiles it touches, and untouched tiles stay shared by refcount (doc 14).
+   Flattening that to a dense pixel buffer on save throws away exactly the
+   sparsity and sharing that make it small, and then pays full price for both.
+   So the on-disk form mirrors the in-memory one:
+
+   - **Blobs are keyed by content hash.** Each *distinct* tile is written once,
+     as `assets/tiles/<hash>`; the layer's `params` hold the per-level arrays of
+     hashes. Identical tiles — the empty ones, the flat ones — collapse to a
+     single blob, and dedup falls out across layers *and* across undo versions
+     for free. It also makes **saves incremental**: a save writes only the tiles
+     that are new, because every untouched tile is already on disk under the
+     same name.
+   - **Mip levels are not persisted.** They are derived, and a rebuild is
+     already proven byte-identical to the incremental recompute
+     (`14-data-model-and-editing#paint-mip-recompute-matches-full-rebuild`).
+     Rebuild on load.
+   - **The storage format is document-carried and is not the working format.**
+     A document may composite in `rgba32f` and store `rgba16f`; half-float's
+     10-bit mantissa is ample for anything that originated as 8-bit sRGB, at
+     half the bytes. Whether that trade is acceptable is a lossy/lossless
+     judgment only the user can make, so it is authored, not inferred.
+     `rgba16f` is the default.
+   - **Compression is per blob: zstd with a byte-shuffle.** The shuffle (group
+     all byte-0s, then all byte-1s, …) separates a float's noisy low mantissa
+     bytes from its structured exponent and sign planes, which is what lifts
+     photographic tiles from 1.5x to 2.1x. zstd rather than LZMA: an interactive
+     editor saves incrementally and cannot pay LZMA's speed for the ratio.
+
+   *Why this shape, and not "just compress it".* Measured on a 30-layer, 24 MP
+   composition (3 full-bleed photos, 4 cropped, 8 painted/retouch, 6 masks,
+   5 gradients, 4 flat fills), each lever applied in turn:
+
+   | | size |
+   | --- | --- |
+   | dense `rgba32f` tiles, mips persisted | 16.11 GB |
+   | mips rebuilt on load | 12.08 GB |
+   | content-addressed: distinct tiles only | 2.80 GB |
+   | stored at `rgba16f` | 1.40 GB |
+   | + zstd with byte-shuffle | 0.49 GB |
+   | + photos referenced as `org.arbc.image` | **32 MB** |
+
+   **Compression is the weakest lever that matters** — 2.9x, less than dedup's
+   4.3x. The reason is worth stating so nobody re-litigates it: compressibility
+   is inversely correlated with how much of the file the content actually
+   occupies. Flat fills compress ~2400x, but content-addressing has already
+   collapsed them to a handful of blobs, so that ratio applies to nothing.
+   Meanwhile **photographic tiles are 93% of the post-dedup bytes and compress
+   only 2.1x**, because sensor noise is incompressible by construction. No
+   compressor rescues a format that stores imported photographs as raster tiles;
+   the only lever that does is not storing them — which is precisely what
+   `org.arbc.image` is for, and why the two kinds are split.
+
+   *Graceful degradation.* An `org.arbc.image` layer has no `Editable` facet, so
+   it cannot be painted on: retouching means stacking a raster layer above it,
+   which is the non-destructive practice this shape assumes. A host that instead
+   flattens a photograph *into* a raster layer gets what it asked for — those
+   tiles are now document state, they are stored, and they compress 2.1x. That
+   is a real cost, honestly paid, and it degrades smoothly rather than falling
+   off a cliff.
+
 ## Deliberately not in the format
 
 - **Camera/viewport state** — a viewer concern, not scene data; anchored
   cameras (doc 04) serialize separately if a host wants bookmarks.
 - **Cached/rendered pixels** — the format stores *how to render*, never
-  results.
+  results. This is a rule about *derived* data, and it is not in tension with
+  Principle 8: a painted raster's tiles are not a render of anything, they are
+  the irreplaceable input the renderer consumes. The test is whether the bytes
+  can be recomputed from something else in the document. A composited frame can,
+  and is never stored; a mip level can, and is rebuilt on load; a brush stroke
+  cannot, and is stored.
 - **Animation** — out of v1 scope (doc 00); when it comes, it lands as
   time-varying values inside placement and `params` under a new format
   major, not as a bolt-on track section.

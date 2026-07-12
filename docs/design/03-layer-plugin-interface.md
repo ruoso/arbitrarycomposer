@@ -232,7 +232,8 @@ not the registry seam's.
 | Kind id | Purpose |
 | --- | --- |
 | `org.arbc.solid` | Minimal sync content; the "hello world" plugin example. |
-| `org.arbc.raster` | Exercises finite bounds, bounded scale range, tiling/mip pyramid, `achieved_scale < requested`. |
+| `org.arbc.raster` | Exercises finite bounds, bounded scale range, tiling/mip pyramid, `achieved_scale < requested`. **Codec-free and editable**: it accepts decoded buffers, carries the `Editable` facet (doc 14), and its painted pixels are document state (doc 08 Principle 8). |
+| `org.arbc.image` | A still image decoded from an external asset URI. Read-only — **no `Editable` facet** — and stores no pixels in the document (doc 08 Principle 3). Exercises content-provided surfaces (doc 09) and the unavailable-reference path (doc 05). Lives outside `libarbc`; see below. |
 | `org.arbc.imageseq` | Timed visual content (doc 11); exercises `time`, `achieved_time`, spans, temporal prefetch. |
 | `org.arbc.tone` | Audio-only content (doc 12); the "hello world" of the audio facet. |
 | `org.arbc.fade` | Single-input operator (doc 13); both facets, `identity()` pass-through, `Timed`-over-`Static` aggregation. |
@@ -242,11 +243,26 @@ not the registry seam's.
 Together these cover every interesting branch of the contract, which
 is the real reason they live in the core repo.
 
-**`org.arbc.imageseq` is the exception to this section's heading.** It lives
-in the core *repo* but ships *outside* `libarbc`, as the separate
-`arbc-plugin-imageseq` shared-library artifact carrying its own decode
-dependency (stb-class) — the resolution of doc 17's "codec line" (a codec
-must never enter an embedder's link line, doc 10). It is therefore the
-permanent, out-of-lib exercise of the `extern "C" arbc_plugin_register(Registry&)`
-path above; the other six kinds link into `libarbc` and only exercise that
-path through the CI-only dual-build (doc 17). See doc 17 "The codec line".
+**`org.arbc.image` and `org.arbc.imageseq` are the exceptions to this section's
+heading.** Both live in the core *repo* but ship *outside* `libarbc`, as separate
+shared-library artifacts (`arbc-plugin-image`, `arbc-plugin-imageseq`) carrying
+their own decode dependency (stb-class, vendored once and shared) — the
+resolution of doc 17's "codec line" (a codec must never enter an embedder's link
+line, doc 10). They are therefore the permanent, out-of-lib exercise of the
+`extern "C" arbc_plugin_register(Registry&)` path above; the other kinds link
+into `libarbc` and only exercise that path through the CI-only dual-build
+(doc 17). See doc 17 "The codec line".
+
+**Why `image` is a kind of its own and not a mode of `raster`.** They differ in
+the two ways that matter most, and collapsing them would forfeit both. `raster`
+is *codec-free and editable* — it takes decoded buffers, so it stays inside
+`libarbc`, and it carries the `Editable` facet, so its pixels are irreplaceable
+document state. `image` is *codec-carrying and read-only* — it decodes a
+referenced file, so it must live behind the codec line, and it has no `Editable`
+facet, so it never stores a pixel in the project. Merging them would drag a
+decoder into `libarbc` and make "is this layer's content recoverable from its
+source file?" a runtime property rather than a static one. Keeping them apart is
+what lets doc 08 answer that question from the kind id alone — and it is what
+makes non-destructive editing *structural*: you retouch a photograph by stacking
+an editable `raster` over a referenced `image`, because the `image` cannot be
+painted on at all.

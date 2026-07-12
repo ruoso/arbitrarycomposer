@@ -12,6 +12,7 @@ its unit tests, and its allowed-dependency list.
 | --- | --- |
 | `libarbc` (shared and static) | all components below, composed |
 | `arbc-testing` (static) | the contract conformance suite (doc 16) — linked by plugin authors' test binaries, never by `libarbc` |
+| `arbc-plugin-image` (shared) | the still-image reference kind (`org.arbc.image`) — *outside* `libarbc` (see "the codec line") |
 | `arbc-plugin-imageseq` (shared) | the image-sequence reference kind — *outside* `libarbc` (see "the codec line") |
 | headers | `include/arbc/<component>/…`, one directory per public-facing component |
 | CMake/pkg-config/CPS metadata | doc 10 |
@@ -211,6 +212,21 @@ separate plugin artifact carrying its own decode dependency (stb-class),
 built and tested in the same repo, loaded like any third-party plugin.
 This also makes imageseq the permanent end-to-end test of the real plugin
 path, which the in-lib kinds no longer exercise at runtime.
+
+**`org.arbc.image` falls on the same side of the line, for the same reason,**
+and it is what makes the codec line *pay* rather than merely hold. A still image
+loaded from a file needs a decoder, so it ships as `arbc-plugin-image` beside
+imageseq, sharing the one vendored stb-class decoder; `kind-raster` stays
+codec-free and keeps accepting decoded buffers. The two kinds then divide the
+pixel-persistence problem cleanly (doc 08 Principles 3 and 8): an `image` is a
+*reference* to a file that already exists, stores nothing, and cannot be edited;
+a `raster` is *painted document state* with no source file, and stores its tiles.
+Without that split, a project would have to re-store every imported photograph as
+raster tiles — measured at roughly 490 MB against 32 MB for a 30-layer 24 MP
+composition, and no compressor closes that gap, because photographic tiles are
+93% of the bytes and compress about 2.1x (doc 08 Principle 8). The codec line is
+usually argued as a *dependency-hygiene* rule; here it also turns out to be the
+thing that keeps project files small.
 
 The same line holds for **device backends**: an OS audio API (PortAudio /
 CoreAudio / ALSA / a miniaudio-class single-header backend) is the audio
