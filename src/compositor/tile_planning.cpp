@@ -381,13 +381,33 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     const double rung_px = rung_scale(selection.rung);
 
     for (PlannedTile& tile : plan.tiles) {
+      // Doc 02 step 3/4: a miss is checked against the PENDING SET as well as the
+      // cache. A tile whose render is already in flight -- this frame dispatched it
+      // for another layer, or an operator's pull did -- is absent from the cache and
+      // so looks exactly like a tile nobody has ever asked for. Dispatching it again
+      // buys nothing: both renders target their own surface, both are deterministic,
+      // and the arrival's damage is BROADCAST on the content's id to every consumer
+      // of the tile rather than delivered to whoever dispatched it
+      // (`refinement.cpp`'s damage + `interactive.cpp`'s `route_arrival_damage`), so
+      // the render already in flight re-drives this layer too. A suppressed tile is
+      // NOT a hit: it takes exactly the path a freshly-dispatched async tile takes --
+      // it keeps its planned fallback `display_source` (stale -> coarser ->
+      // transparent) and composites that below -- minus the second surface, the
+      // second `content->render`, and the second `PendingTile`. A cancelled entry
+      // does not suppress (`tile_in_flight`); an identity operator issues no render
+      // and so is never recorded pending, which is why this guard cannot swallow the
+      // identity-delivery branch below.
+      const bool in_flight = tile.is_miss && tile_in_flight(pending, tile.key);
+      if (in_flight && counters != nullptr) {
+        counters->note_request_suppressed();
+      }
       // Doc 02 step 4: a miss becomes a BestEffort deadline-carrying request
       // targeting exactly the tile footprint, driven inline this pass. The
       // rendered pixels are owned by the cache (TileValue owns its Surface), so
       // the tile target is a cache-owned surface (not a transient pool temp);
       // the pool serves the coarser-fallback upscale. On success the tile
       // becomes its own fresh display source.
-      if (tile.is_miss) {
+      if (tile.is_miss && !in_flight) {
         expected<std::unique_ptr<Surface>, SurfaceError> owned =
             backend.make_surface(k_tile_size, k_tile_size, target.format());
         if (owned.has_value()) {

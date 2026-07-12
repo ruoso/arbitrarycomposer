@@ -97,6 +97,46 @@ struct RefinementQueue {
   std::vector<PendingTile> tiles;
 };
 
+// Is `key`'s render already in flight? (`compositor.in_flight_tile_dedup`, doc 02
+// § The frame, interactively.) The pending set is the second suppression key
+// beside the cache: a dispatched-but-unlanded tile is ABSENT from the cache, so on
+// the cache alone it is indistinguishable from a tile nobody has asked for, and
+// both dispatch sites (the driver's tile loop, `PullService::pull`'s per-covering-
+// tile loop) re-dispatch it. They consult this on a miss instead; a `true` answer
+// means "someone is already rendering exactly this tile -- do not render it again,
+// their arrival will re-drive you".
+//
+// It is a linear scan, deliberately, not an index inside `RefinementQueue`: the
+// answer is not a function of the queue's MUTATIONS. It depends on `settled()` and
+// `cancelled()`, two atomics a renderer thread flips with no notification to the
+// queue, so any precomputed set would be stale the instant a worker settled and
+// would have to be re-validated against the completions on every query anyway --
+// which is this scan, plus an invariant to get wrong. `pending` is bounded by the
+// frame's outstanding misses and this is paid only on the miss path (a warm frame
+// never calls it), so the seam is here to hide an index behind if it ever profiles
+// hot.
+//
+// A null `queue` is "nothing in flight" (the offline driver's first pass plans with
+// no queue; `render_frame_interactive`'s `pending` is optional by contract), so the
+// null path stays byte-identical.
+//
+// SETTLED and CANCELLED entries both answer `false`, and the `cancelled()` clause is
+// load-bearing, not defensive. `cancel` is ADVISORY: it does not settle the
+// completion, and it leaves a conformant content free to honor it and settle via
+// `fail` (`content.hpp:161-163`). `poll_refinements` drops a failed arrival with no
+// cache insert and NO DAMAGE (`refinement.cpp:122-124`) -- which is what stops a
+// persistently-failing tile from spinning the refinement loop forever. Suppress
+// against a cancelled entry and those two facts compose into a permanent hole: the
+// tile is in neither the cache nor the queue, nothing ever damaged it, and nothing
+// re-plans it. It shows a placeholder until some unrelated edit happens to repaint
+// the region. Re-dispatching a cancelled tile costs a render that was probably
+// going to land anyway; suppressing against one costs the tile.
+//
+// The cross-thread reads are the same ones the interactive driver's own unsettled()
+// park predicate already makes (`interactive.cpp:369-372`) -- no lock, no new
+// atomic, no new shared state; the queue stays frame-thread-only.
+bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept;
+
 // The next-rung speculation ring for a zoom gesture (doc 04:99-101). Re-tiles
 // `local_region` at the rung the gesture is heading toward via `tiles_covering`,
 // and assembles the `TileKey` set at that rung carrying `revision` and, for

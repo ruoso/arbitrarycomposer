@@ -57,12 +57,14 @@
 3. **Plan requests.** For each visible layer: map the visible region into
    layer-local space, quantize scale to the ladder, split into **tiles**
    (fixed local-space-aligned tile grid per scale rung, e.g. 256² device
-   pixels), and look each tile up in the cache.
+   pixels), and look each tile up in the cache — and, on a miss, in the
+   **pending set** of renders already in flight (below).
 4. **Render misses within budget.** Cache misses become render requests with
-   a deadline. Layers may answer synchronously, or asynchronously with a
-   placeholder policy (see doc 03). When the deadline nears, the frame
-   proceeds with what it has: stale-revision tiles, coarser-scale tiles
-   rescaled, or checkerboard/transparent, in that preference order.
+   a deadline, *unless the tile's render is already in flight* (below).
+   Layers may answer synchronously, or asynchronously with a placeholder
+   policy (see doc 03). When the deadline nears, the frame proceeds with what
+   it has: stale-revision tiles, coarser-scale tiles rescaled, or
+   checkerboard/transparent, in that preference order.
 5. **Composite.** Draw tiles bottom-to-top onto the target surface with each
    layer's composed transform and opacity. Tiles rendered at a ladder rung
    are resampled by the ≤1-octave remainder during this pass.
@@ -102,6 +104,42 @@ lands on exactly the pixels one un-gated pass would have produced. A tile
 that is still un-rendered when the deadline arrives paints step 4's fallback
 (stale → coarser → transparent) into the cleared region, as it would in a
 full pass; it does not leave the previous frame's pixels showing.
+
+**A tile already in flight is not dispatched twice.** The cache is not the
+only thing a miss must be checked against: a tile whose render was dispatched
+and has not yet landed is absent from the cache, so on the cache alone it is
+indistinguishable from a tile nobody has ever asked for. Planning therefore
+consults a second suppression key — the **pending set** of in-flight renders
+(step 6's queue) — and a miss whose tile is already there issues no request,
+allocates no target, and drives no render. It is *not* treated as a hit: it
+contributes no pixels this pass and settles nothing, taking exactly the path
+the dispatch it deferred to takes — the frame composites step 4's fallback,
+and an operator pulling it degrades for this frame (doc 13).
+
+This is safe because an arrival's damage is **broadcast, not delivered**. When
+the in-flight render settles, step 6 emits damage for the tile's region keyed
+on its content, and the router maps that to *every* consumer of that content —
+so one arrival re-plans everyone who wanted the tile, whether they dispatched
+the render, deferred to someone else's dispatch, or had not been planned yet
+when it was issued. The re-drive is a property of the tile, not of the
+dispatch, which is exactly what lets N dispatches collapse to one without
+losing a wake-up. Without the check, a frame pays one redundant render per
+duplicate ask — an operator whose output spans several tiles re-pulls its
+shared input once per output tile, and a nested chain pays one per level per
+refinement wave. It costs work, never correctness (every render is
+deterministic and targets its own surface), which is why it stayed invisible
+until the worker pool made in-flight state routine.
+
+**One carve-out: a *cancelled* pending render does not suppress.**
+Cancellation is advisory (doc 03) — it does not settle the completion, and it
+leaves the render free to abandon its work and fail. A failed arrival is
+dropped with no cache insert and *no damage*, which is what keeps a
+persistently-failing tile from spinning the refinement loop forever. So a
+suppression that trusted a cancelled entry would strand its tile: absent from
+the cache, gone from the pending set, and never damaged, it would show a
+placeholder until some unrelated edit happened to repaint the region. A
+cancelled entry is therefore re-dispatched, and only a live, uncancelled
+in-flight render is joined.
 
 ## The frame, offline
 

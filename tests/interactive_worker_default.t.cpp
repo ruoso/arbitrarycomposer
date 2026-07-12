@@ -553,8 +553,13 @@ private:
   // is resident by then, so nothing is re-dispatched. Make these three layers overlap --
   // three full-canvas solids, say -- and the first arrival re-plans the other two while
   // they are still on workers, and the scene renders five times instead of three.
-  // `compositor.in_flight_tile_dedup` is the task that makes that impossible; until it
-  // lands, the geometry is load-bearing and this comment is why.
+  //
+  // `compositor.in_flight_tile_dedup` has since landed the queue check, so an overlapping
+  // variant would now be suppressed rather than re-dispatched, and the geometry is no
+  // longer load-bearing for THIS assertion. It is kept as-is because the scene's job is to
+  // pin the flat path, not to exercise the guard (`counters.t.cpp` does that, on a scene
+  // built to share a tile); rewriting it would move this file's byte-identity baseline for
+  // no coverage gained.
   void build_leaf_heavy() {
     constexpr int k_strips = 3;
     const double strip = static_cast<double>(k_dim) / static_cast<double>(k_strips);
@@ -636,26 +641,38 @@ WorkerPoolConfig pool_of(std::size_t workers) {
 // invariant across worker counts -- because on the shipped compositor it is not, and this
 // file is not the place to pretend otherwise.
 //
-// The mechanism is one missing check, and it is not operator-specific. Planning and
-// pulling are CACHE-first with no test against the refinement queue
-// (`tile_planning.cpp:351`, `pull_service.cpp:219-243`), so a tile whose render is still
-// IN FLIGHT is simply a cache miss, and a frame that re-plans it dispatches it AGAIN. At
-// `worker_count == 0` that state does not exist -- `submit` IS the render, so nothing is
-// ever in flight across a frame boundary -- which is exactly why the gap has been
-// invisible until this task made the default non-zero. Operators then multiply it: an
-// operator whose input answered asynchronously degrades this frame and re-drives on the
-// arrival (`pull_service.cpp:205-209`, doc 13's "async composes"), so an operator scene
-// pays one operator render per refinement wave and a nested chain pays one per level per
-// wave.
+// `compositor.in_flight_tile_dedup` landed the check this comment used to name as the fix:
+// both dispatch sites now consult the refinement queue as well as the cache, so a tile
+// whose render is IN FLIGHT is no longer re-dispatched. It did not move these numbers, and
+// the reason is worth recording, because the intuition that it should is very strong.
+//
+// Duplicate dispatch needs a tile that TWO askers want while it is in flight. These two
+// scenes have none: every layer is full-canvas at a 256px viewport, so each covers exactly
+// one tile, and no leaf is shared -- the fade owns `under`, the crossfade owns `from`/`to`,
+// and the nested chain's two fades own a leaf each. Nothing overlaps, so nothing is
+// suppressed, and the `requests_suppressed() == 0` assertion below states exactly that.
+//
+// The excess is a different mechanism: the refinement WAVE. An operator whose input answers
+// asynchronously must still paint something this frame, so it composites a placeholder and
+// reports it INEXACT (doc 13:117-120 -- flagging it exact would freeze the empty tile into
+// the cache as a fresh hit). An inexact tile is not a hit (`tile_planning.cpp:192-204`), so
+// when the input's arrival re-drives the layer, the operator re-renders -- correctly: that
+// re-render is how the real pixels finally get composed. It is not a duplicate of a render
+// in flight; it is a second render, after the first one settled, of a tile whose input has
+// changed underneath it. Measured: `operator_heavy` issues 5 renders inline and 7 threaded,
+// `nested_deep` 5 and 12 -- one chain re-render per independently-arriving input tile,
+// which is what makes `nested_deep` slower with workers than without.
+//
+// Collapsing that is `compositor.operator_refinement_wave_amplification`, and it is a
+// coalescing problem (one wave should re-render a chain once, not once per arrival), not a
+// dedup problem. Until it lands, `>=` is the honest bound here.
 //
 // It costs redundant work on a cold cache; it does not cost correctness -- every render is
 // deterministic and targets its own surface, which is why the byte-identity assertion
-// below still passes at every worker count. `compositor.in_flight_tile_dedup` is the task
-// that collapses it back to one render per tile.
+// below passes at every worker count.
 //
-// The flat scene's leaves are DISJOINT (see `build_leaf_heavy`), so no arrival can re-plan
-// a tile that is still in flight, and its render count IS invariant -- asserted below,
-// where it is true and where it is a real guard.
+// The flat scene's leaves are DISJOINT (see `build_leaf_heavy`), so its render count IS
+// invariant -- asserted below, where it is true and where it is a real guard.
 //
 // enforces: 02-architecture#worker-dispatch-is-leaf-only
 // enforces: 02-architecture#worker-pool-degenerates-to-inline
@@ -695,6 +712,13 @@ TEST_CASE("the interactive frame loop is byte-identical and duplicate-free at ev
       // The operator re-drive, pinned rather than hidden (see the note above): never
       // FEWER renders than inline -- a run issuing fewer would be dropping work.
       CHECK(view.renderer().counters().requests_issued() >= oracle_requests);
+      // And the excess is NOT duplicate dispatch. These two scenes share no tile
+      // between their operators, so there is nothing for the in-flight guard to
+      // suppress and it provably never fires here -- which is what identifies the
+      // residual gap above as the placeholder re-render wave and not this task's
+      // duplicate. A future scene that DOES share a tile will trip this line, and
+      // should: it is the signal to assert the identity, not to relax the bound.
+      CHECK(view.renderer().counters().requests_suppressed() == 0);
     }
   }
 }

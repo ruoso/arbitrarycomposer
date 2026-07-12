@@ -156,8 +156,8 @@ AudioOut render_audio_of(Content& content) {
   REQUIRE(af != nullptr);
   std::vector<float> samples(static_cast<std::size_t>(k_frames) * 2U, 0.0F);
   AudioBlock block{samples.data(), k_frames, ChannelLayout::Stereo, k_rate};
-  const AudioRequest req{block_window(),      k_rate,           ChannelLayout::Stereo,
-                         block,               Exactness::Exact, StateHandle{}};
+  const AudioRequest req{block_window(), k_rate,           ChannelLayout::Stereo,
+                         block,          Exactness::Exact, StateHandle{}};
   auto done = std::make_shared<AudioCompletion>();
   const std::optional<AudioResult> r = af->render_audio(req, done);
   REQUIRE(r.has_value());

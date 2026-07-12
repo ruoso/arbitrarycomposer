@@ -68,6 +68,24 @@ std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
   return want;
 }
 
+bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept {
+  if (queue == nullptr) {
+    return false;
+  }
+  for (const PendingTile& pending : queue->tiles) {
+    // Keyed on the `TileKey` alone -- the full five-field equality, so a revision
+    // bump, a rung change, a different coord or a different achieved_time is a
+    // DIFFERENT tile and is dispatched. `PendingTile::local_rect` is deliberately
+    // not consulted: the two record sites disagree about it (the driver stores the
+    // tile cell, `pull` stores the whole pull region) and nothing reads it --
+    // `poll_refinements` derives its damage rect from the key.
+    if (pending.key == key && !pending.done->settled() && !pending.done->cancelled()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
                                      CompositorCounters* counters, Backend* backend) {
   std::vector<Damage> damage;

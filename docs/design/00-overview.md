@@ -232,6 +232,23 @@ Initially-open questions, now decided in their own docs:
   GPU, must implement. It is a scissor rect; GPU command lists already have
   one. Decided in doc 02 (§ The frame, interactively) and doc 09 (§ Backend
   contract).
+- **The pending set is a suppression key, exactly like the cache.** A tile
+  whose render is in flight is absent from the cache, so a cache-only miss
+  test cannot tell it apart from a tile nobody has ever asked for — and
+  re-dispatches it. Planning and pulling therefore consult the in-flight set
+  as well, and a miss already in flight issues no render: an operator whose
+  output spans several tiles stops re-rendering its shared input once per
+  output tile, and a nested chain stops paying one render per level per
+  refinement wave. What makes the join sound is that an arrival's damage is
+  *broadcast* to every consumer of the tile rather than delivered to the
+  caller that dispatched it, so collapsing N dispatches to one changes the
+  work done and not the wake-ups delivered — no join primitive, no
+  multi-waiter completion, no new contract type. The one carve-out is a
+  *cancelled* render: cancellation is advisory and a cancelled render may
+  fail, and a failed arrival is dropped with no damage, so suppressing
+  against one would strand its tile behind a placeholder forever. Decided in
+  doc 02 (§ The frame, interactively) and doc 13
+  (`compositor.in_flight_tile_dedup`).
 - **The interactive driver ships with real threads, and the deadline is
   what buys them.** This is the first shipped configuration with a worker
   pool under the frame loop, and the argument for it is *correctness*, not

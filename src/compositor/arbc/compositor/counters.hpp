@@ -71,6 +71,18 @@ public:
   // an all-culled composition dispatches zero, over N audible in-span layers with
   // an audio facet dispatches exactly N (`registry.tsv:70`).
   std::uint64_t audio_dispatches() const noexcept { return d_audio_dispatches; }
+  // Renders NOT issued because the tile's render was already in flight
+  // (`compositor.in_flight_tile_dedup`, doc 02 § The frame, interactively): one
+  // bump per fresh-key miss the dispatch guard suppressed, at either dispatch site
+  // (the driver's tile loop, `PullService::pull`'s per-covering-tile loop). It is
+  // the positive witness of the dedup, and it exists because its absence is not
+  // one: "`requests_issued` did not grow" is equally what you observe when the
+  // guard never fires, when the cache was quietly warm, or when a refactor
+  // disconnects the guard. A suppressed render bumps NEITHER `requests_issued` nor
+  // `operator_renders` -- it is not a render driven -- so this counter is disjoint
+  // from both, and the frame's total ask is `requests_issued + requests_suppressed`
+  // against `requests_issued` distinct tile keys.
+  std::uint64_t requests_suppressed() const noexcept { return d_requests_suppressed; }
 
   void note_request_issued() noexcept { ++d_requests_issued; }
   void note_composite() noexcept { ++d_composites; }
@@ -78,6 +90,7 @@ public:
   void note_operator_render() noexcept { ++d_operator_renders; }
   void note_degraded_composite() noexcept { ++d_degraded_composites; }
   void note_audio_dispatch() noexcept { ++d_audio_dispatches; }
+  void note_request_suppressed() noexcept { ++d_requests_suppressed; }
 
 private:
   std::uint64_t d_requests_issued{0};
@@ -86,6 +99,7 @@ private:
   std::uint64_t d_operator_renders{0};
   std::uint64_t d_degraded_composites{0};
   std::uint64_t d_audio_dispatches{0};
+  std::uint64_t d_requests_suppressed{0};
 };
 
 // The composed observability record a host debug panel / downstream
@@ -101,6 +115,9 @@ struct CompositorStats {
   std::uint64_t cache_hits{0};
   std::uint64_t cache_misses{0};
   std::uint64_t cache_evictions{0};
+  // Appended last, after the cache block, so every existing positional aggregate
+  // init of this struct keeps its meaning.
+  std::uint64_t requests_suppressed{0};
 };
 
 // Compose `counters`' own counts with `cache`'s published hit/miss/eviction
@@ -113,7 +130,8 @@ inline CompositorStats counters_snapshot(const CompositorCounters& counters,
                          counters.operator_renders(),
                          cache.hits(),
                          cache.misses(),
-                         cache.evictions()};
+                         cache.evictions(),
+                         counters.requests_suppressed()};
 }
 
 } // namespace arbc

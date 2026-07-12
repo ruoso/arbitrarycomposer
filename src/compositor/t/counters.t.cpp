@@ -7,6 +7,7 @@
 #include <arbc/cache/keyed_store.hpp>
 #include <arbc/compositor/compositor.hpp>
 #include <arbc/compositor/counters.hpp>
+#include <arbc/compositor/pull_service.hpp>
 #include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/scale_ladder.hpp>
 #include <arbc/compositor/tile_planning.hpp>
@@ -27,6 +28,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 // Behavioral-counter unit tests for the interactive compositor path (doc
@@ -130,6 +132,39 @@ public:
 
 private:
   int d_renders{0};
+};
+
+// An operator content over one input (`inputs()` non-empty is the whole
+// leaf/operator test, `operator_graph.hpp`). Its render pulls that input over the
+// tile it was asked for -- the descent the real fade/nested kinds make -- and, when
+// the pull answers asynchronously, reports the TRANSIENT, INEXACT placeholder the
+// contract requires (doc 13:117-120): flagging it exact would freeze this pass's
+// empty tile into the cache as a fresh hit, and the arrival would never re-drive it.
+// Two of these over ONE leaf is the duplicate-dispatch shape the dedup guard exists
+// for: both pull the same covering tile, in the same frame, while it is in flight.
+class PullOperator : public arbc::Content {
+public:
+  arbc::PullServiceImpl* service{nullptr};
+
+  explicit PullOperator(arbc::Content* input) : d_inputs{input} {}
+
+  std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
+  arbc::Stability stability() const override { return arbc::Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
+  std::span<const arbc::ContentRef> inputs() const override { return d_inputs; }
+  std::optional<RenderResult> render(const arbc::RenderRequest& request,
+                                     std::shared_ptr<arbc::RenderCompletion> /*done*/) override {
+    auto inner = std::make_shared<arbc::RenderCompletion>();
+    service->pull(d_inputs.front(), request, inner);
+    if (!inner->settled()) {
+      inner->cancel(); // the completion this pass will not drain
+      return RenderResult{request.scale, /*exact=*/false};
+    }
+    return RenderResult{request.scale, /*exact=*/true};
+  }
+
+private:
+  std::vector<arbc::ContentRef> d_inputs;
 };
 
 // A single-layer document over `content_id`; the resolver binds the id to a
@@ -323,4 +358,102 @@ TEST_CASE("counters: counters_snapshot composes the compositor and cache counts"
   CHECK(stats.cache_hits == cache.hits());
   CHECK(stats.cache_misses == cache.misses());
   CHECK(stats.cache_evictions == cache.evictions());
+  CHECK(stats.requests_suppressed == counters.requests_suppressed());
+}
+
+// --- In-flight dedup, at the driver seam (compositor.in_flight_tile_dedup) ----
+
+// The duplicate this task removes, in the shape the tree actually produces it: two
+// operator layers SHARING one input leaf, over a viewport wider than one tile. Each
+// operator's per-tile render pulls the leaf's covering tile; the first pull
+// dispatches it to a "worker" (the deferring dispatch below) and the second finds it
+// already in flight -- absent from the cache, and so, on the cache alone,
+// indistinguishable from a tile nobody has ever asked for.
+//
+// The identity is the point: `requests_issued` counts exactly the DISTINCT tile keys
+// the frame needed, and `requests_suppressed` counts the duplicates -- a POSITIVE
+// number, so the test fails if the dedup silently stops firing rather than passing
+// vacuously on a number that did not grow.
+//
+// enforces: 02-architecture#in-flight-tile-is-not-redispatched
+// enforces: 16-sdlc-and-quality#compositor-exposes-behavioral-counters
+TEST_CASE("counters: two operator layers sharing an input dispatch its tiles once, not twice") {
+  MarkBackend backend;
+
+  // The shared leaf: it defers (a worker-backed miss), so its render is IN FLIGHT
+  // for the whole frame -- the state the guard exists to see.
+  AsyncContent leaf;
+  PullOperator op_a(&leaf);
+  PullOperator op_b(&leaf);
+
+  arbc::Model model;
+  arbc::ObjectId a_id{};
+  arbc::ObjectId b_id{};
+  {
+    auto txn = model.transact();
+    a_id = txn.add_content(0);
+    txn.add_layer(a_id, arbc::Affine::identity());
+    b_id = txn.add_content(0);
+    txn.add_layer(b_id, arbc::Affine::identity());
+    REQUIRE(txn.commit().has_value());
+  }
+  const arbc::ObjectId leaf_id{99};
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    if (id == a_id) {
+      return &op_a;
+    }
+    return id == b_id ? &op_b : nullptr;
+  };
+
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(512, 512, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+
+  CompositorCounters counters;
+  RefinementQueue queue;
+
+  // `direct_dispatch` renders every content on the frame thread, which reproduces the
+  // shipped leaf-only rule exactly for this scene: an operator renders inline (and so
+  // pulls its input from inside its own render), while `AsyncContent` -- the leaf --
+  // returns nullopt and leaves its completion live, which is precisely the state a
+  // worker-dispatched leaf is in, and the state the guard exists to see.
+  const std::unordered_map<const arbc::Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+  arbc::PullConfig config;
+  config.counters = &counters;
+  config.pending = &queue;
+  config.id_of = [&ids](const arbc::Content* c) {
+    const auto it = ids.find(c);
+    return it != ids.end() ? it->second : arbc::ObjectId{};
+  };
+  config.contribution = [rev = state->revision()](const arbc::Content*) { return rev; };
+  arbc::PullServiceImpl pulls(cache, backend, arbc::direct_dispatch(), config);
+  op_a.service = &pulls;
+  op_b.service = &pulls;
+
+  arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
+                                 arbc::Deadline::none(), std::nullopt, &queue, &counters, nullptr,
+                                 arbc::Time::zero(), nullptr, nullptr, &pulls);
+
+  // The frame needed 12 distinct tile keys: one per output tile for each of the two
+  // operator layers (4 + 4), plus the leaf's four covering tiles -- pulled by BOTH
+  // operators, dispatched once.
+  constexpr std::uint64_t k_operator_tiles = 2 * k_tiles_covered;
+  constexpr std::uint64_t k_distinct_keys = k_operator_tiles + k_tiles_covered;
+  CHECK(counters.requests_issued() == k_distinct_keys);
+  CHECK(counters.operator_renders() == k_operator_tiles);
+
+  // ...and suppressed exactly the duplicates: the second operator's four pulls of the
+  // leaf tiles the first operator already had in flight. Without the guard these are
+  // four more `content->render` calls, four more surfaces, four more PendingTiles --
+  // for pixels that were already being rendered.
+  CHECK(counters.requests_suppressed() == k_tiles_covered);
+  CHECK(leaf.renders() == static_cast<int>(k_tiles_covered));
+
+  // One PendingTile per distinct leaf tile -- the suppressed pulls recorded nothing.
+  // (The operators settled inexact transient placeholders inline, so they queue
+  // nothing.)
+  CHECK(queue.tiles.size() == k_tiles_covered);
 }

@@ -3,6 +3,7 @@
 #include <arbc/compositor/operator_graph.hpp>
 #include <arbc/compositor/provided_surface.hpp>
 #include <arbc/compositor/pull_service.hpp>
+#include <arbc/compositor/refinement.hpp> // tile_in_flight (the pending-set suppression key)
 #include <arbc/compositor/scale_ladder.hpp>
 #include <arbc/compositor/tile_planning.hpp> // k_tile_size, tiles_covering
 #include <arbc/media/audio_block.hpp>        // channel_count
@@ -224,6 +225,32 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
         hit.has_value() && hit->get().meta.exact && hit->get().meta.achieved_scale == rung_px) {
       deliver_tile(d_backend, *hit->get().surface, coord, rung_px, request);
       region_exact = region_exact && hit->get().meta.exact;
+      continue;
+    }
+
+    // Cache-first has a SECOND suppression key behind it (`pull-joins-in-flight-tile`,
+    // doc 13, `compositor.in_flight_tile_dedup`): a covering tile whose render is
+    // already in flight is not dispatched again. The cache is still probed first and
+    // the pending set only on a miss, so this narrows `pull-is-cache-first` rather
+    // than replacing it. This is the dominant duplicate source in the tree: two
+    // operators sharing an input each pull it, a leaf that is both a visible layer
+    // and an operator's input is dispatched by the driver and then re-dispatched by
+    // the pull, and a nested chain pays one per level per wave -- and the in-flight
+    // tile is absent from the cache, so nothing above catches any of it.
+    //
+    // The joined pull delivers NOTHING and settles nothing: it is an async tile like
+    // any other (`any_async`), so the aggregate below leaves the caller's `done`
+    // unsettled, the region stays inexact, the operator degrades this pass
+    // (TRANSIENT -- something more is genuinely coming, from the dispatch we deferred
+    // to), and the in-flight arrival's damage re-drives every consumer of that input,
+    // including this one, which never registered with it. That broadcast is what
+    // makes the join sound with no join primitive: collapsing N dispatches to one
+    // changes the work done, not the wake-ups delivered.
+    if (tile_in_flight(d_config.pending, key)) {
+      if (d_config.counters != nullptr) {
+        d_config.counters->note_request_suppressed();
+      }
+      any_async = true;
       continue;
     }
 

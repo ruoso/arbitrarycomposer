@@ -119,6 +119,19 @@ covering tile is exact at the selected rung. The operator then composites a
 the completion is left unsettled, the operator degrades for this frame, and
 each async tile's arrival re-drives it (below).
 
+Cache-first has a second suppression key behind it: a covering tile whose
+render is **already in flight** (doc 02 § The frame, interactively) is not
+dispatched again. The cache is still probed first and the pending set only on
+a miss, so the rule narrows rather than replaces it — but a tile another pull
+already dispatched is absent from the cache, and re-dispatching it is how an
+operator over a multi-tile region comes to re-render its shared input once per
+output tile. The joined pull delivers nothing and settles nothing: it is an
+async tile like any other, so the region stays unsettled, the operator
+degrades this pass, and the in-flight arrival's damage re-drives every consumer
+of that input — including this one, which never registered with it. The split
+below is unaffected: a joined pull is still a *dispatched* one, so it is
+TRANSIENT, and something more is genuinely coming for this revision.
+
 **A transient placeholder is never exact.** The degraded pass an async pull
 forces — the transparent tile, the silent block — is *not* an answer to the
 request; it is a stand-in for one that is still being rendered. The

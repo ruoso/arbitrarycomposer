@@ -803,6 +803,132 @@ TEST_CASE("pull_service: an async pull records pending, then a poll inserts it a
   CHECK(done2->settled());
 }
 
+// The join: a second pull of a tile whose render is already in flight dispatches
+// NOTHING and delivers NOTHING. It is not a hit -- it is an async tile like any
+// other, so the region stays unsettled (TRANSIENT, not a placeholder-settled
+// FINAL), the operator degrades this pass, and the in-flight arrival's damage
+// re-drives it. That broadcast is the whole reason no join primitive is needed.
+//
+// enforces: 13-effects-as-operators#pull-joins-in-flight-tile
+// enforces: 02-architecture#in-flight-tile-is-not-redispatched
+TEST_CASE("pull_service: a pull whose covering tile is already in flight joins it, dispatching "
+          "nothing and delivering nothing") {
+  MarkBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  auto rec = std::make_shared<DispatchRecorder>();
+  rec->defer = true; // the dispatch answers asynchronously (leaves done live)
+  BufferSurface caller_target(256, 256);
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{31};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+
+  CompositorCounters counters;
+  RefinementQueue queue;
+  PullConfig config;
+  config.counters = &counters;
+  config.pending = &queue;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  PullServiceImpl service(cache, backend, recording_dispatch(rec), config);
+
+  // The first pull dispatches the tile and records it pending, unsettled.
+  auto first = std::make_shared<RenderCompletion>();
+  service.pull(&leaf, one_tile_request(caller_target, StateHandle{}, Deadline::none()), first);
+  REQUIRE(rec->calls == 1);
+  REQUIRE(counters.requests_issued() == 1);
+  REQUIRE(queue.tiles.size() == 1);
+  REQUIRE_FALSE(first->settled());
+
+  // The second pull of the SAME tile, in the same frame -- the duplicate this task
+  // exists to remove. It issues no render, allocates no pending entry, and bumps
+  // the suppression counter instead: the dedup is provable by PRESENCE, not only by
+  // a number that failed to grow.
+  auto second = std::make_shared<RenderCompletion>();
+  service.pull(&leaf, one_tile_request(caller_target, StateHandle{}, Deadline::none()), second);
+  CHECK(rec->calls == 1);                 // no second dispatch
+  CHECK(counters.requests_issued() == 1); // and so no second render request
+  CHECK(counters.requests_suppressed() == 1);
+  CHECK(queue.tiles.size() == 1); // no second PendingTile
+  CHECK(leaf.renders() == 0);     // the deferred dispatch never called render
+  // TRANSIENT: the joined pull left the region unsettled and inexact, exactly as the
+  // dispatch it deferred to would have. It did NOT settle a placeholder (that would
+  // be FINAL -- "nothing more is coming"), and it did not report a hit.
+  CHECK_FALSE(second->settled());
+
+  // The one in-flight render lands. Its arrival inserts under its exact key and
+  // emits one damage -- one broadcast, to every consumer of the tile, which is what
+  // re-drives the pull that joined and never registered with it.
+  queue.tiles.front().done->complete(RenderResult{1.0, true});
+  const std::vector<Damage> damage = arbc::poll_refinements(queue, cache, &counters);
+  REQUIRE(damage.size() == 1);
+  CHECK(queue.tiles.empty());
+
+  // The re-driven pull is now a warm hit: still exactly one render for this tile,
+  // ever, across three asks.
+  auto third = std::make_shared<RenderCompletion>();
+  service.pull(&leaf, one_tile_request(caller_target, StateHandle{}, Deadline::none()), third);
+  CHECK(rec->calls == 1);
+  CHECK(counters.requests_issued() == 1);
+  CHECK(counters.requests_suppressed() == 1); // the hit is not a suppression
+  CHECK(third->settled());
+}
+
+// The carve-out, and the difference between removing waste and stranding a tile.
+// `cancel` is advisory: it does not settle, and it leaves the content free to honor
+// it and settle via `fail` -- which `poll_refinements` drops with no cache insert
+// and no damage. Nothing would ever re-drive a pull that joined THAT.
+//
+// enforces: 02-architecture#cancelled-tile-is-redispatched
+TEST_CASE("pull_service: a pull whose covering tile is pending but CANCELLED re-dispatches it") {
+  MarkBackend backend;
+  TileCache cache(64u * 1024 * 1024);
+  auto rec = std::make_shared<DispatchRecorder>();
+  rec->defer = true;
+  BufferSurface caller_target(256, 256);
+
+  GraphContent leaf;
+  const arbc::ObjectId leaf_id{32};
+  const std::unordered_map<const Content*, arbc::ObjectId> ids{{&leaf, leaf_id}};
+
+  CompositorCounters counters;
+  RefinementQueue queue;
+  PullConfig config;
+  config.counters = &counters;
+  config.pending = &queue;
+  config.id_of = id_map(ids);
+  config.contribution = const_contribution();
+  PullServiceImpl service(cache, backend, recording_dispatch(rec), config);
+
+  auto first = std::make_shared<RenderCompletion>();
+  service.pull(&leaf, one_tile_request(caller_target, StateHandle{}, Deadline::none()), first);
+  REQUIRE(queue.tiles.size() == 1);
+  REQUIRE(counters.requests_issued() == 1);
+
+  // The deadline sweep cancels the in-flight render (`interactive.cpp`'s expiry
+  // path). The entry stays queued and stays UNSETTLED -- cancellation is advisory.
+  queue.tiles.front().done->cancel();
+  REQUIRE_FALSE(queue.tiles.front().done->settled());
+
+  // So the next pull must NOT join it: it dispatches its own render.
+  auto second = std::make_shared<RenderCompletion>();
+  service.pull(&leaf, one_tile_request(caller_target, StateHandle{}, Deadline::none()), second);
+  CHECK(rec->calls == 2);
+  CHECK(counters.requests_issued() == 2);
+  CHECK(counters.requests_suppressed() == 0);
+  CHECK(queue.tiles.size() == 2);
+
+  // And that matters: the cancelled render honors the cancel and fails. The poll
+  // drops it with no insert and no damage -- had the second pull joined it, its tile
+  // would now be in neither the cache nor the queue, with nothing left to re-drive
+  // it. The live re-dispatch is what still owes the tile.
+  queue.tiles.front().done->fail(arbc::RenderError::ContentFailed);
+  CHECK(arbc::poll_refinements(queue, cache, &counters).empty());
+  REQUIRE(queue.tiles.size() == 1);
+  CHECK_FALSE(cache.lookup(tile_key(leaf_id, k_rev)).has_value());
+  CHECK(arbc::tile_in_flight(&queue, tile_key(leaf_id, k_rev)));
+}
+
 // enforces: 13-effects-as-operators#pull-is-cache-first
 TEST_CASE(
     "pull_service: an operator render bumps operator_renders; an identity pull short-circuits") {

@@ -312,6 +312,88 @@ TEST_CASE("poll_refinements over an empty queue schedules no follow-up frame") {
   CHECK(queue.tiles.empty());
 }
 
+// --- The in-flight suppression key (compositor.in_flight_tile_dedup) ---------
+
+// The predicate itself, one case per arm. The two that carry the design are the
+// `cancelled()` arm (a cancelled render may honor the cancel and settle via `fail`,
+// which `poll_refinements` drops with no insert and NO DAMAGE -- so suppressing
+// against it would strand the tile behind a placeholder forever) and the
+// key-mismatch arm (a revision bump MUST re-render, and full `TileKey` equality is
+// the only thing that guarantees it).
+//
+// enforces: 02-architecture#in-flight-tile-is-not-redispatched
+// enforces: 02-architecture#cancelled-tile-is-redispatched
+TEST_CASE("tile_in_flight suppresses only a live, uncancelled, unsettled pending tile") {
+  RefinementQueue queue;
+  const TileKey key = tile_key(ScaleRung{0}, TileCoord{0, 0});
+
+  auto record = [&queue](const TileKey& k, const std::shared_ptr<RenderCompletion>& done) {
+    PendingTile pending;
+    pending.key = k;
+    pending.local_rect = arbc::tile_local_rect(k.rung, k.coord);
+    pending.content = k.content;
+    pending.bytes = 1;
+    pending.surface = std::make_unique<StubSurface>();
+    pending.done = done;
+    queue.tiles.push_back(std::move(pending));
+  };
+
+  SECTION("a null queue is nothing in flight (the offline first pass, the null-path rule)") {
+    CHECK_FALSE(arbc::tile_in_flight(nullptr, key));
+  }
+
+  SECTION("an empty queue is nothing in flight") { CHECK_FALSE(arbc::tile_in_flight(&queue, key)); }
+
+  SECTION("a matching key, unsettled and uncancelled, IS in flight") {
+    record(key, std::make_shared<RenderCompletion>());
+    CHECK(arbc::tile_in_flight(&queue, key));
+  }
+
+  SECTION("a settled entry is not in flight -- its tile is in the cache, or was dropped") {
+    auto done = std::make_shared<RenderCompletion>();
+    record(key, done);
+    done->complete(RenderResult{});
+    CHECK_FALSE(arbc::tile_in_flight(&queue, key));
+  }
+
+  SECTION("a CANCELLED entry is not in flight -- it may fail and be dropped with no damage") {
+    auto done = std::make_shared<RenderCompletion>();
+    record(key, done);
+    done->cancel();
+    // `cancel` is advisory: it does NOT settle. The entry is still unsettled and
+    // still queued -- and still must not suppress, or a content that honors the
+    // cancel strands its tile.
+    CHECK_FALSE(done->settled());
+    CHECK(done->cancelled());
+    CHECK_FALSE(arbc::tile_in_flight(&queue, key));
+  }
+
+  SECTION("a key differing in ANY field is a different tile and is dispatched") {
+    record(key, std::make_shared<RenderCompletion>());
+    REQUIRE(arbc::tile_in_flight(&queue, key));
+
+    TileKey other_content = key;
+    other_content.content = arbc::ObjectId{8};
+    CHECK_FALSE(arbc::tile_in_flight(&queue, other_content));
+
+    TileKey other_revision = key;
+    other_revision.revision = k_revision + 1; // a revision bump MUST re-render
+    CHECK_FALSE(arbc::tile_in_flight(&queue, other_revision));
+
+    TileKey other_rung = key;
+    other_rung.rung = ScaleRung{1};
+    CHECK_FALSE(arbc::tile_in_flight(&queue, other_rung));
+
+    TileKey other_coord = key;
+    other_coord.coord = TileCoord{1, 0};
+    CHECK_FALSE(arbc::tile_in_flight(&queue, other_coord));
+
+    TileKey other_time = key;
+    other_time.achieved_time = arbc::Time{500};
+    CHECK_FALSE(arbc::tile_in_flight(&queue, other_time));
+  }
+}
+
 // --- Driver seam: record vs. drop -------------------------------------------
 
 TEST_CASE("render_frame_interactive records async misses only when a queue is supplied") {
