@@ -140,29 +140,47 @@ double CrossfadeContent::position(Time t) const {
 
 namespace {
 
-// Pull `input` straight into the caller's `target` and settle the RenderResult,
-// mirroring fade's fully-open pass-through: the sub-request carries snapshot,
-// exactness, and deadline VERBATIM (constraint 2); only the target is ours. On a
-// worker-dispatched miss or a failed pull, the target is cleared (transparent)
-// and a placeholder result is reported for this frame. Returns the pulled input
-// result on success (for scale/exactness honesty), nullopt on the placeholder
-// path. This is the endpoint render (`w == 0`/`w == 1`) that keeps render()
-// bit-faithful to identity() (constraint 6).
-std::optional<RenderResult> pull_through(PullService& pull, Backend& backend, ContentRef input,
-                                         const RenderRequest& request) {
+// The outcome of pulling one input. `result` carries the input's own
+// `RenderResult` when the pull settled successfully; otherwise the target was
+// cleared to transparent and this pass shows a placeholder. The two placeholder
+// paths are NOT interchangeable, which is why they are distinguished here:
+//
+//   * TRANSIENT (`transient == true`) -- the pull dispatched the input's render to
+//     a worker and left the completion unsettled. The render will land in the
+//     cache and a later pass must compose the real pixels, so this pass's tile
+//     MUST be reported inexact. Reporting it exact would let the caller cache the
+//     transparent placeholder as a fresh exact hit, which the offline driver's
+//     `Exactness::Exact` second pass would then serve instead of re-rendering --
+//     permanently freezing the crossfade out of the frame
+//     (`nested_content.cpp:398-403`; doc 13:117-120 requires the arrival to
+//     re-drive this render).
+//   * FINAL (`transient == false`) -- the pull failed or exceeded its budget.
+//     Nothing further is coming for this revision, so the placeholder is the
+//     honest exact answer, exactly as nested reports it (`nested_content.cpp:409`).
+//
+// The sub-request carries snapshot, exactness, and deadline VERBATIM (constraint
+// 2); only the target is ours. This is the endpoint render (`w == 0`/`w == 1`)
+// that keeps render() bit-faithful to identity() (constraint 6).
+struct PullOutcome {
+  std::optional<RenderResult> result; // set iff the pull settled successfully
+  bool transient{false};              // dispatched to a worker: this pass is inexact
+};
+
+PullOutcome pull_through(PullService& pull, Backend& backend, ContentRef input,
+                         const RenderRequest& request) {
   auto done = std::make_shared<RenderCompletion>();
   pull.pull(input, request, done);
   if (!done->settled()) {
     done->cancel();
     backend.clear(request.target, 0.0F, 0.0F, 0.0F, 0.0F);
-    return std::nullopt;
+    return PullOutcome{std::nullopt, /*transient=*/true};
   }
   const std::optional<expected<RenderResult, RenderError>> settled = done->take();
   if (!settled.has_value() || !settled->has_value()) {
     backend.clear(request.target, 0.0F, 0.0F, 0.0F, 0.0F);
-    return std::nullopt;
+    return PullOutcome{std::nullopt, /*transient=*/false};
   }
-  return **settled;
+  return PullOutcome{**settled, /*transient=*/false};
 }
 
 } // namespace
@@ -183,12 +201,11 @@ std::optional<RenderResult> CrossfadeContent::render(const RenderRequest& reques
   // time.
   if (w == 0.0 || w == 1.0) {
     const std::size_t idx = (w == 0.0) ? 0U : 1U;
-    const std::optional<RenderResult> in_result =
-        pull_through(*d_pull, backend, d_inputs[idx], request);
-    if (!in_result.has_value()) {
-      return RenderResult{request.scale, true, request.time};
+    const PullOutcome in = pull_through(*d_pull, backend, d_inputs[idx], request);
+    if (!in.result.has_value()) {
+      return RenderResult{request.scale, /*exact=*/!in.transient, request.time};
     }
-    return RenderResult{in_result->achieved_scale, in_result->exact, request.time};
+    return RenderResult{in.result->achieved_scale, in.result->exact, request.time};
   }
 
   // Interior dissolve (Decision 1, constraint 6): pull input 0 into the target as
@@ -199,10 +216,7 @@ std::optional<RenderResult> CrossfadeContent::render(const RenderRequest& reques
   // primitive. The target is cleared first so regions neither input covers stay
   // transparent.
   backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
-  const std::optional<RenderResult> r0 = pull_through(*d_pull, backend, d_inputs[0], request);
-  if (!r0.has_value()) {
-    return RenderResult{request.scale, true, request.time};
-  }
+  const PullOutcome base = pull_through(*d_pull, backend, d_inputs[0], request);
 
   const expected<std::unique_ptr<Surface>, SurfaceError> temp_result =
       backend.make_surface(target.width(), target.height(), target.format());
@@ -213,29 +227,53 @@ std::optional<RenderResult> CrossfadeContent::render(const RenderRequest& reques
   Surface& temp1 = **temp_result;
   backend.clear(temp1, 0.0F, 0.0F, 0.0F, 0.0F);
 
+  // BOTH inputs are pulled on EVERY pass, even when input 0 came back a placeholder.
+  // A dissolve needs both, and a pull is what DISPATCHES a cold input's render -- so
+  // short-circuiting here on input 0's placeholder would leave input 1 undispatched
+  // and undiscovered, and a driver that reaps its dispatched renders once (the offline
+  // parallel path) would then re-render this crossfade against an input 1 that is still
+  // cold, forever. Issue both, decide after: the pass costs one extra pull and makes a
+  // single reap round sufficient at any input count.
   const RenderRequest sub1{request.region, request.scale,     request.time,    request.snapshot,
                            temp1,          request.exactness, request.deadline};
   auto done1 = std::make_shared<RenderCompletion>();
   d_pull->pull(d_inputs[1], sub1, done1);
+
+  std::optional<RenderResult> r1;
+  bool transient = base.transient;
   if (!done1->settled()) {
-    done1->cancel(); // input 1 miss dispatched to a worker: show input 0 alone this frame
-    return RenderResult{r0->achieved_scale, r0->exact, request.time};
+    // Input 1's render went to a worker: it will land in the cache and a later pass
+    // must compose it, so THIS pass is inexact. Reporting it exact would cache a
+    // half-composited tile (input 0 alone) as a fresh exact hit, which the offline
+    // driver's `Exactness::Exact` pass would then serve instead of re-rendering.
+    done1->cancel(); // show input 0 alone this frame
+    transient = true;
+  } else if (const std::optional<expected<RenderResult, RenderError>> settled1 = done1->take();
+             settled1.has_value() && settled1->has_value()) {
+    r1 = **settled1;
   }
-  const std::optional<expected<RenderResult, RenderError>> settled1 = done1->take();
-  if (!settled1.has_value() || !settled1->has_value()) {
-    return RenderResult{r0->achieved_scale, r0->exact, request.time}; // input 1 unavailable
+  // else: a FAILED pull, not a dispatched one -- input 1 is unavailable for this
+  // revision, nothing more is coming, and input 0 alone is the honest answer
+  // (`nested_content.cpp:409`).
+
+  if (!base.result.has_value()) {
+    // No base pixels this pass; the target is already the transparent placeholder.
+    return RenderResult{request.scale, /*exact=*/!transient, request.time};
   }
-  const RenderResult r1 = **settled1;
+  const RenderResult& r0 = *base.result;
+  if (!r1.has_value()) {
+    return RenderResult{r0.achieved_scale, /*exact=*/r0.exact && !transient, request.time};
+  }
 
   // temp1 is in input 1's device raster (achieved_scale); the target is at
   // request.scale over the same region, so the temp1->target map is a pure scale
   // by request.scale/achieved_scale (region translations cancel), the identity at
   // achieved == request.scale (mirrors fade_content.cpp:152-158).
   const Affine temp1_to_dst =
-      Affine::scaling(request.scale / r1.achieved_scale, request.scale / r1.achieved_scale);
+      Affine::scaling(request.scale / r1->achieved_scale, request.scale / r1->achieved_scale);
   backend.composite(target, temp1, temp1_to_dst, w);
 
-  return RenderResult{request.scale, r0->exact && r1.exact, request.time};
+  return RenderResult{request.scale, r0.exact && r1->exact && !transient, request.time};
 }
 
 AudioFacet* CrossfadeContent::audio() { return &d_audio_facet; }

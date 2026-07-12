@@ -1,11 +1,11 @@
-#include <arbc/compositor/operator_graph.hpp> // is_operator (leaf-vs-operator dispatch split)
-#include <arbc/compositor/pull_service.hpp>   // PullServiceImpl, RenderDispatch, PullConfig
-#include <arbc/compositor/refinement.hpp>     // RefinementQueue, poll_refinements
-#include <arbc/compositor/tile_planning.hpp>  // render_frame_interactive
-#include <arbc/contract/content.hpp>          // Deadline, Exactness
+#include <arbc/compositor/pull_service.hpp>  // PullServiceImpl, RenderDispatch, PullConfig
+#include <arbc/compositor/refinement.hpp>    // RefinementQueue, poll_refinements
+#include <arbc/compositor/tile_planning.hpp> // render_frame_interactive
+#include <arbc/contract/content.hpp>         // Deadline, Exactness
 #include <arbc/runtime/offline_sequence.hpp>
 #include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
 #include <arbc/runtime/pull_identity.hpp>    // make_pull_identity_of (child-distinct id_of)
+#include <arbc/runtime/worker_dispatch.hpp>  // worker_backed_dispatch (the leaf-only rule)
 #include <arbc/surface/surface.hpp>          // Surface
 
 #include <cstdint>
@@ -146,58 +146,56 @@ SequenceRenderer::render_frame_at(Time composition_time) {
   // rule). A final all-fresh pass composites the exact result. Exactness is order-
   // independent, so this yields identical pixels to the inline path.
   //
-  // A NON-LEAF content (`is_operator`: a fade, a crossfade, a nested composition)
-  // renders INLINE on this driver thread instead of going to the pool. Its `render`
-  // re-enters the `PullService` to fetch its own inputs (doc 13:69-71) -- and `pull`
-  // does a `TileCache` lookup/insert (`pull_service.cpp:223,311`) and walks the
-  // service's own descent depth (`pull_service.hpp:208-213`), both of which are
-  // frame-thread-confined. Handing such a render to a worker would have that worker
-  // read and write `KeyedStore` concurrently with this thread's own probes and
-  // `poll_refinements` -- exactly the single-writer invariant `worker_pool.hpp:37-40`
-  // states the pool relies on ("workers never touch the cache"), and a TSan-flagged
-  // data race. So the operator descent stays here, byte-for-byte as the inline path
-  // walks it, and only the LEAF renders -- which touch nothing but their own
-  // thread-confined target surface -- fan out. The parallelism that matters is
-  // unaffected: the leaves are where the pixels are made.
-  RenderDispatch dispatch =
-      [this, inline_render = direct_dispatch()](Content* content, const RenderRequest& request,
-                                                std::shared_ptr<RenderCompletion> done) {
-        if (is_operator(content)) {
-          inline_render(content, request, std::move(done));
-          return;
-        }
-        d_pool.submit(RenderTask{content, request, std::move(done)});
-      };
+  // `worker_backed_dispatch` is where the leaf-only rule lives (doc 02 § Threading
+  // model): an operator content renders inline on THIS driver thread and only leaves
+  // fan out, because an operator's render re-enters the render-thread-confined
+  // `PullService`. This driver states the rule nowhere itself -- it obtains a
+  // dispatch that already enforces it, which is the point of the helper.
   RefinementQueue pending;
-  PullServiceImpl pulls(d_cache, d_backend, std::move(dispatch), make_config(&pending));
+  PullServiceImpl pulls(d_cache, d_backend, worker_backed_dispatch(d_pool), make_config(&pending));
   // Bind every operator content to the live service on the DRIVER thread, before any
   // worker dispatch (Constraint 8): its borrowed pointers are read-only on workers
   // during render. The fade's own nested input pull rides `pulls` (async-dispatched
   // and reaped through `pending` below). `pulls` (declared first) outlives `binding`.
   const OperatorBindingScope binding = bind_operators(d_document, pulls, d_backend, d_pinned);
-  render_frame_interactive(state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame,
-                           Deadline::none(), /*prior_revision=*/std::nullopt, &pending, &d_counters,
-                           /*dirty=*/nullptr, composition_time, /*visible_plans=*/nullptr,
-                           /*diagnostics=*/nullptr, &pulls, Exactness::Exact);
-  // Reap to quiescence: no deadline, so wait until EVERY dispatched render settles
-  // into the cache. `poll_refinements` inserts settled arrivals (driver thread) and
-  // drops them from the queue; unsettled ones are retained across the park.
-  while (!pending.tiles.empty()) {
-    d_pool.wait_completions(std::nullopt);
-    poll_refinements(pending, d_cache, &d_counters, &d_backend);
+
+  // Composite, reap, repeat until a pass dispatches NOTHING -- that pass composited a
+  // fully-warm cache and is the exact frame (Decision 3/4).
+  //
+  // One composite + one reap is NOT enough, and assuming it was is how an operator
+  // scene silently exported blank. A pass only discovers the misses it actually pulls
+  // for, and an operator whose input answers asynchronously degrades to a placeholder
+  // and returns `exact == false` (`nested_content.cpp:398-403`) -- so the tiles BELOW
+  // it (its input's input, or a sibling input it never reached because an earlier one
+  // came back a placeholder) are not even requested until the operator is re-rendered
+  // against warm inputs on the NEXT pass. Each round therefore warms strictly more of
+  // the graph and dispatches strictly less; the loop terminates when a round dispatches
+  // nothing, which is bounded by the graph's depth. A leaf-only scene still costs
+  // exactly two passes, as before.
+  //
+  // `pending` is non-null on every pass (an async dispatch requires a reap sink, and a
+  // pass that discovers a NEW miss must be able to record it), and `pulls` is served on
+  // every pass so an operator layer's identity short-circuit is delivered here too
+  // (`runtime.operator_identity_offline_delivery`, Constraint 6): an endpoint tile has
+  // no operator-output cache entry to hit, so it is always a miss and must deliver its
+  // terminal input through `pull`.
+  for (;;) {
+    render_frame_interactive(
+        state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame, Deadline::none(),
+        /*prior_revision=*/std::nullopt, &pending, &d_counters, /*dirty=*/nullptr, composition_time,
+        /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, &pulls, Exactness::Exact);
+    if (pending.tiles.empty()) {
+      break; // nothing was dispatched: this pass read an all-warm cache and is exact
+    }
+    // Reap to quiescence: offline has NO deadline, so wait until EVERY dispatched render
+    // settles into the cache. `poll_refinements` inserts settled arrivals on the DRIVER
+    // thread (workers never touch the cache, `runtime.threading`'s rule) and drops them
+    // from the queue; unsettled ones are retained across the park.
+    while (!pending.tiles.empty()) {
+      d_pool.wait_completions(std::nullopt);
+      poll_refinements(pending, d_cache, &d_counters, &d_backend);
+    }
   }
-  // Re-composite from the now fully-warm cache: every tile is a fresh exact hit, so
-  // this pass dispatches nothing and composites the exact frame (Decision 3/4).
-  // `pulls` (not `nullptr`) so an operator layer's identity short-circuit is SERVED
-  // on this pass too (runtime.operator_identity_offline_delivery, Constraint 6):
-  // there is no operator-output cache entry to hit, so the endpoint tile is always a
-  // miss and must deliver input N through `pull`. The terminal's own tiles are warm
-  // (reaped to quiescence above), so `pull` hits cache-first and dispatches nothing.
-  render_frame_interactive(state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame,
-                           Deadline::none(), /*prior_revision=*/std::nullopt, /*pending=*/nullptr,
-                           &d_counters, /*dirty=*/nullptr, composition_time,
-                           /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, &pulls,
-                           Exactness::Exact);
   return std::move(*target);
 }
 

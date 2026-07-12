@@ -222,21 +222,29 @@ public:
 // Content that answers asynchronously by capturing `done` (and filling the tile)
 // for an off-thread settler to complete + poke -- the concurrency reap/wake case.
 //
-// `render` captures the completion but does NOT publish it to the settler; the
-// publish happens in `stability()`, which the driver calls exactly once per
-// recorded async render, strictly after it has classified the render as async (see
-// `AsyncPresettleSolid` above). Without that gate a settler thread could complete
-// `done` before the dispatch returned, and the driver -- reading `done->settled()`
-// -- would correctly serve the tile inline instead of reaping it off-thread, which
-// is not the path this test exists to prove. Gating the publish makes the off-thread
-// reap deterministic without a sleep or a wall-clock read.
+// The settler may complete `done` only once BOTH of these have happened, in either
+// order:
+//   * `render` has captured the completion (`d_captured`), and
+//   * the driver has CLASSIFIED the render as async (`d_classified`), which it
+//     signals by calling `stability()` -- exactly once per recorded async render,
+//     strictly after reading `done->settled()` (see `AsyncPresettleSolid` above).
+// The classification gate is what keeps this test honest: without it a settler could
+// complete `done` before the driver's `settled()` check, and the driver would
+// correctly serve the tile INLINE instead of reaping it off-thread -- not the path
+// this test exists to prove. It stays deterministic with no sleep and no wall clock.
+//
+// The two signals are ANDed rather than sequenced because their ORDER is not fixed.
+// While the interactive driver dispatched inline, `render` always ran inside
+// `dispatch()` and so always preceded `stability()`; since
+// `runtime.worker_dispatch_leaf_only` made the driver's dispatch worker-backed, a
+// leaf like this one is submitted to the pool and `dispatch()` returns BEFORE the
+// worker runs `render`. Publishing from `stability()` alone (the old gate) would
+// then read `d_captured == false`, never publish, and park the frame forever.
 class AsyncCapture : public arbc::Content {
 public:
   std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
   Stability stability() const override {
-    if (d_captured.load(std::memory_order_acquire)) {
-      d_ready.store(true, std::memory_order_release);
-    }
+    d_classified.store(true, std::memory_order_release);
     return Stability::Timed;
   }
   std::optional<arbc::TimeRange> time_extent() const override { return arbc::TimeRange::all(); }
@@ -254,10 +262,11 @@ public:
 
   // Settler side: complete a captured completion, if any. Returns whether it
   // settled one (the settler then pokes the pool). `d_done` is published/consumed
-  // under the lock, gated by the release/acquire `d_ready` flag -- no torn read.
+  // under the lock, gated by the release/acquire flags -- no torn read.
   bool settle_pending() {
-    if (!d_ready.load(std::memory_order_acquire)) {
-      return false;
+    if (!d_captured.load(std::memory_order_acquire) ||
+        !d_classified.load(std::memory_order_acquire)) {
+      return false; // not yet rendered, or not yet classified async by the driver
     }
     std::shared_ptr<RenderCompletion> done;
     RenderResult result;
@@ -267,7 +276,7 @@ public:
       result = d_result;
     }
     d_captured.store(false, std::memory_order_release);
-    d_ready.store(false, std::memory_order_release);
+    d_classified.store(false, std::memory_order_release);
     if (done) {
       done->complete(result);
       return true;
@@ -277,8 +286,8 @@ public:
 
 private:
   std::mutex d_mutex;
-  mutable std::atomic<bool> d_ready{false}; // published to the settler by `stability()`
-  std::atomic<bool> d_captured{false};      // `render` left a completion live
+  mutable std::atomic<bool> d_classified{false}; // driver called `stability()`: reap is async
+  std::atomic<bool> d_captured{false};           // `render` left a completion live
   std::shared_ptr<RenderCompletion> d_done;
   RenderResult d_result{};
 };

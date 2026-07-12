@@ -200,6 +200,17 @@ Initially-open questions, now decided in their own docs:
   and cache invalidation on one namespace cannot evict the other's entries.
   Synthesized ids never persist — they are render-time state, never
   journaled or serialized. Decided in doc 14 (§ Identity).
+- **Worker dispatch is leaf-only.** The render worker pool executes *leaf*
+  renders only. An operator's `render` re-enters the `PullService`, whose
+  cache probe/insert and descent-depth accounting are render-thread-
+  confined, so dispatching one to a worker is a data race on the tile
+  cache — not a performance trade-off. Operators therefore render inline on
+  the driver thread and only leaves fan out. This bounds what the
+  concurrency story can ever be (the parallelism lives at the leaves, and
+  an operator-heavy scene parallelizes through its leaves, not its spine),
+  so it is structural rather than advisory: the rule lives in one runtime
+  helper that every worker-backed dispatch is obtained from, and a
+  grep-lint keeps it the only one. Decided in doc 02 (§ Threading model).
 - **The housekeeping thread drains; the writer checkpoints.** Deferred
   reclamation and durable checkpointing are both "housekeeping", but they
   do not share a thread. A drain may run on the low-priority thread

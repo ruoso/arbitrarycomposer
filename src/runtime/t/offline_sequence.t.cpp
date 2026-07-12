@@ -436,6 +436,8 @@ TEST_CASE("render_frame_at surfaces an unstorable working space as an error") {
   CHECK(frame.error() == arbc::SurfaceError::UnsupportedFormat);
 }
 
+// enforces: 02-architecture#worker-pool-degenerates-to-inline
+// enforces: 02-architecture#worker-dispatch-is-leaf-only
 TEST_CASE("parallel-exact rendering is byte-identical to the inline path") {
   auto content = std::make_shared<SyncSolid>();
   arbc::Document document;

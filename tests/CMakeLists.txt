@@ -740,6 +740,18 @@ target_link_libraries(arbc_pull_service_async_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_pull_service_async_t)
 
+# runtime.worker_dispatch_leaf_only (tier-6, tsan lane): worker dispatch is leaf-only --
+# an operator (fade, crossfade, nested) renders inline on the driver thread and only a
+# leaf reaches a worker, because an operator's render re-enters the render-thread-confined
+# PullService. Drives BOTH drivers at worker_count > 0 over a scene holding all three
+# operator kinds, so it names the concrete kinds beside the runtime drivers, the worker
+# pool and a real CpuBackend -- cross-component, so it links the umbrella `arbc`. Its
+# `[.nightly]` seeded schedule sweep is registered in nightly.yml's tsan-full lane.
+add_executable(arbc_worker_dispatch_leaf_only_t worker_dispatch_leaf_only.t.cpp)
+target_link_libraries(arbc_worker_dispatch_leaf_only_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_worker_dispatch_leaf_only_t)
+
 # --- org.arbc.imageseq (kinds.imageseq_plugin) --------------------------------
 # The out-of-lib reference Timed kind's enforcing tests. They live here (not in
 # plugins/) because check_claims.py / check_levels.py scan src/tests/testing, not

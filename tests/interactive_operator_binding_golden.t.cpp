@@ -191,8 +191,8 @@ struct NestedScene {
   ObjectId nest_layer{};
 
   NestedScene() {
-    const ObjectId child = doc.add_composition(static_cast<double>(k_dim),
-                                               static_cast<double>(k_dim));
+    const ObjectId child =
+        doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     doc.attach_layer(child, doc.add_layer(doc.add_content(fade_a), Affine::identity()));
     doc.attach_layer(child, doc.add_layer(doc.add_content(fade_b), Affine::identity()));
     nested = std::make_shared<NestedContent>(child);
@@ -213,9 +213,8 @@ TEST_CASE("interactive: a fade at an interior envelope and a crossfade at an int
   // `Document` is non-movable and the operators borrow the solids non-owningly, so all
   // four objects outlive every render below.
   Document doc;
-  const ObjectId fade_layer =
-      doc.add_layer(doc.add_content(std::make_shared<FadeContent>(&under, half_fade())),
-                    Affine::identity());
+  const ObjectId fade_layer = doc.add_layer(
+      doc.add_content(std::make_shared<FadeContent>(&under, half_fade())), Affine::identity());
   doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, half_crossfade())),
                 Affine::identity());
 
@@ -284,7 +283,7 @@ TEST_CASE("interactive: the per-frame re-bind does not thrash nested's metadata 
     view.step_at(Time{k_interior.flicks + i});
   }
   CHECK(view.frames_issued() == 9);
-  CHECK(view.operator_binds() == 9); // every damaged frame re-bound...
+  CHECK(view.operator_binds() == 9);                        // every damaged frame re-bound...
   CHECK(scene.nested->metadata_recomputes() == recomputes); // ...and none re-keyed the memo
 }
 

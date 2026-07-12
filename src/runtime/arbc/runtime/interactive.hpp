@@ -48,10 +48,15 @@
 // instant, two uses, no drift). Injecting the clock keeps the whole deadline
 // path deterministic under a fake clock (doc 16:54-62's no-wall-clock rule).
 //
-// M3 runs the inline pool (`worker_count == 0`, the default): misses fill inline
-// through `render_frame_interactive`, and the `WorkerPool`'s role here is the
-// async-completion park/wake (`wait_completions`/`poke`) for externally-async
-// content, not parallel miss dispatch -- that is `compositor.pull_service` (M4).
+// The `WorkerPool` is both the async-completion park/wake substrate
+// (`wait_completions`/`poke`) and -- since `runtime.worker_dispatch_leaf_only` --
+// the frame's real miss executor: the pull service's dispatch is
+// `worker_backed_dispatch(d_pool)`, so a `worker_count > 0` host genuinely fans
+// leaf misses out. The DEFAULT stays `0` (`worker_pool.hpp:63`), the degenerate
+// inline executor, so the shipped configuration still fills every miss inline on
+// the frame thread, byte-identically. Choosing a non-zero default is a tuning
+// question with no measurement behind it yet
+// (`runtime.interactive_worker_count_default`).
 //
 // Operators (`runtime.interactive_pull_wiring`). Each working frame builds a
 // frame-local `PullServiceImpl` over the `TileCache&`/`Backend&` it is handed and
@@ -63,9 +68,10 @@
 // same seam the export driver calls -- memoized on `state.revision()` (the pinned
 // graph is immutable within a revision, doc 02:121-124, and a revision bump changes
 // every tile key anyway, doc 02:94-95), so the O(graph) walk is per-edit, not
-// per-frame. The dispatch is `direct_dispatch()`: every render still runs inline on
-// the frame thread and no worker touches the cache (`runtime.worker_dispatch_leaf_only`
-// owns the worker-backed swap).
+// per-frame. The dispatch is `worker_backed_dispatch(d_pool)`: an OPERATOR miss
+// (fade, crossfade, nested) renders inline on the frame thread and only LEAF misses
+// reach a worker, so no worker ever touches the cache (doc 02 § Threading model,
+// "Worker dispatch is leaf-only").
 //
 // Because `PullConfig::pending` is wired, an operator's input can now answer
 // asynchronously, and its arrival damage names the input's SYNTHESIZED id -- which
@@ -213,9 +219,9 @@ public:
   // nothing" -- the case that runs at 60Hz doing nothing.
   std::uint64_t operator_binds() const noexcept { return d_operator_binds; }
 
-  // The async-completion park/wake substrate. Exposed so externally-async content
-  // (or, in M4, `compositor.pull_service`'s dispatch) can `poke()` a render
-  // thread parked in this loop's `wait_completions`.
+  // The frame's leaf-miss executor and async-completion park/wake substrate.
+  // Exposed so externally-async content can `poke()` a render thread parked in this
+  // loop's `wait_completions`.
   WorkerPool& worker_pool() noexcept { return d_pool; }
 
 private:
@@ -253,9 +259,15 @@ private:
   std::vector<Damage> route_model_damage(std::span<const Damage> model_damage,
                                          const ContentResolver& resolve) const;
 
+  // DECLARATION ORDER IS LOAD-BEARING: `d_pending` before `d_pool`, so `d_pool`
+  // destructs FIRST and `~WorkerPool` stops and joins its threads while the pending
+  // surfaces those workers may still be writing are all alive. Since
+  // `runtime.worker_dispatch_leaf_only` wired `worker_backed_dispatch(d_pool)` into
+  // the frame, a `worker_count > 0` renderer can be destroyed with real renders in
+  // flight; reversing these two is a use-after-free, not a style choice.
   RefinementQueue d_pending;                     // the frame-to-frame registry of async renders
   CompositorCounters d_counters;                 // persistent behavioral counts across frames
-  WorkerPool d_pool;                             // async-completion park/wake (inline by default)
+  WorkerPool d_pool;                             // leaf-miss executor + async-completion park/wake
   Clock d_clock;                                 // the loop's only wall-clock read
   std::optional<std::uint64_t> d_prior_revision; // last-completed revision (stale probe)
   std::optional<Time> d_prev_time;               // previous composition time (clock advance)

@@ -108,9 +108,16 @@ std::optional<RenderResult> FadeContent::render(const RenderRequest& request,
     auto done = std::make_shared<RenderCompletion>();
     d_pull->pull(d_input, sub, done);
     if (!done->settled()) {
+      // NOT exact: this placeholder is TRANSIENT -- the input's render went to a
+      // worker, will land in the cache, and a later pass composes the real pixels.
+      // Reporting `true` here would let the caller cache this pass's transparent
+      // tile as a fresh exact hit, which the offline driver's `Exactness::Exact`
+      // second pass would then serve instead of re-rendering -- permanently
+      // freezing the fade out of the frame (`nested_content.cpp:398-403` states the
+      // same rule; doc 13:117-120 requires the arrival to re-drive this render).
       done->cancel(); // worker-dispatched miss: placeholder for this frame
       backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
-      return RenderResult{request.scale, true, request.time};
+      return RenderResult{request.scale, /*exact=*/false, request.time};
     }
     const std::optional<expected<RenderResult, RenderError>> settled = done->take();
     if (!settled.has_value() || !settled->has_value()) {
@@ -144,9 +151,12 @@ std::optional<RenderResult> FadeContent::render(const RenderRequest& request,
   auto done = std::make_shared<RenderCompletion>();
   d_pull->pull(d_input, sub, done);
   if (!done->settled()) {
+    // NOT exact -- transient, exactly as the fully-open branch above: the arrival
+    // must re-drive this render, and an exact-flagged placeholder would be served
+    // from the cache forever instead.
     done->cancel(); // cache miss dispatched to a worker: placeholder (transparent) this frame
     backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
-    return RenderResult{request.scale, true, request.time};
+    return RenderResult{request.scale, /*exact=*/false, request.time};
   }
   const std::optional<expected<RenderResult, RenderError>> settled = done->take();
   if (!settled.has_value() || !settled->has_value()) {

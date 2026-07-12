@@ -130,6 +130,20 @@ current-revision entries qualify.
   Layers whose rendering is inherently external (a 3D engine with its own
   thread/GPU context) integrate through the async completion path rather
   than occupying a worker.
+- **Worker dispatch is leaf-only.** The pool is a *leaf-render* executor,
+  not a general one. A content with inputs — an operator (doc 13): a fade,
+  a crossfade, a nested composition — renders inline on the driver thread
+  and is never submitted to a worker, because its `render` re-enters the
+  `PullService` to fetch those inputs, and a pull probes and inserts into
+  the tile cache and walks the service's own descent depth, both of which
+  are render-thread-confined. Only *leaf* content, whose render touches
+  nothing but its own caller-owned target surface, fans out. This is what
+  makes "workers never touch the cache" true rather than aspirational, and
+  it costs no parallelism worth having: the leaves are where the pixels are
+  made. The rule is not a convention each driver re-derives — it is
+  structural, hoisted into runtime's single worker-backed dispatch helper,
+  so a driver obtains a worker-backed dispatch only by obtaining one that
+  already enforces it.
 - Compositing itself happens on the render thread (or GPU queue).
 
 This is the *model*; v1 may degenerate to "everything on one thread" while

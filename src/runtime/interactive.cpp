@@ -4,6 +4,7 @@
 #include <arbc/runtime/document.hpp>        // Document (bind_operators' graph walk)
 #include <arbc/runtime/interactive.hpp>
 #include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
+#include <arbc/runtime/worker_dispatch.hpp>  // worker_backed_dispatch (the leaf-only rule)
 
 #include <cassert>
 #include <chrono>
@@ -243,15 +244,34 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   // issues no pull. The config is the export driver's field-for-field
   // (`offline_sequence.cpp:94-101`) except that `pending` is non-null: interactive is
   // `BestEffort` and reaps across frames, where the export driver reaps to quiescence
-  // within one. `direct_dispatch()` renders every miss inline on this thread -- the
-  // documented byte-for-byte equivalent of the driver's pre-wiring inline fill.
+  // within one.
+  //
+  // The dispatch is `worker_backed_dispatch(d_pool)` (`runtime.worker_dispatch_leaf_only`),
+  // the same helper the export driver obtains its dispatch from -- so `d_pool` finally
+  // receives the work its `WorkerPoolConfig` asks for, and the leaf-only rule (doc 02
+  // § Threading model) holds here by construction rather than by this driver restating
+  // it. An operator miss (fade, crossfade, nested) renders inline on this frame thread;
+  // only leaf misses reach a worker.
+  //
+  // Pixel-neutral at the shipped configuration: `worker_count` defaults to `0`, where
+  // the pool IS the degenerate inline executor and `submit` runs the render on this
+  // thread -- byte-identical to the `direct_dispatch()` this replaces
+  // (`02-architecture#worker-pool-degenerates-to-inline`). A host that asks for threads
+  // gets them; one that does not is unchanged.
+  //
+  // A dispatched leaf may outlive this frame: Step 5 parks only to the deadline and
+  // leaves unsettled renders in flight across frames. That is safe precisely BECAUSE
+  // the dispatch is leaf-only -- a leaf's `RenderTask` borrows the pinned document's
+  // `Content*`, a `Surface&` owned by the member `d_pending` (retained across frames by
+  // `poll_refinements`), and a by-value snapshot; it never borrows the frame-local
+  // `pulls` or `operator_binding` below, both of which die when this stack unwinds.
   refresh_identity_memo(state, resolve, revision);
   PullConfig config;
   config.counters = &d_counters;
   config.pending = &d_pending;
   config.id_of = d_id_of;
   config.contribution = [revision](const Content*) { return revision; };
-  PullServiceImpl pulls(cache, backend, direct_dispatch(), std::move(config));
+  PullServiceImpl pulls(cache, backend, worker_backed_dispatch(d_pool), std::move(config));
 
   // Bind the document's content graph to THIS frame's services
   // (`runtime.interactive_binder_wiring`, doc 13 § "Binding is the render driver's

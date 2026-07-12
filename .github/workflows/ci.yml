@@ -29,6 +29,13 @@ jobs:
       # every push, even the GCC/MSVC matrix members that carry no RealtimeSanitizer.
       - name: rt-safety lint
         run: python3 scripts/check_rt_safety.py
+      # Worker-dispatch grep-lint (runtime.worker_dispatch_leaf_only, doc 02
+      # § Threading model): worker dispatch is leaf-only, and the rule lives in
+      # exactly one helper. A second hand-rolled `RenderTask` submission -- which
+      # compiles, does not assert, and races the tile cache only under TSan or in
+      # the field -- fails the build here.
+      - name: worker-dispatch lint
+        run: python3 scripts/check_worker_dispatch.py
 
   build-test:
     strategy:

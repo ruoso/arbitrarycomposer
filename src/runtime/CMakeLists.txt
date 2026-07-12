@@ -7,7 +7,8 @@ arbc_add_component(
           operator_binding.cpp pull_identity.cpp
           offline.cpp
           offline_sequence.cpp housekeeping.cpp housekeeping_thread.cpp
-          worker_pool.cpp interactive.cpp transport.cpp host_viewport.cpp damage_router.cpp
+          worker_pool.cpp worker_dispatch.cpp
+          interactive.cpp transport.cpp host_viewport.cpp damage_router.cpp
           playback_hints.cpp
           audio_worker_pool.cpp lookahead_pump.cpp device_monitor.cpp export_monitor.cpp
           plugin_host.cpp
@@ -22,6 +23,7 @@ arbc_add_component(
                  arbc/runtime/offline_sequence.hpp arbc/runtime/housekeeping.hpp
                  arbc/runtime/housekeeping_targets.hpp
                  arbc/runtime/housekeeping_thread.hpp arbc/runtime/worker_pool.hpp
+                 arbc/runtime/worker_dispatch.hpp
                  arbc/runtime/interactive.hpp arbc/runtime/transport.hpp
                  arbc/runtime/host_viewport.hpp arbc/runtime/damage_router.hpp
                  arbc/runtime/playback_hints.hpp arbc/runtime/audio_worker_pool.hpp
