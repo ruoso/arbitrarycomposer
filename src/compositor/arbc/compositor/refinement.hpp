@@ -240,6 +240,47 @@ std::vector<TileKey> operator_wave_unmet(const RefinementQueue* queue, const Til
 // atomic, no new shared state; the queue stays frame-thread-only.
 bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept;
 
+// Does the frame still WANT `key`? (`runtime.deadline_cancel_retains_wanted`, doc 02
+// § The frame, interactively.) The predicate the interactive driver's deadline sweep
+// narrows its blanket cancel against: on expiry it cancels an unsettled pending tile
+// only when this answers `false`, and leaves the rest in flight, uncancelled, so the
+// next frame that re-plans them joins the render already running (`tile_in_flight`)
+// rather than dispatching a second one. It answers WANTED, not LIVE -- a settled entry
+// is wanted like any other -- and the sweep composes it with `!settled()`.
+//
+//     wanted.contains(key)
+//       || any wait in queue.waits where wanted.contains(wait.output)
+//                                 and  wait.unmet contains key
+//
+// The second clause is not an optimization; without it the sweep strands operator
+// inputs. When the wave gate defers an operator's output re-render
+// (`operator_wave_pending`), the operator does not render, so it does not pull, so its
+// in-flight input tiles are named by NOTHING in this frame's footprint -- the footprint
+// holds the operator's OUTPUT tiles, a different content and a different key. Cancel
+// those inputs and the wave never ends: the deferred output tile composites its
+// transient placeholder forever.
+//
+// The `wanted.contains(wait.output)` guard is what stops the clause degenerating into
+// "anything ever waited on is forever wanted". A wait whose output the frame no longer
+// wants -- panned away, revision-bumped -- retains nothing, and its inputs are cancelled
+// like any other unwanted pending. That is exactly the case
+// `operator_refinement_wave_amplification`'s Decision 4 anticipated, and it stays
+// harmless: `operator_wave_pending` ignores `cancelled()` by construction, so a
+// cancelled input still holds its (now-unwanted) output's gate closed until it leaves
+// the queue, and both leave together on the next drain.
+//
+// It lives here, beside the gates it complements, rather than in the driver: it is a
+// statement about `RefinementQueue` semantics (L4), and the runtime loop (L5) should not
+// be the second place that knows what `OperatorWait::unmet` means. `O(pending x waits x
+// unmet)`, paid only on the expiry path.
+//
+// `wanted` is taken by CONST REFERENCE, not as a nullable pointer like the sinks above,
+// and that asymmetry is deliberate: an absent wanted set means "nothing is wanted",
+// which is the blanket cancel wearing a disguise, and it must not be representable at
+// the one call site that would act on it. The compositor-side SINKS stay nullable (the
+// offline and one-shot drivers pass nothing, and they never sweep).
+bool tile_wanted(const RefinementQueue& queue, const WantedTiles& wanted, const TileKey& key);
+
 // The next-rung speculation ring for a zoom gesture (doc 04:99-101). Re-tiles
 // `local_region` at the rung the gesture is heading toward via `tiles_covering`,
 // and assembles the `TileKey` set at that rung carrying `revision` and, for

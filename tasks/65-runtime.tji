@@ -164,10 +164,11 @@ task runtime "Runtime" {
     note "InteractiveRenderer owns its WorkerPool by value and is non-movable (interactive.hpp:154,:270), so K viewports spawn K×N threads. Add a non-owning constructor overload taking WorkerPool& (and a std::variant/pointer member for owned-vs-borrowed), so a host builds one pool and hands it to every viewport. Requires its own teardown/TSan story. Source-of-debt: tasks/refinements/runtime/interactive_worker_count_default.md A9. Docs 02/17."
   }
   task deadline_cancel_retains_wanted "Narrow deadline sweep's blanket cancel to unwanted tiles" {
-    effort 2d
+    effort 3d
     allocate team
+    complete 100
     depends compositor.in_flight_tile_dedup
-    note "The deadline sweep (interactive.cpp:383-391) cancels every unsettled pending tile, including tiles the very next frame still wants — forfeiting cross-frame in-flight dedup, since a cancelled entry cannot be suppressed against (Decision 3 of compositor.in_flight_tile_dedup). Narrow the sweep to cancel only tiles that are no longer wanted (revision superseded, or no longer visible), leaving still-wanted renders in flight so the follow-up frame suppresses their re-dispatch. Counter-identity acceptance: same as in_flight_tile_dedup's test, extended one frame further out. Source-of-debt: tasks/refinements/compositor/in_flight_tile_dedup.md. Docs 02/13."
+    note "The deadline sweep (interactive.cpp:383-391) cancels every unsettled pending tile, including tiles the very next frame still wants — forfeiting cross-frame in-flight dedup, since a cancelled entry cannot be suppressed against (Decision 3 of compositor.in_flight_tile_dedup). Narrow the sweep to cancel only tiles that are no longer wanted (revision superseded, or no longer visible), leaving still-wanted renders in flight so the follow-up frame suppresses their re-dispatch. Counter-identity acceptance: same as in_flight_tile_dedup's test, extended one frame further out. Source-of-debt: tasks/refinements/compositor/in_flight_tile_dedup.md. Docs 02/13. Refinement: tasks/refinements/runtime/deadline_cancel_retains_wanted.md"
   }
   task editable_sink_multiplex "Multiplex many editable contents onto the single-slot Model/Journal seams" {
     effort 2d

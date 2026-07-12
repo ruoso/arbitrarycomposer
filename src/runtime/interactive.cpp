@@ -296,9 +296,15 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   // `poll_refinements`), and a by-value snapshot; it never borrows the frame-local
   // `pulls` or `operator_binding` below, both of which die when this stack unwinds.
   refresh_identity_memo(state, resolve, revision);
+  // The frame's wanted-tile set (`runtime.deadline_cancel_retains_wanted`): emptied here,
+  // filled by BOTH producers below -- the compositor's visible-footprint pass and every
+  // tile a pull names -- and read exactly once, by Step 5's deadline sweep. It is a member
+  // only so its buckets survive the frame; nothing about it is carried.
+  d_wanted_tiles.clear();
   PullConfig config;
   config.counters = &d_counters;
   config.pending = &d_pending;
+  config.wanted = &d_wanted_tiles;
   config.id_of = d_id_of;
   config.contribution = [revision](const Content*) { return revision; };
   PullServiceImpl pulls(cache, backend, worker_backed_dispatch(d_pool), std::move(config));
@@ -345,7 +351,8 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   std::vector<LayerTilePlan> visible_plans;
   render_frame_interactive(state, resolve, viewport, cache, backend, pool, target, deadline,
                            d_prior_revision, &d_pending, &d_counters, dirty_ptr, composition_time,
-                           &visible_plans, /*diagnostics=*/nullptr, &pulls);
+                           &visible_plans, /*diagnostics=*/nullptr, &pulls, Exactness::BestEffort,
+                           &d_wanted_tiles);
 
   // --- Step 5: park to the deadline; enforce it (doc 02:61-65, 140-143). ----
   // Park for async arrivals only until `d`, then enforce: cancel whatever is still
@@ -377,16 +384,47 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
       break;
     }
   }
-  // The two counters here are the ONLY observability of that enforcement, and both are
-  // derived from what this frame already knows -- the park's outcome and the pending
-  // queue.
+  // The sweep (`runtime.deadline_cancel_retains_wanted`, doc 02 § The frame,
+  // interactively). Enforcement has ALREADY happened -- the park did not wait past `d`,
+  // and that, not the cancel, is what bounds the frame. What is left is a courtesy to the
+  // renderer, and it is owed only for work the frame no longer wants: a tile whose key is
+  // absent from this frame's visible footprint and from the unmet inputs of any live wait
+  // whose output it still wants (`tile_wanted`). A revision bump, a pan, a zoom, a clock
+  // advance, a layer culled out of its span -- each re-keys or removes the tile, and its
+  // stale pending falls out of the set.
+  //
+  // A still-wanted render is left IN FLIGHT, uncancelled, and that is the whole task.
+  // Cancel it and two things follow. It is disqualified from suppression
+  // (`tile_in_flight` refuses to trust a cancelled entry), so the next frame that
+  // re-plans it -- typically the very next one, re-damaged by a sibling's arrival --
+  // dispatches a SECOND render of a tile that is already being rendered; cross-frame
+  // in-flight dedup is forfeited structurally, in exactly the loaded regime it exists
+  // for. And, worse, cancellation is ADVISORY (doc 03, `content.hpp:161-163`): a
+  // conformant content is free to honor it and settle via `fail`, which
+  // `poll_refinements` drops with no cache insert and NO DAMAGE. Then a partial repaint
+  // whose dirty region does not happen to intersect that tile never re-plans it, the
+  // queue drains empty, the loop quiesces -- and the tile shows a placeholder until some
+  // unrelated edit repaints its region. Retaining what we want removes the cause: a tile
+  // the frame still wants is never told to abandon its render, so a conformant content
+  // never fails it.
+  //
+  // The two counters PARTITION the unsettled entries at expiry, which is what lets a test
+  // assert the sweep looked at the queue and decided, rather than that a number failed to
+  // grow (`in_flight_tile_dedup` Decision 5). Both are derived from what this frame
+  // already knows -- the park's outcome, the pending queue, and the wanted set Step 4
+  // built.
   if (expired) {
     ++d_deadline_expiries;
     for (PendingTile& tile : d_pending.tiles) {
-      if (!tile.done->settled()) {
-        tile.done->cancel();
-        ++d_tiles_cancelled;
+      if (tile.done->settled()) {
+        continue; // it landed: nothing to cancel and nothing to retain
       }
+      if (tile_wanted(d_pending, d_wanted_tiles, tile.key)) {
+        ++d_tiles_retained;
+        continue;
+      }
+      tile.done->cancel();
+      ++d_tiles_cancelled;
     }
   }
 

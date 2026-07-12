@@ -219,6 +219,54 @@ public:
   }
 };
 
+// Content that answers asynchronously and HONORS the advisory cancel
+// (`runtime.deadline_cancel_retains_wanted`): when the test discharges its captured
+// completions, one that was cancelled settles via `fail` instead of `complete`. That is
+// exactly what doc 03:162 and `content.hpp:161-163` permit a CONFORMANT content to do --
+// cancellation is cooperative and best-effort, and honoring it is the cooperative half --
+// and `poll_refinements` drops a failed arrival with no cache insert and NO DAMAGE.
+//
+// Every other double in this file (and in the tree) ignores the flag and lands anyway,
+// which is the only reason the blanket sweep's permanent-hole bug was latent rather than
+// routine: it was deterministic for precisely the well-behaved plugins the contract asks
+// for.
+class AsyncHonorsCancel : public arbc::Content {
+public:
+  std::optional<arbc::Rect> bounds() const override { return arbc::Rect{0.0, 0.0, 512.0, 512.0}; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<RenderResult> render(const RenderRequest& request,
+                                     std::shared_ptr<RenderCompletion> done) override {
+    fill_solid(request.target);
+    d_deferred.push_back(Deferred{std::move(done), RenderResult{request.scale, /*exact=*/true}});
+    return std::nullopt;
+  }
+
+  // Discharge every captured completion: a cancelled one abandons its work and FAILS, the
+  // rest land. Returns how many were failed -- the number of tiles a blanket sweep would
+  // have dropped with no damage and no re-plan.
+  std::size_t settle_all() {
+    std::size_t failed = 0;
+    for (Deferred& deferred : d_deferred) {
+      if (deferred.done->cancelled()) {
+        deferred.done->fail(arbc::RenderError::ContentFailed);
+        ++failed;
+      } else {
+        deferred.done->complete(deferred.result);
+      }
+    }
+    d_deferred.clear();
+    return failed;
+  }
+
+private:
+  struct Deferred {
+    std::shared_ptr<RenderCompletion> done;
+    RenderResult result;
+  };
+  std::vector<Deferred> d_deferred;
+};
+
 // Content that answers asynchronously by capturing `done` (and filling the tile)
 // for an off-thread settler to complete + poke -- the concurrency reap/wake case.
 //
@@ -490,6 +538,7 @@ TEST_CASE("interactive: a still frame builds no identity map and constructs no p
   REQUIRE(renderer.frames_rendered() == 1);
   const std::uint64_t expiries = renderer.deadline_expiries();
   const std::uint64_t cancelled = renderer.tiles_cancelled();
+  const std::uint64_t retained = renderer.tiles_retained();
 
   // The still-scene early-out precedes ALL of the wiring's new work: the
   // `PullServiceImpl` is constructed after it, and the memo hoist that model-damage
@@ -513,6 +562,11 @@ TEST_CASE("interactive: a still frame builds no identity map and constructs no p
   CHECK(renderer.frames_rendered() == 1); // delta 0 across eight still frames
   CHECK(renderer.deadline_expiries() == expiries);
   CHECK(renderer.tiles_cancelled() == cancelled);
+  // ...and it cannot RETAIN one either: the sweep the narrowing added runs only on an
+  // expired frame, and a still frame never reaches it (`tiles_retained` and
+  // `tiles_cancelled` partition the unsettled entries at expiry, so a frame that does not
+  // expire bumps neither).
+  CHECK(renderer.tiles_retained() == retained);
 }
 
 // --- The per-frame operator binding (runtime.interactive_binder_wiring) --------
@@ -696,7 +750,8 @@ TEST_CASE("interactive: the frame never blocks past its deadline") {
   const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
   arbc::SurfacePool pool(backend);
 
-  SECTION("an async miss that never settles is cancelled, and no frame is scheduled") {
+  SECTION("an async miss that never settles degrades at the deadline, and no frame is "
+          "scheduled") {
     AsyncNever content;
     const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
       return id == scene.content ? &content : nullptr;
@@ -713,8 +768,52 @@ TEST_CASE("interactive: the frame never blocks past its deadline") {
     CHECK(renderer.counters().requests_issued() == 1);
     CHECK(renderer.counters().composites() == 0); // transparent placeholder
     CHECK(renderer.counters().follow_up_frames() == 0);
-    // The expired BestEffort pending render was cancelled (advisory).
+    // The bound is the PARK, not the cancel (`runtime.deadline_cancel_retains_wanted`
+    // Decision 6): the frame returned at its deadline having composited what it had, and
+    // the still-in-flight render it STILL WANTS -- the tile is visible, at this revision,
+    // at this camera -- is left in flight, uncancelled, so the next frame that re-plans it
+    // joins it rather than dispatching a second render of it.
+    CHECK(renderer.deadline_expiries() == 1);
+    CHECK(renderer.tiles_retained() == 1);
+    CHECK(renderer.tiles_cancelled() == 0);
     REQUIRE(renderer.pending().tiles.size() == 1);
+    CHECK_FALSE(renderer.pending().tiles.front().done->cancelled());
+  }
+
+  SECTION("an expired frame DOES cancel the pending render it no longer wants") {
+    // The positive cancel witness the claim needs: the sweep still cancels, it just has to
+    // be asked for a tile nobody wants. A revision bump re-keys the visible tile, so the
+    // revision-R pending is absent from the R+1 frame's footprint and is swept.
+    AsyncNever content;
+    const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+      return id == scene.content ? &content : nullptr;
+    };
+    TileCache cache(64u * 1024 * 1024);
+    auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+    REQUIRE(target.has_value());
+    arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+    renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                          arbc::Time{0}, k_budget);
+    REQUIRE(renderer.tiles_retained() == 1);
+    REQUIRE(renderer.tiles_cancelled() == 0);
+    const arbc::TileKey stale = renderer.pending().tiles.front().key;
+
+    bump_revision(model, scene.layer);
+    const arbc::DocStatePtr bumped = model.current();
+    REQUIRE(bumped->revision() != state->revision());
+
+    // The pending queue is non-empty, so this frame runs (the still-scene early-out cannot
+    // fire) even though it carries no damage -- and the wanted set is the frame's VISIBLE
+    // FOOTPRINT, which exists whether or not anything is repainted. The R-keyed pending is
+    // not in it.
+    renderer.render_frame(*bumped, resolver, viewport, cache, backend, pool, **target, {},
+                          arbc::Time{0}, k_budget);
+    CHECK(renderer.deadline_expiries() == 2);
+    CHECK(renderer.tiles_cancelled() == 1);
+    CHECK(renderer.tiles_retained() == 1); // delta 0: nothing new was wanted
+    REQUIRE(renderer.pending().tiles.size() == 1);
+    CHECK(renderer.pending().tiles.front().key == stale);
     CHECK(renderer.pending().tiles.front().done->cancelled());
   }
 
@@ -735,6 +834,223 @@ TEST_CASE("interactive: the frame never blocks past its deadline") {
     CHECK(renderer.counters().follow_up_frames() == 1); // reaped + inserted
     CHECK(renderer.pending().tiles.empty());
   }
+}
+
+// --- The narrowed deadline sweep (runtime.deadline_cancel_retains_wanted) -----
+
+// The "no longer visible" half of the sweep's cancel criterion. Both arms drop the
+// pending tile out of the frame's VISIBLE FOOTPRINT without touching the revision: a pan
+// changes the covering coord range (here, off the layer's bounds entirely), and a zoom
+// changes the rung. Either way the key the frame wants is not the key it has in flight,
+// and the sweep cancels -- which is what keeps `tiles_cancelled` a live path rather than
+// a counter this task quietly killed.
+//
+// enforces: 02-architecture#deadline-sweep-retains-wanted-tiles
+TEST_CASE("interactive: the deadline sweep cancels a pending tile the camera left behind") {
+  MarkBackend backend;
+  AsyncNever content;
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  // Frame 1: the tile is visible and its render is in flight, so the expiry retains it.
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{0}, k_budget);
+  REQUIRE(renderer.tiles_retained() == 1);
+  REQUIRE(renderer.tiles_cancelled() == 0);
+  REQUIRE(renderer.pending().tiles.size() == 1);
+
+  SECTION("a pan that moves the layer off the viewport") {
+    // The layer is bounded to [0, 512]^2, so a camera 1000 device px to the left maps the
+    // viewport onto local x in [1000, 1256]: the layer is culled outright and contributes
+    // nothing to the footprint.
+    const arbc::Viewport panned{256, 256, arbc::Affine::translation(-1000.0, 0.0)};
+    renderer.render_frame(*state, resolver, panned, cache, backend, pool, **target, {},
+                          arbc::Time{0}, k_budget);
+    CHECK(renderer.tiles_cancelled() == 1);
+    CHECK(renderer.tiles_retained() == 1); // delta 0
+    CHECK(renderer.pending().tiles.front().done->cancelled());
+  }
+
+  SECTION("a zoom to a different rung") {
+    // A 4x camera picks a finer rung, so the frame wants that rung's keys -- and the tile
+    // in flight is a rung-0 tile, which is a DIFFERENT tile by full `TileKey` equality.
+    const arbc::Viewport zoomed{256, 256, arbc::Affine::scaling(4.0, 4.0)};
+    renderer.render_frame(*state, resolver, zoomed, cache, backend, pool, **target, {},
+                          arbc::Time{0}, k_budget);
+    CHECK(renderer.tiles_cancelled() == 1);
+    CHECK(renderer.pending().tiles.front().done->cancelled());
+  }
+}
+
+// The permanent-hole regression, and the reason this task is a CORRECTNESS fix rather
+// than an anti-waste one. The chain the blanket sweep closes:
+//
+//   Frame N dispatches tile T (visible, wanted). The deadline expires. The sweep cancels
+//   T. The content HONORS the advisory cancel and fails. `poll_refinements` drops T: not
+//   in the cache, not in the queue, NO DAMAGE emitted. Frame N+1 is a partial repaint
+//   whose dirty region does not intersect T -- nothing damaged T, because the drop was
+//   silent -- so T is never re-planned. The queue is empty, the loop quiesces, and T shows
+//   a placeholder until some unrelated edit happens to repaint its region.
+//
+// That is exactly the failure `in_flight_tile_dedup`'s Decision 3 refused to introduce via
+// suppression, and the blanket sweep introduced it directly, with no suppression involved.
+// It was latent only because every shipped double ignores the advisory flag -- which means
+// it was deterministic for precisely the well-behaved plugins the contract asks for.
+//
+// Narrowing the sweep removes the cause: a tile the frame still wants is never told to
+// abandon its render, so a conformant content never fails it. On the pre-change sweep this
+// case fails on the cache lookups below -- three of the four tiles are cancelled, failed,
+// dropped with no damage, and never re-planned.
+//
+// enforces: 02-architecture#deadline-sweep-retains-wanted-tiles
+TEST_CASE("interactive: a retained tile survives a partial repaint that does not touch it") {
+  MarkBackend backend;
+  AsyncHonorsCancel content; // the conformant content that abandons a cancelled render
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()}; // a 2x2 grid of rung-0 tiles
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(512, 512, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  // Frame 1: the whole viewport, four async misses, and an already-expired deadline. All
+  // four tiles are visible, so all four are retained.
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{0}, k_budget);
+  REQUIRE(renderer.counters().requests_issued() == 4);
+  REQUIRE(renderer.pending().tiles.size() == 4);
+  CHECK(renderer.deadline_expiries() == 1);
+  CHECK(renderer.tiles_retained() == 4);
+  CHECK(renderer.tiles_cancelled() == 0);
+
+  std::vector<TileKey> keys;
+  for (const arbc::PendingTile& tile : renderer.pending().tiles) {
+    keys.push_back(tile.key);
+  }
+  REQUIRE(keys.size() == 4);
+
+  // Frame 2: a PARTIAL repaint whose dirty region covers only the top-left tile. The other
+  // three are plainly visible, plainly still missing -- and plainly not planned, because
+  // nothing re-dirties a tile merely because its render is late. A plan-derived wanted set
+  // would call them unwanted here; a footprint-derived one does not.
+  const std::vector<Damage> damage{Damage{scene.content, arbc::Rect{0.0, 0.0, 16.0, 16.0}, {}}};
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, damage,
+                        arbc::Time{0}, k_budget);
+  CHECK(renderer.counters().requests_issued() == 4); // the re-planned tile joined its own render
+  CHECK(renderer.counters().requests_suppressed() >= 1); // ...and that is the cross-frame join
+  CHECK(renderer.deadline_expiries() == 2);
+  CHECK(renderer.tiles_retained() == 8); // all four, again
+  CHECK(renderer.tiles_cancelled() == 0);
+
+  // Nothing was ever cancelled, so the conformant content abandons nothing: every render
+  // lands.
+  CHECK(content.settle_all() == 0);
+
+  constexpr int k_max_frames = 8; // a convergence bound, never a timing assumption
+  bool quiesced = false;
+  for (int i = 0; i < k_max_frames && !quiesced; ++i) {
+    const auto out = renderer.render_frame(*state, resolver, viewport, cache, backend, pool,
+                                           **target, {}, arbc::Time{0}, k_budget);
+    quiesced = !out.schedule_follow_up && renderer.pending().tiles.empty();
+  }
+  REQUIRE(quiesced);
+
+  // The decisive assertion: all four tiles are in the cache. Not just the one the partial
+  // repaint happened to name -- the three it did not.
+  for (const TileKey& key : keys) {
+    CHECK(cache.lookup(key).has_value());
+  }
+  CHECK(renderer.tiles_cancelled() == 0);
+}
+
+// Constraint 3: no pending tile may end a frame both cancelled and still needed by a live
+// consumer. The one population where that is guaranteed to be tested is an operator's
+// input under the refinement wave: when the wave gate defers the operator's output
+// re-render, the operator does not render, so it does not pull, so its in-flight input
+// tiles are named by NOTHING in the frame's footprint (which holds the operator's OUTPUT
+// tiles -- a different content, a different key). Cancel them and the wave never ends.
+//
+// The `wanted.contains(wait.output)` guard is what keeps that from becoming "anything ever
+// waited on is forever wanted", and the second frame here is where it bites: drop the
+// operator layer and the very same input is cancelled like any other unwanted pending.
+//
+// enforces: 02-architecture#deadline-sweep-never-strands-a-waited-input
+TEST_CASE("interactive: the deadline sweep retains an operator's waited-on input") {
+  MarkBackend backend;
+  AsyncNever leaf; // the fade's input: dispatched to a pull, never settles
+
+  // A fade with an INTERIOR envelope at t == 500, so it is not an identity endpoint and
+  // its own `render` runs -- which is what pulls the leaf and records the wave.
+  arbc::Document doc;
+  const arbc::FadeParams params{arbc::FadeShape::Linear, std::nullopt,
+                                arbc::FadeWindow{arbc::Time{0}, arbc::Time{1000}}};
+  const arbc::ObjectId fade = doc.add_content(std::make_shared<arbc::FadeContent>(&leaf, params));
+  const arbc::ObjectId fade_layer = doc.add_layer(fade, arbc::Affine::identity());
+
+  const arbc::ContentResolver resolve = [&doc](arbc::ObjectId id) { return doc.resolve(id); };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  const auto frame = [&] {
+    const arbc::DocStatePtr pin = doc.pin();
+    const arbc::FrameBinding binding{&doc, pin};
+    return renderer.render_frame(*pin, resolve, viewport, cache, backend, pool, **target, {},
+                                 arbc::Time{500}, k_budget, binding);
+  };
+
+  // Frame 1: the fade renders, pulls its leaf, the leaf answers async. The fade paints a
+  // transient placeholder, reports it inexact, and records the wave naming the leaf tile.
+  // The leaf is in the wanted set outright here -- this frame PULLED it -- so it is
+  // retained, and the wave is live.
+  frame();
+  REQUIRE(renderer.pending().tiles.size() == 1);
+  REQUIRE(renderer.pending().waits.size() == 1);
+  CHECK(renderer.tiles_retained() == 1);
+  CHECK(renderer.tiles_cancelled() == 0);
+  const TileKey input = renderer.pending().tiles.front().key;
+  REQUIRE(renderer.pending().waits.front().unmet.size() == 1);
+  CHECK(renderer.pending().waits.front().unmet.front() == input);
+
+  // Frame 2: no damage, so nothing is re-planned and NOTHING IS PULLED -- the leaf tile is
+  // named by no plan and no pull this frame. Only the wait clause can retain it, and the
+  // fade's output tile (which the frame's footprint does hold) is what licenses that.
+  frame();
+  CHECK(renderer.deadline_expiries() == 2);
+  CHECK(renderer.tiles_retained() == 2); // the leaf, retained by its consumer's wait
+  CHECK(renderer.tiles_cancelled() == 0);
+  REQUIRE(renderer.pending().tiles.size() == 1);
+  CHECK_FALSE(renderer.pending().tiles.front().done->cancelled());
+
+  // Frame 3: cull the operator layer out of its time span. Its output tile leaves the
+  // footprint, so the wait naming the leaf no longer licenses anything -- and the leaf is
+  // cancelled like any other unwanted pending. (The wave gate stays cancel-agnostic, so
+  // the cancelled input still holds the now-unwanted output's gate closed until it drains,
+  // which is exactly what `operator_refinement_wave_amplification`'s Decision 4 says.)
+  doc.set_layer_span(fade_layer, arbc::TimeRange{arbc::Time{2000}, arbc::Time{3000}});
+  frame();
+  CHECK(renderer.tiles_cancelled() == 1);
+  CHECK(renderer.tiles_retained() == 2); // delta 0
+  CHECK(renderer.pending().tiles.front().done->cancelled());
 }
 
 // enforces: 02-architecture#interactive-frame-loop-bounded-by-deadline

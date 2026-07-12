@@ -53,6 +53,7 @@ using arbc::TileCache;
 using arbc::TileCoord;
 using arbc::TileKey;
 using arbc::TileValue;
+using arbc::WantedTiles;
 
 const arbc::ObjectId k_content{7};
 constexpr std::uint64_t k_revision = 100;
@@ -391,6 +392,102 @@ TEST_CASE("tile_in_flight suppresses only a live, uncancelled, unsettled pending
     TileKey other_time = key;
     other_time.achieved_time = arbc::Time{500};
     CHECK_FALSE(arbc::tile_in_flight(&queue, other_time));
+  }
+}
+
+// --- The wanted-tile predicate (runtime.deadline_cancel_retains_wanted) -------
+
+// The predicate the interactive deadline sweep narrows its cancel against, one case per
+// arm. Two arms carry the design. The WAIT arm (a key absent from the footprint but named
+// `unmet` by a live wait whose output IS wanted answers `true`) is what stops the sweep
+// stranding an operator's inputs: a wave-deferred operator does not render, so it does not
+// pull, so its in-flight inputs are named by nothing in the frame's footprint -- cancel
+// them and the wave never ends. The GUARD arm (the same key, under a wait whose output is
+// NOT wanted, answers `false`) is what stops that clause degenerating into "anything ever
+// waited on is forever wanted", which would kill `tiles_cancelled` outright and render a
+// panned-away tile forever.
+//
+// It answers WANTED, not LIVE: a settled entry is wanted like any other, and the sweep
+// composes it with `!settled()`. That separation is why this predicate touches no
+// completion state at all.
+//
+// enforces: 02-architecture#deadline-sweep-retains-wanted-tiles
+// enforces: 02-architecture#deadline-sweep-never-strands-a-waited-input
+TEST_CASE("tile_wanted answers the frame's footprint, plus the unmet inputs of its live waits") {
+  RefinementQueue queue;
+  const TileKey output = tile_key(ScaleRung{0}, TileCoord{0, 0});
+  const TileKey input = tile_key(ScaleRung{0}, TileCoord{1, 0});
+  const TileKey stranger = tile_key(ScaleRung{0}, TileCoord{9, 9});
+
+  // The wave gate reads PRESENCE in `queue.tiles`, so a wait only means anything while its
+  // unmet input is really pending -- record it exactly as the pull service does.
+  auto record = [&queue](const TileKey& k, const std::shared_ptr<RenderCompletion>& done) {
+    PendingTile pending;
+    pending.key = k;
+    pending.local_rect = arbc::tile_local_rect(k.rung, k.coord);
+    pending.content = k.content;
+    pending.bytes = 1;
+    pending.surface = std::make_unique<StubSurface>();
+    pending.done = done;
+    queue.tiles.push_back(std::move(pending));
+  };
+
+  SECTION("a key IN the wanted set is wanted") {
+    const WantedTiles wanted{output};
+    CHECK(arbc::tile_wanted(queue, wanted, output));
+  }
+
+  SECTION("a key absent from an empty wanted set, with no waits, is NOT wanted") {
+    const WantedTiles wanted;
+    CHECK_FALSE(arbc::tile_wanted(queue, wanted, output));
+  }
+
+  SECTION("a key absent from a non-empty wanted set, with no waits, is NOT wanted") {
+    const WantedTiles wanted{output};
+    CHECK_FALSE(arbc::tile_wanted(queue, wanted, stranger));
+  }
+
+  SECTION("a key named `unmet` by a live wait whose OUTPUT is wanted IS wanted") {
+    record(input, std::make_shared<RenderCompletion>());
+    arbc::record_operator_wait(queue, output, {input});
+    REQUIRE(arbc::operator_wave_pending(&queue, output)); // the wave really is live
+
+    const WantedTiles wanted{output}; // the operator's OUTPUT tile, not its input
+    REQUIRE_FALSE(wanted.contains(input));
+    CHECK(arbc::tile_wanted(queue, wanted, input));
+  }
+
+  SECTION("a key named `unmet` by a wait whose OUTPUT is NOT wanted is NOT wanted") {
+    record(input, std::make_shared<RenderCompletion>());
+    arbc::record_operator_wait(queue, output, {input});
+
+    // The operator was panned away / revision-bumped: the frame wants neither its output
+    // nor, transitively, the input it was waiting on. Both are cancelled, and the gate the
+    // cancelled input still holds closed drains out with it.
+    const WantedTiles wanted{stranger};
+    CHECK_FALSE(arbc::tile_wanted(queue, wanted, input));
+    CHECK_FALSE(arbc::tile_wanted(queue, wanted, output));
+  }
+
+  SECTION("a wait naming a DIFFERENT input does not want this key") {
+    record(input, std::make_shared<RenderCompletion>());
+    arbc::record_operator_wait(queue, output, {input});
+    const WantedTiles wanted{output};
+    CHECK_FALSE(arbc::tile_wanted(queue, wanted, stranger));
+  }
+
+  SECTION("settled and cancelled entries do not change the answer -- it is WANTED, not LIVE") {
+    auto done = std::make_shared<RenderCompletion>();
+    record(output, done);
+    const WantedTiles wanted{output};
+    CHECK(arbc::tile_wanted(queue, wanted, output));
+
+    done->cancel();
+    CHECK(arbc::tile_wanted(queue, wanted, output));
+    done->complete(RenderResult{});
+    CHECK(arbc::tile_wanted(queue, wanted, output));
+    // ...and the sweep is what composes it with `!settled()`; the predicate never does.
+    CHECK(done->settled());
   }
 }
 

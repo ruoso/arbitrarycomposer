@@ -293,8 +293,24 @@ public:
   // never from a second clock read (the loop samples `d_clock()` exactly once).
   std::uint64_t deadline_expiries() const noexcept { return d_deadline_expiries; }
   // Still-unsettled BestEffort pending renders the expired frame cancelled (advisory,
-  // `content.hpp:122-123`): how much the frame degraded rather than blocking.
+  // `content.hpp:122-123`) because it NO LONGER WANTS THEM -- superseded by a revision
+  // bump, or no longer visible at the current camera and time
+  // (`runtime.deadline_cancel_retains_wanted`). Not "everything that was in flight": that
+  // blanket sweep is what this counter's sibling below exists to prove is gone. It stays
+  // a live path -- during playback `achieved_time` supersedes every non-Static tile each
+  // frame -- so a scene whose cancels went to zero is a scene whose tiles are all still
+  // wanted, not a sweep that stopped running.
   std::uint64_t tiles_cancelled() const noexcept { return d_tiles_cancelled; }
+  // Still-unsettled pending renders the expired frame deliberately LEFT IN FLIGHT because
+  // it still wants them (`runtime.deadline_cancel_retains_wanted`, doc 02 § The frame,
+  // interactively). Together with `tiles_cancelled` it PARTITIONS the unsettled entries at
+  // expiry, which is the point: without it, "the sweep cancelled nothing" is
+  // indistinguishable from "the deadline never expired", "the tile settled in time", and
+  // "someone deleted the sweep" -- and `in_flight_tile_dedup` shipped a guard that
+  // provably never fired precisely because every assertion on it was of the "a number did
+  // not grow" kind (its Decision 5). This is the positive witness that the sweep looked at
+  // the queue and made a decision.
+  std::uint64_t tiles_retained() const noexcept { return d_tiles_retained; }
 
   // The frame's leaf-miss executor and async-completion park/wake substrate.
   // Exposed so externally-async content can `poke()` a render thread parked in this
@@ -360,6 +376,16 @@ private:
   // dropping the tiles the poll just inserted (a revision bump / model edit is
   // what invalidates; a refinement arrival is not).
   std::vector<Damage> d_carried_damage;
+  // This frame's WANTED TILE SET (`runtime.deadline_cancel_retains_wanted`): the visible
+  // footprint the compositor fills at Step 4, plus every tile the frame's pulls named,
+  // and the only thing Step 5's deadline sweep tests a pending tile against before
+  // cancelling it. Frame-scoped -- `clear()`ed at the top of Step 4, read at Step 5, and
+  // never carried -- but held as a MEMBER rather than a frame local so its hash buckets
+  // survive and a 60Hz loop does not build a table per frame. It is a pure function of
+  // one frame's plan inputs (viewport, camera, revision, composition time, layer culls),
+  // so nothing can invalidate it while it is alive, and it holds keys only -- no surface,
+  // no completion -- so it takes no part in the destruction order below.
+  WantedTiles d_wanted_tiles;
 
   // The per-revision pull-identity memo. `make_pull_identity_of` walks the whole
   // reachable content graph, which the deadline-bounded loop must not pay every
@@ -376,7 +402,8 @@ private:
   std::uint64_t d_operator_binds{0};                            // per-rendering-frame binds
   std::uint64_t d_frames_rendered{0};   // frames past the still-scene early-out
   std::uint64_t d_deadline_expiries{0}; // parks that reached the deadline
-  std::uint64_t d_tiles_cancelled{0};   // pendings the expired frame cancelled
+  std::uint64_t d_tiles_cancelled{0};   // unwanted pendings the expired frame cancelled
+  std::uint64_t d_tiles_retained{0};    // still-wanted pendings it left in flight
 };
 
 } // namespace arbc

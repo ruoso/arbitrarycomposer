@@ -304,7 +304,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                               CompositorCounters* counters, const DirtyRegion* dirty,
                               Time composition_time, std::vector<LayerTilePlan>* visible_plans,
                               GraphDiagnostics* diagnostics, PullServiceImpl* pulls,
-                              Exactness exactness) {
+                              Exactness exactness, WantedTiles* wanted) {
   const std::uint64_t revision = state.revision();
   const Rect device_rect =
       Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
@@ -408,11 +408,6 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     if (const std::optional<Rect> bounds = content->bounds(); bounds.has_value()) {
       region = region.intersect(*bounds);
     }
-    // An empty repaint set skips every layer, realizing "no damage -> no work" as
-    // zero renders and zero composites (doc 02:51).
-    if (dirty != nullptr && repaint.empty()) {
-      return;
-    }
     if (region.empty()) {
       return;
     }
@@ -426,6 +421,39 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     // plan below shares it -- which is what makes the coord the tile's identity here.
     const RungSelection selection = select_rung(scale);
     const double rung_px = rung_scale(selection.rung);
+
+    // The frame's VISIBLE FOOTPRINT sink (`runtime.deadline_cancel_retains_wanted`,
+    // doc 02 § The frame, interactively). This layer's contribution is one key per tile
+    // coord covering `region` -- the WHOLE viewport mapped into layer-local space, which
+    // is what `region` already is -- keyed exactly as `plan_layer` keys it below: the
+    // same `layer_revision` (the aggregate for an operator layer, the flat revision for a
+    // leaf) and the same `quantize_time`d achieved_time, absent for Static content.
+    //
+    // DELIBERATELY ABOVE THE REPAINT GATE. The set answers "what does this frame WANT?",
+    // not "what did this frame PLAN?", and on a partial repaint those differ: a visible,
+    // still-missing tile whose region is not dirty is not planned, and nothing re-dirties
+    // a tile merely because its render is late. Derive wantedness from the plan and the
+    // deadline sweep cancels exactly that tile -- the one the narrowing exists to retain,
+    // and the one whose fail-drop opens a permanent hole. The culls above are the only
+    // thing that removes a layer from the footprint, which is what makes a layer scrolled
+    // out of its time span, panned off the viewport, or zoomed to another rung correctly
+    // UN-want its old tiles.
+    if (wanted != nullptr) {
+      const Time footprint_time = content->quantize_time(local_time).value_or(local_time);
+      const std::optional<Time> footprint_achieved = (content->stability() == Stability::Static)
+                                                         ? std::nullopt
+                                                         : std::optional<Time>(footprint_time);
+      for (const TileCoord coord : tiles_covering(selection.rung, region)) {
+        wanted->insert(
+            TileKey{layer.content, layer_revision, selection.rung, coord, footprint_achieved});
+      }
+    }
+
+    // An empty repaint set skips every layer, realizing "no damage -> no work" as
+    // zero renders and zero composites (doc 02:51).
+    if (dirty != nullptr && repaint.empty()) {
+      return;
+    }
 
     // Damage gating (damage_planning Decision 2; `disjoint_dirty_repaint` Decision 2):
     // plan this layer ONCE PER REPAINT RECT, each rect mapped into layer-local space

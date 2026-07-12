@@ -528,6 +528,82 @@ TEST_CASE("a refine sequence whose damage is two far-apart rects is byte-exact u
   }
 }
 
+namespace {
+
+// The same loop under DEADLINE PRESSURE (`runtime.deadline_cancel_retains_wanted`): the
+// first few frames carry a zero budget, so their deadline is gone the instant it is
+// sampled, the park never waits, and every render dispatched to a worker is still in flight
+// when the frame gives up. The sweep then RETAINS them -- they are visible, at this
+// revision, at this camera -- and the next frame reads those live `PendingTile`s through
+// `tile_in_flight` while a worker is still writing their surfaces and may settle any one of
+// them at any moment.
+//
+// The reads are the same two atomics the park already polls (`settled()` / `cancelled()`),
+// so the thread-safety argument is unchanged. But this is the first code path that keeps a
+// live pending entry ADDRESSABLE ACROSS A FRAME BOUNDARY by design, so it gets explicit
+// TSan exposure rather than an argument. The frames after the tight ones carry the normal
+// budget so the loop converges rather than spinning against the workers it is waiting on --
+// a convergence device, never a timing assumption, and no assertion reads a clock.
+std::vector<float> quiesced_pixels_under_deadline_pressure(Backend& backend,
+                                                           std::size_t worker_count,
+                                                           arbc::test::Perturber* perturb) {
+  constexpr int k_tight_frames = 3; // enough for pendings to cross a boundary, then converge
+  NestedTranslucentScene scene;
+  WorkerPoolConfig pool_config;
+  pool_config.worker_count = worker_count;
+  InteractiveRenderer renderer(std::move(pool_config), InteractiveRenderer::Clock{});
+
+  SurfacePool pool(backend);
+  TileCache cache(64U * 1024 * 1024);
+  expected<std::unique_ptr<Surface>, SurfaceError> target =
+      backend.make_surface(k_dim, k_dim, k_working_rgba32f);
+  REQUIRE(target.has_value());
+
+  constexpr int k_max_frames = 64; // a convergence bound, never a timing assumption
+  for (int i = 0; i < k_max_frames; ++i) {
+    if (perturb != nullptr) {
+      perturb->maybe_yield(); // widen the arrival window; never paces the test
+    }
+    const DocStatePtr pin = scene.doc.pin();
+    const ContentResolver resolve = [&scene](ObjectId id) { return scene.doc.resolve(id); };
+    const FrameBinding binding{&scene.doc, pin};
+    const std::chrono::steady_clock::duration budget =
+        (i < k_tight_frames) ? std::chrono::steady_clock::duration::zero() : k_frame_budget;
+    const InteractiveRenderer::FrameOutcome outcome = renderer.render_frame(
+        *pin, resolve, viewport(), cache, backend, pool, **target, {}, k_interior, budget, binding);
+    if (!outcome.schedule_follow_up && renderer.pending().tiles.empty()) {
+      return snapshot(**target);
+    }
+  }
+  FAIL("the interactive frame loop did not reach quiescence");
+  return {};
+}
+
+} // namespace
+
+// enforces: 02-architecture#deadline-sweep-retains-wanted-tiles
+// enforces: 02-architecture#gated-frame-equals-single-pass
+TEST_CASE("a refine sequence under deadline pressure retains its pendings and stays byte-exact",
+          "[.nightly]") {
+  CpuBackend backend;
+  const std::vector<float> oracle = single_pass_oracle(backend);
+  REQUIRE_FALSE(all_transparent(oracle));
+
+  // Retention changes WHEN a render lands, never what it paints: a retained tile is one
+  // nobody told to abandon its work, and the loop still converges on the single-pass pixels.
+  // Under TSan this is also the coverage for the cross-boundary read of a live pending entry
+  // -- the first such path in the tree.
+  for (std::uint32_t seed = 0; seed < 60; ++seed) {
+    INFO("seed = " << seed);
+    arbc::test::Perturber perturb(seed);
+    for (const std::size_t workers : {std::size_t{1}, std::size_t{2}, std::size_t{4}}) {
+      CAPTURE(workers);
+      REQUIRE(byte_identical(quiesced_pixels_under_deadline_pressure(backend, workers, &perturb),
+                             oracle));
+    }
+  }
+}
+
 // enforces: 02-architecture#gated-frame-equals-single-pass
 TEST_CASE("a refined interactive sequence stays byte-exact across many schedules", "[.nightly]") {
   CpuBackend backend;

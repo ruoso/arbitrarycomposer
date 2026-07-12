@@ -81,7 +81,6 @@ constexpr int k_dim = 256; // one rung-0 tile per full-canvas layer
 constexpr Time k_interior{500};
 
 Rect canvas() { return Rect{0.0, 0.0, static_cast<double>(k_dim), static_cast<double>(k_dim)}; }
-Viewport viewport() { return Viewport{k_dim, k_dim, Affine::identity()}; }
 
 FadeParams half_fade() {
   return FadeParams{FadeShape::Linear, std::nullopt, FadeWindow{Time{0}, Time{1000}}};
@@ -199,9 +198,12 @@ private:
 // what makes the fan-out sound.
 class LatchLeaf final : public Content {
 public:
-  LatchLeaf(Gate& gate, Rgba color) : d_gate(gate), d_color(color) {}
+  // `bounds` defaults to the k_dim canvas; the cross-frame-join scene below spells a wider
+  // one so its single layer covers a 2x2 tile grid rather than one tile.
+  LatchLeaf(Gate& gate, Rgba color, Rect bounds = canvas())
+      : d_gate(gate), d_color(color), d_bounds(bounds) {}
 
-  std::optional<Rect> bounds() const override { return canvas(); }
+  std::optional<Rect> bounds() const override { return d_bounds; }
   Stability stability() const override { return Stability::Static; }
   std::optional<TimeRange> time_extent() const override { return std::nullopt; }
   bool render_thread_safe() const override { return true; }
@@ -237,6 +239,7 @@ public:
 private:
   Gate& d_gate;
   Rgba d_color;
+  Rect d_bounds;
   std::atomic<bool> d_armed{false};
   mutable std::mutex d_mutex;
   std::vector<std::thread::id> d_threads;
@@ -252,13 +255,15 @@ private:
 // runs on `FrameOutcome::schedule_follow_up` (`host_viewport.cpp:160,178`).
 class Driver {
 public:
+  // `dim` is the square viewport/target edge, defaulting to the one-tile `k_dim` every arm
+  // above uses; the cross-frame-join scene drives a 2x2 tile grid instead.
   Driver(Document& doc, Backend& backend, WorkerPoolConfig pool_config,
-         InteractiveRenderer::Clock clock)
-      : d_doc(doc), d_cache(64U * 1024 * 1024), d_surfaces(backend), d_backend(backend),
+         InteractiveRenderer::Clock clock, int dim = k_dim)
+      : d_doc(doc), d_cache(64U * 1024 * 1024), d_surfaces(backend), d_backend(backend), d_dim(dim),
         d_renderer(std::move(pool_config), std::move(clock)) {
     const DocStatePtr pin = doc.pin();
     expected<std::unique_ptr<Surface>, SurfaceError> target =
-        backend.make_surface(k_dim, k_dim, pin->working_space());
+        backend.make_surface(d_dim, d_dim, pin->working_space());
     REQUIRE(target.has_value());
     d_target = std::move(*target);
   }
@@ -268,8 +273,9 @@ public:
     const DocStatePtr pin = d_doc.pin();
     const ContentResolver resolve = [this](ObjectId id) { return d_doc.resolve(id); };
     const FrameBinding binding{&d_doc, pin};
-    return d_renderer.render_frame(*pin, resolve, viewport(), d_cache, d_backend, d_surfaces,
-                                   *d_target, damage, k_interior, budget, binding);
+    const Viewport view{d_dim, d_dim, Affine::identity()};
+    return d_renderer.render_frame(*pin, resolve, view, d_cache, d_backend, d_surfaces, *d_target,
+                                   damage, k_interior, budget, binding);
   }
 
   void drive_to_quiescence(std::chrono::steady_clock::duration budget) {
@@ -292,6 +298,7 @@ private:
   TileCache d_cache;
   SurfacePool d_surfaces;
   Backend& d_backend;
+  int d_dim;
   std::unique_ptr<Surface> d_target;
   InteractiveRenderer d_renderer;
 };
@@ -415,6 +422,11 @@ TEST_CASE("the shipped default renders leaf misses off the frame thread, so the 
     REQUIRE(scene.leaf->renders() == 2);
     CHECK(scene.leaf->renders_off(driver) == 0);
     CHECK(view.renderer().tiles_cancelled() == 0);
+    // ...and nothing to RETAIN either (`runtime.deadline_cancel_retains_wanted`). Inline
+    // dispatch settles every miss before the park is reached, so the sweep -- whether it
+    // cancels or retains -- has an empty queue to walk. The two counters partition the
+    // unsettled entries at expiry, and here there are none of either.
+    CHECK(view.renderer().tiles_retained() == 0);
     CHECK(view.renderer().counters().degraded_composites() == 0);
     CHECK(view.renderer().pending().tiles.empty());
     CHECK_FALSE(out.schedule_follow_up);
@@ -460,21 +472,30 @@ TEST_CASE("the shipped default renders leaf misses off the frame thread, so the 
     clock.expire();
 
     const std::uint64_t cancelled_before = view.renderer().tiles_cancelled();
+    const std::uint64_t retained_before = view.renderer().tiles_retained();
     const std::uint64_t degraded_before = view.renderer().counters().degraded_composites();
     const std::uint64_t expiries_before = view.renderer().deadline_expiries();
     const std::uint64_t follow_ups_before = view.renderer().counters().follow_up_frames();
 
     // The frame the whole task is about. The R+1 miss goes to a worker, which parks inside
     // `render`. The frame thread is NOT in there, so it reaches the deadline park, finds
-    // the deadline already gone, CANCELS the in-flight BestEffort render rather than
-    // waiting on it, and composites the resident revision-R tile instead. That is doc
-    // 02:63-65's preference order actually firing -- and it can only fire because the
-    // render is somewhere the frame is not.
+    // the deadline already gone, and returns with the best pixels it has -- compositing the
+    // resident revision-R tile as the degraded fallback. That is doc 02:63-65's preference
+    // order actually firing, and it can only fire because the render is somewhere the frame
+    // is not.
+    //
+    // What it does NOT do is cancel that render (`runtime.deadline_cancel_retains_wanted`).
+    // The R+1 tile is exactly a tile the frame still wants -- visible, at this revision, at
+    // this camera -- so the sweep leaves it in flight, and the follow-up frame that
+    // re-plans it joins the render already running instead of dispatching a second one. The
+    // DEGRADE is the park's doing, not the cancel's, which is why it is unchanged here: the
+    // deadline is enforced by not waiting past it (Decision 6).
     const InteractiveRenderer::FrameOutcome out = view.frame(k_frame_budget, damage);
     scene.gate.await_arrivals(1); // the render is genuinely in flight, and the frame returned
 
     CHECK(view.renderer().deadline_expiries() == expiries_before + 1);
-    CHECK(view.renderer().tiles_cancelled() >= cancelled_before + 1);
+    CHECK(view.renderer().tiles_retained() >= retained_before + 1);
+    CHECK(view.renderer().tiles_cancelled() == cancelled_before);
     CHECK(view.renderer().counters().degraded_composites() >= degraded_before + 1);
     REQUIRE_FALSE(view.renderer().pending().tiles.empty());
     // NOTHING settled during this frame -- both leaves are latched, which is precisely why
@@ -496,6 +517,161 @@ TEST_CASE("the shipped default renders leaf misses off the frame thread, so the 
     CHECK(view.renderer().pending().tiles.empty());
     CHECK(scene.leaf->renders_off(driver) == scene.leaf->renders()); // every render, on a worker
     CHECK(byte_identical(view.pixels(), sharp));
+  }
+}
+
+// --- A4: the cross-frame in-flight join (runtime.deadline_cancel_retains_wanted) ---
+
+namespace {
+
+constexpr int k_wide = 2 * k_dim; // a 2x2 grid of rung-0 tiles
+
+Rect wide_canvas() {
+  return Rect{0.0, 0.0, static_cast<double>(k_wide), static_cast<double>(k_wide)};
+}
+
+// Every worker count the benchmark sweeps, including the machine's own `hw - 1` (the
+// unclamped formula) -- so the invariants below are pinned on whatever CI runs on, not
+// just on a hand-picked pair. Shared by the two sweeping cases (A4 and A5).
+std::vector<std::size_t> swept_worker_counts() {
+  std::vector<std::size_t> counts{0, 1, 2, 4};
+  const unsigned hw = std::thread::hardware_concurrency();
+  if (hw > 5) {
+    counts.push_back(static_cast<std::size_t>(hw) - 1);
+  }
+  return counts;
+}
+
+WorkerPoolConfig pool_of(std::size_t workers) {
+  WorkerPoolConfig config;
+  config.worker_count = workers;
+  return config;
+}
+
+// The scene the cross-frame identity needs, and every part of its shape is load-bearing.
+//
+// A VISIBLE LEAF LAYER, not an operator's input, because the wave gate would otherwise
+// confound the measurement: it defers the operator's re-render before the input could ever
+// be re-pulled, so the suppression under test would never be reached.
+//
+// FOUR TILES, so the frame's dispatch is plural and the retention is not a single-entry
+// special case.
+//
+// ONE CONTENT, damaged over its whole footprint on the second frame, so every tile the
+// first frame dispatched is RE-PLANNED while its render is still running. That is the
+// collision the predecessor's scenes could not stage: theirs shared no leaf tile between
+// askers, so `requests_suppressed()` was provably `0` and the whole intra-frame identity
+// passed vacuously (`in_flight_tile_dedup`'s Status block).
+struct WideLatchScene {
+  Gate gate;
+  std::shared_ptr<LatchLeaf> leaf =
+      std::make_shared<LatchLeaf>(gate, Rgba{0.6F, 0.3F, 0.15F, 1.0F}, wide_canvas());
+  Document doc;
+  ObjectId content{};
+
+  WideLatchScene() {
+    content = doc.add_content(leaf);
+    doc.add_layer(content, Affine::identity());
+  }
+
+  // Damage over the whole leaf, at the SAME revision -- so the next frame re-plans every
+  // one of its tiles without re-keying them. Nothing is in the cache to invalidate (the
+  // renders have not landed), so this is purely a repaint instruction.
+  std::vector<Damage> repaint_all() const {
+    return {Damage{content, Rect::infinite(), TimeRange::all()}};
+  }
+};
+
+} // namespace
+
+// The headline assertion, and the one the predecessor could not make. `in_flight_tile_dedup`
+// landed the guard but shipped it unfired: its scenes shared no tile, so
+// `requests_suppressed()` was 0 and "requests_issued did not grow" was equally what you
+// observe when a mechanism is disconnected. And it could not have fired ACROSS a frame
+// boundary in any scene, because the deadline sweep cancelled every unsettled entry on
+// expiry and `tile_in_flight` refuses to suppress against a cancelled one -- so every entry
+// that crossed a boundary was disqualified before the next frame planned. Cross-frame dedup
+// was forfeited structurally, by that loop.
+//
+// Narrow the sweep to the tiles the frame no longer wants and the guard becomes reachable.
+// This is the counter identity that proves it, one frame further out than the predecessor
+// could reach:
+//
+//   * `requests_issued()` over the WHOLE two-frame sequence equals the number of distinct
+//     `TileKey`s the sequence needed -- the oracle, measured on the inline run;
+//   * `requests_suppressed() >= 1` -- the POSITIVE proof the cross-frame guard fired, since
+//     without it the identity above passes vacuously (`in_flight_tile_dedup` Decision 5);
+//   * `tiles_retained() >= 1` and `tiles_cancelled() == 0` -- the sweep looked at the queue
+//     and decided to keep, rather than never having run;
+//   * the quiesced image is byte-identical to the inline oracle's (Constraint 1).
+//
+// enforces: 02-architecture#retained-tile-is-suppressed-next-frame
+// enforces: 02-architecture#deadline-sweep-retains-wanted-tiles
+TEST_CASE("a tile retained across a deadline expiry is joined, not re-dispatched") {
+  CpuBackend backend;
+
+  // The oracle: the same scene at the degenerate inline executor. `submit` IS the render
+  // there, so nothing is ever in flight -- nothing suppressed, nothing retained, nothing
+  // cancelled -- and its `requests_issued` is exactly the number of distinct tile keys the
+  // sequence needs (one leaf, one revision, one rung, four coords).
+  WideLatchScene oracle_scene;
+  Driver oracle(oracle_scene.doc, backend, WorkerPoolConfig{}, InteractiveRenderer::Clock{},
+                k_wide);
+  oracle.drive_to_quiescence(k_frame_budget);
+  const std::vector<float> pixels = oracle.pixels();
+  REQUIRE_FALSE(all_transparent(pixels));
+  const std::uint64_t distinct_keys = oracle.renderer().counters().requests_issued();
+  REQUIRE(distinct_keys == 4);
+  CHECK(oracle.renderer().counters().requests_suppressed() == 0);
+  CHECK(oracle.renderer().tiles_retained() == 0);
+  CHECK(oracle.renderer().tiles_cancelled() == 0);
+
+  for (const std::size_t workers : swept_worker_counts()) {
+    if (workers == 0) {
+      continue; // inline: nothing is ever in flight, so there is nothing to retain or join
+    }
+    INFO("worker_count = " << workers);
+
+    WideLatchScene scene;
+    const SwitchableClock clock;
+    Driver view(scene.doc, backend, pool_of(workers), clock.functor(), k_wide);
+
+    scene.leaf->arm(); // every render parks: nothing can settle during the two frames below
+    clock.expire();    // ...and both frames' deadlines are already in the real past
+
+    // Frame N. Four misses, four dispatches, four renders parked on workers, and a deadline
+    // that is already gone. The sweep runs -- and every tile is visible, at this revision,
+    // at this camera, so it RETAINS all four rather than cancelling them.
+    view.frame(k_frame_budget);
+    scene.gate.await_arrivals(1); // the renders really are in flight: observed, not assumed
+    CHECK(view.renderer().deadline_expiries() >= 1);
+    CHECK(view.renderer().tiles_retained() >= 1);
+    CHECK(view.renderer().tiles_cancelled() == 0);
+    CHECK(view.renderer().counters().requests_issued() == distinct_keys);
+    CHECK(view.renderer().counters().requests_suppressed() == 0); // nothing to join YET
+
+    // Frame N+1, the frame this task exists for: the same viewport, damaged over the whole
+    // leaf, so all four tiles are re-planned while their renders are still running. Under
+    // the blanket sweep every one of them was cancelled at frame N, `tile_in_flight` would
+    // decline to suppress, and this frame would dispatch a SECOND render of four tiles that
+    // are already being rendered. Retained, they are joined instead.
+    view.frame(k_frame_budget, scene.repaint_all());
+    CHECK(view.renderer().counters().requests_issued() == distinct_keys); // delta 0
+    CHECK(view.renderer().counters().requests_suppressed() >= 1);         // ...and it FIRED
+    CHECK(view.renderer().tiles_cancelled() == 0);
+
+    // Release the latch and converge. The identity holds over the whole sequence -- exactly
+    // one render per distinct tile key -- and the pixels are the inline oracle's, byte for
+    // byte: retaining a render changes when it lands, never what it paints (Constraint 1).
+    clock.unexpire();
+    scene.gate.open();
+    view.drive_to_quiescence(k_frame_budget);
+    CHECK(view.renderer().counters().requests_issued() == distinct_keys);
+    CHECK(view.renderer().counters().requests_suppressed() >= 1);
+    CHECK(view.renderer().tiles_retained() >= 1);
+    CHECK(view.renderer().tiles_cancelled() == 0);
+    CHECK(view.renderer().pending().tiles.empty());
+    CHECK(byte_identical(view.pixels(), pixels));
   }
 }
 
@@ -601,24 +777,6 @@ private:
   Document d_doc;
   std::vector<std::shared_ptr<Content>> d_held;
 };
-
-// Every worker count the benchmark sweeps, including the machine's own `hw - 1` (the
-// unclamped formula) -- so the invariants below are pinned on whatever CI runs on, not
-// just on a hand-picked pair.
-std::vector<std::size_t> swept_worker_counts() {
-  std::vector<std::size_t> counts{0, 1, 2, 4};
-  const unsigned hw = std::thread::hardware_concurrency();
-  if (hw > 5) {
-    counts.push_back(static_cast<std::size_t>(hw) - 1);
-  }
-  return counts;
-}
-
-WorkerPoolConfig pool_of(std::size_t workers) {
-  WorkerPoolConfig config;
-  config.worker_count = workers;
-  return config;
-}
 
 } // namespace
 

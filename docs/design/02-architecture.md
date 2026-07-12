@@ -165,6 +165,37 @@ placeholder until some unrelated edit happened to repaint the region. A
 cancelled entry is therefore re-dispatched, and only a live, uncancelled
 in-flight render is joined.
 
+**A frame cancels the renders it no longer wants, not the renders it could
+not wait for.** On deadline expiry the frame cancels only the pending renders
+it has stopped wanting — a tile superseded by a revision bump, or no longer
+visible at the current camera and time — and leaves the rest **in flight**,
+uncancelled. So a still-wanted render survives the frame boundary, and the
+next frame that re-plans it *joins* the render already running rather than
+dispatching a second one. What the frame wants is its **visible footprint**:
+every tile a surviving layer covers over the whole viewport at the chosen
+rung, plus every tile its pulls named, plus the unmet inputs of any live wave
+whose output it still wants. Deliberately not "the tiles it planned" —
+planning is repaint-scoped, so on a partial repaint a tile that is plainly
+visible and plainly still missing is simply not planned, and nothing
+re-dirties a tile merely because its render is late.
+
+Narrowing the sweep costs nothing in enforcement, because the deadline is
+enforced by the frame **not parking past it** — the cancel that follows is a
+courtesy to the renderer, not the mechanism. The frame still returns at the
+deadline, still composites step 4's fallback for every tile that has not
+landed. And the blanket alternative is not merely wasteful but *unsound*:
+cancellation is advisory (doc 03), so a conformant content is free to honor it
+and *fail* the render — which is dropped with no cache insert and no damage.
+Cancel a tile the frame still wants, and it is then in neither the cache nor
+the pending set, nothing ever damaged it, and nothing re-plans it: it is
+stranded behind a placeholder, which is precisely the failure the carve-out
+above refuses to introduce via suppression. Retaining what the frame wants
+removes the cause — a tile it still wants is never told to abandon its render
+— and it is what makes the in-flight join a **cross-frame** mechanism rather
+than an intra-frame one. Under a blanket sweep, every entry that survived a
+frame boundary was cancelled, and so was disqualified from suppression before
+the next frame planned: the carve-out above was reachable only in theory.
+
 **A refinement wave re-drives an operator chain at most once.** The term is
 used above as a unit of accounting; here is its boundary. When an operator
 renders and one or more of its input tiles answer asynchronously, it paints a
@@ -193,10 +224,11 @@ Two asymmetries with the in-flight rule above are deliberate, because the two
 gates answer different questions — *"is someone rendering this?"* versus *"is
 more coming for this?"* An input still in the pending set holds the wave open
 whether or not it has been **cancelled** (cancellation is advisory, and the
-render usually lands anyway; were it otherwise, the deadline sweep — which
-cancels every unsettled tile on expiry — would open every gate at every frame
-boundary and the coalescing would evaporate under exactly the deadline
-pressure it exists for), and whether or not it has **settled** (a settled tile's
+render usually lands anyway; and a tile genuinely dropped from the viewport
+can still be cancelled by the deadline sweep — which cancels the unsettled
+tiles it no longer wants — while an operator's recorded wait names it, so a
+gate that trusted the flag would open on a wave that is still running), and
+whether or not it has **settled** (a settled tile's
 pixels are not in the *cache* until step 6 drains it, so a chain re-rendered
 against it would re-dispatch a render that has already finished). Neither can
 strand a tile, which is the failure the in-flight carve-out guards against: a

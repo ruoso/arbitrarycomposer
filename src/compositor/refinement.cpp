@@ -87,6 +87,27 @@ bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept {
   return false;
 }
 
+bool tile_wanted(const RefinementQueue& queue, const WantedTiles& wanted, const TileKey& key) {
+  if (wanted.contains(key)) {
+    return true; // in the frame's visible footprint, or named by one of its pulls
+  }
+  // Not visible in its own right -- but a live wave may still owe it. An operator whose
+  // output the frame wants, and whose last render left `key` unmet, is waiting on this
+  // tile even though it did not (and, wave-deferred, could not) re-pull it this frame.
+  // Cancelling it would end nothing and strand the operator on its placeholder.
+  for (const OperatorWait& wait : queue.waits) {
+    if (!wanted.contains(wait.output)) {
+      continue; // the frame does not want the output either: nothing to strand
+    }
+    for (const TileKey& unmet : wait.unmet) {
+      if (unmet == key) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 namespace {
 
 // Is `key` an input tile the queue still owes? PRESENCE in `queue.tiles`, and nothing

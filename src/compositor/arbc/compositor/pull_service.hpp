@@ -113,6 +113,15 @@ struct PullConfig {
   // later `poll_refinements` inserts it under `Visible` and emits damage. Null
   // drops the async miss exactly as the driver's null-`pending` path does.
   RefinementQueue* pending{nullptr};
+  // The frame's wanted-tile sink (`runtime.deadline_cancel_retains_wanted`, doc 02
+  // § The frame, interactively). Every covering tile key a `pull` NAMES is inserted
+  // here -- hit, in-flight join, wave deferral or fresh dispatch alike -- because an
+  // operator's input leaves are not layers and so appear in no plan and in no visible
+  // footprint. Without this the frame's wanted set would omit exactly the population the
+  // deadline sweep most needs to retain. Sharing the driver's sink is what makes the two
+  // producers one set. Null (the offline driver, every one-shot renderer, neither of
+  // which sweeps) records nothing and is behavior-identical.
+  WantedTiles* wanted{nullptr};
   // The recursion-depth cycle backstop sink (doc 05:66-70). A descent exceeding
   // `budget.max_depth` reports one diagnostic naming the content path here.
   GraphDiagnostics* diagnostics{nullptr};

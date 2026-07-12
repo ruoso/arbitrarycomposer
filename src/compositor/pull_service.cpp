@@ -228,6 +228,17 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
     // `coord`.
     const TileKey key{id, revision, selection.rung, coord, achieved_time};
 
+    // The frame WANTS every tile it pulls (`runtime.deadline_cancel_retains_wanted`).
+    // Recorded before the gates below, unconditionally, because all four outcomes -- a
+    // resident hit, an in-flight join, a wave deferral, a fresh dispatch -- are the same
+    // statement: this frame asked for this tile. An operator's input leaf is not a layer,
+    // so it appears in no plan and in no visible footprint; this is the only place it
+    // enters the wanted set, and it is exactly the population the deadline sweep must not
+    // cancel out from under the operator that is waiting on it.
+    if (d_config.wanted != nullptr) {
+      d_config.wanted->insert(key);
+    }
+
     // Cache lookup first (doc 13:76-77, `pull-is-cache-first`), per tile. A
     // resident exact fresh hit -- exact at this rung -- delivers the resident tile
     // into the caller's `request.target` (`pull-delivers-to-caller-target`) and

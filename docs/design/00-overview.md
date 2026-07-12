@@ -305,6 +305,23 @@ Initially-open questions, now decided in their own docs:
   therefore decides *when* a commit happens, never *where* — every trigger,
   timer included, is evaluated on the writer thread. Decided in doc 15
   (§ Version reclamation, § File-backed arenas) and doc 14 (§ Editable).
+- **A frame cancels the renders it no longer wants, not the renders it could
+  not wait for.** The deadline bounds *the frame*, not *the work*. It is
+  enforced by the frame refusing to park past it; the cancel that follows is a
+  courtesy to the renderer, not the mechanism, so narrowing it costs nothing —
+  the frame still returns on time with the best pixels it has. An expired frame
+  therefore cancels only what it has stopped wanting (superseded by a revision
+  bump, or no longer visible at the current camera and time) and leaves every
+  still-wanted render **in flight**. That is what makes the in-flight join a
+  *cross-frame* mechanism: cancel everything on expiry and every render that
+  survives a frame boundary is disqualified from being joined — precisely under
+  the load that made it worth joining. And the blanket sweep is not merely
+  wasteful, it is unsound: cancellation is advisory, a conformant content may
+  honor it and fail, and a failed render is dropped with no damage — so a tile
+  the frame still wanted ends up in neither the cache nor the pending set, with
+  nothing left to re-plan it, stranded behind a placeholder until an unrelated
+  edit happens to repaint its region. Decided in doc 02 (§ The frame,
+  interactively).
 - **Imported images are referenced; painted pixels are stored — and the two
   are different kinds.** A document is a `.arbc` file plus a sibling asset
   directory. An *imported* photograph has a file it came from, so it

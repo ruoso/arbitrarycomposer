@@ -611,10 +611,10 @@ TEST_CASE("a fade/crossfade/nested frame is byte-identical at every worker count
   }
 }
 
-// --- A3: in flight across the frame, the cancel, and the teardown ---------------
+// --- A3: in flight across the frame, the sweep, and the teardown ----------------
 
 // enforces: 13-effects-as-operators#pull-retains-render-surface-until-settle
-TEST_CASE("an in-flight worker render survives the frame's deadline-cancel and reaps on a "
+TEST_CASE("an in-flight worker render survives the frame's deadline expiry and reaps on a "
           "later frame") {
   CpuBackend backend;
   Gate gate;
@@ -628,20 +628,28 @@ TEST_CASE("an in-flight worker render survives the frame's deadline-cancel and r
   InteractiveDriver view(doc, backend, spied_pool(2, spy), clock.functor());
 
   // The deadline is already past, so the frame does not park: it dispatches its miss to a
-  // worker, finds nothing settled, and runs the cancel loop over the still-unsettled
-  // BestEffort pendings (`interactive.cpp:322-334`). Meanwhile the worker is parked
-  // INSIDE `render`, holding a `Surface&` into `d_pending`.
+  // worker, finds nothing settled, and runs its expiry sweep over the still-unsettled
+  // BestEffort pendings. Meanwhile the worker is parked INSIDE `render`, holding a
+  // `Surface&` into `d_pending`.
   view.frame(std::chrono::milliseconds(0));
   gate.await_arrivals(1); // the render is genuinely in flight, and the frame has returned
 
-  // (a) The frame is over, the cancel ran -- and nothing was freed. The pending tile is
-  //     still resident and its surface is still the live target of an in-flight render.
-  //     Cancellation is ADVISORY (`content.hpp:161-165`): it makes `cancelled()` observe
-  //     true, it does not revoke the worker's target.
+  // (a) The frame is over, the sweep ran -- and nothing was freed. The pending tile is
+  //     still resident and its surface is still the live target of an in-flight render,
+  //     which is the claim this case enforces and is what the deadline does NOT get to
+  //     take away.
+  //
+  //     The sweep also left the render itself alone (`runtime.deadline_cancel_retains_wanted`):
+  //     this leaf is visible, at this revision, at this camera, so it is a tile the frame
+  //     still WANTS, and only tiles it no longer wants are cancelled. (Before that task the
+  //     sweep cancelled every unsettled entry, and this asserted `cancelled()`. Cancelling
+  //     it was never what kept the surface alive -- cancellation is advisory
+  //     (`content.hpp:161-165`) and never revoked the worker's target -- so the retention
+  //     claim reads identically either way, and the reap in (b) is unchanged.)
   REQUIRE_FALSE(view.pending().tiles.empty());
   const PendingTile& tile = view.pending().tiles.front();
   CHECK(tile.surface != nullptr);
-  CHECK(tile.done->cancelled());
+  CHECK_FALSE(tile.done->cancelled());
   CHECK_FALSE(tile.done->settled());
 
   // (b) Release the latch: the arrival reaps normally through `poll_refinements` on a

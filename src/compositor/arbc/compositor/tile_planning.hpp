@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 
 // The interactive tile-based request planner for `arbc::compositor` (L4, doc
@@ -70,6 +71,42 @@ struct GraphDiagnostics;
 // that header (which includes this one) into this one -- the same forward-declare
 // discipline `RefinementQueue` / `DirtyRegion` / `GraphDiagnostics` follow above.
 class PullServiceImpl;
+
+// The frame's WANTED TILE SET (`runtime.deadline_cancel_retains_wanted`, doc 02
+// § The frame, interactively): every `TileKey` this frame still wants, which the
+// interactive driver's deadline sweep narrows its cancel against -- a pending tile
+// the frame no longer wants is cancelled on expiry; one it still wants is left in
+// flight, uncancelled, so the next frame's `tile_in_flight` gate joins the render
+// already running instead of dispatching a second one.
+//
+// It is the frame's VISIBLE FOOTPRINT, not the keys it PLANNED, and the distinction
+// is the whole point. Planning is repaint-scoped (`repaint_regions` drives a per-rect
+// plan loop below), so on a partial repaint a tile that is plainly visible and plainly
+// still missing is simply not planned -- its region is not dirty, and nothing re-dirties
+// a tile merely because its render is late. Cancel it and a conformant content that
+// HONORS the advisory cancel (doc 03) fails the render, which `poll_refinements` drops
+// with no insert and no damage: the tile is in neither the cache nor the queue, nothing
+// ever damaged it, and nothing re-plans it. So the footprint is computed from
+// VISIBILITY, independent of `dirty`: for every layer surviving the culls, one key per
+// tile coord covering the layer-local mapping of the WHOLE viewport at the rung the
+// plan chose, keyed exactly as `plan_layer` keys it. Over-approximation is the correct
+// direction to err in (retaining a tile nobody wants costs one render that was going to
+// be wasted anyway; cancelling one somebody wants can strand it behind a placeholder).
+//
+// Both cancel criteria then fall out of `TileKey` equality with no second predicate to
+// keep in sync: a revision bump (or an operator's aggregate bump) re-keys the tile, a
+// pan changes the covering coords, a zoom changes the rung, a clock advance changes
+// `achieved_time`, and a culled layer contributes nothing at all.
+//
+// A hash set rather than the linear scan `tile_in_flight` uses, and that is not a
+// contradiction of `in_flight_tile_dedup`'s Decision 1: THAT set could not be
+// precomputed because its membership is a function of `settled()`/`cancelled()`, two
+// atomics a worker flips with no notification to the queue. This one is a pure function
+// of one frame's plan inputs -- built once on the frame thread, read once on the frame
+// thread, discarded -- so nothing can invalidate it while it is alive. `std::hash<TileKey>`
+// already exists (`key_shapes.hpp`). The predicate over it is `tile_wanted`
+// (`refinement.hpp`), which also honors live `OperatorWait`s.
+using WantedTiles = std::unordered_set<TileKey>;
 
 // A fixed device-pixel tile edge (doc 02:59's "e.g. 256^2 device pixels").
 // Even at every rung, so tiles satisfy `reduce_rung`'s even-source-dims
@@ -333,6 +370,18 @@ bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
 // completion on both disciplines, so with no deadline pressure an offline frame
 // composites only fresh, exact-scale tiles (the `degraded_composites` counter,
 // bumped below for any stale/coarser/placeholder display, then reads zero).
+//
+// When `wanted` is non-null the driver fills it with this frame's VISIBLE FOOTPRINT
+// (`WantedTiles` above, `runtime.deadline_cancel_retains_wanted`): for every layer
+// surviving the culls, one `TileKey` per tile coord covering the layer-local mapping of
+// the whole viewport at the chosen rung -- computed BEFORE the repaint gate, so it is
+// the tiles the frame WANTS rather than the (repaint-scoped) subset it planned. The sink
+// is emptied by its owner, not here, because a pull-driven operator input contributes to
+// the same set through `PullConfig::wanted` (the input leaves an operator pulls are not
+// layers and appear in no plan). It is an integer coord-range walk: no cache probe, no
+// plan, no dispatch, no render, and `requests_issued` / `composites` are untouched. Null
+// (the default -- the offline driver, every one-shot renderer, neither of which sweeps)
+// surfaces nothing and is byte-for-byte the current behavior.
 void render_frame_interactive(
     const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
     TileCache& cache, Backend& backend, SurfacePool& pool, Surface& target, Deadline deadline,
@@ -340,6 +389,6 @@ void render_frame_interactive(
     CompositorCounters* counters = nullptr, const DirtyRegion* dirty = nullptr,
     Time composition_time = Time::zero(), std::vector<LayerTilePlan>* visible_plans = nullptr,
     GraphDiagnostics* diagnostics = nullptr, PullServiceImpl* pulls = nullptr,
-    Exactness exactness = Exactness::BestEffort);
+    Exactness exactness = Exactness::BestEffort, WantedTiles* wanted = nullptr);
 
 } // namespace arbc

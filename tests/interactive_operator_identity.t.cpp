@@ -184,9 +184,16 @@ TEST_CASE("interactive: an async operator-input arrival schedules the follow-up 
   CHECK_FALSE(out1.schedule_follow_up);               // nothing has arrived yet
   REQUIRE(renderer.pending().tiles.size() == 1U);
   REQUIRE(from.outstanding() == 1U);
-  // The frame reached its deadline with nothing settled, so the still-in-flight
-  // BestEffort render was cancelled -- advisory only, and this content ignores it.
-  CHECK(renderer.pending().tiles.front().done->cancelled());
+  // The frame reached its deadline with nothing settled -- and LEFT the in-flight render
+  // alone (`runtime.deadline_cancel_retains_wanted`). The terminal's tile is a tile this
+  // frame WANTS: its pull named it, so it is in the frame's wanted set, and the sweep
+  // cancels only what the frame no longer wants. (Before that task the sweep cancelled
+  // every unsettled entry on expiry, and this line asserted the cancel; the claim it sits
+  // under is about arrival ROUTING, and neither it nor anything below depends on which way
+  // this goes -- `cancel` is advisory, so a content that ignores it lands either way.)
+  CHECK(renderer.tiles_retained() == 1U);
+  CHECK(renderer.tiles_cancelled() == 0U);
+  CHECK_FALSE(renderer.pending().tiles.front().done->cancelled());
 
   // --- The result arrives. ----------------------------------------------------
   REQUIRE(from.settle_all() == 1U);
