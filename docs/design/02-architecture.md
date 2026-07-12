@@ -177,11 +177,31 @@ current-revision entries qualify.
   structural, hoisted into runtime's single worker-backed dispatch helper,
   so a driver obtains a worker-backed dispatch only by obtaining one that
   already enforces it.
+- **The interactive driver ships with a non-zero worker count.** Not as a
+  performance tuning, but because Step 4's deadline promise is otherwise
+  unkeepable: with zero workers the pool is the degenerate inline executor,
+  where `submit` *is* the render, so the frame thread sits inside a slow
+  leaf's `render` while the deadline passes and reaches the deadline park
+  only once every miss has been rendered to completion — there is nothing
+  left to degrade to and nothing to cancel. "The frame proceeds with what it
+  has" needs the render to be somewhere the frame is not. The count is
+  *runtime policy*, derived from the machine's hardware concurrency (less
+  one, because the frame thread plans, composites and parks, so it is a
+  participant) and capped, because the pool is per-viewport — never a fixed
+  number, which would oversubscribe a small machine and undersubscribe a
+  large one. A host that wants a different pool passes one, and a host that
+  wants no threads at all still gets the inline executor by asking for it.
+  The **offline** driver keeps inline-exact as *its* default (§ The frame,
+  offline): exactness has no deadline to miss, and byte-determinism is the
+  whole point of an export.
 - Compositing itself happens on the render thread (or GPU queue).
 
-This is the *model*; v1 may degenerate to "everything on one thread" while
-keeping the request/completion structure, so concurrency arrives as an
-optimization rather than a redesign.
+This is the *model*. The interactive driver has graduated out of the
+degenerate "everything on one thread" mode it was first built in — and the
+fact that it could, by changing a default rather than a design, is what the
+request/completion structure was for: concurrency arrived as an optimization,
+not a redesign. Drivers with no deadline to enforce (the offline one) stay
+there on purpose.
 
 ## Error handling
 

@@ -772,6 +772,20 @@ target_link_libraries(arbc_refine_idempotence_stress_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_refine_idempotence_stress_t)
 
+# runtime.interactive_worker_count_default (tier-4 counters + tier-6 tsan lane): the
+# shipped interactive default renders leaf misses OFF the frame thread, which is what makes
+# doc 02:61-65's deadline promise keepable at all -- at `worker_count == 0` the pool IS the
+# render, so the frame thread is inside a slow leaf when the deadline passes and there is
+# nothing left to degrade to. Latch-parked leaf, injected already-expired clock, thread-id
+# and counter observations only; plus the parallel-path invariants (byte-identity, no
+# duplicate in-flight render) swept over every worker count the benchmark sweeps. Names the
+# concrete kinds beside the runtime drivers, the worker pool and a real CpuBackend --
+# cross-component, so it links the umbrella `arbc`.
+add_executable(arbc_interactive_worker_default_t interactive_worker_default.t.cpp)
+target_link_libraries(arbc_interactive_worker_default_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_interactive_worker_default_t)
+
 # --- org.arbc.imageseq (kinds.imageseq_plugin) --------------------------------
 # The out-of-lib reference Timed kind's enforcing tests. They live here (not in
 # plugins/) because check_claims.py / check_levels.py scan src/tests/testing, not

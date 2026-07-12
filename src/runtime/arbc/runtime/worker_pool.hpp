@@ -112,6 +112,14 @@ public:
   // Idempotent: sets the stop flag and wakes all workers (join is in the dtor).
   void request_stop() noexcept;
 
+  // The configured worker count -- `0` is the degenerate inline executor. Exposed so a
+  // caller (and `runtime.interactive_worker_count_default`'s unit test) can observe the
+  // pool a driver actually built, without re-deriving it from the config it passed: the
+  // interactive driver's default config is a MACHINE-DEPENDENT policy
+  // (`default_interactive_worker_count()`), so the only honest assertion about it is a
+  // property of what the pool reports, never a literal.
+  std::size_t worker_count() const noexcept { return d_config.worker_count; }
+
   // Behavioral counters (doc 16:54-62), caller-readable and wall-clock-free.
   std::uint64_t tasks_submitted() const noexcept {
     return d_submitted.load(std::memory_order_acquire);

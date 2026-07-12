@@ -6,9 +6,12 @@
 #include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
 #include <arbc/runtime/worker_dispatch.hpp>  // worker_backed_dispatch (the leaf-only rule)
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -23,6 +26,24 @@ namespace {
 constexpr std::int32_t k_pan_prefetch_radius = 1;
 
 } // namespace
+
+std::size_t default_interactive_worker_count() {
+  // `hardware_concurrency()` reports `0` when the machine's core count is not
+  // knowable; read that as one core rather than as "no workers", because the clamp
+  // below must never produce `0` -- `0` is the degenerate inline executor, which is
+  // the very configuration this default exists to leave (see `interactive.hpp`).
+  std::size_t cores = std::thread::hardware_concurrency();
+  if (cores == 0) {
+    cores = 1;
+  }
+  return std::clamp<std::size_t>(cores - 1, 1, k_max_interactive_workers);
+}
+
+WorkerPoolConfig default_interactive_pool_config() {
+  WorkerPoolConfig config; // every other knob (the serialize predicate) stays default
+  config.worker_count = default_interactive_worker_count();
+  return config;
+}
 
 int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept {
   if (!(prev_scale > 0.0)) {
@@ -227,6 +248,10 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
     d_prev_time = composition_time;
     return FrameOutcome{false};
   }
+  // Past the early-out: this frame does work. The denominator of "renders per frame"
+  // (`frames_rendered()`), bumped HERE and nowhere else, so a still frame -- which
+  // returned above -- leaves it exactly where it was.
+  ++d_frames_rendered;
 
   // --- Step 3: invalidate (doc 02:63). -------------------------------------
   // Drop the damaged tiles across rungs so the re-plan sees a miss where content
@@ -253,11 +278,16 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   // it. An operator miss (fade, crossfade, nested) renders inline on this frame thread;
   // only leaf misses reach a worker.
   //
-  // Pixel-neutral at the shipped configuration: `worker_count` defaults to `0`, where
-  // the pool IS the degenerate inline executor and `submit` runs the render on this
-  // thread -- byte-identical to the `direct_dispatch()` this replaces
-  // (`02-architecture#worker-pool-degenerates-to-inline`). A host that asks for threads
-  // gets them; one that does not is unchanged.
+  // Pixel-neutral across worker counts, which is what lets the shipped default BE
+  // non-zero (`runtime.interactive_worker_count_default`): a fan-out changes when a
+  // leaf's pixels land, never what they are, so a frame driven to quiescence at the
+  // default is byte-identical to the same frame at `WorkerPoolConfig{}` -- the
+  // degenerate inline executor a host still opts into by spelling it
+  // (`02-architecture#worker-pool-degenerates-to-inline`,
+  // `02-architecture#worker-dispatch-is-leaf-only`). What the threads buy is the
+  // DEADLINE: with the render off this thread, Step 5's park can reach `deadline_at`
+  // and degrade, which at `worker_count == 0` -- where `submit` IS the render -- it
+  // provably cannot for a slow synchronous leaf.
   //
   // A dispatched leaf may outlive this frame: Step 5 parks only to the deadline and
   // leaves unsettled renders in flight across frames. That is safe precisely BECAUSE
@@ -318,18 +348,44 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
                            &visible_plans, /*diagnostics=*/nullptr, &pulls);
 
   // --- Step 5: park to the deadline; enforce it (doc 02:61-65, 140-143). ----
-  // Park for async arrivals only until `d`. `wait_completions` returns whether a
-  // completion settled since the last drain: `false` means the park reached the
-  // deadline with nothing fresh settled -- the deadline has passed, so cancel the
-  // still-unsettled BestEffort pending renders (advisory, `content.hpp:122-123`)
-  // rather than wait; the frame never blocks past `d`. A `true` return means an
-  // arrival settled (a `poke`), so we may be before `d` -- this frame's misses
-  // are not yet expired and are left to settle/be reaped.
-  const bool ready = d_pool.wait_completions(deadline_at);
-  if (!ready) {
+  // Park for async arrivals only until `d`, then enforce: cancel whatever is still
+  // unsettled (BestEffort cancellation is advisory, `content.hpp:122-123`) rather
+  // than wait. The frame never blocks past `d`.
+  //
+  // `wait_completions` answers "did SOME completion settle since the last drain?",
+  // NOT "did the deadline pass?" -- so a single park cannot decide enforcement. With
+  // more than one miss in flight, a fast tile settling wakes the park and returns
+  // `true` while a slow tile is still rendering and `d` has ALREADY gone by
+  // (`wait_until` on an elapsed bound still evaluates its predicate). Treating that
+  // `true` as "we are before `d`, nothing is expired" is how the deadline silently
+  // stops being enforced on exactly the frames that need it most -- the busy ones.
+  //
+  // So park in a loop: re-park while misses remain unsettled, and stop on the first
+  // park that reaches `d` without a fresh settle. Each iteration either consumes one
+  // settle-generation advance (finitely many -- one per pending tile) or ends the
+  // loop, so this terminates; and because every park re-uses the SAME `deadline_at`
+  // bound, the clock is still read exactly once per frame (above) -- enforcement is
+  // never decided by re-sampling the clock to ask "did we overrun?".
+  const auto unsettled = [this] {
+    return std::any_of(d_pending.tiles.begin(), d_pending.tiles.end(),
+                       [](const PendingTile& tile) { return !tile.done->settled(); });
+  };
+  bool expired = false;
+  while (unsettled()) {
+    if (!d_pool.wait_completions(deadline_at)) {
+      expired = true; // the park reached `d` with misses still outstanding
+      break;
+    }
+  }
+  // The two counters here are the ONLY observability of that enforcement, and both are
+  // derived from what this frame already knows -- the park's outcome and the pending
+  // queue.
+  if (expired) {
+    ++d_deadline_expiries;
     for (PendingTile& tile : d_pending.tiles) {
       if (!tile.done->settled()) {
         tile.done->cancel();
+        ++d_tiles_cancelled;
       }
     }
   }

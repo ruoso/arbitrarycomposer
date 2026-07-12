@@ -59,7 +59,16 @@ arbc_component_test(COMPONENT runtime
                             t/document_serialize.t.cpp t/operator_codecs.t.cpp
                             t/nested_codec.t.cpp
                             t/pull_identity.t.cpp
+                            t/bench_smoke.t.cpp
                             t/plugin_host.t.cpp)
+
+# The interactive worker-count sweep (`runtime.interactive_worker_count_default`, doc 16
+# tier 9): three scenes x the worker counts 0/1/2/4/hw-1, reporting wall-clock AND the
+# frame loop's behavioral counters. Built only under ARBC_BENCHMARKS (the `bench` preset),
+# so dev/asan/tsan/coverage neither fetch Google Benchmark nor compile it -- benchmarks
+# trend, they do not gate (doc 16:225-226). Its workload bodies carry diff coverage via
+# t/bench_smoke.t.cpp above, which drives the shared header in the normal test build.
+arbc_component_bench(COMPONENT runtime SOURCES bench/interactive_worker_bench.cpp)
 
 # t/nested_codec.t.cpp drives `nested_codec()`'s two halves directly, so it names
 # `Codec` -- and through it `nlohmann::json`, which is PRIVATE to arbc_runtime. Link it

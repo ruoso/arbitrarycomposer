@@ -106,11 +106,12 @@ struct TranslucentScene {
   ObjectId nested_content{};
 
   TranslucentScene() {
-    background = doc.add_content(
-        std::make_shared<SolidContent>(Rgba{0.40F, 0.08F, 0.08F, 0.80F}, canvas()));
+    background =
+        doc.add_content(std::make_shared<SolidContent>(Rgba{0.40F, 0.08F, 0.08F, 0.80F}, canvas()));
     doc.add_layer(background, Affine::identity());
 
-    const ObjectId child = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+    const ObjectId child =
+        doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     veil_content =
         doc.add_content(std::make_shared<SolidContent>(Rgba{0.05F, 0.20F, 0.35F, 0.5F}, canvas()));
     doc.attach_layer(child, doc.add_layer(veil_content, Affine::identity()));
@@ -351,4 +352,3 @@ TEST_CASE("refine golden: a gated frame touches no pixel outside its repaint reg
   const std::span<const float> inside = pixel_at(after, 8, 8);
   CHECK(inside[3] > 0.0F);
 }
-

@@ -151,13 +151,30 @@ HostViewport::StepOutcome HostViewport::step() {
   }
 
   // 3. Drain accumulated model damage and decide whether to render. A step with no
-  //    pending damage, no owed follow-up, and a still scene issues zero
-  //    `render_frame` invocations (Constraint 7, doc 01:140).
+  //    pending damage, no owed follow-up, a still scene AND nothing in flight issues
+  //    zero `render_frame` invocations (Constraint 7, doc 01:140).
+  //
+  //    The in-flight term is load-bearing since `runtime.interactive_worker_count_default`
+  //    made the shipped pool non-zero. A frame that dispatches a leaf miss to a worker and
+  //    then reaches its deadline returns having composited a DEGRADED tile, with the real
+  //    render still running and no follow-up scheduled (the arrival has not settled, so
+  //    there is no arrival damage to schedule one from -- that is what `pending()` is
+  //    for). Without this term a host whose scene then goes still -- a paused playhead, an
+  //    unmoved camera -- would issue no further frame, and the tile the worker is at that
+  //    moment painting would never be reaped or composited: the viewport would sit on the
+  //    degraded frame until something unrelated moved. At `worker_count == 0` the case did
+  //    not exist (`submit` IS the render, so nothing is ever left in flight), which is
+  //    exactly why the term was not needed before and is not optional now.
+  //
+  //    It does not weaken `02-architecture#idle-viewport-issues-no-frames`: a genuinely
+  //    idle viewport has an EMPTY refinement queue, so the early-out still fires and a
+  //    still scene still costs nothing.
   std::vector<Damage> damage = d_sink.drain();
   const bool scene_moved = d_rendered_once && (d_viewport.camera != d_last_render_camera ||
                                                d_viewport.anchor != d_last_render_anchor ||
                                                composition_time != d_last_render_time);
-  if (damage.empty() && !d_follow_up_owed && !scene_moved) {
+  const bool work_in_flight = !d_renderer.pending().tiles.empty();
+  if (damage.empty() && !d_follow_up_owed && !scene_moved && !work_in_flight) {
     return outcome; // idle: a still scene costs nothing
   }
 

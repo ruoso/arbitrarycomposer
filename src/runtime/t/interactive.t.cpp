@@ -353,6 +353,31 @@ void put_tile(TileCache& cache, const TileKey& key, std::size_t bytes, PriorityC
 
 } // namespace
 
+// --- The shipped worker-count default (runtime.interactive_worker_count_default) ------
+
+// `hardware_concurrency()` varies by machine, so the SHIPPED default varies by machine.
+// Every assertion here is therefore a PROPERTY of the policy, never a literal: a test that
+// hard-codes `4` is green on the author's box and red on a two-core CI runner.
+TEST_CASE("interactive: the default worker count is a non-zero, capped runtime policy") {
+  const std::size_t n = arbc::default_interactive_worker_count();
+  CHECK(n >= 1);                               // never the degenerate inline executor
+  CHECK(n <= arbc::k_max_interactive_workers); // the pool is per-renderer: never unbounded
+  CHECK(arbc::default_interactive_pool_config().worker_count == n);
+
+  // The renderer a host gets when it names no pool config carries exactly that pool.
+  arbc::InteractiveRenderer shipped;
+  CHECK(shipped.worker_pool().worker_count() == n);
+
+  // ...and the explicit inline opt-out still gives a thread-free renderer (Constraint 3):
+  // `WorkerPoolConfig{}` keeps its `0`, which is what every deterministic unit test and
+  // golden in this file spells, and what `02-architecture#worker-pool-degenerates-to-inline`
+  // claims. The struct's own default is deliberately NOT flipped -- it is shared with
+  // `SequenceRenderer`, whose inline-exact offline default must not move (doc 02:73-85).
+  arbc::InteractiveRenderer opted_out({}, epoch_clock());
+  CHECK(opted_out.worker_pool().worker_count() == 0);
+  CHECK(arbc::WorkerPoolConfig{}.worker_count == 0);
+}
+
 // enforces: 02-architecture#interactive-still-scene-schedules-no-frame
 // enforces: 11-time-and-video#clock-advance-damages-only-moving-layers
 // enforces: 02-architecture#quiescent-refinement-schedules-no-frame
@@ -458,6 +483,13 @@ TEST_CASE("interactive: a still frame builds no identity map and constructs no p
   REQUIRE(renderer.identity_map_builds() == 1);
   const std::uint64_t requests = renderer.counters().requests_issued();
   const std::uint64_t composites = renderer.counters().composites();
+  // The three deadline/frame counters (`runtime.interactive_worker_count_default` A4),
+  // snapshotted after the working frame so the still frames below are measured as DELTAS.
+  // The working frame really did do the work these count (it is not a vacuous baseline):
+  // it got past the early-out, so `frames_rendered` is 1.
+  REQUIRE(renderer.frames_rendered() == 1);
+  const std::uint64_t expiries = renderer.deadline_expiries();
+  const std::uint64_t cancelled = renderer.tiles_cancelled();
 
   // The still-scene early-out precedes ALL of the wiring's new work: the
   // `PullServiceImpl` is constructed after it, and the memo hoist that model-damage
@@ -474,6 +506,13 @@ TEST_CASE("interactive: a still frame builds no identity map and constructs no p
   CHECK(renderer.counters().requests_issued() == requests);
   CHECK(renderer.counters().composites() == composites);
   CHECK(renderer.counters().follow_up_frames() == 0);
+  // The still-scene early-out precedes the deadline park too, so an early-out frame bumps
+  // NONE of the three new counters: it renders no frame, so it cannot expire a deadline
+  // and cannot cancel a tile. `frames_rendered` is the denominator of "renders per frame"
+  // -- if a still frame bumped it, the ratio would silently deflate at 60Hz idle.
+  CHECK(renderer.frames_rendered() == 1); // delta 0 across eight still frames
+  CHECK(renderer.deadline_expiries() == expiries);
+  CHECK(renderer.tiles_cancelled() == cancelled);
 }
 
 // --- The per-frame operator binding (runtime.interactive_binder_wiring) --------

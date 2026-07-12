@@ -1,9 +1,8 @@
-#include <arbc/runtime/worker_dispatch.hpp>
-
 #include <arbc/compositor/operator_graph.hpp> // is_operator (the sole leaf/operator test)
 #include <arbc/compositor/pull_service.hpp>   // RenderDispatch, direct_dispatch
 #include <arbc/contract/content.hpp>          // Content, RenderRequest, RenderCompletion
-#include <arbc/runtime/worker_pool.hpp>       // WorkerPool, RenderTask
+#include <arbc/runtime/worker_dispatch.hpp>
+#include <arbc/runtime/worker_pool.hpp> // WorkerPool, RenderTask
 
 #include <memory>
 #include <utility>

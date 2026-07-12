@@ -14,6 +14,7 @@
 #include <arbc/runtime/worker_pool.hpp>       // WorkerPool, WorkerPoolConfig
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -52,11 +53,15 @@
 // (`wait_completions`/`poke`) and -- since `runtime.worker_dispatch_leaf_only` --
 // the frame's real miss executor: the pull service's dispatch is
 // `worker_backed_dispatch(d_pool)`, so a `worker_count > 0` host genuinely fans
-// leaf misses out. The DEFAULT stays `0` (`worker_pool.hpp:63`), the degenerate
-// inline executor, so the shipped configuration still fills every miss inline on
-// the frame thread, byte-identically. Choosing a non-zero default is a tuning
-// question with no measurement behind it yet
-// (`runtime.interactive_worker_count_default`).
+// leaf misses out. Since `runtime.interactive_worker_count_default` the SHIPPED
+// interactive default is non-zero (`default_interactive_pool_config()`, below):
+// this is the first arbitrarycomposer configuration with real threads under the
+// frame loop, and it is a CORRECTNESS choice, not a throughput one -- at
+// `worker_count == 0` the pool IS the render (`worker_pool.cpp:66`), so the frame
+// thread sits inside a slow leaf's `render` while the deadline passes and doc
+// 02:61-65's "when the deadline nears, the frame proceeds with what it has" cannot
+// be kept. An explicit `WorkerPoolConfig{}` still selects the degenerate inline
+// executor, byte-identically, for debuggability and determinism.
 //
 // Operators (`runtime.interactive_pull_wiring`). Each working frame builds a
 // frame-local `PullServiceImpl` over the `TileCache&`/`Backend&` it is handed and
@@ -130,6 +135,50 @@ class Document;
 // speculation". A free function so the derivation is directly unit-testable.
 int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept;
 
+// The cap on the interactive driver's default worker count
+// (`runtime.interactive_worker_count_default` Decision 2). The pool is
+// PER-RENDERER (`d_pool`, below) and `InteractiveRenderer` owns it by value, so an
+// uncapped `hardware_concurrency() - 1` would spawn 63 threads per viewport on a
+// 64-core workstation -- and a second viewport would double that until
+// `runtime.shared_worker_pool` lets viewports share one pool. `2` is the value the
+// task's Google Benchmark table selected: across the leaf-heavy, operator-heavy and
+// nested-deep scenes the counters at 4 workers were identical to the counters at 2
+// (same renders, same composites, no duplicate in-flight), so under the refinement's
+// stated tie-break -- "if the counters do not separate 2 from 4, ship 2" -- the
+// smaller thread footprint wins. A host that wants more passes its own
+// `WorkerPoolConfig`.
+inline constexpr std::size_t k_max_interactive_workers = 2;
+
+// The interactive driver's default worker count: `hardware_concurrency() - 1`,
+// clamped to `[1, k_max_interactive_workers]`.
+//
+// `n - 1` because the frame thread is a PARTICIPANT, not an observer -- it plans,
+// composites and parks in `wait_completions` -- so leaving it a core is the point.
+// `>= 1` even on a single-core box, because the reason for a worker is that the frame
+// thread can REACH the deadline park and degrade (doc 02:61-65), which is a latency
+// property, not a throughput one: on one core the worker still gets scheduled while
+// the frame thread parks. A `hardware_concurrency()` of `0` means "unknown" and reads
+// as one core.
+//
+// A formula rather than a constant because a fixed `4` oversubscribes a 2-core CI
+// runner by 3x and undersubscribes a workstation: a constant that ignores the machine
+// is a measurement of the author's machine.
+std::size_t default_interactive_worker_count();
+
+// The pool config `InteractiveRenderer`'s constructor defaults to: the policy above
+// in `worker_count`, every other knob at its `WorkerPoolConfig` default.
+//
+// The default is installed HERE, on the interactive driver, and NOT on
+// `WorkerPoolConfig::worker_count` (which keeps its `0`, claim
+// `02-architecture#worker-pool-degenerates-to-inline`): the struct is shared with
+// `SequenceRenderer`, which caches `worker_count != 0` as its inline-vs-parallel
+// switch (`offline_sequence.cpp:58`), so flipping it there would silently move the
+// OFFLINE driver off the byte-deterministic exact path doc 02:73-85 specifies -- and
+// "how many threads should an interactive host use?" is render-driver policy (doc
+// 17:110-112), not a property of a config struct that does not know which driver it
+// is about to configure.
+WorkerPoolConfig default_interactive_pool_config();
+
 // What a frame needs to BIND its operators, and the only thing the frame signature does
 // not already carry (`runtime.interactive_binder_wiring` Decision 2): the `Document` whose
 // content graph `bind_operators` walks, and the pin the frame is compositing -- the SAME
@@ -165,7 +214,12 @@ public:
   // deterministic and wall-clock-free (doc 16:54-62).
   using Clock = std::function<std::chrono::steady_clock::time_point()>;
 
-  explicit InteractiveRenderer(WorkerPoolConfig pool_config = {}, Clock clock = {});
+  // The default `pool_config` is the SHIPPED interactive configuration: real workers
+  // (`default_interactive_pool_config()`). Passing an explicit `WorkerPoolConfig{}`
+  // opts back out to the thread-free degenerate inline executor, byte-identically --
+  // the spelling every deterministic unit test and golden in the tree uses.
+  explicit InteractiveRenderer(WorkerPoolConfig pool_config = default_interactive_pool_config(),
+                               Clock clock = {});
 
   InteractiveRenderer(const InteractiveRenderer&) = delete;
   InteractiveRenderer& operator=(const InteractiveRenderer&) = delete;
@@ -218,6 +272,29 @@ public:
   // behavioral counter (doc 16:54-62, never wall-clock) that pins "a still scene binds
   // nothing" -- the case that runs at 60Hz doing nothing.
   std::uint64_t operator_binds() const noexcept { return d_operator_binds; }
+
+  // The three counters the non-zero default has to be ARGUED from
+  // (`runtime.interactive_worker_count_default`, doc 16:54-62 -- "wall-clock tests lie
+  // in CI; counters don't"). Frame-thread-only, plain `std::uint64_t` like
+  // `CompositorCounters` (`counters.hpp:22-24`): nothing on a worker may bump one --
+  // that would be exactly the data race the leaf-only rule exists to prevent, and TSan
+  // would say so.
+
+  // Frames that got past the still-scene early-out and actually did work. The
+  // DENOMINATOR for "renders per frame"; the numerator is `counters().requests_issued()`.
+  // A still frame bumps nothing (claim
+  // `02-architecture#interactive-still-scene-schedules-no-frame`).
+  std::uint64_t frames_rendered() const noexcept { return d_frames_rendered; }
+  // Frames whose deadline park (Step 5) reached the deadline with renders still
+  // unsettled -- `wait_completions` returned `false`. This is the counter that makes doc
+  // 02:61-65's deadline promise OBSERVABLE: at `worker_count == 0` it can never bump for
+  // a slow synchronous leaf, because `submit` IS the render and the frame thread is
+  // inside it when the deadline passes. Derived from `wait_completions`' return value,
+  // never from a second clock read (the loop samples `d_clock()` exactly once).
+  std::uint64_t deadline_expiries() const noexcept { return d_deadline_expiries; }
+  // Still-unsettled BestEffort pending renders the expired frame cancelled (advisory,
+  // `content.hpp:122-123`): how much the frame degraded rather than blocking.
+  std::uint64_t tiles_cancelled() const noexcept { return d_tiles_cancelled; }
 
   // The frame's leaf-miss executor and async-completion park/wake substrate.
   // Exposed so externally-async content can `poke()` a render thread parked in this
@@ -297,6 +374,9 @@ private:
   std::vector<OperatorLayer> d_operator_layers;                 // the visible operator layers
   std::uint64_t d_identity_map_builds{0};                       // memo (re)builds, a counter
   std::uint64_t d_operator_binds{0};                            // per-rendering-frame binds
+  std::uint64_t d_frames_rendered{0};   // frames past the still-scene early-out
+  std::uint64_t d_deadline_expiries{0}; // parks that reached the deadline
+  std::uint64_t d_tiles_cancelled{0};   // pendings the expired frame cancelled
 };
 
 } // namespace arbc

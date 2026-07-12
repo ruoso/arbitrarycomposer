@@ -5,8 +5,10 @@
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/host_viewport.hpp>
 #include <arbc/runtime/interactive.hpp>
+#include <arbc/runtime/worker_pool.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <chrono>
 #include <cmath>
@@ -77,7 +79,19 @@ arbc::HostViewport::Clock epoch_clock() {
 } // namespace
 
 // enforces: 04-transforms-and-infinite-zoom#zoom-out-reanchors-along-anchor-path
+// enforces: 02-architecture#worker-dispatch-is-leaf-only
 TEST_CASE("host_viewport zoom-out re-anchor preserves the composed probe to within one rounding") {
+  // Run the whole golden at BOTH pool configurations: the explicit inline opt-out and the
+  // SHIPPED default (`runtime.interactive_worker_count_default`). Flipping a constructor
+  // default that no golden exercises would ship an untested configuration; this is the
+  // cheapest place to stop that, because the anchor-path math is pool-independent by
+  // construction and must stay so -- re-anchoring only re-expresses the camera, and no
+  // worker has any part in it. The result is the same to within one double rounding, which
+  // is the tolerance doc 04:66 specifies for the continuity itself.
+  const arbc::WorkerPoolConfig pool_config =
+      GENERATE(arbc::WorkerPoolConfig{}, arbc::default_interactive_pool_config());
+  INFO("worker_count = " << pool_config.worker_count);
+
   arbc::CpuBackend backend;
   arbc::Model model;
   const std::vector<ObjectId> comps = build_chain(model, /*levels=*/1);
@@ -86,7 +100,7 @@ TEST_CASE("host_viewport zoom-out re-anchor preserves the composed probe to with
   arbc::TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(1000, 1000, arbc::k_working_rgba32f);
   REQUIRE(target.has_value());
-  arbc::InteractiveRenderer renderer({}, epoch_clock());
+  arbc::InteractiveRenderer renderer(pool_config, epoch_clock());
 
   const double s = arbc::k_reanchor_scale_threshold * 2.0;
   const Affine c0 = frame_camera(s);

@@ -59,9 +59,9 @@
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_pool.hpp>
 
-#include "support/schedule_perturb.hpp"
-
 #include <catch2/catch_test_macros.hpp>
+
+#include "support/schedule_perturb.hpp"
 
 #include <algorithm>
 #include <array>
@@ -185,10 +185,8 @@ public:
   // Renders observed on a thread OTHER than `driver` -- i.e. on a worker.
   std::size_t off_thread(std::thread::id driver) const {
     const std::lock_guard<std::mutex> lock(d_mutex);
-    return static_cast<std::size_t>(
-        std::count_if(d_threads.begin(), d_threads.end(), [driver](std::thread::id t) {
-          return t != driver;
-        }));
+    return static_cast<std::size_t>(std::count_if(
+        d_threads.begin(), d_threads.end(), [driver](std::thread::id t) { return t != driver; }));
   }
 
 private:

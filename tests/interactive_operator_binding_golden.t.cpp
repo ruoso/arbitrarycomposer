@@ -41,10 +41,12 @@
 #include <arbc/runtime/interactive.hpp>
 #include <arbc/runtime/offline_sequence.hpp>
 #include <arbc/runtime/pull_identity.hpp>
+#include <arbc/runtime/worker_pool.hpp>
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_pool.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <chrono>
 #include <cstdint>
@@ -117,13 +119,24 @@ std::vector<float> exported_frame(Document& doc, Backend& backend, Time time) {
 // A `Document`-bound `HostViewport` over its own renderer/cache/target: the path a host
 // actually drives, and the one that holds the pin `bind_operators` needs. Everything is
 // owned here so a test can drive N steps and then read both the pixels and the counters.
+//
+// `pool_config` defaults to the explicit inline opt-out (`WorkerPoolConfig{}`), which is
+// what every counter case below wants: at the degenerate inline executor `submit` IS the
+// render, so one `step()` is one complete frame and `frames_issued()` / `operator_binds()`
+// are exact per-frame statements about BINDING rather than about scheduling. The
+// byte-identity case at the bottom overrides it with the shipped default and drives to
+// quiescence instead, which is the honest way to compare a fan-out against an oracle.
 class BoundViewport {
 public:
-  BoundViewport(Document& doc, Backend& backend, ObjectId bootstrap_layer)
+  BoundViewport(Document& doc, Backend& backend, ObjectId bootstrap_layer,
+                WorkerPoolConfig pool_config = {},
+                InteractiveRenderer::Clock renderer_clock = epoch_clock(),
+                std::chrono::steady_clock::duration budget = k_budget)
       : d_doc(doc), d_bootstrap(bootstrap_layer), d_cache(64U * 1024 * 1024), d_pool(backend),
-        d_target(make_target(doc, backend)), d_renderer({}, epoch_clock()),
+        d_target(make_target(doc, backend)),
+        d_renderer(std::move(pool_config), std::move(renderer_clock)),
         d_view(d_renderer, doc, HostViewport::DocumentBinding{}, backend, d_pool, d_cache,
-               *d_target, epoch_clock(), config()) {
+               *d_target, epoch_clock(), config(budget)) {
     // The playhead is an injected deterministic source, so `composition_time` is a pure
     // function of the frame index -- no transport advance, no wall clock (doc 16:54-62).
     d_view.set_playhead_source([this] { return d_time; });
@@ -133,13 +146,30 @@ public:
   // unmoved scene, so its first `step()` would legitimately issue zero frames (doc
   // 01:140) -- a trivial re-set of the bootstrap layer's transform is the model edit that
   // damages it and makes the first step render, exactly as `host_viewport.t.cpp` does.
-  void step_at(Time time) {
+  HostViewport::StepOutcome step_at(Time time) {
     d_time = time;
     if (!d_bootstrapped) {
       d_doc.set_layer_transform(d_bootstrap, Affine::identity());
       d_bootstrapped = true;
     }
-    d_view.step();
+    return d_view.step();
+  }
+
+  // Step until the loop is genuinely settled: nothing in flight AND no follow-up owed.
+  // At `worker_count == 0` this is one step; at a non-zero count a leaf miss goes to a
+  // worker, the frame degrades, and the arrival is reaped and then composited over the
+  // following steps. `HostViewport::step()` keeps issuing frames while the renderer has
+  // work in flight (`host_viewport.cpp` step 3), which is what lets a STILL scene -- a
+  // paused playhead, an unmoved camera -- converge at all.
+  void step_to_quiescence(Time time) {
+    constexpr int k_max_steps = 64; // a convergence bound, never a timing assumption
+    for (int i = 0; i < k_max_steps; ++i) {
+      const HostViewport::StepOutcome outcome = step_at(time);
+      if (!outcome.schedule_follow_up && d_renderer.pending().tiles.empty()) {
+        return;
+      }
+    }
+    FAIL("the bound viewport did not reach quiescence");
   }
 
   std::vector<float> pixels() const { return snapshot(*d_target); }
@@ -154,10 +184,10 @@ private:
     REQUIRE(target.has_value());
     return std::move(*target);
   }
-  static HostViewport::Config config() {
+  static HostViewport::Config config(std::chrono::steady_clock::duration budget) {
     HostViewport::Config cfg;
     cfg.viewport = viewport();
-    cfg.budget = k_budget;
+    cfg.budget = budget;
     return cfg;
   }
 
@@ -285,6 +315,73 @@ TEST_CASE("interactive: the per-frame re-bind does not thrash nested's metadata 
   CHECK(view.frames_issued() == 9);
   CHECK(view.operator_binds() == 9);                        // every damaged frame re-bound...
   CHECK(scene.nested->metadata_recomputes() == recomputes); // ...and none re-keyed the memo
+}
+
+// The same two goldens, at the SHIPPED DEFAULT pool
+// (`runtime.interactive_worker_count_default`). Flipping a constructor default that no
+// golden exercises would ship an untested configuration, and this is the golden that
+// matters most: it is the one whose operators run their own `render` and pull their inputs
+// through the frame-local service, so it is the one where a leaf escaping onto a worker
+// could actually change a pixel.
+//
+// It does not: driven to quiescence, the fan-out converges byte-for-byte on the export
+// driver's frame of the same document at the same instant -- the very oracle the inline
+// cases above are pinned against. A worker changes WHEN a leaf's pixels land, never what
+// they are (the leaf-only rule keeps every operator, and so every cache touch, on the
+// frame thread). This is a second enforcer of `registry.tsv`'s byte-identity clause, not a
+// new claim: `02-architecture#worker-dispatch-is-leaf-only` already says "the frames are
+// byte-identical to the worker_count == 0 run", and this is that sentence at the default a
+// host now gets for free.
+//
+// The renderer's clock is the REAL `steady_clock` here, unlike the epoch clock the inline
+// cases use: a frame with a render genuinely in flight must PARK for it (and wake on the
+// completion), where an already-expired deadline would make every reaping step a no-wait
+// poll that spins against the very worker it is waiting on. The budget below is a park
+// bound, never an assertion -- nothing here is timed (doc 16:54-62).
+//
+// enforces: 02-architecture#worker-dispatch-is-leaf-only
+// enforces: 02-architecture#worker-pool-degenerates-to-inline
+TEST_CASE("interactive: the operator and nested goldens are byte-identical at the shipped "
+          "default worker count") {
+  const WorkerPoolConfig pool_config =
+      GENERATE(WorkerPoolConfig{}, default_interactive_pool_config());
+  INFO("worker_count = " << pool_config.worker_count);
+  // A park bound over the real clock, not a deadline assertion: a frame with work in
+  // flight returns the instant a completion settles, and a missed one costs the loop one
+  // more turn (cancellation is advisory, `content.hpp:161-165`), never a wrong answer.
+  constexpr auto k_park = std::chrono::milliseconds(100);
+
+  CpuBackend backend;
+
+  SECTION("a fade at an interior envelope beside a crossfade at an interior weight") {
+    SolidContent under{Rgba{0.25F, 0.50F, 0.75F, 1.0F}, canvas()};
+    SolidContent from{Rgba{0.50F, 0.25F, 0.125F, 1.0F}, canvas()};
+    SolidContent to{Rgba{0.125F, 0.375F, 0.75F, 1.0F}, canvas()};
+
+    Document doc;
+    const ObjectId fade_layer = doc.add_layer(
+        doc.add_content(std::make_shared<FadeContent>(&under, half_fade())), Affine::identity());
+    doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, half_crossfade())),
+                  Affine::identity());
+
+    BoundViewport view(doc, backend, fade_layer, pool_config, InteractiveRenderer::Clock{}, k_park);
+    view.step_to_quiescence(k_interior);
+
+    const std::vector<float> pixels = view.pixels();
+    CHECK_FALSE(all_transparent(pixels));
+    CHECK(byte_identical(pixels, exported_frame(doc, backend, k_interior)));
+  }
+
+  SECTION("a nested scene") {
+    NestedScene scene;
+    BoundViewport view(scene.doc, backend, scene.nest_layer, pool_config,
+                       InteractiveRenderer::Clock{}, k_park);
+    view.step_to_quiescence(k_interior);
+
+    const std::vector<float> pixels = view.pixels();
+    CHECK_FALSE(all_transparent(pixels));
+    CHECK(byte_identical(pixels, exported_frame(scene.doc, backend, k_interior)));
+  }
 }
 
 // enforces: 13-effects-as-operators#operator-input-children-have-distinct-cache-identity

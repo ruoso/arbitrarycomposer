@@ -373,9 +373,9 @@ TEST_CASE("a leaf that arrives on a later frame refines onto byte-exact pixels")
                                  k_interior, k_frame_budget, binding);
   };
 
-  frame();                        // dispatches; the gated leaf parks on a worker
-  scene.gate.await_arrivals(1);   // it really is in flight -- observed, not assumed
-  scene.gate.open();              // ... and now it may arrive
+  frame();                      // dispatches; the gated leaf parks on a worker
+  scene.gate.await_arrivals(1); // it really is in flight -- observed, not assumed
+  scene.gate.open();            // ... and now it may arrive
 
   constexpr int k_max_frames = 64; // a convergence bound, never a timing assumption
   bool quiesced = false;

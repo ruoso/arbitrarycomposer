@@ -224,6 +224,19 @@ Initially-open questions, now decided in their own docs:
   GPU, must implement. It is a scissor rect; GPU command lists already have
   one. Decided in doc 02 (§ The frame, interactively) and doc 09 (§ Backend
   contract).
+- **The interactive driver ships with real threads, and the deadline is
+  what buys them.** This is the first shipped configuration with a worker
+  pool under the frame loop, and the argument for it is *correctness*, not
+  throughput: with zero workers the pool is the degenerate inline executor,
+  so `submit` is the render, the frame thread is inside a slow leaf when the
+  deadline passes, and the "proceed with what you have — stale, coarser, or
+  transparent" promise has nothing to proceed *with*. A degrade policy needs
+  the render to be off the thread that has to give up on it. The count is a
+  formula (hardware concurrency, less the frame thread, capped), not a
+  constant: a constant is a measurement of the author's machine, and the cap
+  exists because the pool is per-viewport. The offline driver keeps its
+  inline-exact default — exactness has no deadline to miss. Decided in doc 02
+  (§ Threading model).
 - **The housekeeping thread drains; the writer checkpoints.** Deferred
   reclamation and durable checkpointing are both "housekeeping", but they
   do not share a thread. A drain may run on the low-priority thread
