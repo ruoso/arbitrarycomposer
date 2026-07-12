@@ -41,6 +41,21 @@ call `convert`, and by then the answer is yes. This is the operation doc 07
 rule 4's nesting boundary uses, and the one the import and display-out edges
 will reuse.
 
+**The clip-scoped operations.** Clearing and compositing each come in a
+second form that carries a device-space (destination-space) clip rect and
+writes no pixel outside it: `clear_rect(dst, device_rect, rgba)` and
+`composite_clipped(dst, src, src_to_dst, opacity, device_clip)`. They exist
+because damage-gated rendering repaints a *region* of a persisted target
+(doc 02 step 5): the region must be cleared before it is re-composited, and
+the composites must not spill past it, or source-over lands twice on the
+pixels beyond the clear. The clip is intersected with the destination's
+bounds and is half-open; an empty clip is a no-op, and a clip covering the
+whole destination is byte-identical to the unclipped operation — which is
+how the unclipped `clear`/`composite` are defined, so a backend carries one
+kernel per operation, not two. This is a scissor rect: it is the shape a GPU
+backend's command list wants, and it keeps the "core never loops over
+pixels" rule intact — the core computes the region, the backend honors it.
+
 - **CPU reference backend (v1):** surfaces are memory buffers; kernels are
   the doc-07 templated loops; everything supports typed access; import is
   wrap-or-copy of caller memory. Exists for correctness, tests, and hosts

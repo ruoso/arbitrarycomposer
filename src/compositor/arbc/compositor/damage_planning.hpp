@@ -48,6 +48,39 @@ struct DirtyRegion {
   std::vector<Rect> device_rects;
 };
 
+// The single device **repaint rect** a damage-gated frame is defined by (doc 02
+// § The frame, interactively; `refine_frame_composite_idempotence` Decision 2):
+// the bounding box of `dirty.device_rects` -- each first intersected with the
+// viewport, so a structural `Rect::infinite()` rect saturates rather than
+// poisoning the box -- rounded **out** to whole device pixels. Empty (the
+// default `Rect{}`) iff the region is empty or maps entirely outside the
+// viewport, which is the concrete "no damage -> no work".
+//
+// The gated frame uses this ONE value three times: it gates each layer's plan
+// (mapped back through the layer's inverse into local space), it is the
+// `Backend::clear_rect` argument, and it is the `device_clip` on every composite
+// onto the target. Deriving all three from one value is what makes the
+// idempotence proof trivial -- the planned set, the cleared set and the painted
+// set are the same set, so within the region every layer that covers a pixel
+// repaints it exactly once onto transparent (a single full pass, restricted to
+// the region), and outside it nothing is written.
+//
+// *Why the bounding box and not the individual rects:* the per-layer gate was
+// already bbox-granular, and `map_damage_to_device` emits one rect per (damage,
+// layer) pair, which may OVERLAP -- clipping each tile once per dirty rect would
+// composite it twice in the overlap, re-introducing the very double-blend this
+// clears. One rect means one composite per tile, unambiguously. The precision
+// (a disjoint rect set, repainted per rect) is `compositor.disjoint_dirty_repaint`;
+// the bbox is byte-exact, just wider than it needs to be, and it re-composites
+// from cache (no extra renders).
+//
+// *Why round out:* the dirty rects are `map_rect` outputs -- arbitrary doubles.
+// Rounding in would leave a sub-pixel fringe of the true damage unpainted (a
+// stale seam); rounding out is conservative in the safe direction, and because
+// the same rounded rect gates the plan, the extra pixels are covered by every
+// layer that covers them.
+Rect repaint_region(const DirtyRegion& dirty, const Viewport& viewport);
+
 // Project model/refinement `Damage` onto per-viewport device dirty rects (doc
 // 02:51,57-60). For each `Damage`: (a) a temporal gate -- skip unless
 // `range.empty() || range.contains(now)`, so an edit that only affects a

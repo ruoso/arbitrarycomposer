@@ -54,6 +54,24 @@ Affine surface_to_device(const Affine& local_to_device, const Rect& local_rect, 
                                           Affine::scaling(1.0 / scale, 1.0 / scale)));
 }
 
+// Composite onto the frame target, honoring the gated frame's device repaint
+// clip (`refine_frame_composite_idempotence`). `clip` is null on the un-gated
+// (null-`dirty`) path, which routes to the plain `Backend::composite` -- so that
+// path is byte-identical and the existing goldens are untouched. On the gated
+// path every composite onto the target carries the SAME repaint rect the frame
+// cleared and planned against, so the painted set equals the cleared set: a tile
+// straddling the region's edge cannot spill its overhang source-over onto
+// un-cleared pixels. The counter contract is unchanged -- this is one composite
+// call either way, counted at the call sites exactly as before.
+void composite_onto_target(Backend& backend, Surface& target, const Surface& src,
+                           const Affine& src_to_dst, double opacity, const Rect* clip) {
+  if (clip != nullptr) {
+    backend.composite_clipped(target, src, src_to_dst, opacity, *clip);
+  } else {
+    backend.composite(target, src, src_to_dst, opacity);
+  }
+}
+
 // Composite a `Coarser` fallback (doc 02:64). The coarser source covers a
 // larger local rect (2^octave x this tile), so painting it directly would
 // overpaint abutting tiles. Instead upscale just this fine tile's footprint
@@ -62,7 +80,7 @@ Affine surface_to_device(const Affine& local_to_device, const Rect& local_rect, 
 // fallbacks never double-blend.
 void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
                        const PlannedTile& tile, const Affine& local_to_device, ScaleRung rung,
-                       double opacity, CompositorCounters* counters) {
+                       double opacity, CompositorCounters* counters, const Rect* clip) {
   const double rung_px = rung_scale(rung);
   const int octave = rung.index - tile.source_rung.index;
   const std::int32_t factor = std::int32_t{1} << octave;
@@ -92,8 +110,9 @@ void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
     counters->note_composite();
   }
 
-  backend.composite(target, temp_surface,
-                    surface_to_device(local_to_device, tile.local_rect, rung_px), opacity);
+  composite_onto_target(backend, target, temp_surface,
+                        surface_to_device(local_to_device, tile.local_rect, rung_px), opacity,
+                        clip);
   if (counters != nullptr) {
     counters->note_composite();
   }
@@ -235,12 +254,38 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                               Time composition_time, std::vector<LayerTilePlan>* visible_plans,
                               GraphDiagnostics* diagnostics, PullServiceImpl* pulls,
                               Exactness exactness) {
-  // The null-`dirty` path clears and re-plans the whole viewport (byte-identical
-  // to today). A gated frame composites only the damaged tiles onto the
-  // caller-persisted `target`, so it must NOT clear -- the untouched region
-  // survives from the previous frame (doc 02:51, refinement Decision 2).
+  const std::uint64_t revision = state.revision();
+  const Rect device_rect =
+      Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
+
+  // The frame's device **repaint region** (doc 02 § The frame, interactively;
+  // `refine_frame_composite_idempotence` Decision 2). The null-`dirty` path clears
+  // and re-plans the WHOLE viewport, unclipped -- byte-identical to today, which is
+  // what keeps every landed golden un-rebaselined. A gated frame instead repaints
+  // exactly one region: the bounding box of the device dirty rects, rounded out.
+  //
+  // That ONE value is used three times below -- it gates each layer's plan, it is
+  // what gets cleared, and it is the clip on every composite onto the target -- so
+  // the planned set, the cleared set and the painted set are the same set. That is
+  // the whole idempotence proof: within the region every layer that covers a pixel
+  // repaints it exactly once onto transparent (a single full pass, restricted to
+  // the region), and outside it nothing is written.
+  //
+  // The clear is gated on a NON-EMPTY region, not merely on `dirty != nullptr`: a
+  // non-null but empty `DirtyRegion` clears nothing, plans nothing, composites
+  // nothing, and leaves `target` byte-identical -- "no damage -> no work" (doc
+  // 02:51). `repaint` stays empty on the null path and `repaint_clip` stays null
+  // there, which is what routes the un-gated composites to the unclipped
+  // `Backend::composite`.
+  const Rect repaint = (dirty != nullptr) ? repaint_region(*dirty, viewport) : Rect{};
+  const Rect* const repaint_clip = (dirty != nullptr) ? &repaint : nullptr;
   if (dirty == nullptr) {
     backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
+  } else if (!repaint.empty()) {
+    // Clear FIRST: source-over is not idempotent for anything but fully-opaque
+    // content, so re-compositing a translucent layer onto the pixels the previous
+    // frame left in place would land its contribution twice (doc 02, "Clear first").
+    backend.clear_rect(target, repaint, 0.0F, 0.0F, 0.0F, 0.0F);
   }
 
   // The opt-in plan sink is emptied at entry so it holds exactly this frame's
@@ -249,10 +294,6 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
   if (visible_plans != nullptr) {
     visible_plans->clear();
   }
-
-  const std::uint64_t revision = state.revision();
-  const Rect device_rect =
-      Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
 
   // The per-layer cull/compose/region walk is `render_frame`'s front half
   // (compositor.cpp:16-46), reused verbatim; the interactive path forks after
@@ -308,22 +349,20 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     if (const std::optional<Rect> bounds = content->bounds(); bounds.has_value()) {
       region = region.intersect(*bounds);
     }
-    // Damage gating (Decision 2): narrow this layer's plan region to the dirty
-    // region mapped into layer-local space (reusing the inverse the cull already
-    // computed), so only tiles intersecting a device dirty rect are planned. A
-    // non-null empty `DirtyRegion` leaves `dirty_local` empty -> `region` empty
-    // -> this layer is skipped, realizing "no damage -> no work" as zero renders
-    // and zero composites.
+    // Damage gating (damage_planning Decision 2): narrow this layer's plan region
+    // to the frame's device repaint region mapped into layer-local space (reusing
+    // the inverse the cull already computed), so only tiles intersecting it are
+    // planned. This is the SAME rect the frame cleared and clips every composite
+    // to (`refine_frame_composite_idempotence` Decision 2) -- previously this loop
+    // bounding-boxed the dirty rects itself, which is exactly what `repaint_region`
+    // now computes once, hoisted out of the per-layer walk. An empty repaint region
+    // (a non-null but empty `DirtyRegion`) skips every layer, realizing "no damage
+    // -> no work" as zero renders and zero composites.
     if (dirty != nullptr) {
-      Rect dirty_local{}; // empty accumulator (empty=identity under rect_union)
-      for (const Rect& device_dirty : dirty->device_rects) {
-        const Rect clipped = device_dirty.intersect(device_rect);
-        if (clipped.empty()) {
-          continue;
-        }
-        dirty_local = rect_union(dirty_local, inv->map_rect(clipped));
+      if (repaint.empty()) {
+        return;
       }
-      region = region.intersect(dirty_local);
+      region = region.intersect(inv->map_rect(repaint));
     }
     if (region.empty()) {
       return;
@@ -497,9 +536,9 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                 // the composite switch below is a no-op (`tile.hold` invalid):
                 // this direct composite is the sole paint, so the frame is not
                 // counted degraded (offline no-degrade guarantee).
-                backend.composite(target, tile_surface,
-                                  surface_to_device(composed, tile.local_rect, rung_px),
-                                  layer.opacity);
+                composite_onto_target(backend, target, tile_surface,
+                                      surface_to_device(composed, tile.local_rect, rung_px),
+                                      layer.opacity, repaint_clip);
                 if (counters != nullptr) {
                   counters->note_composite();
                 }
@@ -522,8 +561,9 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       switch (tile.display_source) {
       case TileSource::Fresh:
         if (tile.hold.valid()) {
-          backend.composite(target, *tile.hold->surface,
-                            surface_to_device(composed, tile.local_rect, rung_px), layer.opacity);
+          composite_onto_target(backend, target, *tile.hold->surface,
+                                surface_to_device(composed, tile.local_rect, rung_px),
+                                layer.opacity, repaint_clip);
           if (counters != nullptr) {
             counters->note_composite();
           }
@@ -534,8 +574,9 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         // owed (doc 02:64). Counted as degraded so the offline no-degrade guarantee
         // is a behavioral zero (`02-architecture#offline-frame-renders-exactly-no-degrade`).
         if (tile.hold.valid()) {
-          backend.composite(target, *tile.hold->surface,
-                            surface_to_device(composed, tile.local_rect, rung_px), layer.opacity);
+          composite_onto_target(backend, target, *tile.hold->surface,
+                                surface_to_device(composed, tile.local_rect, rung_px),
+                                layer.opacity, repaint_clip);
           if (counters != nullptr) {
             counters->note_composite();
             counters->note_degraded_composite();
@@ -546,18 +587,27 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         // A degraded display: a coarser-rung tile rescaled up (doc 02:64).
         if (tile.hold.valid()) {
           composite_coarser(backend, pool, target, tile, composed, selection.rung, layer.opacity,
-                            counters);
+                            counters, repaint_clip);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }
         }
         break;
       case TileSource::Placeholder:
-        // Transparent placeholder: the target was cleared to transparent, so
-        // "nothing yet" is a no-op paint (doc 02:64 checkerboard/transparent) -- but
-        // it is still a degraded (non-fresh) display, so it is counted as such: an
-        // offline frame that composited a placeholder left a hole, which the
-        // no-degrade guarantee forbids.
+        // Transparent placeholder: the pixels this tile covers were cleared to
+        // transparent -- the whole target on the un-gated path, the repaint region
+        // on the gated one, and a planned tile lies inside the region it was gated
+        // to by construction -- so "nothing yet" is a no-op paint (doc 02:64
+        // checkerboard/transparent). On the gated path this is a HOLE for one frame
+        // until the arrival refines it, not the previous frame's pixels showing
+        // through: that is what a full pass would have shown (doc 02 step 4's
+        // degradation ladder), and a content-damaged tile has no stale or coarser
+        // rung left to fall back to -- `invalidate_damage` drops it across all rungs
+        // and revisions (doc 02:94-95). Unreachable at the shipped `worker_count ==
+        // 0`, where every miss settles inline (`refine_frame_composite_idempotence`
+        // Decision 3). It is still a degraded (non-fresh) display, so it is counted
+        // as such: an offline frame that composited a placeholder left a hole, which
+        // the no-degrade guarantee forbids.
         if (counters != nullptr) {
           counters->note_degraded_composite();
         }

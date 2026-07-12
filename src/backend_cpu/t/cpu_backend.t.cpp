@@ -13,6 +13,7 @@
 #include <memory>
 #include <span>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -634,6 +635,203 @@ TEST_CASE("the bilinear tap resamples in linear light, not on the sRGB bytes") {
   REQUIRE(out[at + 0] != gamma_wrong);
   REQUIRE(linear_expected > gamma_wrong);
   REQUIRE(out[at + 3] == 255); // opaque after the blend of two opaque taps
+}
+
+// --- the clip-scoped operations (doc 09) ------------------------------------
+
+namespace {
+
+// Every pixel of a 32f surface, as raw floats: the byte-exact comparison the
+// clip tests are made of ("wrote no pixel outside the clip" is a statement about
+// *bytes*, not about a tolerance).
+std::vector<float> pixels(const arbc::Surface& surface) {
+  const std::span<const float> px = std::as_const(surface).span<PixelFormat::Rgba32fLinearPremul>();
+  return {px.begin(), px.end()};
+}
+
+// Pre-paint a 32f surface opaque red, so any pixel a clipped operation touches is
+// unmistakable against what it must leave alone. (`Surface` is neither copyable
+// nor movable, so this paints in place rather than handing one back.)
+void paint_red(arbc::Surface& surface) {
+  arbc::CpuBackend backend;
+  backend.clear(surface, 1.0F, 0.0F, 0.0F, 1.0F);
+}
+
+} // namespace
+
+// enforces: 09-surfaces-and-backends#clip-scoped-ops-honor-the-clip
+TEST_CASE("clear_rect writes no pixel outside its clip") {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
+  paint_red(dst);
+  const std::vector<float> before = pixels(dst);
+
+  // Clear the interior 2x2 to transparent; the surrounding ring must survive.
+  backend.clear_rect(dst, arbc::Rect{1.0, 1.0, 3.0, 3.0}, 0.0F, 0.0F, 0.0F, 0.0F);
+
+  for (int y = 0; y < 4; ++y) {
+    for (int x = 0; x < 4; ++x) {
+      const int idx = y * 4 + x;
+      const bool inside = x >= 1 && x < 3 && y >= 1 && y < 3;
+      CAPTURE(x, y);
+      const arbc::WorkingPixel got = read_px<PixelFormat::Rgba32fLinearPremul>(dst, idx);
+      if (inside) {
+        REQUIRE(got == arbc::WorkingPixel{0.0F, 0.0F, 0.0F, 0.0F});
+      } else {
+        // Byte-identical to what was there before: the clip is a scissor, not a
+        // hint.
+        for (std::size_t k = 0; k < 4; ++k) {
+          REQUIRE(got[k] == before[static_cast<std::size_t>(idx) * 4 + k]);
+        }
+      }
+    }
+  }
+}
+
+// enforces: 09-surfaces-and-backends#clip-scoped-ops-honor-the-clip
+TEST_CASE("composite_clipped writes no pixel outside its clip") {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
+  paint_red(dst);
+  const std::vector<float> before = pixels(dst);
+
+  // An opaque green source covering the WHOLE destination: unclipped it would
+  // replace every pixel, so anything red left standing is the clip doing its job.
+  arbc::CpuSurface src(4, 4, arbc::k_working_rgba32f);
+  backend.clear(src, 0.0F, 1.0F, 0.0F, 1.0F);
+
+  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0,
+                            arbc::Rect{1.0, 1.0, 3.0, 3.0});
+
+  for (int y = 0; y < 4; ++y) {
+    for (int x = 0; x < 4; ++x) {
+      const int idx = y * 4 + x;
+      const bool inside = x >= 1 && x < 3 && y >= 1 && y < 3;
+      CAPTURE(x, y);
+      const arbc::WorkingPixel got = read_px<PixelFormat::Rgba32fLinearPremul>(dst, idx);
+      if (inside) {
+        REQUIRE(got == arbc::WorkingPixel{0.0F, 1.0F, 0.0F, 1.0F}); // opaque green
+      } else {
+        for (std::size_t k = 0; k < 4; ++k) {
+          REQUIRE(got[k] == before[static_cast<std::size_t>(idx) * 4 + k]); // still red
+        }
+      }
+    }
+  }
+}
+
+// enforces: 09-surfaces-and-backends#clip-scoped-ops-honor-the-clip
+TEST_CASE("a clip is intersected with the destination bounds") {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
+  paint_red(dst);
+
+  // A clip reaching far past every edge (and the whole-plane clip) is LEGAL, not
+  // an error: it saturates to the destination. Both must reproduce the unclipped
+  // clear byte-for-byte.
+  arbc::CpuSurface reference(4, 4, arbc::k_working_rgba32f);
+  paint_red(reference);
+  backend.clear(reference, 0.0F, 0.0F, 1.0F, 1.0F);
+
+  backend.clear_rect(dst, arbc::Rect{-100.0, -100.0, 100.0, 100.0}, 0.0F, 0.0F, 1.0F, 1.0F);
+  REQUIRE(pixels(dst) == pixels(reference));
+
+  arbc::CpuSurface infinite_clipped(4, 4, arbc::k_working_rgba32f);
+  paint_red(infinite_clipped);
+  backend.clear_rect(infinite_clipped, arbc::Rect::infinite(), 0.0F, 0.0F, 1.0F, 1.0F);
+  REQUIRE(pixels(infinite_clipped) == pixels(reference));
+
+  // A clip entirely outside the destination intersects to nothing: a no-op.
+  arbc::CpuSurface outside(4, 4, arbc::k_working_rgba32f);
+  paint_red(outside);
+  const std::vector<float> untouched = pixels(outside);
+  backend.clear_rect(outside, arbc::Rect{10.0, 10.0, 20.0, 20.0}, 0.0F, 0.0F, 1.0F, 1.0F);
+  REQUIRE(pixels(outside) == untouched);
+}
+
+// enforces: 09-surfaces-and-backends#clip-scoped-ops-honor-the-clip
+TEST_CASE("an empty clip is a no-op for both clip-scoped operations") {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(4, 4, arbc::k_working_rgba32f);
+  backend.clear(src, 0.0F, 1.0F, 0.0F, 1.0F);
+
+  arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
+  paint_red(dst);
+  const std::vector<float> before = pixels(dst);
+
+  // Degenerate (zero-area) and inverted rects are both `Rect::empty()`.
+  const arbc::Rect degenerate{2.0, 2.0, 2.0, 2.0};
+  const arbc::Rect inverted{3.0, 3.0, 1.0, 1.0};
+
+  backend.clear_rect(dst, degenerate, 0.0F, 0.0F, 0.0F, 0.0F);
+  REQUIRE(pixels(dst) == before);
+  backend.clear_rect(dst, inverted, 0.0F, 0.0F, 0.0F, 0.0F);
+  REQUIRE(pixels(dst) == before);
+  backend.clear_rect(dst, arbc::Rect{}, 0.0F, 0.0F, 0.0F, 0.0F);
+  REQUIRE(pixels(dst) == before);
+
+  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, degenerate);
+  REQUIRE(pixels(dst) == before);
+  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, inverted);
+  REQUIRE(pixels(dst) == before);
+  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, arbc::Rect{});
+  REQUIRE(pixels(dst) == before);
+}
+
+// enforces: 09-surfaces-and-backends#clip-scoped-ops-honor-the-clip
+TEST_CASE("a whole-destination clip is byte-identical to the unclipped operation") {
+  arbc::CpuBackend backend;
+  const arbc::Rect whole = arbc::Rect::from_size(4.0, 4.0);
+
+  // This is not a nicety -- it is how the unclipped ops are DEFINED (doc 09), so
+  // the backend carries one kernel per operation rather than two. A drift here is
+  // a second kernel that has started to disagree with the first.
+  arbc::CpuSurface clipped_clear(4, 4, arbc::k_working_rgba32f);
+  paint_red(clipped_clear);
+  arbc::CpuSurface plain_clear(4, 4, arbc::k_working_rgba32f);
+  paint_red(plain_clear);
+  backend.clear_rect(clipped_clear, whole, 0.25F, 0.5F, 0.75F, 1.0F);
+  backend.clear(plain_clear, 0.25F, 0.5F, 0.75F, 1.0F);
+  REQUIRE(pixels(clipped_clear) == pixels(plain_clear));
+
+  // A translucent source at a FRACTIONAL offset, so the bilinear tap is live: the
+  // clipped walk must resolve each destination pixel to the same sample the
+  // unclipped walk does -- the sample position may not depend on the clip.
+  arbc::CpuSurface src(4, 4, arbc::k_working_rgba32f);
+  fill_red_ramp_2x2<PixelFormat::Rgba32fLinearPremul>(src);
+  write_px<PixelFormat::Rgba32fLinearPremul>(src, 5, {0.2F, 0.1F, 0.05F, 0.4F});
+
+  arbc::CpuSurface clipped_composite(4, 4, arbc::k_working_rgba32f);
+  paint_red(clipped_composite);
+  arbc::CpuSurface plain_composite(4, 4, arbc::k_working_rgba32f);
+  paint_red(plain_composite);
+  const arbc::Affine placement = arbc::Affine::translation(0.5, 0.5);
+  backend.composite_clipped(clipped_composite, src, placement, 0.6, whole);
+  backend.composite(plain_composite, src, placement, 0.6);
+  REQUIRE(pixels(clipped_composite) == pixels(plain_composite));
+}
+
+// enforces: 09-surfaces-and-backends#clip-scoped-ops-honor-the-clip
+TEST_CASE("a clip is rounded OUT to whole device pixels") {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
+  paint_red(dst);
+
+  // Device dirty rects are `map_rect` outputs -- arbitrary doubles. A pixel whose
+  // cell the clip touches at all is IN: rounding in would leave a sub-pixel fringe
+  // of the repaint region unpainted (a stale seam), and the compositor gates its
+  // plan on the same rounded rect, so the extra pixels are covered.
+  backend.clear_rect(dst, arbc::Rect{0.5, 0.5, 2.5, 2.5}, 0.0F, 0.0F, 0.0F, 0.0F);
+
+  for (int y = 0; y < 4; ++y) {
+    for (int x = 0; x < 4; ++x) {
+      CAPTURE(x, y);
+      const bool inside = x < 3 && y < 3; // floor(0.5)=0 .. ceil(2.5)=3
+      const arbc::WorkingPixel got = read_px<PixelFormat::Rgba32fLinearPremul>(dst, y * 4 + x);
+      REQUIRE(got == (inside ? arbc::WorkingPixel{0.0F, 0.0F, 0.0F, 0.0F}
+                             : arbc::WorkingPixel{1.0F, 0.0F, 0.0F, 1.0F}));
+    }
+  }
 }
 
 } // namespace

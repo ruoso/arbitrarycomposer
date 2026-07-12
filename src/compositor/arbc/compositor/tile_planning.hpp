@@ -219,14 +219,30 @@ bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
 // caller-owned struct, never a surface (doc 16:54-62, `counters.hpp`).
 //
 // When `dirty` is non-null the frame is damage-gated (doc 02:51 "no damage ->
-// no work"): each visible layer's planned `local_region` is intersected with
-// the dirty region mapped into that layer's local space, so only tiles
-// intersecting a device dirty rect are planned, rendered, and composited onto
-// the (caller-persisted) `target` -- which is therefore NOT cleared on the gated
-// path. A non-null but *empty* `DirtyRegion` plans nothing: zero renders, zero
-// composites. When `dirty` is null (the default) the driver clears `target` and
-// plans the whole viewport, byte-identical to the pre-damage behavior the
-// `tile_planning`/`refinement`/`anchored_viewports` goldens guard.
+// no work") and repaints exactly one device region: `repaint_region(*dirty,
+// viewport)` -- the bounding box of the dirty rects, rounded out (doc 02 § The
+// frame, interactively). That single rect is used three times, which is what
+// makes the frame idempotent: each visible layer's planned `local_region` is
+// intersected with it (mapped into that layer's local space), the driver
+// `clear_rect`s it on the caller-persisted `target` before compositing, and every
+// composite onto `target` is `composite_clipped` to it -- so the planned set, the
+// cleared set and the painted set are the same set, and a tile straddling the
+// region's edge cannot spill its overhang source-over onto un-cleared pixels.
+//
+// The invariant this buys: **a gated frame's repaint region is byte-identical to
+// what a single full pass would have put there, and the rest of the target is
+// untouched** -- so compositing the same gated frame twice is a no-op, and a
+// scene refined over N follow-up frames lands on exactly the pixels one un-gated
+// pass would have produced. Without the clear the frame re-composites source-over
+// onto pixels a previous frame already painted, which for translucent content
+// lands the contribution twice and converges silently on wrong pixels.
+//
+// A non-null but *empty* `DirtyRegion` (an empty repaint region) clears nothing,
+// plans nothing, composites nothing, and leaves `target` byte-identical: zero
+// renders, zero composites. When `dirty` is null (the default) the driver clears
+// the WHOLE `target` and plans the whole viewport with unclipped composites,
+// byte-identical to the pre-damage behavior the `tile_planning` / `refinement` /
+// `anchored_viewports` goldens guard.
 //
 // `composition_time` is the caller-supplied composition-time instant the frame
 // plans at (Decision 4): a `Time` value, not a clock -- the compositor stays

@@ -81,6 +81,30 @@ std::vector<Damage> clock_advance_damage(const DocRoot& state, const ContentReso
   return damage;
 }
 
+Rect repaint_region(const DirtyRegion& dirty, const Viewport& viewport) {
+  const Rect device_rect =
+      Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
+  Rect box{}; // empty accumulator (empty = identity under rect_union)
+  for (const Rect& device_dirty : dirty.device_rects) {
+    // Intersect BEFORE unioning: `Rect::infinite()` is absorbing under
+    // `rect_union`, so an un-clipped structural rect would take the box to
+    // infinity and the round-out below to a non-representable int.
+    const Rect clipped = device_dirty.intersect(device_rect);
+    if (clipped.empty()) {
+      continue;
+    }
+    box = rect_union(box, clipped);
+  }
+  if (box.empty()) {
+    return Rect{};
+  }
+  // Round out to whole device pixels, then re-intersect: the round-out of a rect
+  // already inside an integer viewport stays inside it, so this only re-asserts
+  // the bound (and pins it against a viewport with non-integer extent).
+  const Rect rounded{std::floor(box.x0), std::floor(box.y0), std::ceil(box.x1), std::ceil(box.y1)};
+  return rounded.intersect(device_rect);
+}
+
 std::size_t invalidate_damage(TileCache& cache, std::span<const Damage> damage) {
   std::size_t dropped = 0;
   for (const Damage& d : damage) {

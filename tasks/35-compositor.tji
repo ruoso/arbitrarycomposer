@@ -102,8 +102,9 @@ task compositor "Compositor" {
     note "Give the visual frame walk the composition it is rendering. render_frame (compositor.cpp:114) and render_frame_interactive (tile_planning.cpp:260) walk the document-global for_each_layer, so a document that nests a child composition DRAWS THE CHILD'S LAYERS TWICE: once at top level with child-local transforms, once (correctly) through NestedContent::render. Scope both to for_each_layer_in(root), as ExportMonitor's audio mix already does (mix.cpp:285), letting nested's own render own the child. Settle the two nesting representations first: anchored_viewports' walk_composition (anchored_viewports.cpp:148) treats layer.content AS a composition ObjectId, while NestedContent wraps the child id in a ContentRecord — the cull_walk k_root_anchor fallback (anchored_viewports.cpp:147) has the identical global-walk bug and must move with it. Drivers must source the root id (no driver calls find_first_composition today; see the model root-marker question, still parked). Source: tasks/parking-lot.md 2026-07-11 (root_composition_frame_walk double-draw). Docs 02/05."
   }
   task refine_frame_composite_idempotence "Clear target region before re-compositing in a damage-gated refine frame" {
-    effort 1d
+    effort 2d
     allocate team
+    complete 100
     depends !refinement
     note "A damage-gated refine frame re-composites onto the caller-persisted target without clearing first, so source-over lands twice. Observed: 2/60 runs with worker_count=1 under CPU oversubscription on a nested semi-transparent scene produce composites=6 where the single-pass oracle does composites=3; the loop quiesces cleanly on wrong pixels (schedule_follow_up=false, pending empty, zero degraded composites). The fix: clear the target region before re-compositing so a refined frame is byte-identical to a single full pass. Blocking prerequisite for runtime.interactive_worker_count_default — at worker_count=0 the refine path never fires and the bug stays latent; a non-zero default makes it routine. Source-of-debt: tasks/refinements/runtime/interactive_worker_count_default.md. Docs 02/04. Refinement: tasks/refinements/compositor/refine_frame_composite_idempotence.md"
   }
@@ -112,5 +113,11 @@ task compositor "Compositor" {
     allocate team
     depends !refine_frame_composite_idempotence
     note "tile_planning.cpp:351 and pull_service.cpp:219-243 are cache-first with no check against the RefinementQueue, so a tile whose render is already in flight is re-dispatched on the next refinement wave; an operator scene pays one extra operator render per wave. Waste, not incorrectness. Fix: query the RefinementQueue for in-flight tile ids before scheduling a new dispatch and skip duplicates. Source-of-debt: tasks/refinements/runtime/interactive_worker_count_default.md. Docs 02/13."
+  }
+  task disjoint_dirty_repaint "Normalize damage rects to a disjoint set before clear/clip/repaint" {
+    effort 2d
+    allocate team
+    depends !refine_frame_composite_idempotence
+    note "The repaint region is currently the bounding box of the frame's device dirty rects (Decision 2 of refine_frame_composite_idempotence): two small damages at opposite corners of the viewport repaint everything between them. Normalize the DirtyRegion into a disjoint rect set and clear/clip/repaint per rect instead. Waste, not incorrectness — the bbox repaint is byte-exact and re-composites from cache. Source-of-debt: tasks/refinements/compositor/refine_frame_composite_idempotence.md. Docs 02/09."
   }
 }

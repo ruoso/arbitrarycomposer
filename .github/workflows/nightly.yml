@@ -68,10 +68,16 @@ jobs:
       # fan-out over fade/crossfade/nested once, on one interleaving; here it runs
       # the high-iteration `[.nightly]` case so the leaf-only rule gets repeated
       # schedule stress rather than a single lucky schedule.
+      #
+      # `refine_idempotence_stress` is the second: a damage-gated refine frame must
+      # land byte-exact on the single-pass pixels no matter how the arrivals
+      # interleaved. Its bug was found at 2/60 runs under CPU oversubscription and
+      # converged SILENTLY on wrong pixels (clean quiesce, nothing pending, nothing
+      # degraded), so one interleaving is exactly the coverage that missed it.
       - name: long-form seeded schedule-perturbation sweep
         run: |
           for t in stress_publish_pin stress_reclamation_queue arena_growth_litmus \
-                   worker_dispatch_leaf_only; do
+                   worker_dispatch_leaf_only refine_idempotence_stress; do
             echo "== $t [.nightly] =="
             ./build/tsan/tests/arbc_${t}_t "[.nightly]"
           done

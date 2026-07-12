@@ -41,6 +41,13 @@ public:
   void clear(Surface& surface, float r, float g, float b, float a) override;
   void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                  double opacity) override;
+  // The clip-scoped forms (doc 09). The unclipped ops above are defined as the
+  // whole-destination-clip case of these, so the backend carries one kernel per
+  // operation, not two.
+  void clear_rect(Surface& dst, const Rect& device_rect, float r, float g, float b,
+                  float a) override;
+  void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                         const Rect& device_clip) override;
   void downsample(Surface& dst, const Surface& src) override;
   void convert(Surface& dst, const Surface& src) override;
 };

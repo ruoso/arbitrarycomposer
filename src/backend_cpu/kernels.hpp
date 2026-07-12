@@ -21,12 +21,35 @@
 
 namespace arbc {
 
-// Fill every pixel of `dst` with one working-space color, encoding it into the
-// destination format once per pixel.
-template <PixelFormat F> void fill_kernel(TypedSpan<F> dst, const WorkingPixel& color) {
+// A half-open integer pixel box: the clip every write-side kernel is scoped to
+// (doc 09 "The clip-scoped operations" -- a scissor rect). Already resolved
+// against the destination's bounds by `clip_box` in cpu_backend.cpp, so a kernel
+// may index [x0, x1) x [y0, y1) without a further bounds check. Empty means "no
+// pixel", which is how a kernel realizes the doc-09 "an empty clip is a no-op".
+struct PixelBox {
+  int x0{0};
+  int y0{0};
+  int x1{0};
+  int y1{0};
+
+  constexpr bool empty() const { return !(x0 < x1 && y0 < y1); }
+};
+
+// Fill the pixels of `dst` inside `clip` with one working-space color, encoding
+// it into the destination format once per pixel. The whole-surface clip is the
+// unclipped `Backend::clear` (doc 09: the unclipped op *is* the whole-destination
+// clip case), so this is the one fill kernel, not two.
+template <PixelFormat F>
+void fill_kernel(TypedSpan<F> dst, int dst_width, const PixelBox& clip, const WorkingPixel& color) {
   using Traits = PixelTraits<F>;
-  for (std::size_t i = 0; i + Traits::channels <= dst.data.size(); i += Traits::channels) {
-    Traits::encode(color, &dst.data[i]);
+  const std::size_t stride = Traits::channels;
+  for (int y = clip.y0; y < clip.y1; ++y) {
+    for (int x = clip.x0; x < clip.x1; ++x) {
+      const std::size_t at =
+          stride * (static_cast<std::size_t>(y) * static_cast<std::size_t>(dst_width) +
+                    static_cast<std::size_t>(x));
+      Traits::encode(color, &dst.data[at]);
+    }
   }
 }
 
@@ -62,14 +85,22 @@ inline WorkingPixel fetch_texel(std::span<const typename PixelTraits<F>::Storage
 // tap byte-for-byte (the walking-skeleton golden is a regression guard, not a
 // casualty). The four taps are interpolated in decoded premultiplied linear
 // working floats, never the encoded bytes and never straight alpha.
+//
+// The destination walk is scoped to `clip` (doc 09 "The clip-scoped operations"):
+// no pixel outside it is read or written, and the sample position of a pixel
+// inside it does not depend on the clip -- so a clipped composite paints exactly
+// the clip-restricted subset of what the unclipped one would. The whole-surface
+// clip IS the unclipped `Backend::composite`, so this is the one composite
+// kernel, not two.
 template <PixelFormat F>
-void source_over_kernel(TypedSpan<F> dst, int dst_width, int dst_height,
+void source_over_kernel(TypedSpan<F> dst, int dst_width,
                         std::span<const typename PixelTraits<F>::Storage> src, int src_width,
-                        int src_height, const Affine& dst_to_src, float opacity) {
+                        int src_height, const Affine& dst_to_src, float opacity,
+                        const PixelBox& clip) {
   using Traits = PixelTraits<F>;
   const std::size_t stride = Traits::channels;
-  for (int y = 0; y < dst_height; ++y) {
-    for (int x = 0; x < dst_width; ++x) {
+  for (int y = clip.y0; y < clip.y1; ++y) {
+    for (int x = clip.x0; x < clip.x1; ++x) {
       const Vec2 q = dst_to_src.apply({x + 0.5, y + 0.5});
       const double sx = q.x - 0.5;
       const double sy = q.y - 0.5;

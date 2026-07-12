@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arbc/base/expected.hpp>
+#include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/capabilities.hpp>
@@ -39,6 +40,35 @@ public:
 
   void composite(Surface& /*dst*/, const Surface& /*src*/, const Affine& /*src_to_dst*/,
                  double /*opacity*/) override {}
+
+  // The clip-scoped operations (doc 09) DELEGATE to the unclipped ones rather than
+  // no-oping like the operations above -- the one place this base departs from "stub
+  // it out", and deliberately.
+  //
+  // Doc 09 defines a whole-destination clip as byte-identical to the unclipped
+  // operation, so delegation is a faithful reading of the contract for a double that
+  // does not model geometry. And it is the only SAFE default here: a subclass that
+  // overrides `clear`/`composite` to model pixels (the `MarkBackend` shape, all over
+  // the tree) but inherits a no-op `clear_rect`/`composite_clipped` would silently
+  // DROP every paint a damage-gated frame makes -- green tests asserting nothing,
+  // which is precisely the failure mode `ForwardingBackend`'s header calls out for
+  // decorators. A subclass that no-ops `clear`/`composite` (the pure stub) still
+  // no-ops these, because the delegation lands on its own no-ops.
+  //
+  // A double that must observe the CLIP itself -- rather than the paint -- overrides
+  // these explicitly (`CountingBackend` does). Clip fidelity proper is asserted
+  // against the real `CpuBackend`
+  // (`09-surfaces-and-backends#clip-scoped-ops-honor-the-clip`), never against a
+  // double, so nothing here can make that claim vacuous.
+  void clear_rect(Surface& dst, const Rect& /*device_rect*/, float r, float g, float b,
+                  float a) override {
+    clear(dst, r, g, b, a);
+  }
+
+  void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                         const Rect& /*device_clip*/) override {
+    composite(dst, src, src_to_dst, opacity);
+  }
 
   void downsample(Surface& /*dst*/, const Surface& /*src*/) override {}
 

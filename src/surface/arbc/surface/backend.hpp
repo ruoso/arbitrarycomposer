@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arbc/base/expected.hpp>
+#include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/surface/capabilities.hpp>
 #include <arbc/surface/surface.hpp>
@@ -38,6 +39,31 @@ public:
   // on premultiplied alpha, scaled by `opacity`.
   virtual void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                          double opacity) = 0;
+
+  // The clip-scoped operations (doc 09 "The clip-scoped operations"): `clear`
+  // and `composite` in a second form carrying a device-space (destination-space)
+  // clip rect, writing NO pixel outside it. Damage-gated rendering repaints a
+  // *region* of a caller-persisted target (doc 02 § The frame, interactively):
+  // the region must be cleared before it is re-composited, and the composites
+  // must not spill past it, or source-over lands twice on the pixels beyond the
+  // clear -- a tile is a whole cache cell, so a tile straddling the region's
+  // edge overhangs it.
+  //
+  // The clip is intersected with the destination's bounds (a clip reaching past
+  // the edge is legal, not an error) and is half-open. An empty clip is a no-op;
+  // a clip covering the whole destination is byte-identical to the unclipped
+  // operation above -- which is how `clear`/`composite` are *defined*, so a
+  // backend carries one kernel per operation rather than two. It is a scissor
+  // rect: the shape a GPU backend's command list already has.
+  //
+  // Distinct names rather than a defaulted/overloaded parameter: an overloaded
+  // virtual is hidden by any override in a derived backend unless every one of
+  // them writes `using Backend::clear;`, and a default argument on a virtual
+  // binds statically.
+  virtual void clear_rect(Surface& dst, const Rect& device_rect, float r, float g, float b,
+                          float a) = 0;
+  virtual void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst,
+                                 double opacity, const Rect& device_clip) = 0;
 
   // Box-filtered exact 2:1 downsample of `src` into `dst` (doc 09:18's
   // "backend-internal ... resample operation consumed by the compositor"):

@@ -70,6 +70,39 @@
    region, scheduling a follow-up frame. Zooming therefore shows
    progressively sharper content rather than blocking.
 
+**The target surface is the caller's, and it persists across frames.** The
+compositor never owns it and never reallocates it: the host hands the same
+surface to every frame, and the pixels a frame does not repaint are the
+pixels the previous frame left there. That is what makes step 1's "no damage
+→ no work" a *visual* no-op and not a black screen.
+
+**A damage-gated frame repaints exactly one device region — clearing it
+first.** Step 1's damage maps to a device **repaint region**; the frame
+clears that region, then re-composites *every* layer that intersects it,
+each layer's tiles clipped to it. Both halves are load-bearing:
+
+- *Clear first.* Compositing is source-over, which is not idempotent for
+  anything but fully-opaque content. Re-compositing a translucent layer onto
+  the pixels a previous frame left in place lands its contribution twice. A
+  refine frame (step 6) re-composites precisely such a region, so without the
+  clear the loop converges — quietly, with no degraded tiles and no pending
+  work — on wrong pixels.
+- *Clip to the region.* Tiles are whole cache cells, so a tile that
+  straddles the region's edge extends beyond it. Painting the overhang would
+  land source-over on pixels that were *not* cleared — the same double
+  contribution, narrowed to a fringe. Every composite onto the target is
+  therefore clipped to the repaint region (doc 09 § Backend contract), which
+  makes the painted set and the cleared set the same set.
+
+Together these give the frame loop its correctness invariant: **a gated
+frame's repaint region is byte-identical to what a single full pass would
+have put there, and the rest of the target is untouched** — so compositing
+the same frame twice is a no-op, and a scene refined over N follow-up frames
+lands on exactly the pixels one un-gated pass would have produced. A tile
+that is still un-rendered when the deadline arrives paints step 4's fallback
+(stale → coarser → transparent) into the cleared region, as it would in a
+full pass; it does not leave the previous frame's pixels showing.
+
 ## The frame, offline
 
 Same steps without deadlines, quantization, or placeholders: exact scale,

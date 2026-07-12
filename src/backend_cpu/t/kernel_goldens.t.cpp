@@ -123,7 +123,10 @@ constexpr arbc::WorkingPixel kConvB{0.30F, 0.15F, 0.05F, 0.6F};
 
 template <PixelFormat F> std::vector<std::byte> fill_bytes(arbc::SurfaceFormat fmt) {
   arbc::CpuSurface dst(2, 1, fmt);
-  arbc::fill_kernel<F>(arbc::TypedSpan<F>{dst.span<F>()}, kFillColor);
+  // The whole-surface clip: the box that makes the one fill kernel the unclipped
+  // `Backend::clear` (doc 09), so this golden's bytes are the shipped clear path.
+  arbc::fill_kernel<F>(arbc::TypedSpan<F>{dst.span<F>()}, /*dst_width=*/2,
+                       arbc::PixelBox{0, 0, 2, 1}, kFillColor);
   return bytes_of(dst);
 }
 

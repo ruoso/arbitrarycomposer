@@ -7,6 +7,7 @@
 #include "kernels.hpp"
 
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <memory>
@@ -41,6 +42,79 @@ template <class Visitor> void visit_pixel_format(PixelFormat format, Visitor&& v
     visitor(FormatTag<PixelFormat::Rgba8Srgb>{});
     return;
   }
+}
+
+// Resolve a device-space clip rect against a destination's bounds into the
+// half-open integer pixel box the kernels walk (doc 09 "The clip-scoped
+// operations"). Two rules, both stated in doc 09 and both load-bearing:
+//
+//  * *Intersected with the destination's bounds* -- a clip reaching past the
+//    edge (or `Rect::infinite()`) is legal and simply saturates, so the kernels
+//    need no per-pixel bounds check and an unclipped operation is expressible as
+//    the whole-destination clip.
+//  * *Rounded OUT to whole pixels* -- a device dirty rect is a `map_rect` output,
+//    i.e. arbitrary doubles. A pixel whose cell the clip touches at all is in.
+//    Rounding IN would leave a sub-pixel fringe of the repaint region unpainted
+//    (a stale seam); rounding out is conservative in the safe direction, and the
+//    compositor gates its plan on the *same* rounded rect, so the extra pixels
+//    are covered by every layer that covers them (refinement Decision 2).
+//
+// An empty (or NaN-poisoned, which `Rect::empty()` reports empty) clip yields an
+// empty box: the kernels then walk zero pixels, which is doc 09's "an empty clip
+// is a no-op".
+PixelBox clip_box(const Rect& device_clip, int width, int height) {
+  const Rect bounded = device_clip.intersect(
+      Rect::from_size(static_cast<double>(width), static_cast<double>(height)));
+  if (bounded.empty()) {
+    return PixelBox{};
+  }
+  return PixelBox{static_cast<int>(std::floor(bounded.x0)),
+                  static_cast<int>(std::floor(bounded.y0)), static_cast<int>(std::ceil(bounded.x1)),
+                  static_cast<int>(std::ceil(bounded.y1))};
+}
+
+// The whole destination, as a clip: the box that makes a clipped operation the
+// unclipped one (doc 09 -- which is how `clear`/`composite` are defined below).
+PixelBox whole_surface(const Surface& surface) {
+  return PixelBox{0, 0, surface.width(), surface.height()};
+}
+
+// The one fill: (r,g,b,a) is a premultiplied working-space sample (doc 07 rule
+// 2). One variant dispatch per operation -- resolve the surface's runtime format
+// tag to a compile-time typed span, then run the monomorphized fill that encodes
+// the working color into the destination format once per pixel inside `box`.
+void clear_in_box(Surface& surface, const PixelBox& box, float r, float g, float b, float a) {
+  const WorkingPixel color{r, g, b, a};
+  const int width = surface.width();
+  visit_surface(surface, [&](auto typed) { fill_kernel(typed, width, box, color); });
+}
+
+// The one composite. Tag agreement (doc 07 rule 2): compositing happens within
+// one working format; converting between differing tags routes through
+// convert_kernel and is wired by the edge tasks (imports, nesting, display-out),
+// not here. Until then a mismatch is a caller error, never a silent
+// reinterpretation -- debug assert, no-op in release, mirroring the
+// degenerate-transform cull below.
+void composite_in_box(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                      const PixelBox& box) {
+  assert(dst.format() == src.format());
+  if (!(dst.format() == src.format())) {
+    return;
+  }
+  const std::optional<Affine> dst_to_src = src_to_dst.inverse();
+  if (!dst_to_src.has_value()) {
+    return; // degenerate mapping: cull, never propagate NaNs (doc 04)
+  }
+  // One dispatch per tile-sized operation (doc 07), never per pixel: the kernel
+  // body is monomorphized on the shared format. src is read through the same
+  // compile-time format, so the source-over math runs in linear working floats.
+  visit_surface(dst, [&](auto dst_typed) {
+    constexpr PixelFormat F = decltype(dst_typed)::format;
+    const std::span<const typename PixelTraits<F>::Storage> src_span = src.span<F>();
+    assert(!dst_typed.data.empty() && !src_span.empty());
+    source_over_kernel<F>(dst_typed, dst.width(), src_span, src.width(), src.height(), *dst_to_src,
+                          static_cast<float>(opacity), box);
+  });
 }
 
 } // namespace
@@ -89,39 +163,26 @@ expected<std::unique_ptr<Surface>, SurfaceError> CpuBackend::make_surface(int wi
 }
 
 void CpuBackend::clear(Surface& surface, float r, float g, float b, float a) {
-  // (r,g,b,a) is a premultiplied working-space sample (doc 07 rule 2). One
-  // variant dispatch per operation: resolve the surface's runtime format tag to
-  // a compile-time typed span, then run the monomorphized fill that encodes the
-  // working color into the destination format once per pixel.
-  const WorkingPixel color{r, g, b, a};
-  visit_surface(surface, [&](auto typed) { fill_kernel(typed, color); });
+  // The unclipped clear IS the whole-destination clip case (doc 09), so the
+  // backend carries one fill kernel, not two.
+  clear_in_box(surface, whole_surface(surface), r, g, b, a);
+}
+
+void CpuBackend::clear_rect(Surface& dst, const Rect& device_rect, float r, float g, float b,
+                            float a) {
+  clear_in_box(dst, clip_box(device_rect, dst.width(), dst.height()), r, g, b, a);
 }
 
 void CpuBackend::composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                            double opacity) {
-  // Tag agreement (doc 07 rule 2): compositing happens within one working
-  // format; converting between differing tags routes through convert_kernel and
-  // is wired by the edge tasks (imports, nesting, display-out), not here. Until
-  // then a mismatch is a caller error, never a silent reinterpretation -- debug
-  // assert, no-op in release, mirroring the degenerate-transform cull below.
-  assert(dst.format() == src.format());
-  if (!(dst.format() == src.format())) {
-    return;
-  }
-  const std::optional<Affine> dst_to_src = src_to_dst.inverse();
-  if (!dst_to_src.has_value()) {
-    return; // degenerate mapping: cull, never propagate NaNs (doc 04)
-  }
-  // One dispatch per tile-sized operation (doc 07), never per pixel: the kernel
-  // body is monomorphized on the shared format. src is read through the same
-  // compile-time format, so the source-over math runs in linear working floats.
-  visit_surface(dst, [&](auto dst_typed) {
-    constexpr PixelFormat F = decltype(dst_typed)::format;
-    const std::span<const typename PixelTraits<F>::Storage> src_span = src.span<F>();
-    assert(!dst_typed.data.empty() && !src_span.empty());
-    source_over_kernel<F>(dst_typed, dst.width(), dst.height(), src_span, src.width(), src.height(),
-                          *dst_to_src, static_cast<float>(opacity));
-  });
+  // The unclipped composite IS the whole-destination clip case (doc 09): same
+  // kernel, same taps, every destination pixel in the box.
+  composite_in_box(dst, src, src_to_dst, opacity, whole_surface(dst));
+}
+
+void CpuBackend::composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst,
+                                   double opacity, const Rect& device_clip) {
+  composite_in_box(dst, src, src_to_dst, opacity, clip_box(device_clip, dst.width(), dst.height()));
 }
 
 void CpuBackend::downsample(Surface& dst, const Surface& src) {

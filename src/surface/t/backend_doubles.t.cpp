@@ -57,6 +57,22 @@ public:
     composite_opacity = opacity;
   }
 
+  // The clip-scoped ops record their CLIP as well as their arrival: a decorator
+  // that forwarded the operation but dropped the scissor rect on the floor would
+  // be as wrong as one that swallowed it -- the pixels outside the clip would be
+  // painted anyway.
+  void clear_rect(arbc::Surface&, const arbc::Rect& device_rect, float, float, float,
+                  float) override {
+    ++clear_rect_seen;
+    clear_rect_clip = device_rect;
+  }
+
+  void composite_clipped(arbc::Surface&, const arbc::Surface&, const arbc::Affine&, double,
+                         const arbc::Rect& device_clip) override {
+    ++composite_clipped_seen;
+    composite_clip = device_clip;
+  }
+
   void downsample(arbc::Surface&, const arbc::Surface&) override { ++downsample_seen; }
 
   void convert(arbc::Surface&, const arbc::Surface&) override { ++convert_seen; }
@@ -65,11 +81,15 @@ public:
   int make_surface_seen = 0;
   int clear_seen = 0;
   int composite_seen = 0;
+  int clear_rect_seen = 0;
+  int composite_clipped_seen = 0;
   int downsample_seen = 0;
   int convert_seen = 0;
   int live = 0;
   float clear_red = 0.0F;
   double composite_opacity = 0.0;
+  arbc::Rect clear_rect_clip{};
+  arbc::Rect composite_clip{};
 };
 
 // An unsupported key (it differs from the working format on the premul tag).
@@ -81,7 +101,10 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   RecordingBackend inner;
   arbc::testing::CountingBackend backend(inner);
 
-  // Drive each of the six operations exactly once through the decorator.
+  // Drive each of the eight operations exactly once through the decorator. The
+  // clip-scoped pair (`clear_rect` / `composite_clipped`) joined the contract with
+  // `compositor.refine_frame_composite_idempotence`, and this claim is about EVERY
+  // operation -- so growing the contract grows this test by construction.
   const arbc::BackendCaps caps = backend.capabilities();
 
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> surface =
@@ -89,8 +112,11 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   REQUIRE(surface.has_value());
   arbc::testing::StubSurface other(16, 8, arbc::k_working_rgba32f);
 
+  const arbc::Rect clip{2.0, 3.0, 11.0, 7.0};
   backend.clear(**surface, 0.25F, 0.5F, 0.75F, 1.0F);
   backend.composite(**surface, other, arbc::Affine::identity(), 0.5);
+  backend.clear_rect(**surface, clip, 0.25F, 0.5F, 0.75F, 1.0F);
+  backend.composite_clipped(**surface, other, arbc::Affine::identity(), 0.5, clip);
   backend.downsample(**surface, other);
   backend.convert(**surface, other);
 
@@ -99,6 +125,8 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   CHECK(backend.make_surface_calls == 1);
   CHECK(backend.clear_calls == 1);
   CHECK(backend.composite_calls == 1);
+  CHECK(backend.clear_rect_calls == 1);
+  CHECK(backend.composite_clipped_calls == 1);
   CHECK(backend.downsample_calls == 1);
   CHECK(backend.convert_calls == 1);
 
@@ -110,13 +138,18 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   CHECK(inner.make_surface_seen == 1);
   CHECK(inner.clear_seen == 1);
   CHECK(inner.composite_seen == 1);
+  CHECK(inner.clear_rect_seen == 1);
+  CHECK(inner.composite_clipped_seen == 1);
   CHECK(inner.downsample_seen == 1);
   CHECK(inner.convert_seen == 1);
 
-  // The forwards carry their arguments and their results through unmangled.
+  // The forwards carry their arguments and their results through unmangled --
+  // including the clip rects, which a decorator must pass through untouched.
   CHECK(caps == RecordingBackend::k_caps);
   CHECK(inner.clear_red == 0.25F);
   CHECK(inner.composite_opacity == 0.5);
+  CHECK(inner.clear_rect_clip == clip);
+  CHECK(inner.composite_clip == clip);
   CHECK((*surface)->width() == 16);
   CHECK((*surface)->height() == 8);
   CHECK((*surface)->format() == arbc::k_working_rgba32f);
@@ -127,6 +160,8 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   CHECK(backend.make_surface_calls == 0);
   CHECK(backend.clear_calls == 0);
   CHECK(backend.composite_calls == 0);
+  CHECK(backend.clear_rect_calls == 0);
+  CHECK(backend.composite_clipped_calls == 0);
   CHECK(backend.downsample_calls == 0);
   CHECK(backend.convert_calls == 0);
 }

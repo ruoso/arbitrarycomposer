@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arbc/base/expected.hpp>
+#include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/capabilities.hpp>
@@ -49,6 +50,16 @@ public:
   void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                  double opacity) override {
     d_inner.composite(dst, src, src_to_dst, opacity);
+  }
+
+  void clear_rect(Surface& dst, const Rect& device_rect, float r, float g, float b,
+                  float a) override {
+    d_inner.clear_rect(dst, device_rect, r, g, b, a);
+  }
+
+  void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                         const Rect& device_clip) override {
+    d_inner.composite_clipped(dst, src, src_to_dst, opacity, device_clip);
   }
 
   void downsample(Surface& dst, const Surface& src) override { d_inner.downsample(dst, src); }

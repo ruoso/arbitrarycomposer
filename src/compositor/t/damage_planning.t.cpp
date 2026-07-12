@@ -347,3 +347,43 @@ TEST_CASE("render_frame_interactive gates work to the dirty region (counter-back
     CHECK(counters.composites() == k_tiles_covered);
   }
 }
+
+// enforces: 02-architecture#gated-frame-touches-only-its-repaint-region
+TEST_CASE("repaint_region is the rounded-out bbox of the dirty rects, viewport-clipped") {
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+
+  SECTION("an empty region repaints nothing") {
+    CHECK(arbc::repaint_region(DirtyRegion{}, viewport).empty());
+  }
+
+  SECTION("a single rect rounds OUT to whole device pixels") {
+    // Rounding IN would leave a sub-pixel fringe of the true damage unpainted --
+    // a stale seam. Out is conservative in the safe direction.
+    const DirtyRegion dirty{{arbc::Rect{10.25, 20.75, 30.5, 40.1}}};
+    CHECK(arbc::repaint_region(dirty, viewport) == arbc::Rect{10.0, 20.0, 31.0, 41.0});
+  }
+
+  SECTION("several rects collapse to their bounding box") {
+    // Two disjoint corners repaint everything between them: waste, not
+    // incorrectness (`compositor.disjoint_dirty_repaint` is where the precision
+    // goes). One rect means one composite per tile, which is what keeps a tile in
+    // an overlap of two dirty rects from being composited twice.
+    const DirtyRegion dirty{{arbc::Rect{0.0, 0.0, 16.0, 16.0},
+                             arbc::Rect{100.0, 200.0, 110.0, 210.0},
+                             arbc::Rect{50.0, 50.0, 60.0, 60.0}}};
+    CHECK(arbc::repaint_region(dirty, viewport) == arbc::Rect{0.0, 0.0, 110.0, 210.0});
+  }
+
+  SECTION("rects are clipped to the viewport, and a structural infinite rect saturates") {
+    const DirtyRegion out_of_view{{arbc::Rect{600.0, 600.0, 700.0, 700.0}}};
+    CHECK(arbc::repaint_region(out_of_view, viewport).empty());
+
+    const DirtyRegion straddling{{arbc::Rect{480.0, 480.0, 900.0, 900.0}}};
+    CHECK(arbc::repaint_region(straddling, viewport) == arbc::Rect{480.0, 480.0, 512.0, 512.0});
+
+    // The whole-plane rect must clip to the viewport, not take the box to
+    // infinity (it is absorbing under `rect_union`).
+    const DirtyRegion structural{{arbc::Rect{4.0, 4.0, 8.0, 8.0}, arbc::Rect::infinite()}};
+    CHECK(arbc::repaint_region(structural, viewport) == arbc::Rect{0.0, 0.0, 512.0, 512.0});
+  }
+}

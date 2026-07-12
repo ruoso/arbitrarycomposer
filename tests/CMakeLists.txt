@@ -752,6 +752,26 @@ target_link_libraries(arbc_worker_dispatch_leaf_only_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_worker_dispatch_leaf_only_t)
 
+# compositor.refine_frame_composite_idempotence: a damage-gated frame CLEARS and CLIPS its
+# device repaint region, so its pixels are what one full pass would have put there and
+# compositing the same gated frame twice is a no-op. The golden is deterministic and
+# byte-exact on a TRANSLUCENT nested scene -- the inverse of damage_planning_golden's
+# deliberately opaque one, where a double source-over is invisible. The stress binary is
+# the original repro: the interactive loop driven to quiescence under a real worker pool,
+# byte-exact against the single-pass oracle on every iteration. Both name the concrete
+# kinds beside the compositor driver and the runtime loop -- cross-component, so they link
+# the umbrella `arbc`. The stress binary's `[.nightly]` seeded schedule sweep is
+# registered in nightly.yml's tsan-full lane; its short form runs per-push under gcc-tsan.
+add_executable(arbc_refine_idempotence_golden_t refine_idempotence_golden.t.cpp)
+target_link_libraries(arbc_refine_idempotence_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_refine_idempotence_golden_t)
+
+add_executable(arbc_refine_idempotence_stress_t refine_idempotence_stress.t.cpp)
+target_link_libraries(arbc_refine_idempotence_stress_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_refine_idempotence_stress_t)
+
 # --- org.arbc.imageseq (kinds.imageseq_plugin) --------------------------------
 # The out-of-lib reference Timed kind's enforcing tests. They live here (not in
 # plugins/) because check_claims.py / check_levels.py scan src/tests/testing, not

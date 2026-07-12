@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arbc/base/expected.hpp>
+#include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/surface.hpp>
@@ -47,6 +48,22 @@ public:
     ForwardingBackend::composite(dst, src, src_to_dst, opacity);
   }
 
+  // The clip-scoped ops tally SEPARATELY from their unclipped forms: they are
+  // distinct `Backend` operations, and a test asserting "this frame composited N
+  // times unclipped" must not be silently satisfied by N clipped composites. A
+  // test that wants the total adds the two.
+  void clear_rect(Surface& dst, const Rect& device_rect, float r, float g, float b,
+                  float a) override {
+    ++clear_rect_calls;
+    ForwardingBackend::clear_rect(dst, device_rect, r, g, b, a);
+  }
+
+  void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                         const Rect& device_clip) override {
+    ++composite_clipped_calls;
+    ForwardingBackend::composite_clipped(dst, src, src_to_dst, opacity, device_clip);
+  }
+
   void downsample(Surface& dst, const Surface& src) override {
     ++downsample_calls;
     ForwardingBackend::downsample(dst, src);
@@ -62,6 +79,8 @@ public:
     make_surface_calls = 0;
     clear_calls = 0;
     composite_calls = 0;
+    clear_rect_calls = 0;
+    composite_clipped_calls = 0;
     downsample_calls = 0;
     convert_calls = 0;
   }
@@ -70,6 +89,8 @@ public:
   int make_surface_calls = 0;
   int clear_calls = 0;
   int composite_calls = 0;
+  int clear_rect_calls = 0;
+  int composite_clipped_calls = 0;
   int downsample_calls = 0;
   int convert_calls = 0;
 };
