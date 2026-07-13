@@ -797,6 +797,28 @@ target_link_libraries(arbc_interactive_worker_default_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_interactive_worker_default_t)
 
+# runtime.shared_worker_pool (tier-4 counters + tier-6 tsan lane): several
+# InteractiveRenderers share ONE WorkerPool, so K viewports cost N threads and not K x N.
+# The two invariants sharing breaks are what these drive through the real frame loop: the
+# completion WAKE (a caller-owned drain cursor, so a parked renderer cannot consume a
+# sibling's settle and spuriously expire) and the TEARDOWN (a per-owner drain, so a dying
+# viewport purges its own queued work and waits out its own in-flight renders without
+# stopping the pool or touching a sibling's). Latches, counters and an injected clock only.
+add_executable(arbc_shared_worker_pool_t shared_worker_pool.t.cpp)
+target_link_libraries(arbc_shared_worker_pool_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_shared_worker_pool_t)
+
+# The shared pool's concurrency story: K = 4 renderers over one pool, each on its own thread
+# with its own TileCache, constructed and destroyed MID-FLIGHT on a seeded schedule -- the
+# only way to exercise the per-owner drain against a pool a sibling is actively using. The
+# brief TEST_CASE runs per-push (also under the `tsan` preset short-form); its `[.nightly]`
+# seed sweep is hidden and registered in nightly.yml's tsan-full lane.
+add_executable(arbc_shared_worker_pool_stress_t shared_worker_pool_stress.t.cpp)
+target_link_libraries(arbc_shared_worker_pool_stress_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_shared_worker_pool_stress_t)
+
 # --- org.arbc.imageseq (kinds.imageseq_plugin) --------------------------------
 # The out-of-lib reference Timed kind's enforcing tests. They live here (not in
 # plugins/) because check_claims.py / check_levels.py scan src/tests/testing, not

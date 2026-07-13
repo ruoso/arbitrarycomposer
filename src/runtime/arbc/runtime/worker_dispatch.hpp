@@ -47,13 +47,23 @@ namespace arbc {
 // driver's deadline-park does.
 //
 // Lifetime: the returned dispatch borrows `pool` by reference and must not
-// outlive it. Both drivers own their pool as a member and hold the dispatch only
-// for the duration of a frame.
+// outlive it. A driver holds the dispatch only for the duration of a frame, and
+// either owns the pool as a member or borrows one the host outlives it with
+// (`runtime.shared_worker_pool`; `interactive.hpp`'s borrowing constructor).
+//
+// `owner` is the OPAQUE submitter tag stamped onto every task this dispatch
+// submits (`RenderTask::owner`), and it is REQUIRED: a driver passes its own
+// `this`, so that when it dies it can name its own outstanding work to the pool
+// (`WorkerPool::drain_owner`) without touching a sibling driver's. It is required
+// rather than defaulted because a driver that forgot to name itself would share the
+// null tag with every other forgetful driver, and one of them dying would drain the
+// others' renders out from under them -- a default here buys convenience and pays
+// for it with a silent cross-driver bug.
 //
 // At `worker_count == 0` the pool is the degenerate inline executor
 // (`worker_pool.hpp:57-63`), so this dispatch is byte-identical to
 // `direct_dispatch()` -- which is why adopting it is pixel-neutral at the shipped
 // configuration.
-RenderDispatch worker_backed_dispatch(WorkerPool& pool);
+RenderDispatch worker_backed_dispatch(WorkerPool& pool, const void* owner);
 
 } // namespace arbc

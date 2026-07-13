@@ -1,7 +1,10 @@
 #include <arbc/runtime/worker_pool.hpp>
 
+#include <cstdint>
+#include <deque>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace arbc {
 
@@ -38,20 +41,134 @@ void WorkerPool::poke() noexcept {
     std::lock_guard<std::mutex> lock(d_mutex);
     ++d_settle_gen;
   }
+  // BROADCAST, not a targeted wake (Decision 1): `poke()` is the contract-facing
+  // handle and its caller cannot name a waiter. Every parked waiter re-tests the
+  // generation against its OWN cursor and decides for itself whether it saw
+  // something new.
   d_completion_cv.notify_all();
 }
 
-bool WorkerPool::wait_completions(std::optional<std::chrono::steady_clock::time_point> until) {
+std::uint64_t WorkerPool::settle_generation() const noexcept {
+  std::lock_guard<std::mutex> lock(d_mutex);
+  return d_settle_gen;
+}
+
+bool WorkerPool::wait_completions(CompletionCursor& cursor,
+                                  std::optional<std::chrono::steady_clock::time_point> until) {
   std::unique_lock<std::mutex> lock(d_mutex);
-  const auto ready = [this] { return d_stop || d_settle_gen != d_drained_gen; };
+  const auto ready = [this, &cursor] { return d_stop || d_settle_gen != cursor.drained_gen; };
   if (until.has_value()) {
     d_completion_cv.wait_until(lock, *until, ready);
   } else {
     d_completion_cv.wait(lock, ready);
   }
-  const bool settled_since_drain = d_settle_gen != d_drained_gen;
-  d_drained_gen = d_settle_gen; // consume: the next park waits for a fresh advance
+  const bool settled_since_drain = d_settle_gen != cursor.drained_gen;
+  // Consume into the CALLER's cursor: the next park by THIS waiter waits for a
+  // fresh advance, and every other waiter's view of the counter is untouched.
+  cursor.drained_gen = d_settle_gen;
   return settled_since_drain;
+}
+
+void WorkerPool::claim_outstanding(const void* owner) { ++d_outstanding[owner]; }
+
+void WorkerPool::release_outstanding(const void* owner) {
+  const auto it = d_outstanding.find(owner);
+  if (it == d_outstanding.end()) {
+    return; // never claimed (a task the pool refused): nothing to release
+  }
+  if (--it->second == 0) {
+    d_outstanding.erase(it); // an idle owner holds no entry
+  }
+}
+
+void WorkerPool::drop_queued(const RenderTask& task) {
+  d_dropped.fetch_add(1, std::memory_order_release);
+  release_outstanding(task.owner);
+}
+
+void WorkerPool::abandon_queued() {
+  for (const RenderTask& task : d_ready) {
+    drop_queued(task);
+  }
+  d_ready.clear();
+  for (auto& [content, state] : d_serial) {
+    for (const RenderTask& task : state.parked) {
+      drop_queued(task);
+    }
+    state.parked.clear();
+  }
+}
+
+void WorkerPool::drain_owner(const void* owner) {
+  std::unique_lock<std::mutex> lock(d_mutex);
+
+  // (1) The owner's PARKED tasks, first -- so the gate-release in (2) can only hand
+  //     the gate to a task that survives this purge.
+  for (auto& [content, state] : d_serial) {
+    std::deque<RenderTask> kept;
+    while (!state.parked.empty()) {
+      RenderTask task = std::move(state.parked.front());
+      state.parked.pop_front();
+      if (task.owner == owner) {
+        drop_queued(task);
+      } else {
+        kept.push_back(std::move(task));
+      }
+    }
+    state.parked = std::move(kept);
+  }
+
+  // (2) The owner's READY tasks. A serialized task sitting in `d_ready` is BY
+  //     CONSTRUCTION its content's gate holder: `submit` pushes it there only after
+  //     setting `active`, and `run` hands the gate on by pushing the next parked task
+  //     there -- so at most one admitted task per serialized content exists at a time,
+  //     and while it is queued nothing of that content is rendering. Purging it
+  //     therefore has to RELEASE the gate, or the content's `active` flag stays set
+  //     forever and every later submit of it parks behind a task that will never run.
+  //     Having a `SerialState` entry at all is exactly the "is serialized" test here
+  //     (an unserialized content never gets one), so the purge never calls back into
+  //     `serialize_predicate` under the lock.
+  std::deque<RenderTask> kept_ready;
+  std::vector<const Content*> orphaned_gates;
+  while (!d_ready.empty()) {
+    RenderTask task = std::move(d_ready.front());
+    d_ready.pop_front();
+    if (task.owner != owner) {
+      kept_ready.push_back(std::move(task));
+      continue;
+    }
+    if (d_serial.find(task.content) != d_serial.end()) {
+      orphaned_gates.push_back(task.content);
+    }
+    drop_queued(task);
+  }
+  d_ready = std::move(kept_ready);
+
+  bool handed_on = false;
+  for (const Content* const content : orphaned_gates) {
+    const auto it = d_serial.find(content);
+    if (it == d_serial.end()) {
+      continue;
+    }
+    SerialState& state = it->second;
+    if (!state.parked.empty()) {
+      d_ready.push_back(std::move(state.parked.front())); // a sibling's task inherits the gate
+      state.parked.pop_front();
+      handed_on = true;
+    } else {
+      state.active = false;
+      d_serial.erase(it);
+    }
+  }
+  if (handed_on) {
+    d_work_cv.notify_all();
+  }
+
+  // (3) Wait out the owner's STARTED tasks. Nothing of this owner is queued any more,
+  //     so what is left is exactly the renders a worker is inside right now -- and
+  //     every one of those returns, stop or no stop. A sibling's tasks are not waited
+  //     on and were not touched.
+  d_drain_cv.wait(lock, [this, owner] { return d_outstanding.find(owner) == d_outstanding.end(); });
 }
 
 void WorkerPool::submit(RenderTask task) {
@@ -61,6 +178,11 @@ void WorkerPool::submit(RenderTask task) {
       return; // refuse new work after stop; the completion is left unsettled
     }
     d_submitted.fetch_add(1, std::memory_order_release);
+    // Outstanding from ADMISSION, not from dispatch: a task queued behind the
+    // serialization gate is work the pool is holding on this owner's behalf, and a
+    // drain that ignored it would return while it was still poised to run against
+    // surfaces the owner is about to destroy.
+    claim_outstanding(task.owner);
   }
 
   if (d_config.worker_count == 0) {
@@ -147,6 +269,18 @@ void WorkerPool::run_task(RenderTask task, bool serialize) {
     d_completed.fetch_add(1, std::memory_order_release);
     poke();
   }
+
+  // The task stops being OUTSTANDING here -- when the render returns, not when the
+  // completion settles. This is the whole termination argument for `drain_owner`: a
+  // content that settles off-thread may never settle, and a cancelled render settles
+  // however it likes, but every `content->render` call that started has now returned,
+  // so the pool is provably no longer touching this task's target surface.
+  {
+    std::lock_guard<std::mutex> lock(d_mutex);
+    release_outstanding(task.owner);
+  }
+  d_drain_cv.notify_all();
+
   // For serialized content the `rendering` decrement + gate release happens in
   // the caller (`run`/`submit_inline`) so the two release paths stay explicit.
 }
@@ -158,7 +292,14 @@ void WorkerPool::run() {
       std::unique_lock<std::mutex> lock(d_mutex);
       d_work_cv.wait(lock, [this] { return d_stop || !d_ready.empty(); });
       if (d_stop) {
-        return; // in-flight renders already finished; queued work is abandoned
+        // In-flight renders already finished; queued work is abandoned. It always
+        // was -- `tasks_dropped()` is what makes that visible, so the accounting
+        // identity closes instead of leaving the abandoned tasks looking like
+        // submissions that merely never settled. The first worker here empties the
+        // queues and counts them; the rest find nothing left to abandon.
+        abandon_queued();
+        d_drain_cv.notify_all(); // a drain parked on abandoned work is now satisfied
+        return;
       }
       task.emplace(std::move(d_ready.front()));
       d_ready.pop_front();

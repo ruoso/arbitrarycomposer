@@ -152,7 +152,8 @@ SequenceRenderer::render_frame_at(Time composition_time) {
   // `PullService`. This driver states the rule nowhere itself -- it obtains a
   // dispatch that already enforces it, which is the point of the helper.
   RefinementQueue pending;
-  PullServiceImpl pulls(d_cache, d_backend, worker_backed_dispatch(d_pool), make_config(&pending));
+  PullServiceImpl pulls(d_cache, d_backend, worker_backed_dispatch(d_pool, this),
+                        make_config(&pending));
   // Bind every operator content to the live service on the DRIVER thread, before any
   // worker dispatch (Constraint 8): its borrowed pointers are read-only on workers
   // during render. The fade's own nested input pull rides `pulls` (async-dispatched
@@ -192,7 +193,7 @@ SequenceRenderer::render_frame_at(Time composition_time) {
     // thread (workers never touch the cache, `runtime.threading`'s rule) and drops them
     // from the queue; unsettled ones are retained across the park.
     while (!pending.tiles.empty()) {
-      d_pool.wait_completions(std::nullopt);
+      d_pool.wait_completions(d_cursor, std::nullopt);
       poll_refinements(pending, d_cache, &d_counters, &d_backend);
     }
   }

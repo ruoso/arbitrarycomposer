@@ -290,9 +290,23 @@ Initially-open questions, now decided in their own docs:
   the render to be off the thread that has to give up on it. The count is a
   formula (hardware concurrency, less the frame thread, capped), not a
   constant: a constant is a measurement of the author's machine, and the cap
-  exists because the pool is per-viewport. The offline driver keeps its
-  inline-exact default — exactness has no deadline to miss. Decided in doc 02
-  (§ Threading model).
+  exists because the pool is per-viewport *by default* (see the next bullet).
+  The offline driver keeps its inline-exact default — exactness has no
+  deadline to miss. Decided in doc 02 (§ Threading model).
+- **The renderer's pool is an ownership seam, not a fixed member.** Doc 02 has
+  long promised that "a host that wants a different pool passes one"; it is now
+  true. A renderer either builds its own pool (the default, per-viewport, which
+  is what the worker-count cap above protects) or borrows the host's, so a host
+  with K viewports builds one pool and pays N threads instead of K×N. Two things
+  had to become *per-submitter* for that to be safe, and they are the whole task.
+  The **wake**: the pool keeps the settle counter but each parking renderer keeps
+  its own drain cursor, so a sibling's settle can wake a renderer but never be
+  consumed by it — otherwise a viewport parks on to its deadline and degrades
+  tiles that are already finished, which is a wrong-output bug rather than a slow
+  one. The **drain**: a closing viewport purges its own queued renders and waits
+  out its own running ones, and does *not* stop the pool — a stop is terminal and
+  pool-global, which is precisely why one viewport closing cannot be allowed to
+  strand another's renders unsettled. Decided in doc 02 (§ Threading model).
 - **The housekeeping thread drains; the writer checkpoints.** Deferred
   reclamation and durable checkpointing are both "housekeeping", but they
   do not share a thread. A drain may run on the low-priority thread

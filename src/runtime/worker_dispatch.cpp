@@ -9,18 +9,23 @@
 
 namespace arbc {
 
-RenderDispatch worker_backed_dispatch(WorkerPool& pool) {
+RenderDispatch worker_backed_dispatch(WorkerPool& pool, const void* owner) {
   // `is_operator` (`operator_graph.hpp:80-85`) is the whole leaf/operator
   // mechanism in the tree and the helper adds no second classification. A null
   // `content` answers `false` and therefore reaches `submit` -- the pool's own
   // null handling is its business, and this seam does not quietly change it.
-  return [&pool, inline_render = direct_dispatch()](Content* content, const RenderRequest& request,
-                                                    std::shared_ptr<RenderCompletion> done) {
+  //
+  // `owner` is stamped onto every task and is otherwise untouched: the leaf-only rule
+  // decides WHAT may be dispatched, the owner tag records WHO dispatched it, and the
+  // two do not interact. Operators still render inline on the driver thread.
+  return [&pool, owner, inline_render = direct_dispatch()](Content* content,
+                                                           const RenderRequest& request,
+                                                           std::shared_ptr<RenderCompletion> done) {
     if (is_operator(content)) {
       inline_render(content, request, std::move(done));
       return;
     }
-    pool.submit(RenderTask{content, request, std::move(done)});
+    pool.submit(RenderTask{content, request, std::move(done), owner});
   };
 }
 

@@ -426,6 +426,42 @@ TEST_CASE("interactive: the default worker count is a non-zero, capped runtime p
   CHECK(arbc::WorkerPoolConfig{}.worker_count == 0);
 }
 
+// --- The pool is an ownership seam (runtime.shared_worker_pool) -----------------------
+
+// The renderer's pool is a seam, not a fixed member: it either BUILDS one (the default,
+// per-viewport, and the reason the worker-count cap above exists) or BORROWS the host's.
+//
+// This is the API-shape half of the task -- that a renderer can be handed a pool at all,
+// that two renderers handed the SAME pool really do run on one set of threads, and that a
+// renderer left to itself still gets a pool of its very own. The behavior underneath it --
+// that sharing does not let one viewport steal another's wakes or drain another's renders
+// -- is `tests/shared_worker_pool.t.cpp`.
+TEST_CASE("interactive: a renderer owns its pool or borrows the host's") {
+  arbc::WorkerPoolConfig cfg;
+  cfg.worker_count = 3; // a host that shares is not bound by k_max_interactive_workers (D7)
+  arbc::WorkerPool host_pool(cfg);
+
+  // Declared AFTER the pool, so they die BEFORE it -- the discipline the borrowing ctor's
+  // header comment states, and the one a host owes: `~InteractiveRenderer` calls into the
+  // pool, so a pool that died first would be a use-after-free.
+  arbc::InteractiveRenderer a(host_pool, epoch_clock());
+  arbc::InteractiveRenderer b(host_pool, epoch_clock());
+
+  // K viewports, N threads -- not K x N. Same pool object, by address.
+  CHECK(&a.worker_pool() == &host_pool);
+  CHECK(&b.worker_pool() == &host_pool);
+  CHECK(a.worker_pool().worker_count() == 3);
+  CHECK(b.worker_pool().worker_count() == 3);
+
+  // A renderer that was handed nothing still has a pool of its own, and it is nobody
+  // else's: the default stays per-viewport ownership, which is what keeps every existing
+  // single-viewport host and every golden in the tree exactly where it was.
+  arbc::InteractiveRenderer owns_one({}, epoch_clock());
+  arbc::InteractiveRenderer owns_another({}, epoch_clock());
+  CHECK(&owns_one.worker_pool() != &owns_another.worker_pool());
+  CHECK(&owns_one.worker_pool() != &host_pool);
+}
+
 // enforces: 02-architecture#interactive-still-scene-schedules-no-frame
 // enforces: 11-time-and-video#clock-advance-damages-only-moving-layers
 // enforces: 02-architecture#quiescent-refinement-schedules-no-frame

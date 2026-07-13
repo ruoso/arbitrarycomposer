@@ -128,6 +128,7 @@ TEST_CASE("nested renders race-free and deterministically across worker threads"
   WorkerPoolConfig config;
   config.worker_count = 4;
   WorkerPool pool(config);
+  CompletionCursor cursor; // this thread's own drain cursor (runtime.shared_worker_pool)
   for (int i = 0; i < k_tasks; ++i) {
     // The Surface objects live on the heap behind the unique_ptrs, so binding a
     // reference into the RenderRequest is stable regardless of vector growth.
@@ -142,7 +143,7 @@ TEST_CASE("nested renders race-free and deterministically across worker threads"
   // Drain the pool (bounded park loop; never a fixed sleep or wall-clock gate).
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
   while (pool.tasks_completed() < static_cast<std::uint64_t>(k_tasks)) {
-    pool.wait_completions(std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
+    pool.wait_completions(cursor, std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
     if (std::chrono::steady_clock::now() > deadline) {
       break;
     }

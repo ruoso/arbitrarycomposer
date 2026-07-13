@@ -59,13 +59,41 @@ int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept {
 }
 
 InteractiveRenderer::InteractiveRenderer(WorkerPoolConfig pool_config, Clock clock)
-    : d_pool(std::move(pool_config)),
+    : d_owned_pool(std::in_place, std::move(pool_config)), d_pool(*d_owned_pool),
+      d_cursor{d_pool.settle_generation()},
       d_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}) {
   // Populate the operator-binder registry once (thread-safe, idempotent) so a bound
   // frame's `bind_operators` finds a thunk for each built-in kind. `SequenceRenderer`
   // and `ExportMonitor` do the same in their constructors: a driver that binds without
   // registering binds nothing, silently.
   register_builtin_operator_binders();
+}
+
+InteractiveRenderer::InteractiveRenderer(WorkerPool& pool, Clock clock)
+    : d_pool(pool), d_cursor{d_pool.settle_generation()},
+      d_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}) {
+  // `d_owned_pool` stays disengaged: this renderer borrows, and the HOST owns. The
+  // cursor is seeded from the pool's CURRENT generation rather than from zero, because
+  // a renderer joining a pool that has been running for other viewports would otherwise
+  // start its first park already "behind" by every settle they have ever produced -- one
+  // free return, harmless (the loop re-tests its own pending queue) but pointless.
+  register_builtin_operator_binders();
+}
+
+InteractiveRenderer::~InteractiveRenderer() {
+  // The teardown drain (`runtime.shared_worker_pool` Decision 4). A destructor BODY runs
+  // before any member is destroyed, so this is ordered ahead of `d_pending` -- whose
+  // `PendingTile`s own the very target surfaces a worker may be writing into right now.
+  //
+  // It drains OUR submissions only. A sibling renderer sharing this pool keeps its renders
+  // running, keeps its queued work, and keeps a usable pool afterwards -- which is why this
+  // is `drain_owner(this)` and not `request_stop()`: stop is terminal and pool-global, and
+  // one viewport closing must not strand every other viewport's renders unsettled forever.
+  //
+  // For an OWNED pool this is redundant but not wrong: `~WorkerPool` (running moments later,
+  // since `d_owned_pool` is declared after `d_pending`) would stop and join anyway. One
+  // destructor, no branch on ownership.
+  d_pool.drain_owner(this);
 }
 
 void InteractiveRenderer::refresh_identity_memo(const DocRoot& state,
@@ -307,7 +335,10 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   config.wanted = &d_wanted_tiles;
   config.id_of = d_id_of;
   config.contribution = [revision](const Content*) { return revision; };
-  PullServiceImpl pulls(cache, backend, worker_backed_dispatch(d_pool), std::move(config));
+  // `this` is the submitter tag every task this frame dispatches carries, and it is what
+  // `~InteractiveRenderer`'s `drain_owner(this)` later names. On a SHARED pool it is the
+  // only thing that distinguishes our work from a sibling viewport's.
+  PullServiceImpl pulls(cache, backend, worker_backed_dispatch(d_pool, this), std::move(config));
 
   // Bind the document's content graph to THIS frame's services
   // (`runtime.interactive_binder_wiring`, doc 13 § "Binding is the render driver's
@@ -377,9 +408,17 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
     return std::any_of(d_pending.tiles.begin(), d_pending.tiles.end(),
                        [](const PendingTile& tile) { return !tile.done->settled(); });
   };
+  //
+  // The park consumes settles into `d_cursor`, THIS renderer's own drain cursor
+  // (`runtime.shared_worker_pool` Decision 1). On a pool shared with sibling viewports the
+  // wake is a broadcast, so a sibling's settle can wake this park; the loop then finds its
+  // own pending queue unchanged and re-parks against the SAME `deadline_at`, which costs one
+  // predicate evaluation and cannot spin. What CANNOT happen is the converse: a sibling
+  // consuming the settle of one of OUR tiles and leaving this frame to expire against work
+  // that is sitting finished in `d_pending`.
   bool expired = false;
   while (unsettled()) {
-    if (!d_pool.wait_completions(deadline_at)) {
+    if (!d_pool.wait_completions(d_cursor, deadline_at)) {
       expired = true; // the park reached `d` with misses still outstanding
       break;
     }

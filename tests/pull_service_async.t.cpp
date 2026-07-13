@@ -92,6 +92,7 @@ TEST_CASE("pull_service async: many concurrent worker pulls settle race-free int
   WorkerPoolConfig pool_config;
   pool_config.worker_count = 4;
   WorkerPool pool(pool_config);
+  CompletionCursor cursor; // this thread's own drain cursor (runtime.shared_worker_pool)
   TileCache cache(256u * 1024 * 1024); // budget well above k_pulls tiles -> no eviction
 
   // Distinct leaf inputs -> distinct cache keys, one resident tile each.
@@ -147,7 +148,7 @@ TEST_CASE("pull_service async: many concurrent worker pulls settle race-free int
     if (queue.tiles.empty()) {
       break;
     }
-    pool.wait_completions(std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
+    pool.wait_completions(cursor, std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
   }
 
   // Every pull settled its tile into the cache exactly once -- whether inline or
@@ -171,6 +172,7 @@ TEST_CASE(
   WorkerPoolConfig pool_config;
   pool_config.worker_count = 4;
   WorkerPool pool(pool_config);
+  CompletionCursor cursor; // this thread's own drain cursor (runtime.shared_worker_pool)
   TileCache cache(256u * 1024 * 1024); // 32 * 4 tiles == 128 MiB < budget -> no eviction
 
   std::vector<std::unique_ptr<SolidLeaf>> leaves;
@@ -248,7 +250,7 @@ TEST_CASE(
     if (queue.tiles.empty()) {
       break;
     }
-    pool.wait_completions(std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
+    pool.wait_completions(cursor, std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
   }
 
   // Final state (timing-independent): all four covering tiles of every leaf are
@@ -290,6 +292,7 @@ TEST_CASE("pull_service async: a caller cancel mid-flight frees no live surface;
   WorkerPoolConfig pool_config;
   pool_config.worker_count = 4;
   WorkerPool pool(pool_config);
+  CompletionCursor cursor; // this thread's own drain cursor (runtime.shared_worker_pool)
   TileCache cache(256u * 1024 * 1024);
 
   std::vector<std::unique_ptr<SolidLeaf>> leaves;
@@ -346,7 +349,7 @@ TEST_CASE("pull_service async: a caller cancel mid-flight frees no live surface;
     if (queue.tiles.empty()) {
       break;
     }
-    pool.wait_completions(std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
+    pool.wait_completions(cursor, std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
   }
 
   CHECK(queue.tiles.empty());

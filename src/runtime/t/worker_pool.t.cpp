@@ -11,8 +11,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <thread>
@@ -144,6 +146,74 @@ arbc::RenderRequest make_request(MemSurface& target, double scale) {
                              arbc::StateHandle{}, target};
 }
 
+// A manually-opened gate. A gate, not a sleep: wall-clock tests lie in CI, latches do
+// not (doc 16:54-62). The idiom `tests/interactive_worker_default.t.cpp:163-189` uses.
+class Gate {
+public:
+  void arrive_and_wait() {
+    std::unique_lock<std::mutex> lock(d_mutex);
+    ++d_arrived;
+    d_arrival_cv.notify_all();
+    d_open_cv.wait(lock, [this] { return d_open; });
+  }
+  void open() {
+    {
+      const std::lock_guard<std::mutex> lock(d_mutex);
+      d_open = true;
+    }
+    d_open_cv.notify_all();
+  }
+  void await_arrivals(std::size_t n) {
+    std::unique_lock<std::mutex> lock(d_mutex);
+    d_arrival_cv.wait(lock, [this, n] { return d_arrived >= n; });
+  }
+
+private:
+  std::mutex d_mutex;
+  std::condition_variable d_open_cv;
+  std::condition_variable d_arrival_cv;
+  std::size_t d_arrived{0};
+  bool d_open{false};
+};
+
+// Content that BLOCKS inside `render` until the gate opens, and records that its render
+// RETURNED. `drain_owner`'s promise -- "no worker is inside `content->render` for one of
+// my tasks when I return to you" -- is only observable against a render you can hold open
+// and whose exit you can see. `render_thread_safe()` is configurable so the same stub
+// drives the serialization-gate purge below.
+class BlockingContent : public arbc::Content {
+public:
+  explicit BlockingContent(Gate& gate, bool thread_safe = true)
+      : d_gate(gate), d_thread_safe(thread_safe) {}
+
+  std::optional<arbc::Rect> bounds() const override { return std::nullopt; }
+  arbc::Stability stability() const override { return arbc::Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
+  bool render_thread_safe() const override { return d_thread_safe; }
+
+  std::optional<arbc::RenderResult> render(const arbc::RenderRequest& request,
+                                           std::shared_ptr<arbc::RenderCompletion>) override {
+    d_gate.arrive_and_wait();
+    paint(request);
+    d_exited.fetch_add(1, std::memory_order_release); // the LAST thing the render does
+    return arbc::RenderResult{request.scale, true};
+  }
+
+  std::uint64_t exits() const { return d_exited.load(std::memory_order_acquire); }
+
+private:
+  Gate& d_gate;
+  bool d_thread_safe;
+  std::atomic<std::uint64_t> d_exited{0};
+};
+
+// A park bound for the isolation cases below. It is a HANG GUARD and never a timing
+// assertion (doc 16:224-226): a correct pool returns the instant the settle lands, and a
+// regressed one fails as an assertion here rather than as a CTest timeout ten minutes later.
+std::chrono::steady_clock::time_point hang_guard() {
+  return std::chrono::steady_clock::now() + std::chrono::seconds(10);
+}
+
 } // namespace
 
 // enforces: 02-architecture#worker-pool-degenerates-to-inline
@@ -152,6 +222,7 @@ TEST_CASE("inline degenerate mode settles on the calling thread, byte-identical 
   const std::thread::id test_tid = std::this_thread::get_id();
 
   arbc::WorkerPool pool(arbc::WorkerPoolConfig{}); // worker_count == 0 (default)
+  arbc::CompletionCursor cursor;                   // this thread's own drain cursor
 
   // (a) sync content: submit runs the render inline and settles before returning.
   StubContent content(/*thread_safe=*/true, /*wait_for_overlap=*/false);
@@ -184,7 +255,7 @@ TEST_CASE("inline degenerate mode settles on the calling thread, byte-identical 
   REQUIRE_FALSE(async_done->settled()); // async: not settled by the render call
   async.deliver();                      // external settle...
   pool.poke();                          // ...wakes the parked render thread
-  REQUIRE(pool.wait_completions(std::nullopt));
+  REQUIRE(pool.wait_completions(cursor, std::nullopt));
   std::optional<arbc::expected<arbc::RenderResult, arbc::RenderError>> a = async_done->take();
   REQUIRE(a.has_value());
   REQUIRE(a->has_value());
@@ -199,6 +270,7 @@ TEST_CASE("real pool renders on workers and wakes the render thread") {
   arbc::WorkerPoolConfig cfg;
   cfg.worker_count = 4;
   arbc::WorkerPool pool(cfg);
+  arbc::CompletionCursor cursor;
 
   StubContent content(/*thread_safe=*/true, /*wait_for_overlap=*/false);
   std::vector<std::unique_ptr<MemSurface>> targets;
@@ -212,7 +284,7 @@ TEST_CASE("real pool renders on workers and wakes the render thread") {
   std::vector<bool> taken(k, false);
   int got = 0;
   while (got < k) {
-    pool.wait_completions(std::nullopt); // park until a completion advances
+    pool.wait_completions(cursor, std::nullopt); // park until a completion advances
     for (int i = 0; i < k; ++i) {
       if (!taken[i]) {
         std::optional<arbc::expected<arbc::RenderResult, arbc::RenderError>> s = dones[i]->take();
@@ -242,6 +314,7 @@ TEST_CASE("per-content serialization holds at most one in-flight render") {
   arbc::WorkerPoolConfig cfg;
   cfg.worker_count = 8;
   arbc::WorkerPool pool(cfg);
+  arbc::CompletionCursor cursor;
 
   StubContent serialized(/*thread_safe=*/false, /*wait_for_overlap=*/false);
   StubContent safe(/*thread_safe=*/true, /*wait_for_overlap=*/true);
@@ -261,7 +334,7 @@ TEST_CASE("per-content serialization holds at most one in-flight render") {
   std::vector<bool> taken(total, false);
   int got = 0;
   while (got < total) {
-    pool.wait_completions(std::nullopt);
+    pool.wait_completions(cursor, std::nullopt);
     for (int i = 0; i < total; ++i) {
       if (!taken[i] && dones[i]->take().has_value()) {
         taken[i] = true;
@@ -285,6 +358,7 @@ TEST_CASE("graceful stop joins without hang and refuses new work") {
     arbc::WorkerPoolConfig cfg;
     cfg.worker_count = 4;
     arbc::WorkerPool pool(cfg);
+    arbc::CompletionCursor cursor;
 
     constexpr int k = 16;
     StubContent content(/*thread_safe=*/true, /*wait_for_overlap=*/false);
@@ -297,7 +371,7 @@ TEST_CASE("graceful stop joins without hang and refuses new work") {
     }
     int got = 0;
     while (got < k) {
-      pool.wait_completions(std::nullopt);
+      pool.wait_completions(cursor, std::nullopt);
       for (int i = 0; i < k; ++i) {
         if (dones[i]->settled()) {
           std::optional<arbc::expected<arbc::RenderResult, arbc::RenderError>> s = dones[i]->take();
@@ -330,6 +404,57 @@ TEST_CASE("graceful stop joins without hang and refuses new work") {
     } // dtor request_stop + join -- reaching the next line means no hang
     REQUIRE(true);
   }
+
+  SECTION("queued work abandoned on stop is COUNTED, not silently lost") {
+    // Stop lets in-flight renders finish and abandons whatever is still queued. That has
+    // always been true and was always invisible: an abandoned task looked exactly like a
+    // submitted task that merely never settled. `tasks_dropped()` is what tells the two
+    // apart, and it is what lets the accounting identity close.
+    arbc::WorkerPoolConfig cfg;
+    cfg.worker_count = 1; // one worker, held open, so the rest of the queue cannot start
+    arbc::WorkerPool pool(cfg);
+
+    Gate gate;
+    BlockingContent blocker(gate);
+    StubContent queued(/*thread_safe=*/true, /*wait_for_overlap=*/false);
+
+    MemSurface blocker_target(2, 2);
+    auto blocker_done = std::make_shared<arbc::RenderCompletion>();
+    pool.submit(arbc::RenderTask{&blocker, make_request(blocker_target, 1.5), blocker_done});
+    gate.await_arrivals(1); // the only worker is inside `render`
+
+    constexpr int k_queued = 5;
+    std::vector<std::unique_ptr<MemSurface>> targets;
+    std::vector<std::shared_ptr<arbc::RenderCompletion>> dones;
+    for (int i = 0; i < k_queued; ++i) {
+      targets.push_back(std::make_unique<MemSurface>(2, 2));
+      dones.push_back(std::make_shared<arbc::RenderCompletion>());
+      pool.submit(arbc::RenderTask{&queued, make_request(*targets.back(), 1.5), dones.back()});
+    }
+    REQUIRE(pool.tasks_submitted() == 1 + k_queued);
+    REQUIRE(pool.tasks_dropped() == 0);
+
+    pool.request_stop();
+    gate.open(); // the in-flight render finishes; the worker then sees stop and goes home
+
+    // Abandoning the queue is the worker's last act before it returns, so wait for the counter
+    // to reach its final value. A bounded spin, never a sleep, and the bound is a hang guard --
+    // only the VALUE is asserted, never the time it took (doc 16:54-62, :224-226).
+    const auto guard = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (pool.tasks_dropped() < k_queued && std::chrono::steady_clock::now() < guard) {
+      std::this_thread::yield();
+    }
+
+    CHECK(pool.tasks_dropped() == k_queued); // every queued task, counted
+    CHECK(pool.tasks_completed() == 1);      // only the one already in flight ran to a settle
+    CHECK(queued.render_calls() == 0);       // abandoned, not run
+    CHECK(blocker_done->settled());          // stop LETS IN-FLIGHT RENDERS FINISH
+    for (const std::shared_ptr<arbc::RenderCompletion>& done : dones) {
+      CHECK_FALSE(done->settled()); // left unsettled, never lost to UB
+    }
+    // Nothing went missing: the identity that `tasks_dropped()` exists to make assertable.
+    CHECK(pool.tasks_submitted() == pool.tasks_completed() + pool.tasks_dropped());
+  }
 }
 
 // enforces: 02-architecture#worker-pool-stops-gracefully
@@ -337,11 +462,12 @@ TEST_CASE("quiescent substrate is idle: no completions, wait times out to false"
   arbc::WorkerPoolConfig cfg;
   cfg.worker_count = 4;
   arbc::WorkerPool pool(cfg);
+  arbc::CompletionCursor cursor;
 
   // No work submitted: nothing settles, and a bounded park returns false without
   // a busy loop. The timeout is a park bound; only the return value is asserted.
   const auto bound = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
-  REQUIRE_FALSE(pool.wait_completions(bound));
+  REQUIRE_FALSE(pool.wait_completions(cursor, bound));
   REQUIRE(pool.tasks_completed() == 0);
   REQUIRE(pool.tasks_submitted() == 0);
   REQUIRE(pool.max_in_flight_per_content() == 0);
@@ -396,10 +522,12 @@ TEST_CASE("stress: producers submit interleaved thread-safe and serialized work"
 
   // Consumer: drain settled completions until every submission has settled once.
   std::thread consumer([&] {
+    arbc::CompletionCursor cursor; // the parking thread owns its cursor, not the pool
     std::vector<bool> taken(total, false);
     int got = 0;
     while (got < total) {
-      pool.wait_completions(std::chrono::steady_clock::now() + std::chrono::milliseconds(1));
+      pool.wait_completions(cursor,
+                            std::chrono::steady_clock::now() + std::chrono::milliseconds(1));
       for (int i = 0; i < total; ++i) {
         if (!taken[i] && dones[i]->take().has_value()) {
           taken[i] = true;
@@ -421,5 +549,229 @@ TEST_CASE("stress: producers submit interleaved thread-safe and serialized work"
   REQUIRE(serialized.max_in_flight() == 1);
   for (int i = 0; i < total; ++i) {
     REQUIRE_FALSE(dones[i]->take().has_value()); // none double-settled
+  }
+}
+
+// --- runtime.shared_worker_pool: the two invariants sharing a pool breaks -------------
+
+// The wake, at the pool. `poke()` bumps ONE settle counter and broadcasts; the DRAIN
+// cursor is the caller's. So a settle is observable to every waiter that has not yet seen
+// it and consumable by none of them -- which is precisely what a pool-global
+// `d_drained_gen` could not do: whichever waiter parked first consumed the bump "for
+// everybody", and the second waiter parked on to its deadline believing nothing had
+// landed.
+//
+// Both directions are asserted, because they fail differently:
+//
+//   * two cursors, one settle -- BOTH must return `true`. Under the old shared cursor
+//     exactly one could, and the loser blocked to its bound.
+//   * a settle AFTER one cursor has already drained -- a cursor that drained earlier and a
+//     cursor that has never parked at all must both still observe it. This is the direction
+//     that catches a "fix" that merely resets the shared cursor per-waiter.
+//
+// enforces: 02-architecture#shared-pool-park-observes-only-its-own-settles
+TEST_CASE("two cursors over one pool: a park observes every settle and consumes none of "
+          "another's") {
+  arbc::WorkerPoolConfig cfg;
+  cfg.worker_count = 2;
+  arbc::WorkerPool pool(cfg);
+
+  StubContent content(/*thread_safe=*/true, /*wait_for_overlap=*/false);
+  std::vector<std::unique_ptr<MemSurface>> targets;
+  std::vector<std::shared_ptr<arbc::RenderCompletion>> dones;
+  const auto submit_one = [&] {
+    targets.push_back(std::make_unique<MemSurface>(2, 2));
+    dones.push_back(std::make_shared<arbc::RenderCompletion>());
+    pool.submit(arbc::RenderTask{&content, make_request(*targets.back(), 1.5), dones.back()});
+  };
+
+  // Two INDEPENDENT waiters over one pool -- what two `InteractiveRenderer`s sharing a pool
+  // are, stripped of the frame loop around them.
+  arbc::CompletionCursor a;
+  arbc::CompletionCursor b;
+
+  submit_one();
+  REQUIRE(pool.wait_completions(a, hang_guard()));
+  // THE REGRESSION. `a`'s park did not consume the settle out from under `b`.
+  REQUIRE(pool.wait_completions(b, hang_guard()));
+  REQUIRE(dones.front()->settled());
+
+  // The cross-consumption direction. A second settle, after `a` and `b` have both drained
+  // -- plus `c`, a cursor that has never parked at all and whose view of the counter is
+  // therefore still at zero.
+  arbc::CompletionCursor c;
+  submit_one();
+  REQUIRE(pool.wait_completions(b, hang_guard()));
+  REQUIRE(pool.wait_completions(a, hang_guard()));
+  REQUIRE(pool.wait_completions(c, hang_guard()));
+
+  // ...and a cursor that HAS drained to the head of the counter parks: no settle is owed to
+  // it, so it reaches its bound and reports `false`. The negative witness that these cursors
+  // track something real rather than always answering `true` (the bound is asserted only
+  // through the return value, never as a duration).
+  const auto bound = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+  REQUIRE_FALSE(pool.wait_completions(a, bound));
+
+  REQUIRE(pool.tasks_submitted() == 2);
+  REQUIRE(pool.tasks_completed() == 2);
+  REQUIRE(pool.tasks_dropped() == 0);
+}
+
+// The teardown, at the pool. A driver that BORROWS a pool is not the thing that destroys it,
+// so `~WorkerPool`'s stop-and-join -- which is the entire reason a worker can never be found
+// writing into a dead `PendingTile` today -- does not run when it dies. `drain_owner` is what
+// runs instead, and it has to do three things at once: wait out the owner's STARTED renders,
+// throw away its UNSTARTED ones, and touch nothing of anybody else's.
+//
+// One worker throughout, because that is what makes "queued" a state the test can construct
+// rather than hope for: with the single worker held open inside a blocked render, every
+// later submission is provably unstarted.
+//
+// enforces: 02-architecture#shared-pool-teardown-drains-only-its-own-submissions
+TEST_CASE("drain_owner waits out one owner's started renders, purges its queued ones, and "
+          "leaves a sibling's work running") {
+  const int owner_a = 0; // two opaque submitter tags. The pool compares and hashes them;
+  const int owner_b = 0; // it never dereferences them, so their VALUES are beside the point.
+
+  SECTION("started renders are waited out; queued ones are purged; the sibling is untouched") {
+    arbc::WorkerPoolConfig cfg;
+    cfg.worker_count = 1;
+    arbc::WorkerPool pool(cfg);
+
+    Gate gate;
+    BlockingContent blocker(gate);
+    StubContent quick(/*thread_safe=*/true, /*wait_for_overlap=*/false);
+
+    std::vector<std::unique_ptr<MemSurface>> targets;
+    std::vector<std::shared_ptr<arbc::RenderCompletion>> dones;
+    const auto submit = [&](arbc::Content* content, const void* owner) {
+      targets.push_back(std::make_unique<MemSurface>(2, 2));
+      dones.push_back(std::make_shared<arbc::RenderCompletion>());
+      pool.submit(
+          arbc::RenderTask{content, make_request(*targets.back(), 1.5), dones.back(), owner});
+      return dones.back();
+    };
+
+    // A's render takes the one worker and parks inside `render`. Observed, not assumed.
+    const std::shared_ptr<arbc::RenderCompletion> a_running = submit(&blocker, &owner_a);
+    gate.await_arrivals(1);
+
+    // A also has work QUEUED behind it, and so does B. Nothing else can start: the worker is
+    // in the gate.
+    const std::shared_ptr<arbc::RenderCompletion> a_queued = submit(&quick, &owner_a);
+    constexpr int k_b_queued = 3;
+    std::vector<std::shared_ptr<arbc::RenderCompletion>> b_dones;
+    for (int i = 0; i < k_b_queued; ++i) {
+      b_dones.push_back(submit(&quick, &owner_b));
+    }
+    REQUIRE(pool.tasks_submitted() == 2 + k_b_queued);
+    REQUIRE(pool.tasks_completed() == 0);
+
+    // B dies. It has nothing started, so this returns without waiting on A's blocked render
+    // -- the whole point of a PER-OWNER drain: B must not have to wait out a sibling.
+    pool.drain_owner(&owner_b);
+
+    CHECK(pool.tasks_dropped() == k_b_queued); // exactly B's queued work, and nothing else
+    CHECK(pool.tasks_completed() == 0);        // ...and it was thrown away, not run
+    CHECK(quick.render_calls() == 0);
+    for (const std::shared_ptr<arbc::RenderCompletion>& done : b_dones) {
+      CHECK_FALSE(done->settled()); // purged, left unsettled, never lost to UB
+    }
+    // A is untouched: still blocked, still queued behind itself.
+    CHECK_FALSE(a_running->settled());
+    CHECK_FALSE(a_queued->settled());
+
+    // Release A's render. Its started task AND its queued task both run -- so B's drain
+    // neither stopped the pool nor purged a sibling's queue.
+    gate.open();
+    arbc::CompletionCursor cursor;
+    while (!a_running->settled() || !a_queued->settled()) {
+      pool.wait_completions(cursor, hang_guard());
+    }
+    CHECK(pool.tasks_completed() == 2);
+    CHECK(quick.render_calls() == 1); // A's queued one ran; B's three did not
+
+    // And the pool is still USABLE after a borrower died in it -- the proof that the drain
+    // did not reach for `request_stop()`, which is terminal and pool-global.
+    const std::shared_ptr<arbc::RenderCompletion> fresh = submit(&quick, &owner_a);
+    while (!fresh->settled()) {
+      pool.wait_completions(cursor, hang_guard());
+    }
+    CHECK(pool.tasks_completed() == 3);
+    // The accounting identity, at quiescence: nothing submitted went missing.
+    CHECK(pool.tasks_submitted() == pool.tasks_completed() + pool.tasks_dropped());
+  }
+
+  SECTION("a started render is waited out: drain_owner does not return while a worker is "
+          "inside it") {
+    arbc::WorkerPoolConfig cfg;
+    cfg.worker_count = 2;
+    arbc::WorkerPool pool(cfg);
+
+    Gate gate;
+    BlockingContent blocker(gate);
+    MemSurface target(2, 2);
+    auto done = std::make_shared<arbc::RenderCompletion>();
+    pool.submit(arbc::RenderTask{&blocker, make_request(target, 1.5), done, &owner_a});
+    gate.await_arrivals(1); // a worker really is inside `render`
+
+    // The releaser opens the gate once the render is in there; the drain must not return
+    // until that render has RETURNED, which the exit count -- stored as the last statement of
+    // `render` -- is what witnesses. This is the ordering that keeps a worker from writing
+    // into a `PendingTile` surface that the dying renderer is about to free.
+    std::thread releaser([&gate] { gate.open(); });
+    pool.drain_owner(&owner_a);
+    CHECK(blocker.exits() == 1); // guaranteed by the drain; a coin-flip without it
+    releaser.join();
+
+    CHECK(pool.tasks_dropped() == 0); // nothing was queued: nothing to purge
+    CHECK(pool.tasks_completed() == 1);
+  }
+
+  SECTION("purging a serialized owner's queued work releases the per-content gate") {
+    // The trap this section exists for. A serialized task sitting in the ready queue HOLDS
+    // its content's admission gate. Purge it without handing the gate on and `active` stays
+    // set forever: every later submission of that content parks behind a task that will never
+    // run, and the content is dead to the pool. A sibling renderer over the same shared
+    // document renders exactly the same `Content*`, so this is not a hypothetical.
+    arbc::WorkerPoolConfig cfg;
+    cfg.worker_count = 1;
+    arbc::WorkerPool pool(cfg);
+
+    Gate gate;
+    BlockingContent blocker(gate);                                         // holds the one worker
+    StubContent serial(/*thread_safe=*/false, /*wait_for_overlap=*/false); // the gated content
+
+    std::vector<std::unique_ptr<MemSurface>> targets;
+    std::vector<std::shared_ptr<arbc::RenderCompletion>> dones;
+    const auto submit = [&](arbc::Content* content, const void* owner) {
+      targets.push_back(std::make_unique<MemSurface>(2, 2));
+      dones.push_back(std::make_shared<arbc::RenderCompletion>());
+      pool.submit(
+          arbc::RenderTask{content, make_request(*targets.back(), 1.5), dones.back(), owner});
+      return dones.back();
+    };
+
+    submit(&blocker, &owner_a);
+    gate.await_arrivals(1);
+
+    // B takes the serialized content's gate (first submission -> admitted, queued behind the
+    // blocker) and parks a second one behind it.
+    submit(&serial, &owner_b);
+    submit(&serial, &owner_b);
+
+    pool.drain_owner(&owner_b);
+    CHECK(pool.tasks_dropped() == 2); // the gate holder AND the parked one
+
+    // The gate is free again: A's submission of the SAME content runs.
+    const std::shared_ptr<arbc::RenderCompletion> a_serial = submit(&serial, &owner_a);
+    gate.open();
+    arbc::CompletionCursor cursor;
+    while (!a_serial->settled()) {
+      pool.wait_completions(cursor, hang_guard());
+    }
+    CHECK(serial.render_calls() == 1);
+    CHECK(pool.max_in_flight_per_content() <= 1);
+    CHECK(pool.tasks_submitted() == pool.tasks_completed() + pool.tasks_dropped());
   }
 }

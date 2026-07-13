@@ -136,11 +136,15 @@ class Document;
 int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept;
 
 // The cap on the interactive driver's default worker count
-// (`runtime.interactive_worker_count_default` Decision 2). The pool is
-// PER-RENDERER (`d_pool`, below) and `InteractiveRenderer` owns it by value, so an
-// uncapped `hardware_concurrency() - 1` would spawn 63 threads per viewport on a
-// 64-core workstation -- and a second viewport would double that until
-// `runtime.shared_worker_pool` lets viewports share one pool. `2` is the value the
+// (`runtime.interactive_worker_count_default` Decision 2). The DEFAULT pool is
+// per-renderer -- the renderer builds and owns it -- so an uncapped
+// `hardware_concurrency() - 1` would spawn 63 threads per viewport on a 64-core
+// workstation, and a second viewport would double that. The cap governs exactly
+// that default: a host that opens several viewports now builds ONE pool and passes
+// it to every one of them (`InteractiveRenderer(WorkerPool&, Clock)`,
+// `runtime.shared_worker_pool`), sizes it however it likes, and is not bound by this
+// number at all. The cap is not repealed, because it still protects the host that
+// does not share -- which is the default, and the common case. `2` is the value the
 // task's Google Benchmark table selected: across the leaf-heavy, operator-heavy and
 // nested-deep scenes the counters at 4 workers were identical to the counters at 2
 // (same renders, same composites, no duplicate in-flight), so under the refinement's
@@ -214,12 +218,34 @@ public:
   // deterministic and wall-clock-free (doc 16:54-62).
   using Clock = std::function<std::chrono::steady_clock::time_point()>;
 
-  // The default `pool_config` is the SHIPPED interactive configuration: real workers
-  // (`default_interactive_pool_config()`). Passing an explicit `WorkerPoolConfig{}`
-  // opts back out to the thread-free degenerate inline executor, byte-identically --
-  // the spelling every deterministic unit test and golden in the tree uses.
+  // OWN a pool. The default `pool_config` is the SHIPPED interactive configuration:
+  // real workers (`default_interactive_pool_config()`). Passing an explicit
+  // `WorkerPoolConfig{}` opts back out to the thread-free degenerate inline executor,
+  // byte-identically -- the spelling every deterministic unit test and golden in the
+  // tree uses.
   explicit InteractiveRenderer(WorkerPoolConfig pool_config = default_interactive_pool_config(),
                                Clock clock = {});
+
+  // BORROW a pool (`runtime.shared_worker_pool`). A host with K viewports builds ONE
+  // pool and hands it to every viewport, so K viewports cost N threads and not K x N.
+  //
+  // K renderers over 1 pool is the only correct multi-viewport shape, and it is the
+  // cheap one. It is not interchangeable with K viewports over 1 RENDERER: the wanted-
+  // tile set, the carried damage, the previous time and camera scale and the pull-
+  // identity memo below are all PER-VIEWPORT state, so sharing a renderer
+  // cross-contaminates one viewport's frame into another's -- silently, with no crash.
+  //
+  // LIFETIME, and it is on the host: `pool` MUST outlive every renderer borrowing it.
+  // `~InteractiveRenderer` calls into the pool to drain its own submissions, so a pool
+  // that died first is a use-after-free. Declare the pool BEFORE the renderers that
+  // borrow it, exactly as the member block below declares `d_pending` before its own
+  // pool and for the same reason.
+  explicit InteractiveRenderer(WorkerPool& pool, Clock clock = {});
+
+  // Drains THIS renderer's outstanding submissions out of the pool (`d_pool.drain_owner`)
+  // before any member dies -- see the member block below for why that has to be a
+  // destructor BODY and not a member's own destructor.
+  ~InteractiveRenderer();
 
   InteractiveRenderer(const InteractiveRenderer&) = delete;
   InteractiveRenderer& operator=(const InteractiveRenderer&) = delete;
@@ -352,15 +378,39 @@ private:
   std::vector<Damage> route_model_damage(std::span<const Damage> model_damage,
                                          const ContentResolver& resolve) const;
 
-  // DECLARATION ORDER IS LOAD-BEARING: `d_pending` before `d_pool`, so `d_pool`
-  // destructs FIRST and `~WorkerPool` stops and joins its threads while the pending
+  // DECLARATION ORDER IS LOAD-BEARING: `d_pending` before `d_owned_pool`, so an OWNED
+  // pool destructs FIRST and `~WorkerPool` stops and joins its threads while the pending
   // surfaces those workers may still be writing are all alive. Since
-  // `runtime.worker_dispatch_leaf_only` wired `worker_backed_dispatch(d_pool)` into
+  // `runtime.worker_dispatch_leaf_only` wired `worker_backed_dispatch(d_pool, this)` into
   // the frame, a `worker_count > 0` renderer can be destroyed with real renders in
   // flight; reversing these two is a use-after-free, not a style choice.
-  RefinementQueue d_pending;                     // the frame-to-frame registry of async renders
-  CompositorCounters d_counters;                 // persistent behavioral counts across frames
-  WorkerPool d_pool;                             // leaf-miss executor + async-completion park/wake
+  //
+  // That argument covers only the OWNED case. A BORROWED pool is not destructed when this
+  // renderer dies, so no join happens here at all and a worker can still be inside
+  // `content->render`, writing into a `PendingTile`'s surface, when `d_pending` goes. What
+  // covers the borrowed case is `~InteractiveRenderer`'s BODY, which calls
+  // `d_pool.drain_owner(this)`: a destructor body runs before ANY member is destroyed, so
+  // it drains ahead of `d_pending` unconditionally -- for the borrowed case, where nothing
+  // else would, and harmlessly for the owned case, where `~WorkerPool` would have done it a
+  // moment later. It is a statement in the body rather than an RAII lease member precisely
+  // because a lease member would have to be declared BEFORE `d_pending` to drain in time,
+  // inverting the rule above: two opposite member-order rules in one class, each a
+  // use-after-free if broken (`runtime.shared_worker_pool` Decision 4).
+  RefinementQueue d_pending;     // the frame-to-frame registry of async renders
+  CompositorCounters d_counters; // persistent behavioral counts across frames
+  // The pool, owned or borrowed. `d_owned_pool` is engaged exactly when this renderer
+  // built its own; `d_pool` binds to it or to the host's, so every use site just says
+  // `d_pool` and branches on nothing. A reference member rather than a variant because
+  // `WorkerPool` is non-movable, and because the only thing any call site wants is *the
+  // pool* (Decision 2).
+  std::optional<WorkerPool> d_owned_pool;
+  WorkerPool& d_pool; // leaf-miss executor + async-completion park/wake
+  // THIS renderer's drain cursor into the pool's settle counter (Decision 1). Caller-owned
+  // so that a sibling renderer parked on the same pool cannot consume the settle produced
+  // by one of OUR tiles -- and cannot have one of its own consumed by us. Seeded from the
+  // pool's current generation at construction, so joining a busy pool does not hand the
+  // first frame a free spurious return.
+  CompletionCursor d_cursor;
   Clock d_clock;                                 // the loop's only wall-clock read
   std::optional<std::uint64_t> d_prior_revision; // last-completed revision (stale probe)
   std::optional<Time> d_prev_time;               // previous composition time (clock advance)

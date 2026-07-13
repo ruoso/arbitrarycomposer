@@ -58,6 +58,7 @@ TEST_CASE("imageseq renders serialize through the per-content queue race-free") 
   }
 
   WorkerPool pool(WorkerPoolConfig{/*worker_count=*/4});
+  CompletionCursor cursor; // this thread's own drain cursor (runtime.shared_worker_pool)
 
   // A background thread races the decoder with temporal-prefetch hints while
   // renders are in flight (drive_playback_prefetch fans hints to content off the
@@ -100,7 +101,7 @@ TEST_CASE("imageseq renders serialize through the per-content queue race-free") 
   // Drain every completion (park on the settle condition, never a fixed sleep).
   int settled = 0;
   while (settled < k_tasks) {
-    pool.wait_completions(std::nullopt);
+    pool.wait_completions(cursor, std::nullopt);
     settled = 0;
     for (int i = 0; i < k_tasks; ++i) {
       settled += dones[static_cast<std::size_t>(i)]->settled() ? 1 : 0;

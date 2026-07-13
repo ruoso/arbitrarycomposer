@@ -74,10 +74,17 @@ jobs:
       # interleaved. Its bug was found at 2/60 runs under CPU oversubscription and
       # converged SILENTLY on wrong pixels (clean quiesce, nothing pending, nothing
       # degraded), so one interleaving is exactly the coverage that missed it.
+      #
+      # `shared_worker_pool_stress` is the third: K renderers over ONE pool, each on
+      # its own thread, constructed and destroyed MID-FLIGHT. The mechanism it stresses
+      # -- a dying renderer draining its own submissions out of a pool three siblings
+      # are actively rendering on -- is a race whose failure mode is a worker writing
+      # into a freed PendingTile surface, so the interleaving IS the test.
       - name: long-form seeded schedule-perturbation sweep
         run: |
           for t in stress_publish_pin stress_reclamation_queue arena_growth_litmus \
-                   worker_dispatch_leaf_only refine_idempotence_stress; do
+                   worker_dispatch_leaf_only refine_idempotence_stress \
+                   shared_worker_pool_stress; do
             echo "== $t [.nightly] =="
             ./build/tsan/tests/arbc_${t}_t "[.nightly]"
           done

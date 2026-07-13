@@ -322,13 +322,55 @@ current-revision entries qualify.
   has" needs the render to be somewhere the frame is not. The count is
   *runtime policy*, derived from the machine's hardware concurrency (less
   one, because the frame thread plans, composites and parks, so it is a
-  participant) and capped, because the pool is per-viewport — never a fixed
-  number, which would oversubscribe a small machine and undersubscribe a
-  large one. A host that wants a different pool passes one, and a host that
-  wants no threads at all still gets the inline executor by asking for it.
-  The **offline** driver keeps inline-exact as *its* default (§ The frame,
-  offline): exactness has no deadline to miss, and byte-determinism is the
-  whole point of an export.
+  participant) and capped, because the pool is per-viewport *by default* (see
+  the next bullet) — never a fixed number, which would oversubscribe a small
+  machine and undersubscribe a large one. A host that wants a different pool
+  passes one, and a host that wants no threads at all still gets the inline
+  executor by asking for it. The **offline** driver keeps inline-exact as
+  *its* default (§ The frame, offline): exactness has no deadline to miss,
+  and byte-determinism is the whole point of an export.
+- **The pool is owned by the renderer, or borrowed from the host.** Per-viewport
+  ownership is the default and the common case: a renderer given only a
+  `WorkerPoolConfig` builds its own pool, and the worker-count cap above exists
+  to protect exactly that host. But a host with K viewports builds **one** pool
+  and hands it to every viewport, so K viewports cost N threads and not K×N —
+  and it is not free to skip that by pointing K viewports at one *renderer*
+  instead: the wanted-tile set, the carried damage, the previous time and camera
+  scale and the pull-identity memo are all per-viewport state, so a shared
+  renderer cross-contaminates one viewport's frame into another's. K renderers
+  over one pool is the only correct shape, and it is also the cheap one.
+
+  Three rules make sharing correct, and none of them is implied by the pool's
+  existing contract:
+
+  - A parked renderer observes only its **own** settles. The pool keeps the
+    settle counter; each parking thread keeps its own drain cursor. A sibling's
+    completion may *wake* a renderer — the wake is a broadcast, because the
+    completion wake is the handle content itself reaches for (doc 03) and content
+    knows nothing about renderers — but it can never be *consumed* by it. A
+    renderer that could swallow a sibling's settle would leave that sibling to
+    park on to its deadline, spuriously expire, and cancel or degrade tiles that
+    are sitting finished in its own refinement queue: a wrong-output bug, not a
+    slow one.
+  - A renderer's teardown drains only its **own** submissions. When a viewport
+    closes, the pool purges that renderer's not-yet-started tasks and waits out
+    the ones a worker has already begun — waiting on *no longer outstanding*,
+    never on *settled*, so it terminates even though a cancelled render still runs
+    and off-thread content may never settle at all. It does not stop the pool: a
+    stop is terminal and pool-global, so one viewport closing would strand every
+    other viewport's renders unsettled, forever. A sibling's renders keep running
+    and the pool stays usable.
+  - One renderer's deadline sweep cancels only its **own** tiles. "A frame cancels
+    the renders it no longer wants" (§ The frame, interactively) means its *own*
+    renders; a frame has no business cancelling work another viewport is waiting on.
+
+  And two things sharing does **not** buy. The pool must **outlive** every renderer
+  borrowing it — a closing renderer calls into the pool to drain, so a host declares
+  the pool before the viewports. And a shared pool is not a shared `TileCache`:
+  workers never touch the cache (that is the leaf-only rule above, not a property of
+  the pool's topology), so all cache traffic is on each renderer's own frame thread,
+  and K renderers driven from K threads need K caches. The pool is shareable across
+  threads; the cache is not.
 - Compositing itself happens on the render thread (or GPU queue).
 
 This is the *model*. The interactive driver has graduated out of the

@@ -139,6 +139,12 @@ private:
   bool d_parallel;
   // Inline (`worker_count == 0`, default) or the parallel-exact fan-out substrate.
   WorkerPool d_pool;
+  // This driver's own drain cursor into the pool's settle counter
+  // (`runtime.shared_worker_pool` Decision 1). The offline driver owns its pool
+  // outright, so it is the only waiter on it and could not lose a settle to anyone --
+  // but the cursor is caller-owned state now, and there is no pool-side cursor left to
+  // fall back on. Its reap-to-quiescence park (`offline_sequence.cpp`) threads this.
+  CompletionCursor d_cursor;
 };
 
 } // namespace arbc

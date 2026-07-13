@@ -492,7 +492,12 @@ TEST_CASE("worker_backed_dispatch renders an operator inline and fans a leaf out
   CpuBackend backend;
   DispatchSpy spy;
   WorkerPool pool(spied_pool(4, spy));
-  const RenderDispatch dispatch = worker_backed_dispatch(pool);
+  // The submitter tag (`runtime.shared_worker_pool` Decision 3). A driver passes its own
+  // `this`; this test IS the driver, so it passes a tag of its own. The pool only compares
+  // and hashes it -- it is never dereferenced.
+  const int owner_tag = 0;
+  const RenderDispatch dispatch = worker_backed_dispatch(pool, &owner_tag);
+  CompletionCursor cursor;
   const std::thread::id driver = std::this_thread::get_id();
 
   expected<std::unique_ptr<Surface>, SurfaceError> op_target =
@@ -527,7 +532,7 @@ TEST_CASE("worker_backed_dispatch renders an operator inline and fans a leaf out
            leaf_done);
   CHECK(pool.tasks_submitted() == 1);
   while (!leaf_done->settled()) {
-    pool.wait_completions(std::nullopt);
+    pool.wait_completions(cursor, std::nullopt);
   }
   REQUIRE(leaf.log().renders() == 1);
   CHECK(leaf.log().off_thread(driver) == 1); // a worker painted it, not this thread
