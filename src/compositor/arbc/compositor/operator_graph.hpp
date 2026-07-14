@@ -87,19 +87,35 @@ inline bool is_operator(const Content* content) {
 // Fold the reachable `inputs()` DAG of `root` into a single opaque aggregate
 // revision (doc 05:82-91, doc 13:124-125). Each reachable node (including
 // `root`) is folded exactly once via a `const Content*` visited set, so a shared
-// diamond input is folded once and any `inputs()` cycle terminates. The combine
-// is integer addition -- commutative and associative, hence order-independent
-// (permuting `inputs()` yields the same value) -- and because exactly one
-// reachable node's contribution changing shifts the sum by that node's delta,
-// the aggregate changes iff some reachable contribution changes (no hash
-// collision, no stale operator tile). A single node (a leaf, empty `inputs()`)
-// degenerates to `contribution(root)` -- the byte-exact flat-key behavior.
+// diamond input is folded once and any `inputs()` cycle terminates.
 //
-// `contribution` is caller-supplied: the driver passes the document-global
-// `state.revision()` for every node today (Decision 3), correct and never stale
-// (any change bumps every operator's key); per-node contributions drop in with
-// no change here when the model exposes them. Termination and full coverage are
-// by the visited set; `budget` is the planning-descent backstop, not a fold
+// The combine is `acc += mix64(contribution(node))` -- a sum of a BIJECTIVE
+// 64-bit mix of each contribution, not of the raw contributions
+// (`model.per_object_revision` Decision 3,
+// `05-recursive-composition#aggregate-fold-mixes-before-summing`). Addition is
+// commutative and associative, so the fold stays order-independent (permuting
+// `inputs()` yields the same value); mixing first is what makes it
+// collision-resistant. A RAW sum is collision-free only while every contribution
+// carries the same value, and per-object revision stamps are small monotone
+// integers that cancel: two reachable inputs at stamps 7 and 3 fold to the same
+// 10 as a later configuration at 6 and 4 -- reachable through an ordinary
+// undo/redo interleaving, or a membership edit that swaps a high-stamp layer for
+// a low-stamp one -- and a collision here serves the OTHER configuration's
+// composed-result tile. Mixing before summing is what makes the registered
+// "changes **iff** some reachable input's contribution changes" actually true,
+// rather than true-by-accident of uniform contributions.
+//
+// A single node (a leaf, empty `inputs()`) degenerates to
+// `mix64(contribution(root))`. The aggregate is an OPAQUE key value -- nothing
+// reads meaning out of it -- so the numeric change from the raw sum invalidates
+// no pixels, only cached keys.
+//
+// `contribution` is caller-supplied: the runtime passes each node's per-object
+// revision stamp, folded with the arrangement of any composition the content
+// names (`runtime/pull_identity.hpp`, Decisions 4-5). A caller with no per-object
+// stamps to hand (a test double, the conformance suite) may still pass a constant
+// -- correct and never stale, just less selective. Termination and full coverage
+// are by the visited set; `budget` is the planning-descent backstop, not a fold
 // cutoff (cutting the fold by depth would drop reachable contributions and be
 // unsound), so the fold carries it only for signature uniformity.
 std::uint64_t aggregate_revision(const Content* root,

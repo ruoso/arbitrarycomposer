@@ -1,5 +1,6 @@
 #include <arbc/base/expected.hpp>
 #include <arbc/base/geometry.hpp>
+#include <arbc/base/hash_mix.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
@@ -1138,8 +1139,11 @@ TEST_CASE(
     CHECK(counters.operator_renders() == 1);
     CHECK(counters.requests_issued() == 1);
     CHECK(op.renders() == 1);
-    // Keyed by its aggregate revision (op + reachable leaf = 2 * k_rev).
-    CHECK(cache.lookup(tile_key(op_id, 2 * k_rev)).has_value());
+    // Keyed by its aggregate revision: the fold sums a bijective MIX of each reachable
+    // node's contribution (`model.per_object_revision` Decision 3), so op + reachable leaf
+    // is `2 * mix64(k_rev)`, not `2 * k_rev`. A leaf still keys under its own raw
+    // contribution -- only the aggregate is folded.
+    CHECK(cache.lookup(tile_key(op_id, 2 * arbc::mix64(k_rev))).has_value());
   }
 
   SECTION("an identity operator issues zero operator renders and no operator-output entry") {

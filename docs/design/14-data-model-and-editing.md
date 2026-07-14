@@ -343,10 +343,61 @@ must be baked into every kind's mutation API from its first version —
 retrofitting it is a rewrite of exactly the code plugin authors copy from
 the reference kinds.
 
+## Per-object revisions
+
+The **document** revision is version-monotonic: one publish, one increment.
+But a document-global revision is the wrong cache key, because it makes
+*every* object's tiles unreachable on *any* edit — a brush stroke's sixty
+dabs are sixty publishes, and each one orphans the whole tile cache, so the
+first pan after a stroke re-renders cold. Doc 01 therefore asks for a
+revision *per object*, and structural sharing already provides one for free.
+
+Each object record carries a **revision stamp**, minted from the publishing
+revision at the copy-on-write that every mutation already performs. A commit
+therefore stamps exactly the objects it touched; every untouched object keeps
+its record — and so keeps its stamp — by the same structural sharing that
+makes a commit O(path depth) rather than O(document). The stamp costs no
+extra traversal and no extra write. It is what the tile and block cache keys
+carry in their revision slot; the cache itself is unchanged and still treats
+the value as an opaque token.
+
+A stamp increases for a given object across successive commits, but it is
+**restored, not advanced, by undo/redo**: navigation republishes the stored
+owning edge by identity, so the resurrected record — stamp included — is
+byte-identical to the one the pre-edit tiles were rendered from. Serving
+those tiles again is therefore correct under § Render purity, not merely
+convenient: the key still identifies the state, and the state is still
+immutable. Undoing a stroke makes the pre-stroke cache live again. Per-object
+stamps are consequently *not* globally monotone, and nothing should assume
+they are.
+
+Two consequences fall out, and both are load-bearing:
+
+- **A composition's arrangement is part of its embedder's revision.** A
+  nested composition's rendered result depends on its layer order and on each
+  member layer's placement — neither of which is a *content*, so neither is
+  reachable by the aggregate-revision fold over `inputs()` (doc 05). An
+  embedding content's revision contribution therefore folds in the
+  arrangement of the composition it names: that composition's own stamp plus
+  its member layers' stamps. Without this, a reorder inside a child would
+  leave the parent's composed-result key unchanged and the cache would serve
+  the pre-edit composite.
+- **A recovered document resumes above every persisted stamp.** Stamps live
+  in the records, so they survive into the workspace file while the reopened
+  document's revision counter would otherwise restart at zero — letting a
+  later commit mint a stamp some still-reachable record already carries, and
+  keying two different renderings of one object alike. The reachability walk
+  that reopening already runs to rebuild refcounts (doc 15) also takes the
+  maximum stamp, and the document resumes at one above it. Stamps are never
+  serialized into the doc 08 JSON: a load starts every record at zero against
+  a cold cache, and monotonicity from there is enough.
+
 ## Cross-doc impact
 
 - Doc 01's "identity and versioning" section is realized by `ObjectId` +
-  `DocState`; revisions become version-monotonic as before.
+  `DocState`. The *document* revision is version-monotonic; each object
+  additionally carries its own revision stamp, restored rather than advanced
+  by undo (§ Per-object revisions).
 - Doc 02's "single-writer / snapshot fence" threading model is unchanged
   in shape; the fence is now a pinned persistent structure rather than an
   abstract token.

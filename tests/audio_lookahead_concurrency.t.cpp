@@ -284,7 +284,7 @@ TEST_CASE("TSan: concurrent worker fill + drain equals the inline goldens, settl
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
 
   AudioWorkerPoolConfig poolcfg;
@@ -368,7 +368,7 @@ TEST_CASE("TSan: a declared-latency scene drains the zero-latency inline goldens
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
   // The ring lifts its fill lead by the declared latency: it warms blocks past the base
   // horizon (the residency the latent contributor needs).
@@ -575,7 +575,7 @@ TEST_CASE("TSan: threaded recursive fill of nested + below-rate drains the inlin
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   ringcfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
     return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
   };
@@ -734,7 +734,7 @@ TEST_CASE("TSan: threaded Spatial nested fill drains the inline Spatial oracle, 
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   ringcfg.policy = MixPolicy::Spatial;
   ringcfg.spatial = seed;
   ringcfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
@@ -854,7 +854,7 @@ TEST_CASE("TSan: two spatial embeddings over one shared cache settle once and dr
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   ringcfg.policy = MixPolicy::Spatial;
   ringcfg.spatial = seed;
   ringcfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {

@@ -107,6 +107,14 @@ void InteractiveRenderer::refresh_identity_memo(const DocRoot& state,
   // Decision 2), so the two drivers cannot disagree on an input's cache identity.
   d_identity_map = build_pull_identity_map(state, resolve);
   d_id_of = pull_identity_of(d_identity_map);
+  // The per-object revision contribution column, built on THIS (the frame) thread over
+  // the pinned, immutable `DocRoot` and then read lock-free by the render workers
+  // (`model.per_object_revision` Decision 4). It rides the identity memo's cadence for
+  // free: within one revision the stamps cannot move, and across a bump the memo is
+  // rebuilt anyway. That is what pins the wiring's per-frame cost at O(1) -- the
+  // `identity_map_builds` counter already asserts it.
+  d_stamp_map = build_pull_stamp_map(state, *d_identity_map);
+  d_contribution = pull_contribution_of(d_identity_map, d_stamp_map);
   d_content_by_id.clear();
   d_content_by_id.reserve(d_identity_map->size());
   for (const auto& [content, id] : *d_identity_map) {
@@ -272,7 +280,9 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   // `target`), and schedules no follow-up frame -- zero deltas on
   // requests_issued / composites / follow_up_frames.
   if (!first_frame && dirty.device_rects.empty() && d_pending.tiles.empty()) {
-    d_prior_revision = revision;
+    // `d_prior_stamps` is deliberately NOT advanced here: a still frame composites
+    // nothing, so no content's last-composited stamp moved, and each keeps the one the
+    // last frame that actually planned it recorded (Decision 7).
     d_prev_time = composition_time;
     return FrameOutcome{false};
   }
@@ -334,7 +344,12 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   config.pending = &d_pending;
   config.wanted = &d_wanted_tiles;
   config.id_of = d_id_of;
-  config.contribution = [revision](const Content*) { return revision; };
+  // Per-OBJECT contributions, not the document-global revision (`model.per_object_
+  // revision`): the layer plan below and every pull an operator issues key off this ONE
+  // functor, so a layer's tile key and the key its operator's pulls probe are equal by
+  // construction. Handing the pull side per-object stamps while the plan side kept the
+  // global revision would make every pull miss.
+  config.contribution = d_contribution;
   // `this` is the submitter tag every task this frame dispatches carries, and it is what
   // `~InteractiveRenderer`'s `drain_owner(this)` later names. On a SHARED pool it is the
   // only thing that distinguishes our work from a sibling viewport's.
@@ -380,10 +395,15 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   // seam). A frame-local: consumed by Step 7 and dropped at frame end, so the
   // plan stays a pure per-frame value and no plan state crosses frames.
   std::vector<LayerTilePlan> visible_plans;
+  // The scalar `prior_revision` is `nullopt` and `d_prior_stamps` carries the probe
+  // instead (Decision 7): under per-object stamps a document-global prior revision names
+  // no content's prior stamp, so keeping the scalar would make the stale tier miss
+  // unconditionally rather than fire.
   render_frame_interactive(state, resolve, viewport, cache, backend, pool, target, deadline,
-                           d_prior_revision, &d_pending, &d_counters, dirty_ptr, composition_time,
-                           &visible_plans, /*diagnostics=*/nullptr, &pulls, Exactness::BestEffort,
-                           &d_wanted_tiles);
+                           /*prior_revision=*/std::nullopt, &d_pending, &d_counters, dirty_ptr,
+                           composition_time, &visible_plans, /*diagnostics=*/nullptr, &pulls,
+                           Exactness::BestEffort, &d_wanted_tiles, &d_contribution,
+                           &d_prior_stamps);
 
   // --- Step 5: park to the deadline; enforce it (doc 02:61-65, 140-143). ----
   // Park for async arrivals only until `d`, then enforce: cancel whatever is still
@@ -508,10 +528,19 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   const int zoom_direction = zoom_direction_from_scale_delta(d_prev_camera_scale, camera_scale);
   for (const LayerTilePlan& plan : visible_plans) {
     prime_prefetch(cache, plan, zoom_direction, k_pan_prefetch_radius);
+    // Record what this frame ACTUALLY composited each content under, so the next frame's
+    // stale probe has that content's prior stamp to reach for (Decision 7). Taken off the
+    // plan rather than re-derived, which is what keeps the operator (aggregate) and leaf
+    // cases uniform -- both wrote the key they used into `LayerTilePlan::revision`.
+    // Updated, never cleared: a content culled next frame keeps the stamp it was last
+    // composited under, which is a legitimate prior rendering of it.
+    if (plan.content.valid()) {
+      d_prior_stamps[plan.content] = plan.revision;
+    }
   }
 
   // --- Step 8: advance state. ----------------------------------------------
-  d_prior_revision = revision;
+  // (`d_prior_stamps` advanced per composited layer in Step 7, from the plans.)
   d_prev_time = composition_time;
   d_prev_camera_scale = camera_scale;
   return FrameOutcome{schedule_follow_up};

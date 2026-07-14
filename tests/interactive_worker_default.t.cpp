@@ -341,10 +341,12 @@ namespace {
 // and only the trigger's tiles are dropped. The latched leaf's revision-R tile survives,
 // resident, as the stale fallback doc 02:63-65 promises.
 //
-// The trigger is a LatchLeaf too, and not a plain SolidContent, because of what the
-// revision bump does: it re-keys EVERY visible tile, so the trigger's R+1 tile is a miss on
-// the measured frame no matter what the damage says, and a leaf miss is dispatched to a
-// worker. A fast trigger is therefore a second render RACING the frame thread -- and if it
+// The trigger is a LatchLeaf too, and not a plain SolidContent, because it MISSES on the
+// measured frame as well: the damage names the trigger, so `invalidate_damage` drops its
+// tiles outright, and a leaf miss is dispatched to a worker. (Before per-object revisions
+// it missed for a second reason too -- the document-global bump re-keyed every visible
+// tile. That reason is gone; the invalidation one was always the load-bearing one, and it
+// is untouched.) A fast trigger is therefore a second render RACING the frame thread -- and if it
 // settles before the deadline park is reached, its arrival damage schedules a follow-up
 // frame, so `schedule_follow_up` stops being a statement about the design and becomes a
 // statement about which thread won. Gating the trigger on the same latch is what removes
@@ -358,19 +360,32 @@ struct LatchScene {
   std::shared_ptr<LatchLeaf> trigger =
       std::make_shared<LatchLeaf>(gate, Rgba{0.1F, 0.2F, 0.3F, 0.4F});
   Document doc;
+  ObjectId leaf_content{};
   ObjectId trigger_content{};
   ObjectId trigger_layer{};
 
   LatchScene() {
-    doc.add_layer(doc.add_content(leaf), Affine::identity());
+    leaf_content = doc.add_content(leaf);
+    doc.add_layer(leaf_content, Affine::identity());
     trigger_content = doc.add_content(trigger);
     trigger_layer = doc.add_layer(trigger_content, Affine::identity());
   }
 
-  // Bump the revision (so the latched leaf's fresh key becomes a miss) and hand back the
-  // damage that re-plans the viewport without dropping its prior-revision tile.
+  // Re-key the latched leaf (so its fresh key becomes a miss) and hand back the damage
+  // that re-plans the viewport without dropping its prior-stamp tile.
+  //
+  // The re-key is a re-STAMP of the leaf's own CONTENT record. Under per-object revisions
+  // (`model.per_object_revision`) that is the only thing that moves a content's tile key:
+  // a placement edit on some OTHER layer publishes a new document revision but leaves
+  // every content's stamp exactly where it was -- which is the whole point of the task,
+  // and which would leave the latched leaf's tile FRESH, so it would never re-render and
+  // the releaser below would wait forever. The damage still names the TRIGGER, not the
+  // leaf, so `invalidate_damage` drops the trigger's tiles and spares the leaf's prior
+  // tile -- the resident stale fallback the degrade is supposed to reach for.
   std::vector<Damage> disturb() {
-    doc.set_layer_transform(trigger_layer, Affine::identity()); // publishes revision R+1
+    auto txn = doc.transact("disturb");
+    txn.set_content_state(leaf_content, StateHandle{}); // re-stamps the LEAF: its key moves
+    REQUIRE(txn.commit().has_value());
     return {Damage{trigger_content, Rect::infinite(), TimeRange::all()}};
   }
 };

@@ -325,18 +325,19 @@ void LookaheadRing::descend(ObjectId composition, std::uint32_t request_rate, Ti
 
 BlockKey LookaheadRing::contribution_key(const Contribution& c) const {
   // The exact `BlockKey` `PullServiceImpl::pull_audio` computes for the mixer's
-  // child request (`pull_service.cpp:301`, `audio_block_index`): the content id, the
-  // doc-global revision, the window-start sample-frame index at the child rate, and
-  // the child rate. The pump wires `id_of(content) == layer.content` and
-  // `contribution(content) == revision`, so the key the fill populates is the key
-  // the mix pass probes.
+  // child request (`pull_service.cpp:301`, `audio_block_index`): the content id, that
+  // content's PER-OBJECT revision contribution, the window-start sample-frame index at
+  // the child rate, and the child rate. The pump wires `id_of(content) == layer.content`
+  // and hands this ring the SAME contribution map the pull config reads
+  // (`model.per_object_revision` constraint 6), so the key the fill populates is exactly
+  // the key the mix pass probes -- which is the whole reason the ring is not waste.
   const std::int64_t fpf = Time::flicks_per_second / static_cast<std::int64_t>(c.rate);
   const std::int64_t block_index = fpf != 0 ? c.window_start.flicks / fpf : 0;
   // Fold the per-edge Spatial context digest (D1/D4): this write-side warm key must
   // equal the read-side pull key `pull_service.cpp:301` builds from `request.spatial`
   // for the same edge, preserved because `spatial_nested_warm_context` made the two
   // `Spatialization` structs bit-identical (Constraint 2). Flat digests to 0.
-  return BlockKey{c.content, d_config.revision, block_index, c.rate,
+  return BlockKey{c.content, object_contribution(c.content), block_index, c.rate,
                   spatial_context_digest(c.spatial)};
 }
 
@@ -371,7 +372,7 @@ LookaheadRing::native_rerequest_want(const Contribution& c, std::uint32_t achiev
   // Same per-edge context as the discovery pull (D4): the below-rate native re-request
   // is a distinct `BlockKey` (native `rate`) but the SAME spatial context, so a
   // below-rate Spatial contributor does not collide on its native slot either.
-  const BlockKey key{c.content, d_config.revision, block_index, achieved_rate,
+  const BlockKey key{c.content, object_contribution(c.content), block_index, achieved_rate,
                      spatial_context_digest(c.spatial)};
   return PrefetchWant{
       key,

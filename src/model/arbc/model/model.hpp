@@ -99,6 +99,40 @@ public:
   // untouched-structure). Returns false when absent.
   bool record_edge(ObjectId id, SlotRef<ObjectRecord>& out) const;
 
+  // `id`'s PER-OBJECT REVISION STAMP as of this pinned version (`ObjectRecord::
+  // revision`, `model.per_object_revision` Decision 1) -- the value the compositor
+  // projects into the opaque `TileKey::revision` slot instead of the document-global
+  // revision, so an edit to one object stops orphaning every other object's tiles.
+  // `0` for an absent id: a well-defined no-op, never a stale hit (nothing renders
+  // under an id the document does not contain). A refcount-free `peek` read, so it
+  // holds on a parallel render worker (15-memory-model#const-ref-traversal-touches-no-
+  // refcount-page).
+  std::uint64_t object_revision(ObjectId id) const;
+
+  // A composition's ARRANGEMENT STAMP: its own record stamp folded with every member
+  // layer's record stamp, inline arm and spill chain alike (Decision 5).
+  //
+  // This exists because the compositor's aggregate fold walks `inputs()`, which yields
+  // CONTENTS -- while a nested composition's composed pixels also depend on things that
+  // are not contents: the child's layer ORDER, and each member layer's transform,
+  // opacity, span and time map. Those live in `CompositionRecord` and `LayerRecord`,
+  // separate objects with their own ids. Reorder a child composition or nudge one
+  // member layer's transform and no child CONTENT's stamp moves, so a contribution
+  // built from the content stamp alone would leave the embedder's composed-result key
+  // unchanged and the cache would serve the pre-edit composite
+  // (05-recursive-composition#composition-arrangement-joins-the-contribution).
+  //
+  // A SHALLOW one-level walk -- it does NOT recurse. The grandchildren are reached by
+  // the compositor's own `inputs()` fold, each level contributing its own composition's
+  // arrangement, so the induction closes without a second traversal here. Pure model
+  // vocabulary (`CompositionRecord::layers` / `spill_root`), which is why the primitive
+  // lives at L2; the JOINING of it with a content's `composition_ref()` happens in
+  // `runtime`, the only level that sees both the `DocRoot` and the `Content` vtable
+  // (doc 17:80-84 keeps the model free of that vtable). `0` when `composition` is
+  // absent or is not a composition -- a well-defined no-op. Refcount-free peek
+  // traversal.
+  std::uint64_t composition_revision(ObjectId composition) const;
+
   // Resolve `id`'s captured content `StateHandle` as of THIS pinned version --
   // the L2 half of the render-purity refinement (doc 14:155-161). A lock-free
   // `peek` that touches no refcount page (15-memory-model#const-ref-traversal-
@@ -483,6 +517,15 @@ public:
     // Note `id` as touched so `commit()` assembles its (before, after) edge.
     void touch(ObjectId id);
 
+    // Stamp a record this transaction just path-copied with the revision this
+    // transaction will PUBLISH (`model.per_object_revision` Decision 1). Called on the
+    // fresh record inside every mutator's existing `create -> copy -> override ->
+    // insert -> touch` sequence, which is what makes the stamp cost no traversal and
+    // perturb no structural sharing: a record the commit did not path-copy is never
+    // written, so it keeps its old stamp for free
+    // (14-data-model-and-editing#commit-stamps-only-touched-objects).
+    void stamp(ObjectRecord& record) const noexcept { record.revision = d_publish_revision; }
+
     // Path-copy `composition`'s membership in the working tree to `new_order`,
     // sharing every spill chunk whose members and `next` edge are unchanged and
     // creating/erasing chunk records only at the touched tail (so live-slot growth
@@ -503,6 +546,14 @@ public:
     DocStatePtr d_base;   // pinned base version: the source of before-edges
     Ref<HamtNode> d_root; // working-tree root (owning); empty == empty map
     std::uint64_t d_base_revision;
+    // The revision this transaction's publish will carry, and therefore the stamp it
+    // mints into every record it path-copies. `d_base_revision + 1` for an ordinary
+    // commit; `load_baseline` re-points it at 0, because a doc-08 load PUBLISHES
+    // revision 0 (08-serialization#load-installs-version-0-baseline) and a record
+    // stamped 1 under a document opened at 0 would collide with the first real commit's
+    // stamp on any object that commit touches -- two different renderings of one object
+    // under one key.
+    std::uint64_t d_publish_revision;
     std::vector<ObjectId> d_touched;
     std::vector<ContentStateEdit> d_contents;
     std::vector<Damage> d_damage;
@@ -560,6 +611,16 @@ private:
     std::vector<SlotIndex> nodes;   // reachable HamtNode slots (d_nodes' live set)
     std::vector<SlotIndex> records; // reachable ObjectRecord slots (d_records' live set)
     std::uint64_t max_id{0};        // the highest reachable ObjectId: reseeds d_next_id
+    // The highest reachable PER-OBJECT REVISION STAMP: reseeds the document revision
+    // (`model.per_object_revision` Decision 2, 15-memory-model#recovery-resumes-above-
+    // every-persisted-stamp). The stamp lives IN the record, so it persists into the
+    // workspace file -- while a recovered document would otherwise reopen at revision
+    // 0. Left alone that is a wrong-pixel path: after 500 commits in the recovered
+    // session a new commit would mint stamp 500 for object X, while X's RECOVERED
+    // record -- still reachable from a journal before-edge or a pinned snapshot, and
+    // carrying different content -- also reads 500. The walk already visits every
+    // record to rebuild its refcount, so the max is free.
+    std::uint64_t max_revision{0};
   };
   Recovered rebuild_counts(SlotIndex root_index);
 

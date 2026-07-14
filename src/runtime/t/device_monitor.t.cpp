@@ -366,7 +366,7 @@ std::vector<float> drive_device(const DocStatePtr& doc, ObjectId comp, const Mix
   ringcfg.sample_rate = working_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
 
   AudioWorkerPoolConfig poolcfg;
@@ -447,7 +447,7 @@ drive_seek_realign(const DocStatePtr& doc, ObjectId comp, const MixResolver& res
   ringcfg.sample_rate = working_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
 
   AudioWorkerPoolConfig poolcfg;
@@ -555,7 +555,7 @@ SpatialDriveResult drive_spatial(const DocStatePtr& doc, ObjectId comp, const Mi
   ringcfg.sample_rate = working_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   ringcfg.policy = MixPolicy::Spatial;
   ringcfg.spatial = base;
   LookaheadRing ring(*doc, pull, ringcfg);
@@ -666,7 +666,7 @@ TEST_CASE("device monitor masters the transport from samples; drained bytes equa
     ringcfg.sample_rate = k_rate;
     ringcfg.layout = ChannelLayout::Stereo;
     ringcfg.block_frames = k_block_frames;
-    ringcfg.revision = doc->revision();
+    ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
     LookaheadRing ring(*doc, pull, ringcfg);
 
     AudioWorkerPoolConfig poolcfg;
@@ -758,7 +758,7 @@ TEST_CASE("a starved block yields silence + an underrun, never an inline mix") {
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
 
   AudioWorkerPoolConfig poolcfg;
@@ -827,7 +827,7 @@ TEST_CASE("host seek and set_rate rebase the mastered clock and reprime") {
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
 
   AudioWorkerPoolConfig poolcfg;
@@ -908,7 +908,7 @@ TEST_CASE("one device monitor per transport is rejected") {
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
 
   AudioWorkerPoolConfig poolcfg;
@@ -1153,7 +1153,7 @@ TEST_CASE(
     ringcfg.sample_rate = working_rate;
     ringcfg.layout = ChannelLayout::Stereo;
     ringcfg.block_frames = block_frames;
-    ringcfg.revision = doc->revision();
+    ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
     LookaheadRing ring(*doc, pull, ringcfg);
 
     AudioWorkerPoolConfig poolcfg;
@@ -1386,7 +1386,7 @@ TEST_CASE("the device RT callback chain is nonblocking under an armed RtScope") 
     ringcfg.sample_rate = working_rate;
     ringcfg.layout = ChannelLayout::Stereo;
     ringcfg.block_frames = k_block_frames;
-    ringcfg.revision = doc->revision();
+    ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
     LookaheadRing ring(*doc, pull, ringcfg);
 
     AudioWorkerPoolConfig poolcfg;
@@ -1647,7 +1647,7 @@ TEST_CASE("camera follow stress: cycling cameras concurrent with drain is race-f
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   ringcfg.policy = MixPolicy::Spatial;
   ringcfg.spatial = seed_for(Affine::identity());
   LookaheadRing ring(*doc, pull, ringcfg);

@@ -259,7 +259,7 @@ TEST_CASE("the threaded pump drains a Spatial nested scene byte-identical to the
     ringcfg.sample_rate = k_rate;
     ringcfg.layout = ChannelLayout::Stereo;
     ringcfg.block_frames = k_block_frames;
-    ringcfg.revision = doc->revision();
+    ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
     ringcfg.policy = MixPolicy::Spatial;
     ringcfg.spatial = seed;
     ringcfg.nested_composition = scene.nesting();

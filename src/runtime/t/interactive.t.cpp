@@ -13,6 +13,7 @@
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/interactive.hpp>
+#include <arbc/runtime/pull_identity.hpp>
 #include <arbc/runtime/transport.hpp>
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/surface.hpp>
@@ -362,6 +363,20 @@ void bump_revision(arbc::Model& model, arbc::ObjectId layer) {
   REQUIRE(txn.commit().has_value());
 }
 
+// Re-stamp a CONTENT object (`model.per_object_revision`): path-copy its record through
+// the one content mutator the model has, which mints the publishing revision as that
+// record's new per-object stamp and so re-keys exactly that content's tiles. The layer
+// mutator above no longer does this, and that is the point of the task -- a layer's
+// placement edit re-composites the layer without re-rendering its content -- so a test
+// that needs a content's tile key to MOVE has to move the content's stamp. Emits no model
+// damage (the content mutator deliberately floors none), so the cache is not invalidated
+// and the prior-stamp tile stays resident for the stale probe to reach.
+void bump_content_revision(arbc::Model& model, arbc::ObjectId content) {
+  auto txn = model.transact();
+  txn.set_content_state(content, arbc::StateHandle{});
+  REQUIRE(txn.commit().has_value());
+}
+
 bool bytes_identical(std::span<const std::byte> a, std::span<const std::byte> b) {
   return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size_bytes()) == 0;
 }
@@ -391,6 +406,19 @@ constexpr std::size_t k_tile_bytes = static_cast<std::size_t>(256) * 256 * 16;
 TileKey tile_key(arbc::ObjectId content, std::uint64_t revision, TileCoord coord,
                  ScaleRung rung = ScaleRung{0}) {
   return TileKey{content, revision, rung, coord, std::nullopt};
+}
+
+// The key revision the renderer plans a leaf content under: that content's PER-OBJECT
+// revision contribution (`model.per_object_revision`), not the document-global revision.
+// A test that hand-builds a `TileKey` the renderer must agree with has to project the
+// same value the renderer's memo does, so it composes the shipped seams rather than
+// re-deriving the projection.
+std::uint64_t content_key_revision(const arbc::DocRoot& state,
+                                   const std::function<arbc::Content*(arbc::ObjectId)>& resolve,
+                                   const arbc::Content* content) {
+  const auto ids = arbc::build_pull_identity_map(state, resolve);
+  const auto stamps = arbc::build_pull_stamp_map(state, *ids);
+  return arbc::pull_contribution_of(ids, stamps)(content);
 }
 
 // Hand-populate a resident entry of a given class/bytes and drop the pinned hold
@@ -835,13 +863,18 @@ TEST_CASE("interactive: the frame never blocks past its deadline") {
     REQUIRE(renderer.tiles_cancelled() == 0);
     const arbc::TileKey stale = renderer.pending().tiles.front().key;
 
-    bump_revision(model, scene.layer);
+    // Re-stamp the CONTENT, which is what re-keys its tiles under per-object revisions
+    // (`model.per_object_revision`): a layer PLACEMENT edit deliberately no longer moves
+    // the content's key -- the tiles are in content-local space and the new affine merely
+    // re-composites them -- so it would leave the pending tile still wanted, and this
+    // section would assert nothing.
+    bump_content_revision(model, scene.content);
     const arbc::DocStatePtr bumped = model.current();
     REQUIRE(bumped->revision() != state->revision());
 
     // The pending queue is non-empty, so this frame runs (the still-scene early-out cannot
     // fire) even though it carries no damage -- and the wanted set is the frame's VISIBLE
-    // FOOTPRINT, which exists whether or not anything is repainted. The R-keyed pending is
+    // FOOTPRINT, which exists whether or not anything is repainted. The old-stamp pending is
     // not in it.
     renderer.render_frame(*bumped, resolver, viewport, cache, backend, pool, **target, {},
                           arbc::Time{0}, k_budget);
@@ -1177,6 +1210,7 @@ TEST_CASE("interactive: a damage-gated frame re-plans only the changed tiles") {
 }
 
 // enforces: 02-architecture#degraded-fallback-preference-order
+// enforces: 02-architecture#stale-probe-is-per-content
 TEST_CASE("interactive: frame-to-frame state advances across frames") {
   MarkBackend backend;
   arbc::Model model;
@@ -1197,7 +1231,15 @@ TEST_CASE("interactive: frame-to-frame state advances across frames") {
 
     renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
                           arbc::Time{0}, k_budget);
-    CHECK(renderer.prior_revision() == state->revision());
+    // The renderer tracks a PRIOR STAMP PER CONTENT, not one document-global scalar
+    // (`model.per_object_revision` Decision 7): what it records for the content it just
+    // composited is the exact key it planned that content under -- the content's own
+    // revision contribution as of the version the frame pinned.
+    const auto ids = arbc::build_pull_identity_map(*state, resolver);
+    const auto stamps = arbc::build_pull_stamp_map(*state, *ids);
+    REQUIRE(renderer.prior_stamp(scene.content).has_value());
+    CHECK(*renderer.prior_stamp(scene.content) ==
+          arbc::pull_contribution_of(ids, stamps)(&content));
     CHECK(renderer.previous_time() == arbc::Time{0});
 
     // A later (no-work) frame still advances the previous composition time, so the
@@ -1245,13 +1287,17 @@ TEST_CASE("interactive: frame-to-frame state advances across frames") {
     const arbc::DocStatePtr state_r = model.current();
     renderer.render_frame(*state_r, r_resolver, viewport, cache, backend, pool, **target, {},
                           arbc::Time{0}, k_budget);
-    REQUIRE(renderer.prior_revision() == state_r->revision());
+    // Frame 1 recorded the stamp it composited the content under: THAT is the key the
+    // stale probe reaches for below (Decision 7), and a content the renderer has never
+    // composited would simply have no stale tier.
+    REQUIRE(renderer.prior_stamp(scene.content).has_value());
+    const std::uint64_t stale_stamp = *renderer.prior_stamp(scene.content);
 
-    // Bump the revision without moving the layer and without invalidating the
-    // cache. Frame 2 renders async-never, so the fresh (R+1) key stays a miss and
-    // the prior-revision (R) tile -- reached by the stale probe that `prior_revision`
-    // enables -- is composited as the fallback, not a transparent placeholder.
-    bump_revision(model, scene.layer);
+    // Re-stamp the CONTENT without invalidating the cache. Frame 2 renders async-never,
+    // so the fresh (new-stamp) key stays a miss and the PRIOR-STAMP tile -- reached by
+    // the per-content stale probe -- is composited as the fallback, not a transparent
+    // placeholder.
+    bump_content_revision(model, scene.content);
     const arbc::DocStatePtr state_r1 = model.current();
     REQUIRE(state_r1->revision() == state_r->revision() + 1);
 
@@ -1259,6 +1305,11 @@ TEST_CASE("interactive: frame-to-frame state advances across frames") {
     const auto r1_resolver = [&](arbc::ObjectId id) -> arbc::Content* {
       return id == scene.content ? &r1_content : nullptr;
     };
+    // The content's stamp actually MOVED -- otherwise the fresh key would hit and this
+    // section would pass while testing nothing.
+    const auto r1_ids = arbc::build_pull_identity_map(*state_r1, r1_resolver);
+    const auto r1_stamps = arbc::build_pull_stamp_map(*state_r1, *r1_ids);
+    REQUIRE(arbc::pull_contribution_of(r1_ids, r1_stamps)(&r1_content) != stale_stamp);
     const std::uint64_t requests_before = renderer.counters().requests_issued();
     const std::uint64_t composites_before = renderer.counters().composites();
     renderer.render_frame(*state_r1, r1_resolver, viewport, cache, backend, pool, **target, {},
@@ -1395,7 +1446,7 @@ TEST_CASE("interactive: the prime pass reclassifies a resident pan-ring tile to 
   };
   const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // visible tile (0,0) rung 0
   arbc::SurfacePool pool(backend);
-  const std::uint64_t rev = state->revision();
+  const std::uint64_t rev = content_key_revision(*state, resolver, &content);
 
   // A budget that holds exactly the rendered visible tile plus two tiny residents:
   // one pan-ring neighbour (to be reclassified) and one control far outside it.
@@ -1436,7 +1487,7 @@ TEST_CASE("interactive: a scale-increase frame speculates the next zoom rung und
     return id == scene.content ? &content : nullptr;
   };
   arbc::SurfacePool pool(backend);
-  const std::uint64_t rev = state->revision();
+  const std::uint64_t rev = content_key_revision(*state, resolver, &content);
 
   // Budget: frame 1's rung-0 tile + frame 2's rung-1 tile + a tiny non-ring control.
   TileCache cache(2 * k_tile_bytes + 100);

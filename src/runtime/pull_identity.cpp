@@ -1,5 +1,6 @@
-#include <arbc/contract/content.hpp> // Content, ContentRef, inputs()
-#include <arbc/model/model.hpp>      // DocRoot::for_each_layer
+#include <arbc/base/hash_mix.hpp>    // mix64 -- the contribution's bijective mixer
+#include <arbc/contract/content.hpp> // Content, ContentRef, inputs(), composition_ref()
+#include <arbc/model/model.hpp>      // DocRoot::for_each_layer / object_revision
 #include <arbc/model/records.hpp>    // LayerRecord
 #include <arbc/runtime/pull_identity.hpp>
 
@@ -73,6 +74,54 @@ pull_identity_of(std::shared_ptr<const PullIdentityMap> ids) {
 std::function<ObjectId(const Content*)>
 make_pull_identity_of(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve) {
   return pull_identity_of(build_pull_identity_map(state, resolve));
+}
+
+std::shared_ptr<const PullStampMap> build_pull_stamp_map(const DocRoot& state,
+                                                         const PullIdentityMap& ids) {
+  auto stamps = std::make_shared<PullStampMap>();
+  stamps->reserve(ids.size());
+  for (const auto& [content, id] : ids) {
+    // The content's own record stamp, mixed (Decision 3's rule applies to every fold in
+    // this task, not only the aggregate: a raw sum of the two terms below would cancel
+    // just as readily).
+    std::uint64_t value = mix64(state.object_revision(id));
+    // Plus the ARRANGEMENT of the composition this content names, if any (Decision 5) --
+    // the child's layer order and every member layer's placement, none of which any
+    // child CONTENT's stamp can see, and none of which the compositor's `inputs()` fold
+    // can reach. Without this term a reorder or a member-transform nudge leaves the
+    // embedder's composed-result key unchanged and the cache serves the pre-edit
+    // composite. `composition_revision` is shallow by design: it does not recurse,
+    // because each nesting level contributes its own composition's arrangement through
+    // its own entry here, and the `inputs()` fold walks the levels.
+    if (content != nullptr) {
+      if (const ObjectId child = content->composition_ref(); child.valid()) {
+        value += state.composition_revision(child);
+      }
+    }
+    stamps->emplace(id, value);
+  }
+  return stamps;
+}
+
+std::function<std::uint64_t(const Content*)>
+pull_contribution_of(std::shared_ptr<const PullIdentityMap> ids,
+                     std::shared_ptr<const PullStampMap> stamps) {
+  return [ids = std::move(ids), stamps = std::move(stamps)](const Content* c) -> std::uint64_t {
+    const auto id_it = ids->find(c);
+    if (id_it == ids->end()) {
+      return 0;
+    }
+    const auto stamp_it = stamps->find(id_it->second);
+    return stamp_it != stamps->end() ? stamp_it->second : 0;
+  };
+}
+
+std::function<std::uint64_t(ObjectId)>
+object_contribution_of(std::shared_ptr<const PullStampMap> stamps) {
+  return [stamps = std::move(stamps)](ObjectId id) -> std::uint64_t {
+    const auto it = stamps->find(id);
+    return it != stamps->end() ? it->second : 0;
+  };
 }
 
 } // namespace arbc

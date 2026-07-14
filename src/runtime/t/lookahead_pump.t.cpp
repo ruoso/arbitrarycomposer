@@ -232,7 +232,7 @@ TEST_CASE("the pump renders ahead: drain consumes prepared blocks, worker-count-
     ringcfg.sample_rate = k_rate;
     ringcfg.layout = ChannelLayout::Stereo;
     ringcfg.block_frames = k_block_frames;
-    ringcfg.revision = doc->revision();
+    ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
     LookaheadRing ring(*doc, pull, ringcfg);
 
     AudioWorkerPoolConfig poolcfg;

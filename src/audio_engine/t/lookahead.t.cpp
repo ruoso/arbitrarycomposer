@@ -275,7 +275,7 @@ LookaheadRingConfig ring_config(Scene& scene) {
   cfg.sample_rate = k_rate;
   cfg.layout = ChannelLayout::Stereo;
   cfg.block_frames = k_block_frames;
-  cfg.revision = 0;
+  cfg.contribution = [rev = std::uint64_t{0}](ObjectId) { return rev; };
   return cfg;
 }
 
@@ -641,7 +641,7 @@ TEST_CASE("the fill descends recursively and gates a nested contributor on its c
   cfg.sample_rate = k_rate;
   cfg.layout = ChannelLayout::Stereo;
   cfg.block_frames = k_block_frames;
-  cfg.revision = 0;
+  cfg.contribution = [rev = std::uint64_t{0}](ObjectId) { return rev; };
   cfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
     return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
   };
@@ -774,7 +774,7 @@ TEST_CASE("the recursive descent honors the Flat-mode culls: an inaudible child 
   cfg.sample_rate = k_rate;
   cfg.layout = ChannelLayout::Stereo;
   cfg.block_frames = k_block_frames;
-  cfg.revision = 0;
+  cfg.contribution = [rev = std::uint64_t{0}](ObjectId) { return rev; };
   cfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
     return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
   };
@@ -866,7 +866,7 @@ std::size_t warm_closure_count(SpatialChain& chain, bool spatial) {
   cfg.sample_rate = k_rate;
   cfg.layout = ChannelLayout::Stereo;
   cfg.block_frames = k_block_frames;
-  cfg.revision = 0;
+  cfg.contribution = [rev = std::uint64_t{0}](ObjectId) { return rev; };
   cfg.nested_composition = chain.nesting();
   if (spatial) {
     cfg.policy = MixPolicy::Spatial;
@@ -935,7 +935,7 @@ TEST_CASE("the Spatial cull keeps the primed-ring drain byte-exact: cache == inl
   icfg.sample_rate = k_rate;
   icfg.layout = ChannelLayout::Stereo;
   icfg.block_frames = k_block_frames;
-  icfg.revision = 0;
+  icfg.contribution = [rev = std::uint64_t{0}](ObjectId) { return rev; };
   icfg.nested_composition = ichain.nesting();
   icfg.policy = MixPolicy::Spatial;
   icfg.spatial = seed;
@@ -956,7 +956,7 @@ TEST_CASE("the Spatial cull keeps the primed-ring drain byte-exact: cache == inl
   ccfg.sample_rate = k_rate;
   ccfg.layout = ChannelLayout::Stereo;
   ccfg.block_frames = k_block_frames;
-  ccfg.revision = 0;
+  ccfg.contribution = [rev = std::uint64_t{0}](ObjectId) { return rev; };
   ccfg.nested_composition = cchain.nesting();
   ccfg.policy = MixPolicy::Spatial;
   ccfg.spatial = seed;

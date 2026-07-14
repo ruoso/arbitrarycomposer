@@ -1,3 +1,4 @@
+#include <arbc/base/hash_mix.hpp> // mix64 -- the fold's bijective pre-sum mixer
 #include <arbc/compositor/operator_graph.hpp>
 
 #include <cstddef>
@@ -26,7 +27,7 @@ std::uint64_t aggregate_revision(const Content* root,
   // a pathologically deep acyclic DAG). Integer addition is commutative and
   // associative -> order-independent; the visited set folds each reachable node
   // exactly once, so a diamond folds its shared input once and a cycle
-  // terminates. A single node degenerates to `contribution(root)`.
+  // terminates. A single node degenerates to `mix64(contribution(root))`.
   std::vector<const Content*> stack;
   std::unordered_set<const Content*> visited;
   stack.push_back(root);
@@ -35,7 +36,17 @@ std::uint64_t aggregate_revision(const Content* root,
   while (!stack.empty()) {
     const Content* node = stack.back();
     stack.pop_back();
-    acc += contribution(node);
+    // Sum a BIJECTIVE MIX of each contribution, never the raw values
+    // (`model.per_object_revision` Decision 3,
+    // 05-recursive-composition#aggregate-fold-mixes-before-summing). The raw sum's
+    // collision-freedom argument held only while every contribution carried the same
+    // document-global revision, and it collapses the moment they are per-object stamps:
+    // two inputs at stamps 7 and 3 sum to the same 10 as a later configuration at 6 and
+    // 4, and that collision serves another configuration's composed tile -- wrong
+    // pixels, silently, from a cache hit. `mix64` is a bijection, so it preserves
+    // everything the fold needs (order-independence, one visit per reachable node) and
+    // destroys only the structured cancellation.
+    acc += mix64(contribution(node));
     for (const ContentRef input : node->inputs()) {
       if (input != nullptr && visited.insert(input).second) {
         stack.push_back(input);

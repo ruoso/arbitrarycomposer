@@ -288,7 +288,7 @@ TEST_CASE("the threaded pump drains a nested-of-tones scene byte-identical to th
     ringcfg.sample_rate = k_rate;
     ringcfg.layout = ChannelLayout::Stereo;
     ringcfg.block_frames = k_block_frames;
-    ringcfg.revision = doc->revision();
+    ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
     ringcfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
       return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
     };
@@ -398,7 +398,7 @@ TEST_CASE("nested-of-tones counters: closure warmed once, inner pulls all hit, d
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   ringcfg.nested_composition = [c_nest, c_inner](ObjectId content) -> std::optional<ObjectId> {
     return content == c_nest ? std::optional<ObjectId>(c_inner) : std::nullopt;
   };
@@ -490,7 +490,7 @@ TEST_CASE("the threaded pump drains a below-rate native contributor byte-identic
     ringcfg.sample_rate = k_rate;
     ringcfg.layout = ChannelLayout::Stereo;
     ringcfg.block_frames = k_block_frames;
-    ringcfg.revision = doc->revision();
+    ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
     // No nesting here: the below-rate contributor is a native leaf, so the closure is
     // its discovery block + its native re-request block (both leaf renders).
     LookaheadRing ring(*doc, pull, ringcfg);

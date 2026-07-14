@@ -151,6 +151,25 @@ struct CompositionRecord {
 struct ObjectRecord {
   RecordKind kind{RecordKind::Layer};
   ObjectId id{};
+  // The PER-OBJECT REVISION STAMP (`model.per_object_revision`, doc 01 § Identity and
+  // versioning, doc 14 § Per-object revisions): the document revision the commit that
+  // minted THIS record published. It is written into the fresh record at the
+  // copy-on-write every mutation already performs, so a commit stamps exactly the
+  // objects it touched and every untouched object keeps its prior stamp with no write
+  // at all -- by the very structural sharing that keeps its record
+  // (14-data-model-and-editing#commit-shares-untouched-structure). That is why the
+  // stamp needs no side table, no new traversal, and no bookkeeping in `navigate()`:
+  // undo republishes the stored record wholesale, so it carries the old stamp back for
+  // free (#undo-restores-the-prior-stamp).
+  //
+  // It is what the tile/block cache key's opaque `revision` slot is projected from, so
+  // an edit to one layer no longer makes every other layer's cached tiles unreachable.
+  // A `uint64` rather than a `uint32` squeezed into the alignment hole above: a static
+  // layer's tiles are now DESIGNED to survive unrelated edits indefinitely, so a 32-bit
+  // stamp's wrap at 2^32 commits is a silent wrong-pixel path (the resident tile keyed
+  // `(X, s)` outlives the wrap, X's next edit mints `s` again, and the cache serves
+  // ancient pixels) -- 8 bytes per object is the right trade against that.
+  std::uint64_t revision{0};
   union {
     CompositionRecord composition;
     LayerRecord layer;

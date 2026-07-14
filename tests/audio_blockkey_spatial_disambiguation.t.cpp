@@ -304,7 +304,7 @@ TEST_CASE("two embeddings of one nested composition drain per-context, not one s
     ringcfg.sample_rate = k_rate;
     ringcfg.layout = ChannelLayout::Stereo;
     ringcfg.block_frames = k_block_frames;
-    ringcfg.revision = doc->revision();
+    ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
     ringcfg.policy = MixPolicy::Spatial;
     ringcfg.spatial = seed;
     ringcfg.nested_composition = scene.nesting();
@@ -412,7 +412,7 @@ TEST_CASE("two monitors of differing listener over one shared cache each drain t
     ringcfg.sample_rate = k_rate;
     ringcfg.layout = ChannelLayout::Stereo;
     ringcfg.block_frames = k_block_frames;
-    ringcfg.revision = doc->revision();
+    ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
     ringcfg.policy = MixPolicy::Spatial;
     ringcfg.spatial = seed;
     ringcfg.nested_composition = scene.nesting();

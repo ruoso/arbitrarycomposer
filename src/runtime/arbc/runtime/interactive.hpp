@@ -283,7 +283,17 @@ public:
 
   // Frame-to-frame state, exposed read-only for tests and host observability.
   const RefinementQueue& pending() const noexcept { return d_pending; }
-  std::optional<std::uint64_t> prior_revision() const noexcept { return d_prior_revision; }
+  // The stamp the last frame that composited `content` keyed it under -- the stale
+  // probe's per-content prior (`model.per_object_revision` Decision 7,
+  // `02-architecture#stale-probe-is-per-content`). `nullopt` for a content this renderer
+  // has never composited, which is exactly the case with no stale tier. This replaces
+  // the document-global `prior_revision()` scalar, which under per-object stamps named
+  // no content's prior stamp and would have made the probe miss unconditionally --
+  // silently costing the degradation ladder a tier.
+  std::optional<std::uint64_t> prior_stamp(ObjectId content) const noexcept {
+    const auto it = d_prior_stamps.find(content);
+    return it != d_prior_stamps.end() ? std::optional<std::uint64_t>(it->second) : std::nullopt;
+  }
   std::optional<Time> previous_time() const noexcept { return d_prev_time; }
   // How many times the per-revision pull-identity memo has been (re)built: the
   // behavioral counter that pins the wiring's per-frame cost at O(1) rather than
@@ -411,9 +421,17 @@ private:
   // pool's current generation at construction, so joining a busy pool does not hand the
   // first frame a free spurious return.
   CompletionCursor d_cursor;
-  Clock d_clock;                                 // the loop's only wall-clock read
-  std::optional<std::uint64_t> d_prior_revision; // last-completed revision (stale probe)
-  std::optional<Time> d_prev_time;               // previous composition time (clock advance)
+  Clock d_clock; // the loop's only wall-clock read
+  // The stale probe's PER-CONTENT priors (Decision 7): for each content this renderer has
+  // composited, the `layer_revision` the last frame that planned it keyed it under --
+  // the aggregate for an operator layer, the leaf stamp otherwise, taken straight off the
+  // plan the frame composited (`LayerTilePlan::revision`), which is what keeps the two
+  // cases uniform. Updated, never cleared: a layer culled this frame keeps the stamp it
+  // was last composited under, which is a legitimate prior rendering of that content and
+  // therefore a legitimate stale tier. It replaces the single document-global scalar,
+  // which per-object stamps make meaningless.
+  PriorStamps d_prior_stamps;
+  std::optional<Time> d_prev_time; // previous composition time (clock advance)
   // The previous frame's viewport camera scale magnitude (`camera.max_scale()`),
   // the only inter-frame camera state the loop keeps -- Step 7 compares it with
   // this frame's to pick a `zoom_direction` sign for `prime_prefetch` (Decision
@@ -442,10 +460,19 @@ private:
   // frame; within one revision the pinned graph is immutable, so the memo is exact,
   // and across a bump every tile key changes anyway, so a shifted synthesized id can
   // never serve a stale hit. Keying on the revision alone is sound under exactly the
-  // single-document-per-renderer assumption `d_prior_revision` already relies on.
+  // single-document-per-renderer assumption this loop has always relied on.
+  //
+  // The per-object revision CONTRIBUTION column rides the same memo
+  // (`model.per_object_revision` Decision 4): one more walk-free pass over the identity
+  // map on the frame thread, per revision, handed to the workers as a read-only
+  // snapshot. Eager-and-immutable rather than lazily filled, because workers pull
+  // concurrently and a lazy memo would need mutable state and a lock on exactly the
+  // hot path.
   std::optional<std::uint64_t> d_identity_revision;      // the revision the memo was built at
   std::shared_ptr<const PullIdentityMap> d_identity_map; // Content* -> ObjectId
+  std::shared_ptr<const PullStampMap> d_stamp_map;       // ObjectId -> revision contribution
   std::function<ObjectId(const Content*)> d_id_of;       // PullConfig::id_of over it
+  RevisionContribution d_contribution;                   // PullConfig::contribution over both
   std::unordered_map<ObjectId, const Content*> d_content_by_id; // the inverse, for routing
   std::vector<OperatorLayer> d_operator_layers;                 // the visible operator layers
   std::uint64_t d_identity_map_builds{0};                       // memo (re)builds, a counter

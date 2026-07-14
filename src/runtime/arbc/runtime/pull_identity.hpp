@@ -3,6 +3,7 @@
 
 #include <arbc/base/ids.hpp> // ObjectId
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -52,6 +53,67 @@ pull_identity_of(std::shared_ptr<const PullIdentityMap> ids);
 // interactive-audio `id_of` wiring reuses it verbatim.
 std::function<ObjectId(const Content*)>
 make_pull_identity_of(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve);
+
+// The SECOND COLUMN of the same per-revision memo (`model.per_object_revision`
+// Decision 4): each identified object's revision CONTRIBUTION -- the value the
+// compositor projects into the opaque `TileKey`/`BlockKey` revision slot in place of the
+// document-global revision, so an edit to one object stops orphaning every other
+// object's cached tiles.
+//
+// Keyed by `ObjectId` rather than `Content*` because BOTH read sides need it and they
+// hold different things: the visual/pull seams (`PullConfig::contribution`) receive a
+// raw `Content*`, while the audio lookahead ring computes its warm keys from an
+// `ObjectId` (`lookahead.hpp`). One map, two functors over it, is what keeps the ring's
+// write-side key and the pull's read-side probe key equal BY CONSTRUCTION rather than by
+// coincidence -- if they diverged the ring would warm blocks nobody probes and every
+// pull would miss.
+using PullStampMap = std::unordered_map<ObjectId, std::uint64_t>;
+
+// Build the contribution column over a pinned revision and an ALREADY-built identity
+// map. For each identified content `N`:
+//
+//     contribution(N) = mix64(object_revision(id_of(N)))
+//                     + (N->composition_ref().valid()
+//                          ? composition_revision(N->composition_ref())
+//                          : 0)
+//
+// The second term is Decision 5, and it is a wrong-pixel guard, not a refinement. The
+// compositor's aggregate fold walks `inputs()`, which yields CONTENTS -- but a nested
+// content's composed pixels also depend on the child composition's layer ORDER and on
+// each member layer's transform / opacity / span / time map, which live on records with
+// their own ids and are reachable from no content. Reorder a child composition, or nudge
+// one member layer's transform, and no child content's stamp moves: with the content
+// stamp alone the embedder's composed-result key would be unchanged and the cache would
+// serve the PRE-EDIT composite. Today's document-global revision masks this by bumping
+// everything.
+//
+// This is where the two halves are joined, and it has to be HERE: `composition_ref()` is
+// on the `Content` vtable and doc 17:80-84 keeps the model free of that vtable, while
+// `object_revision` / `composition_revision` are pure model vocabulary. `runtime` is the
+// only level that sees both, so no new levelization edge is introduced.
+//
+// EAGER and IMMUTABLE, built on the frame/driver thread over the pinned (immutable)
+// `DocRoot`, then read lock-free by parallel render workers -- the same posture
+// `build_pull_identity_map` already has. A lazily-filled memo would need mutable state
+// and a lock on the pull path, which is precisely the shape that produced the
+// audio-lookahead cache-thread-safety trap already on record.
+std::shared_ptr<const PullStampMap> build_pull_stamp_map(const DocRoot& state,
+                                                         const PullIdentityMap& ids);
+
+// The `PullConfig::contribution` functor: `Content* -> contribution`, composing the two
+// memo columns. A content with no identity, or an id with no stamp (a synthesized
+// operator-input child is not a model object), contributes 0 -- which is sound because
+// such a content renders as a pure function of its own inputs and of the operator record
+// that constructed it, and BOTH are model objects reachable in the same `inputs()` fold.
+std::function<std::uint64_t(const Content*)>
+pull_contribution_of(std::shared_ptr<const PullIdentityMap> ids,
+                     std::shared_ptr<const PullStampMap> stamps);
+
+// The same column read by id: the audio lookahead ring's warm-key contribution
+// (`LookaheadRingConfig::contribution`). Same map, same values, so the ring warms exactly
+// the keys `PullServiceImpl::pull_audio` later probes.
+std::function<std::uint64_t(ObjectId)>
+object_contribution_of(std::shared_ptr<const PullStampMap> stamps);
 
 } // namespace arbc
 

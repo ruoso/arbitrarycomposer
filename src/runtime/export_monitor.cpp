@@ -112,13 +112,17 @@ ExportMonitor::ExportMonitor(const Document& document, ObjectId composition,
   // synthesized id (runtime.operator_input_cache_identity), so two same-stability
   // audio inputs of one operator key under different `BlockKey`s instead of aliasing
   // on `ObjectId{}` -- the audio twin of the visual collision fix.
+  const auto identity_map = build_pull_identity_map(*d_pinned, d_resolve);
   PullConfig config;
   config.counters = &d_counters;
-  config.id_of = make_pull_identity_of(*d_pinned, d_resolve);
-  // Every node contributes the one pinned revision (doc 05:82-91): the whole export
-  // keys at `DocRoot::revision() == R`.
-  const std::uint64_t revision = d_pinned->revision();
-  config.contribution = [revision](const Content*) { return revision; };
+  config.id_of = pull_identity_of(identity_map);
+  // Each node contributes its PER-OBJECT revision stamp, read from the ONE pinned
+  // `DocRoot` (`model.per_object_revision` Decision 4). A pinned state's stamps cannot
+  // move, so `12-audio#export-monitor-pins-single-revision` holds exactly as it did
+  // under the document-global revision -- the export still keys at one frozen version;
+  // it merely keys each object by its own stamp within that version.
+  config.contribution =
+      pull_contribution_of(identity_map, build_pull_stamp_map(*d_pinned, *identity_map));
   // Render each block-cache miss inline on this (the export) thread -- offline has no
   // worker fan-out (Decision "drive mix_composition directly"): the audio twin of
   // `direct_dispatch`.

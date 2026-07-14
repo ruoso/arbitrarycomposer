@@ -194,6 +194,8 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
                          StateHandle snapshot, Deadline deadline, const Content* content_ptr) {
   LayerTilePlan plan;
   plan.content = content;
+  plan.revision = revision; // the key revision the driver records as this content's
+                            // prior stamp for the next frame's stale probe
   plan.rung = selection.rung;
   plan.remainder = selection.remainder;
   plan.local_to_device = local_to_device;
@@ -304,8 +306,17 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                               CompositorCounters* counters, const DirtyRegion* dirty,
                               Time composition_time, std::vector<LayerTilePlan>* visible_plans,
                               GraphDiagnostics* diagnostics, PullServiceImpl* pulls,
-                              Exactness exactness, WantedTiles* wanted) {
+                              Exactness exactness, WantedTiles* wanted,
+                              const RevisionContribution* contribution,
+                              const PriorStamps* prior_stamps) {
   const std::uint64_t revision = state.revision();
+  // The per-node contribution this frame keys by (`model.per_object_revision` Decision
+  // 4). A caller that supplies none contributes the document-global revision for every
+  // node -- the pre-task key, byte-for-byte -- so the offline drivers and every landed
+  // golden are untouched by this task.
+  const RevisionContribution flat_contribution = [revision](const Content*) { return revision; };
+  const RevisionContribution& contribute =
+      (contribution != nullptr && *contribution) ? *contribution : flat_contribution;
   const Rect device_rect =
       Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
 
@@ -392,13 +403,29 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     // content is an operator (`inputs()` non-empty) keys its tiles by the
     // aggregate revision folded over the reachable `inputs()` DAG (doc
     // 05:82-91), so the operator's key changes on any reachable input change.
-    // A leaf keeps the flat `revision` -- the fold degenerates to
-    // `contribution(root)` and this branch is skipped, so the leaf path is
-    // byte-identical. The driver supplies the document-global `revision` as
-    // every node's contribution today (Decision 3): correct and never stale.
+    // A leaf keys by its OWN contribution -- the fold degenerates to that one
+    // node, so the two cases are the same rule.
+    //
+    // `contribute` is the per-object revision stamp when the caller supplied one
+    // (`model.per_object_revision`), and the document-global revision otherwise.
+    // That substitution is the whole of this task at this seam: the key shape does
+    // not change, only the value projected into its opaque `revision` slot.
     const bool op_layer = is_operator(content);
     const std::uint64_t layer_revision =
-        op_layer ? aggregate_revision(content, [&](const Content*) { return revision; }) : revision;
+        op_layer ? aggregate_revision(content, contribute) : contribute(content);
+
+    // The stale probe's prior key for THIS content (Decision 7): the stamp the caller
+    // last composited it under, not a document-global scalar that names no content's
+    // prior stamp. A content the caller has never composited has no entry and gets no
+    // stale tier -- today's `nullopt` behavior. With no map the scalar stands, so every
+    // pre-task caller probes exactly as before.
+    std::optional<std::uint64_t> layer_prior = prior_revision;
+    if (prior_stamps != nullptr) {
+      const auto prior_it = prior_stamps->find(layer.content);
+      layer_prior = (prior_it != prior_stamps->end())
+                        ? std::optional<std::uint64_t>(prior_it->second)
+                        : std::nullopt;
+    }
     const Affine composed = compose(viewport.camera, layer.transform);
     const std::optional<Affine> inv = composed.inverse();
     if (!inv.has_value()) {
@@ -477,9 +504,9 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
     LayerTilePlan plan;
     std::vector<std::vector<const Rect*>> tile_clips;
     const auto plan_region = [&](const Rect& local_region) {
-      return plan_layer(cache, layer.content, layer_revision, prior_revision, selection,
-                        local_region, composed, content->stability(), local_time, StateHandle{},
-                        deadline, content);
+      return plan_layer(cache, layer.content, layer_revision, layer_prior, selection, local_region,
+                        composed, content->stability(), local_time, StateHandle{}, deadline,
+                        content);
     };
     if (dirty == nullptr) {
       plan = plan_region(region);

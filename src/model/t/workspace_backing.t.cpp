@@ -658,7 +658,15 @@ TEST_CASE("recovery continues to serve transactions: ids resume past every recov
     REQUIRE_FALSE(recovered.current()->contains(fresh));
 
     // And the recovered document keeps editing: a fresh layer lands, commits, and
-    // the version publishes on top of the recovered baseline.
+    // the version publishes on top of the recovered baseline -- ONE revision above
+    // wherever recovery resumed. Recovery no longer resumes at 0: per-object revision
+    // stamps ride inside the records and so persist into the file, and a session that
+    // reopened at 0 would re-mint a stamp a still-reachable record already carries
+    // (`model.per_object_revision` Decision 2,
+    // 15-memory-model#recovery-resumes-above-every-persisted-stamp). So the baseline is
+    // derived from the recovered version rather than re-typed as a constant.
+    const std::uint64_t resumed_at = recovered.current()->revision();
+    REQUIRE(resumed_at > recovered.current()->object_revision(doc.composition));
     {
       auto txn = recovered.transact();
       const arbc::ObjectId content = txn.add_content(0x9999u);
@@ -667,7 +675,7 @@ TEST_CASE("recovery continues to serve transactions: ids resume past every recov
       REQUIRE(txn.commit().has_value());
     }
     recovered.drain();
-    REQUIRE(recovered.current()->revision() == 1);
+    REQUIRE(recovered.current()->revision() == resumed_at + 1);
     const arbc::CompositionRecord* comp = recovered.current()->find_composition(doc.composition);
     REQUIRE(comp != nullptr);
     REQUIRE(comp->layer_count == static_cast<std::uint32_t>(k_layer_count) + 1);

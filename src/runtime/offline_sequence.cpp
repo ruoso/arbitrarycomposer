@@ -89,14 +89,23 @@ SequenceRenderer::render_frame_at(Time composition_time) {
   // operator no longer collide on `ObjectId{}` and alias one cache key. The walk is
   // deterministic over the immutable pinned graph, so a child's id is stable across
   // the frames of this sequence (Constraint 3); shared read-only on parallel workers.
-  auto id_of = make_pull_identity_of(state, resolve);
-  const std::uint64_t revision = state.revision();
+  //
+  // The per-object revision contribution rides the same pinned walk
+  // (`model.per_object_revision` Decision 4). Offline stays revision-consistent by
+  // construction: the stamps are read from the PINNED `DocRoot`, and a pinned state's
+  // stamps cannot move, so `02-architecture#offline-sequence-pins-single-revision` holds
+  // unchanged -- what moves is only how SELECTIVE the key is, which is what lets one
+  // sequence's frames reuse an unedited layer's tiles across the run.
+  const auto identity_map = build_pull_identity_map(state, resolve);
+  const auto stamp_map = build_pull_stamp_map(state, *identity_map);
+  auto id_of = pull_identity_of(identity_map);
+  auto contribution = pull_contribution_of(identity_map, stamp_map);
   const auto make_config = [&](RefinementQueue* pending_queue) {
     PullConfig config;
     config.counters = &d_counters;
     config.pending = pending_queue;
     config.id_of = id_of;
-    config.contribution = [revision](const Content*) { return revision; };
+    config.contribution = contribution;
     return config;
   };
 
@@ -131,11 +140,14 @@ SequenceRenderer::render_frame_at(Time composition_time) {
     // delivery). Byte-for-byte safe on the non-identity path: `inline_pull` uses
     // `direct_dispatch`, so `pulls->dispatch` is exactly the prior inline
     // `content->render` + `done->complete` (pull_service.hpp:195-199).
+    // The SAME `contribution` the config above hands the pull side: the frame's layer
+    // keys and the keys its operators' pulls probe must be the one function, or every
+    // pull misses (`model.per_object_revision` Decision 4).
     render_frame_interactive(state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame,
                              Deadline::none(), /*prior_revision=*/std::nullopt,
                              /*pending=*/nullptr, &d_counters, /*dirty=*/nullptr, composition_time,
                              /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, &inline_pull,
-                             Exactness::Exact);
+                             Exactness::Exact, /*wanted=*/nullptr, &contribution);
     return std::move(*target);
   }
 
@@ -184,7 +196,8 @@ SequenceRenderer::render_frame_at(Time composition_time) {
     render_frame_interactive(
         state, resolve, d_viewport, d_cache, d_backend, d_surfaces, frame, Deadline::none(),
         /*prior_revision=*/std::nullopt, &pending, &d_counters, /*dirty=*/nullptr, composition_time,
-        /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, &pulls, Exactness::Exact);
+        /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, &pulls, Exactness::Exact,
+        /*wanted=*/nullptr, &contribution);
     if (pending.tiles.empty()) {
       break; // nothing was dispatched: this pass read an all-warm cache and is exact
     }

@@ -279,7 +279,7 @@ TEST_CASE("TSan: mastered-clock publish races the pump + a viewport; goldens sur
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
 
   AudioWorkerPoolConfig poolcfg;
@@ -432,7 +432,7 @@ TEST_CASE("TSan: the device-edge streaming resampler runs on the RT callback und
   ringcfg.sample_rate = working_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
 
   AudioWorkerPoolConfig poolcfg;
@@ -544,7 +544,7 @@ TEST_CASE("TSan: the device-edge streaming resampler runs on the RT callback und
   ringcfg.sample_rate = working_rate;
   ringcfg.layout = ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = doc->revision();
+  ringcfg.contribution = [rev = doc->revision()](ObjectId) { return rev; };
   LookaheadRing ring(*doc, pull, ringcfg);
 
   AudioWorkerPoolConfig poolcfg;

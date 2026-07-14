@@ -17,7 +17,9 @@
 #include <arbc/surface/surface_pool.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -108,6 +110,34 @@ class PullServiceImpl;
 // (`refinement.hpp`), which also honors live `OperatorWait`s.
 using WantedTiles = std::unordered_set<TileKey>;
 
+// The per-node revision contribution the frame keys its tiles by
+// (`model.per_object_revision` Decision 4). `Content*` carries no id at this seam
+// (`content.hpp:161`), so the caller -- the runtime, the only level that sees both the
+// `DocRoot` and the `Content` vtable -- supplies the projection: a content's per-object
+// revision stamp, folded with the arrangement stamp of any composition it names. It is
+// the SAME functor `PullConfig::contribution` takes, which is what keeps a layer's key
+// and the key its operator's pulls probe equal by construction.
+//
+// Null / empty at `render_frame_interactive` means "no per-object stamps": every node
+// contributes the document-global `state.revision()`, which is the pre-task behavior --
+// correct and never stale, merely un-selective (one edit re-keys every layer). The
+// offline drivers and every one-shot renderer take that path, so their goldens are
+// byte-unchanged.
+using RevisionContribution = std::function<std::uint64_t(const Content*)>;
+
+// The stale-revision fallback's PER-CONTENT prior stamps (`model.per_object_revision`
+// Decision 7, `02-architecture#stale-probe-is-per-content`): for each content the caller
+// last composited, the `layer_revision` it composited it UNDER -- the aggregate for an
+// operator layer, the leaf stamp otherwise, which is what makes the two cases uniform.
+//
+// Under per-object stamps a single document-global "prior revision" scalar names no
+// content's prior stamp, so the stale probe would miss unconditionally and the
+// degradation ladder would silently lose a tier (doc 02:62-67). This map is what keeps
+// that tier alive. A content the caller has never composited simply has no entry, and
+// therefore no stale tier -- exactly today's `nullopt` behavior, and what the offline
+// drivers (which disable the stale probe outright) already pass.
+using PriorStamps = std::unordered_map<ObjectId, std::uint64_t>;
+
 // A fixed device-pixel tile edge (doc 02:59's "e.g. 256^2 device pixels").
 // Even at every rung, so tiles satisfy `reduce_rung`'s even-source-dims
 // precondition (the power-of-two tile geometry `scale_ladder.md:251-253`
@@ -180,6 +210,12 @@ struct PlannedTile {
 // lock at plan time (doc 02:123-125).
 struct LayerTilePlan {
   ObjectId content;
+  // The key revision every tile in this plan was keyed under: the aggregate for an
+  // operator layer, the content's own contribution for a leaf. Surfaced so the
+  // interactive driver can record it as this content's PRIOR STAMP for the next frame's
+  // stale probe (`PriorStamps` above) without re-deriving it -- the operator and leaf
+  // cases stay uniform because both flow through this one field.
+  std::uint64_t revision{0};
   ScaleRung rung;
   double remainder{1.0};
   Affine local_to_device;
@@ -382,6 +418,26 @@ bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
 // plan, no dispatch, no render, and `requests_issued` / `composites` are untouched. Null
 // (the default -- the offline driver, every one-shot renderer, neither of which sweeps)
 // surfaces nothing and is byte-for-byte the current behavior.
+// PER-OBJECT REVISION KEYS (`model.per_object_revision`, doc 01:155-165). When
+// `contribution` is non-null and engaged, each visible layer keys its tiles by THAT
+// content's contribution -- its per-object revision stamp folded with the arrangement of
+// any composition it names -- instead of the document-global `state.revision()`, so an
+// edit to one layer no longer makes every other layer's cached tiles unreachable. An
+// operator layer keys by the aggregate folded over that contribution across its
+// reachable `inputs()` DAG, exactly as before; the two cases stay uniform because both
+// flow through one `layer_revision`. Null (the default) contributes `state.revision()`
+// for every node -- the pre-task document-global key, which is correct and never stale,
+// merely un-selective -- so every offline driver, one-shot renderer and landed golden is
+// byte-unchanged.
+//
+// When `prior_stamps` is non-null it REPLACES the `prior_revision` scalar per layer: the
+// stale probe looks up the stamp the caller last composited THAT content under
+// (Decision 7, `02-architecture#stale-probe-is-per-content`). Under per-object stamps a
+// document-global prior revision names no content's prior stamp, so the probe would miss
+// unconditionally and the degradation ladder would silently lose its stale tier; a
+// content with no entry has no prior stamp and no stale tier, which is exactly the
+// `nullopt` behavior the offline drivers already pass. Null (the default) keeps the
+// scalar `prior_revision` for every layer, byte-for-byte the pre-task probe.
 void render_frame_interactive(
     const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
     TileCache& cache, Backend& backend, SurfacePool& pool, Surface& target, Deadline deadline,
@@ -389,6 +445,7 @@ void render_frame_interactive(
     CompositorCounters* counters = nullptr, const DirtyRegion* dirty = nullptr,
     Time composition_time = Time::zero(), std::vector<LayerTilePlan>* visible_plans = nullptr,
     GraphDiagnostics* diagnostics = nullptr, PullServiceImpl* pulls = nullptr,
-    Exactness exactness = Exactness::BestEffort, WantedTiles* wanted = nullptr);
+    Exactness exactness = Exactness::BestEffort, WantedTiles* wanted = nullptr,
+    const RevisionContribution* contribution = nullptr, const PriorStamps* prior_stamps = nullptr);
 
 } // namespace arbc

@@ -1,3 +1,4 @@
+#include <arbc/base/hash_mix.hpp> // mix64 -- the arrangement fold's bijective mixer
 #include <arbc/model/model.hpp>
 
 #include <algorithm>
@@ -6,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -375,6 +377,39 @@ bool DocRoot::contains(ObjectId id) const {
   return hamt_lookup(d_stores, d_root, id.value, edge);
 }
 
+std::uint64_t DocRoot::object_revision(ObjectId id) const {
+  SlotRef<ObjectRecord> edge;
+  if (!hamt_lookup(d_stores, d_root, id.value, edge)) {
+    return 0; // absent: a well-defined no-op, not a stale key
+  }
+  return d_stores.records->peek(edge)->revision;
+}
+
+std::uint64_t DocRoot::composition_revision(ObjectId composition) const {
+  SlotRef<ObjectRecord> edge;
+  if (!hamt_lookup(d_stores, d_root, composition.value, edge)) {
+    return 0; // absent
+  }
+  const ObjectRecord* const rec = d_stores.records->peek(edge);
+  if (rec->kind != RecordKind::Composition) {
+    return 0; // not a composition
+  }
+  // The composition's OWN stamp carries every arrangement fact that lives on its record
+  // -- the layer order, the membership set, the inline/spill representation -- because
+  // attach, detach and reorder all path-copy the composition record itself. Each member
+  // layer's stamp carries that layer's placement (transform, opacity, span, time map),
+  // which lives on `LayerRecord`. A layer's CONTENT edit moves no stamp here and is not
+  // meant to: the compositor's `inputs()` fold covers that half.
+  //
+  // Mixed before summing, exactly as the aggregate fold is (Decision 3): a raw sum of
+  // member stamps cancels when a reorder swaps a high-stamp layer for a low-stamp one,
+  // which is precisely one of the edits this fold exists to detect.
+  std::uint64_t acc = mix64(rec->revision);
+  for_each_layer_in(composition,
+                    [&](const ObjectId member) { acc += mix64(object_revision(member)); });
+  return acc;
+}
+
 const LayerRecord* DocRoot::find_layer(ObjectId id) const {
   SlotRef<ObjectRecord> edge;
   if (!hamt_lookup(d_stores, d_root, id.value, edge)) {
@@ -631,10 +666,32 @@ expected<std::unique_ptr<Model>, WorkspaceFileError> Model::open(const std::stri
   // nothing on disk is trusted for bookkeeping (doc 15:184-190).
   const Recovered recovered = model->rebuild_counts(root_index);
 
-  // Each store's free list is the below-high-water complement of its live set, and
-  // its live count is that set's size (checkpoint.hpp:202-204). One call per store.
-  model->d_checkpointer->finalize_open(model->d_nodes.store(), recovered.nodes);
-  model->d_checkpointer->finalize_open(model->d_records.store(), recovered.records);
+  // Each store's free list is the below-high-water complement of its live set, and its
+  // live count is that set's size (checkpoint.hpp:202-204) -- so `finalize_open` takes a
+  // store's WHOLE live set and is called ONCE PER STORE.
+  //
+  // Once per STORE, not once per typed view: the arena keys stores by SIZE CLASS, so two
+  // `RefStore`s whose slot geometry coincides are two views over ONE `SlotStore`
+  // (slot_store.cpp: "later typed views for the same size class share this store"). The
+  // nodes view and the records view are exactly that whenever `sizeof(HamtNode) ==
+  // sizeof(ObjectRecord)` -- which is not hypothetical and not build-stable: `SlotRef`
+  // carries a generation word only in debug (refs.hpp:77-87), so `HamtNode`'s 32 child
+  // edges make it 288 bytes in a debug build and 152 in a release one, and 152 is what
+  // `ObjectRecord` weighs since it grew the per-object revision stamp. Feeding the two
+  // live sets to a SHARED store as two calls would let the second finalize OVERWRITE the
+  // first: every reachable HAMT node onto the free list, for the next allocation to
+  // overwrite under a document that still points at it. So group the walk's live sets by
+  // store identity and finalize each store once, with the union. (Slot indices are
+  // unique within a store, so the union is exactly the store's live set: no slot is both
+  // a node and a record.)
+  std::map<SlotStore*, std::vector<SlotIndex>> live_by_store;
+  std::vector<SlotIndex>& node_live = live_by_store[&model->d_nodes.store()];
+  node_live.insert(node_live.end(), recovered.nodes.begin(), recovered.nodes.end());
+  std::vector<SlotIndex>& record_live = live_by_store[&model->d_records.store()];
+  record_live.insert(record_live.end(), recovered.records.begin(), recovered.records.end());
+  for (auto& [store, live] : live_by_store) {
+    model->d_checkpointer->finalize_open(*store, live);
+  }
 
   // Ids are never reused (doc 14 § Identity), and spill-chunk records draw from the
   // same counter -- so the counter must resume PAST every id in the file, or the
@@ -654,8 +711,17 @@ expected<std::unique_ptr<Model>, WorkspaceFileError> Model::open(const std::stri
     // Adopt the one count the walk reserved for the version handle. `DocRoot` owns
     // exactly one count on the version root (model.hpp), so this takes ownership of
     // a count already accounted for -- it does not retain again.
+    //
+    // The recovered document opens ABOVE every persisted per-object stamp, not at 0
+    // (`model.per_object_revision` Decision 2). Stamps ride inside the records and so
+    // persist into the file; resuming the counter at 0 would let a commit in the
+    // recovered session re-mint a stamp a still-reachable record already carries, which
+    // keys two different renderings of one object alike. The document's CONTENT is
+    // unchanged by this -- only the number beside it moves, and the durable root is the
+    // document, not that number (15-memory-model#recovery-resumes-above-every-persisted-
+    // stamp).
     model->d_current.store(std::make_shared<const DocRoot>(
-        model->d_bundle, model->d_nodes.adopt_index(root_index), 0));
+        model->d_bundle, model->d_nodes.adopt_index(root_index), recovered.max_revision + 1));
   }
   return model;
 }
@@ -695,6 +761,7 @@ Model::Recovered Model::rebuild_counts(SlotIndex root_index) {
         out.records.push_back(leaf);
         const ObjectRecord* record = d_records.peek_index(leaf);
         out.max_id = std::max(out.max_id, record->id.value);
+        out.max_revision = std::max(out.max_revision, record->revision);
         // The walk VISITS every content record's state handle and descends nothing:
         // v1 handles are inert (`k_state_none`) because no kind ships a persistent
         // workspace-backed state slab yet, and content-state slabs are kind-owned in
@@ -779,6 +846,15 @@ Model::load_baseline(const std::function<void(Transaction&)>& build) {
   // baseline WITHOUT journaling it (serialize.reader Decision 3): a load is a
   // fresh document at version 0, not an undoable edit (doc 14:263-264, 40-43).
   Transaction txn(*this, "load");
+  // A load PUBLISHES revision 0, so its records must be STAMPED 0 -- not the `base + 1`
+  // an ordinary commit mints (`model.per_object_revision` Decision 2). Otherwise every
+  // loaded record would carry stamp 1 under a document opened at revision 0, and the
+  // first real commit -- which publishes revision 1 -- would mint stamp 1 again for
+  // each object it touches: two different renderings of one object under one cache key.
+  // The doc-08 writer never emitted a stamp and the reader never reads one, so a load
+  // simply mints them all at 0 and the counter is monotone from there against a cold
+  // cache (no format-major bump, no reader/writer change).
+  txn.d_publish_revision = 0;
   build(txn);
   if (!txn.d_status) {
     return txn.d_status; // a reconstruction step exhausted the arena: publish nothing
@@ -806,6 +882,7 @@ Model::Transaction::Transaction(Model& model, std::string name)
   d_base = model.current(); // pin the base version: fork its root + the before-edges
   d_root = d_base->root_ref();
   d_base_revision = d_base->revision();
+  d_publish_revision = d_base_revision + 1; // `load_baseline` re-points this at 0
 }
 
 void Model::Transaction::touch(ObjectId id) {
@@ -828,6 +905,7 @@ ObjectId Model::Transaction::add_layer(ObjectId content, const Affine& transform
     return ObjectId{};
   }
   ObjectRecord& r = **rec;
+  stamp(r);
   r.kind = RecordKind::Layer;
   r.id = id;
   // gain / flags (audible+visible) / span / time_map take their still-defaults.
@@ -856,6 +934,7 @@ ObjectId Model::Transaction::add_content(std::uint64_t kind) {
     return ObjectId{};
   }
   ObjectRecord& r = **rec;
+  stamp(r);
   r.kind = RecordKind::Content;
   r.id = id;
   r.as.content = ContentRecord{kind, StateHandle{}};
@@ -889,6 +968,7 @@ ObjectId Model::Transaction::add_composition(ObjectId id, double canvas_w, doubl
     return ObjectId{};
   }
   ObjectRecord& r = **rec;
+  stamp(r);
   r.kind = RecordKind::Composition;
   r.id = id;
   r.as.composition = CompositionRecord{};
@@ -926,6 +1006,7 @@ void Model::Transaction::set_working_space(ObjectId composition, const SurfaceFo
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override the config
+  stamp(nr);
   nr.as.composition.working_space = format;
 
   expected<Ref<HamtNode>, PoolError> next =
@@ -958,6 +1039,7 @@ void Model::Transaction::set_working_audio_format(ObjectId composition, const Au
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override the config
+  stamp(nr);
   nr.as.composition.working_audio_format = format;
 
   expected<Ref<HamtNode>, PoolError> next =
@@ -990,6 +1072,7 @@ void Model::Transaction::set_transform(ObjectId layer, const Affine& transform) 
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override placement
+  stamp(nr);
   nr.as.layer.transform = transform;
 
   expected<Ref<HamtNode>, PoolError> next =
@@ -1022,6 +1105,7 @@ void Model::Transaction::set_span(ObjectId layer, const TimeRange& span) {
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override placement
+  stamp(nr);
   nr.as.layer.span = span;
 
   expected<Ref<HamtNode>, PoolError> next =
@@ -1054,6 +1138,7 @@ void Model::Transaction::set_time_map(ObjectId layer, const TimeMap& time_map) {
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override placement
+  stamp(nr);
   nr.as.layer.time_map = time_map;
 
   expected<Ref<HamtNode>, PoolError> next =
@@ -1086,6 +1171,7 @@ void Model::Transaction::set_opacity(ObjectId layer, double opacity) {
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override placement
+  stamp(nr);
   nr.as.layer.opacity = opacity;
 
   expected<Ref<HamtNode>, PoolError> next =
@@ -1118,6 +1204,7 @@ void Model::Transaction::set_gain(ObjectId layer, double gain) {
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override placement
+  stamp(nr);
   nr.as.layer.gain = gain;
 
   expected<Ref<HamtNode>, PoolError> next =
@@ -1150,6 +1237,7 @@ void Model::Transaction::set_audible(ObjectId layer, bool audible) {
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override placement
+  stamp(nr);
   if (audible) {
     nr.as.layer.flags |= k_layer_audible;
   } else {
@@ -1186,6 +1274,7 @@ void Model::Transaction::set_visible(ObjectId layer, bool visible) {
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override placement
+  stamp(nr);
   if (visible) {
     nr.as.layer.flags |= k_layer_visible;
   } else {
@@ -1228,6 +1317,7 @@ bool Model::Transaction::store_membership(ObjectId composition, const ObjectReco
     }
     ObjectRecord& nr = **rec;
     nr = base;
+    stamp(nr);
     nr.as.composition.layer_count = static_cast<std::uint32_t>(n);
     nr.as.composition.spill_root = ObjectId{};
     for (std::size_t i = 0; i < cap; ++i) {
@@ -1294,6 +1384,7 @@ bool Model::Transaction::store_membership(ObjectId composition, const ObjectReco
       return false;
     }
     ObjectRecord& cr = **rec;
+    stamp(cr);
     cr.kind = RecordKind::LayerOrderChunk;
     cr.id = chunk_ids[p];
     cr.as.order_chunk = LayerOrderChunk{};
@@ -1321,6 +1412,7 @@ bool Model::Transaction::store_membership(ObjectId composition, const ObjectReco
   }
   ObjectRecord& nr = **rec;
   nr = base;
+  stamp(nr);
   nr.as.composition.layer_count = static_cast<std::uint32_t>(n);
   nr.as.composition.spill_root = chunk_ids[0];
   for (std::size_t i = 0; i < cap; ++i) {
@@ -1465,6 +1557,7 @@ void Model::Transaction::set_content_state(ObjectId content, StateHandle after) 
   }
   ObjectRecord& nr = **rec;
   nr = *old; // trivial copy of the immutable old record, then override the handle
+  stamp(nr);
   nr.as.content.state = after;
 
   // Retain the captured handle for THIS newly-created record slot (one retain per
@@ -1586,9 +1679,11 @@ expected<std::monostate, PoolError> Model::Transaction::commit() {
     }
   }
 
-  // Publish: exactly one atomic store, exactly one revision increment.
+  // Publish: exactly one atomic store, exactly one revision increment -- and it is the
+  // same value every record this transaction path-copied was already stamped with, so
+  // the object stamps and the document revision cannot drift apart.
   d_model->d_current.store(
-      std::make_shared<const DocRoot>(d_model->d_bundle, std::move(d_root), d_base_revision + 1));
+      std::make_shared<const DocRoot>(d_model->d_bundle, std::move(d_root), d_publish_revision));
   d_open = false;
 
   // Flush damage once, then notify the commit sink once (doc 14:92-94, :164).

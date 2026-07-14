@@ -248,23 +248,34 @@ TEST_CASE("interactive: damaging a $ref content cannot evict an inline child's t
   const std::vector<Damage> edit{Damage{f.c_id, Rect::infinite(), TimeRange::all()}};
 
   // --- Frame 2: the driver routes the damage and invalidates. ------------------
+  const std::uint64_t requests_before = renderer.counters().requests_issued();
   renderer.render_frame(*after, resolve, viewport(), cache, backend, pool, **target, edit, k_when,
                         k_budget);
 
   // C's tiles WERE dropped: the router emits C's pull identity beside its model id
   // (`operator_model_damage_routing`), and that is the key its tiles actually live under.
-  // Exactly the four freshly rendered tiles remain -- the superseded-revision four were
-  // reclaimed, not merely made unreachable.
+  // Exactly the four freshly rendered tiles remain -- the superseded four were reclaimed,
+  // not merely made unreachable.
   CHECK(tiles_for(cache, c_pull) == 4U);
 
-  // X's tiles were NOT: X is a different content, its operator reaches nothing damaged,
-  // and its synthesized id carries the reserved bit that C's model id cannot. So X keeps
-  // BOTH its frame-1 tiles and the frame-2 re-render's -- eight, none of them evicted.
+  // X's tiles were NOT: X is a different content, its operator reaches nothing damaged, and
+  // its synthesized id carries the reserved bit that C's model id cannot. So X keeps its
+  // frame-1 tiles -- four, none of them evicted.
   //
-  // THIS is the regression. Under the old seed `x_pull` was numerically equal to `f.c_id`,
-  // so `invalidate_damage`'s revision-agnostic `key.content == content` predicate dropped
-  // every one of X's tiles along with C's, and this count came back at 4.
-  CHECK(tiles_for(cache, x_pull) == 8U);
+  // Under PER-OBJECT REVISIONS (`model.per_object_revision`) the commit's revision bump no
+  // longer re-keys X: the edit path-copies C's layer record, X's content record is untouched
+  // and keeps its stamp, and X's tiles therefore stay reachable under the SAME key rather
+  // than being orphaned into a second generation. So the residency count is four, not the
+  // eight a document-global key produced -- and the discriminating observable moves from the
+  // tile count to the RENDER COUNT, which is the sharper statement anyway.
+  CHECK(tiles_for(cache, x_pull) == 4U);
+
+  // THIS is the regression, now stated as a behavioral counter. Under the old seed `x_pull`
+  // was numerically equal to `f.c_id`, so `invalidate_damage`'s revision-agnostic
+  // `key.content == content` predicate dropped every one of X's tiles along with C's -- and
+  // frame 2 had to RE-RENDER all four. With disjoint identities X's tiles survive the
+  // invalidation and frame 2 re-renders only C's four: delta 4, not 8.
+  CHECK(renderer.counters().requests_issued() - requests_before == 4U);
 }
 
 // enforces: 14-data-model-and-editing#synthesized-identities-never-collide-with-model-ids

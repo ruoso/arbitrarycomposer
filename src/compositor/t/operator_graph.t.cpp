@@ -1,4 +1,5 @@
 #include <arbc/base/geometry.hpp>
+#include <arbc/base/hash_mix.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/base/transform.hpp>
@@ -178,8 +179,12 @@ TEST_CASE("operator_graph: aggregate revision folds each reachable input exactly
     // A leaf is neutral under every graph-aware query (re-asserting the contract
     // leaf claim through the graph-aware planner's own functions).
     CHECK(leaf.map_input_damage(0, Rect{1.0, 2.0, 5.0, 9.0}) == Rect{1.0, 2.0, 5.0, 9.0});
+    // The fold sums a BIJECTIVE MIX of each contribution rather than the raw values
+    // (`model.per_object_revision` Decision 3), so a single node degenerates to
+    // `mix64(contribution(root))`. The aggregate is an opaque key value -- nothing reads
+    // meaning out of it -- so the numeric change re-keys tiles and moves no pixels.
     const std::unordered_map<const Content*, std::uint64_t> revs{{&leaf, 4242U}};
-    CHECK(arbc::aggregate_revision(&leaf, contrib_of(revs)) == 4242U);
+    CHECK(arbc::aggregate_revision(&leaf, contrib_of(revs)) == arbc::mix64(4242U));
   }
 
   SECTION("a chain folds every node's contribution") {
@@ -188,7 +193,8 @@ TEST_CASE("operator_graph: aggregate revision folds each reachable input exactly
     GraphContent op({&a});
     REQUIRE(arbc::is_operator(&op));
     const std::unordered_map<const Content*, std::uint64_t> revs{{&op, 3U}, {&a, 30U}, {&b, 300U}};
-    CHECK(arbc::aggregate_revision(&op, contrib_of(revs)) == 333U);
+    CHECK(arbc::aggregate_revision(&op, contrib_of(revs)) ==
+          arbc::mix64(3U) + arbc::mix64(30U) + arbc::mix64(300U));
   }
 
   SECTION("a diamond folds the shared input once and is order-independent") {
@@ -199,8 +205,9 @@ TEST_CASE("operator_graph: aggregate revision folds each reachable input exactly
     GraphContent op_perm({&b, &a}); // same reachable set, permuted input order
     const std::unordered_map<const Content*, std::uint64_t> revs{
         {&op, 1U}, {&op_perm, 1U}, {&a, 10U}, {&b, 100U}, {&c, 1000U}};
-    // c folded once, not twice: 1 + 10 + 100 + 1000.
-    CHECK(arbc::aggregate_revision(&op, contrib_of(revs)) == 1111U);
+    // c folded once, not twice: mix64(1) + mix64(10) + mix64(100) + mix64(1000).
+    CHECK(arbc::aggregate_revision(&op, contrib_of(revs)) ==
+          arbc::mix64(1U) + arbc::mix64(10U) + arbc::mix64(100U) + arbc::mix64(1000U));
     CHECK(arbc::aggregate_revision(&op_perm, contrib_of(revs)) ==
           arbc::aggregate_revision(&op, contrib_of(revs)));
   }
@@ -225,8 +232,38 @@ TEST_CASE("operator_graph: aggregate revision folds each reachable input exactly
     op.set_inputs({&a});
     a.set_inputs({&op}); // op -> a -> op (feedback)
     const std::unordered_map<const Content*, std::uint64_t> revs{{&op, 7U}, {&a, 70U}};
-    CHECK(arbc::aggregate_revision(&op, contrib_of(revs)) == 77U);
+    CHECK(arbc::aggregate_revision(&op, contrib_of(revs)) == arbc::mix64(7U) + arbc::mix64(70U));
   }
+}
+
+// enforces: 05-recursive-composition#aggregate-fold-mixes-before-summing
+TEST_CASE("operator_graph: the aggregate fold mixes before summing, so stamps cannot cancel") {
+  // The failure the mix exists to remove, driven through the real fold. Per-object revision
+  // stamps are small monotone integers, so two reachable inputs whose stamps move in
+  // OPPOSITE DIRECTIONS BY EQUAL AMOUNTS cancel under a raw sum -- reachable through an
+  // ordinary undo/redo interleaving, or a membership edit that swaps a high-stamp layer for
+  // a low-stamp one. A raw fold would then hand the second configuration the FIRST one's
+  // aggregate, and the cache would serve the first one's composed tile: wrong pixels,
+  // silently, from a hit. Nothing about the graph changes here -- only the stamps.
+  GraphContent a;
+  GraphContent b;
+  GraphContent op({&a, &b});
+
+  std::unordered_map<const Content*, std::uint64_t> revs{{&op, 0U}, {&a, 7U}, {&b, 3U}};
+  const std::uint64_t first = arbc::aggregate_revision(&op, contrib_of(revs));
+
+  revs[&a] = 6U; // -1
+  revs[&b] = 4U; // +1  -- the raw sum is unchanged (7 + 3 == 6 + 4)
+  REQUIRE(7U + 3U == 6U + 4U);
+  const std::uint64_t second = arbc::aggregate_revision(&op, contrib_of(revs));
+  CHECK(first != second);
+
+  // The properties the raw sum had are all still here: order-independence over the mixed
+  // values (addition is still commutative and associative), and each reachable node folded
+  // exactly once.
+  GraphContent op_perm({&b, &a});
+  revs[&op_perm] = 0U;
+  CHECK(arbc::aggregate_revision(&op_perm, contrib_of(revs)) == second);
 }
 
 // enforces: 05-recursive-composition#operator-damage-routes-through-map-input-damage

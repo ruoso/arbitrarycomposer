@@ -23,6 +23,7 @@
 #include <arbc/runtime/host_viewport.hpp>
 #include <arbc/runtime/interactive.hpp>
 #include <arbc/runtime/lookahead_pump.hpp>
+#include <arbc/runtime/pull_identity.hpp>
 #include <arbc/runtime/transport.hpp>
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/surface.hpp>
@@ -449,7 +450,7 @@ TEST_CASE("host_viewport: an audio-mastered viewport chases the playhead and nev
   ringcfg.sample_rate = k_rate;
   ringcfg.layout = arbc::ChannelLayout::Stereo;
   ringcfg.block_frames = k_block_frames;
-  ringcfg.revision = audio_doc->revision();
+  ringcfg.contribution = [rev = audio_doc->revision()](ObjectId) { return rev; };
   arbc::LookaheadRing ring(*audio_doc, pull, ringcfg);
 
   arbc::AudioWorkerPoolConfig apoolcfg;
@@ -722,10 +723,18 @@ TEST_CASE("host_viewport: the settle hook runs at the top of the frame, before p
   CHECK(settles == 1);
   CHECK(viewport.external_loads_settled() == 1);
   CHECK(viewport.frames_issued() == 1);
-  // The frame pinned AFTER the settle: the renderer's last-completed revision is the one the
-  // install published, not the one that preceded it.
-  REQUIRE(renderer.prior_revision().has_value());
-  CHECK(*renderer.prior_revision() == revision_at_settle);
+  // The frame pinned AFTER the settle: the stamp the renderer recorded for the content it
+  // composited is the one the INSTALL's version carries, not the one that preceded it. Under
+  // per-object revisions (`model.per_object_revision`) the renderer tracks a prior stamp per
+  // content rather than one document-global scalar, so the "which version did the frame
+  // pin?" question is asked of the content the frame actually composited.
+  const arbc::DocStatePtr settled = model.current();
+  REQUIRE(settled->revision() == revision_at_settle);
+  const auto settled_ids = arbc::build_pull_identity_map(*settled, resolve);
+  const auto settled_stamps = arbc::build_pull_stamp_map(*settled, *settled_ids);
+  REQUIRE(renderer.prior_stamp(scene.content).has_value());
+  CHECK(*renderer.prior_stamp(scene.content) ==
+        arbc::pull_contribution_of(settled_ids, settled_stamps)(&content));
 
   // Frame 2: the hook is still called (arrivals are polled, not predicted), settles nothing,
   // and -- with no damage, no follow-up owed and a still scene -- issues no frame at all. The

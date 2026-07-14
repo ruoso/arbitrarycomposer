@@ -1001,3 +1001,15 @@ add_dependencies(
   arbc-ci-plugin-solid arbc-ci-plugin-tone arbc-ci-plugin-raster arbc-ci-plugin-nested
   arbc-ci-plugin-fade arbc-ci-plugin-crossfade arbc-plugin-imageseq)
 catch_discover_tests(arbc_dual_build_t)
+
+# model.per_object_revision: the cache key carries each object's OWN revision stamp, so an
+# edit to one layer stops making every other layer's cached tiles unreachable. The headline
+# 60-dab stroke counter, the composition-arrangement fold pinned at the pixel (its failure
+# mode is a stale composite, not a slow frame), and doc 05's static-subtree caching promise
+# re-enforced against the SHIPPED InteractiveRenderer rather than a stub that hand-writes its
+# own contribution. Cross-component (runtime + compositor + cache + kind_nested/kind_solid +
+# backend_cpu), so it links `arbc`.
+add_executable(arbc_per_object_revision_keys_t per_object_revision_keys.t.cpp)
+target_link_libraries(arbc_per_object_revision_keys_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_per_object_revision_keys_t)

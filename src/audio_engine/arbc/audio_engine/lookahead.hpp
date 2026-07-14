@@ -62,11 +62,18 @@ struct LookaheadRingConfig {
   // reserved `pull_service.hpp:98` note leaves to this task. One output block index
   // spans `block_frames` frames of the working rate.
   std::uint32_t block_frames{0};
-  // The doc-global revision the per-content `BlockKey`s carry (doc 12:203-208, the
-  // audio revision space IS the visual one). The pump passes `DocRoot::revision()`;
-  // it must equal `PullConfig::contribution` for every leaf so the fill keys the
-  // ring populates are the exact keys `PullServiceImpl::pull_audio` later probes.
-  std::uint64_t revision{0};
+  // The per-object revision contribution the `BlockKey`s carry (doc 12:203-208, the
+  // audio revision space IS the visual one; `model.per_object_revision` constraint 6).
+  // It MUST BE THE SAME FUNCTION as `PullConfig::contribution` for every contributor, or
+  // the ring warms blocks under keys nobody probes: every pull misses, the ring becomes
+  // pure waste, and `12-audio#block-key-disambiguates-spatial-context`'s residency
+  // clause breaks. That is why this is a functor rather than the scalar it used to be --
+  // once the pull side keys per-object, a single document-global number here would be
+  // exactly that divergence. The runtime hands over `object_contribution_of(stamps)`,
+  // the very map its `PullConfig::contribution` reads (`runtime/pull_identity.hpp`), so
+  // write-side and read-side keys are equal BY CONSTRUCTION rather than by coincidence.
+  // Empty -> every contributor keys at 0 (a caller that keys nothing per-object).
+  std::function<std::uint64_t(ObjectId)> contribution{};
   // The per-layer contribution policy (doc 12:127-130,167-206). `Spatial` requires
   // `spatial` (below) to be seeded so the device mix carries the composed transform.
   MixPolicy policy{MixPolicy::Flat};
@@ -323,6 +330,14 @@ private:
   void descend(ObjectId composition, std::uint32_t request_rate, Time window_start,
                std::uint32_t depth, float accum_atten, const Affine& parent_listener,
                std::vector<Contribution>& out) const;
+  // The revision slot every `BlockKey` this ring warms carries: `id`'s per-object
+  // contribution, read from the SAME map the pull config's `contribution` reads
+  // (`LookaheadRingConfig::contribution`), so the warm key and the probe key are one key.
+  // A config that supplies no map keys every contributor at 0 -- degenerate but
+  // self-consistent, since the matching pull side then contributes 0 too.
+  std::uint64_t object_contribution(ObjectId id) const {
+    return d_config.contribution ? d_config.contribution(id) : 0;
+  }
   BlockKey contribution_key(const Contribution& c) const;
   // The working-rate discovery `PrefetchWant` for a contributor (leaf or nested).
   PrefetchWant make_want(const Contribution& c) const;

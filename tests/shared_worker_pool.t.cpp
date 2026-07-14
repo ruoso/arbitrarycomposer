@@ -350,7 +350,8 @@ TEST_CASE("a renderer parked on a shared pool never loses a wake to a sibling") 
   // The oracle for B's pixels: the same scene on its own inline renderer. Sharing a pool must
   // not change what B paints, only when.
   Scene oracle_scene(Rgba{0.2F, 0.4F, 0.6F, 1.0F}, /*blocks=*/0);
-  ViewportDriver oracle(oracle_scene.doc, backend, WorkerPoolConfig{}, InteractiveRenderer::Clock{});
+  ViewportDriver oracle(oracle_scene.doc, backend, WorkerPoolConfig{},
+                        InteractiveRenderer::Clock{});
   oracle.drive_to_quiescence(k_frame_budget);
   const std::vector<float> expected_pixels = oracle.pixels();
   REQUIRE_FALSE(all_transparent(expected_pixels));

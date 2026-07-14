@@ -208,6 +208,23 @@ Initially-open questions, now decided in their own docs:
   and cache invalidation on one namespace cannot evict the other's entries.
   Synthesized ids never persist — they are render-time state, never
   journaled or serialized. Decided in doc 14 (§ Identity).
+- **Per-object revision stamps.** Cache keys carry a revision stamped *per
+  object*, not the document-global revision. The stamp is a field on the
+  object record, minted at the copy-on-write every mutation already performs,
+  so a commit stamps exactly what it touched and structural sharing keeps
+  every untouched object's stamp with no write at all — the selectivity is a
+  free consequence of the persistent map, not a new mechanism. Undo restores
+  a stamp rather than advancing it, because navigation republishes the
+  byte-identical record, which makes the pre-edit tiles reachable again
+  instead of merely stale. Three things follow that are easy to get wrong: a
+  slot reference is *not* an object stamp (a slot recycles, an `ObjectId`
+  does not, and the generation tag that would catch the aliasing is
+  debug-only); the aggregate fold must mix each contribution before summing,
+  or two stamps moving oppositely can cancel and serve another
+  configuration's composed tile; and a composition's *arrangement* — layer
+  order and placement, which are not contents and so are invisible to the
+  fold over `inputs()` — must join its embedder's contribution. Decided in
+  doc 14 (§ Per-object revisions), realizing doc 01's cache-key formula.
 - **Worker dispatch is leaf-only.** The render worker pool executes *leaf*
   renders only. An operator's `render` re-enters the `PullService`, whose
   cache probe/insert and descent-depth accounting are render-thread-

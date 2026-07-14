@@ -154,12 +154,17 @@ which anything re-renders in interactive mode; offline mode ignores damage
 
 ## Identity and versioning
 
-Every content object and every layer instance carries a monotonically
-increasing **revision**, bumped on any change. Cache keys are
+Every content object and every layer instance carries its own **revision**,
+bumped on any change and increasing across successive edits. Cache keys are
 `(content identity, revision, region, quantized scale)`. This keeps caching
-correct without the cache needing to understand what changed.
+correct without the cache needing to understand what changed — and it keeps
+caching *selective*: an edit to one object leaves every other object's keys
+untouched, so a static sibling's tiles survive an unrelated edit.
 
 Identity is a stable per-object `ObjectId`, and "any change" is concretely
 a transaction publishing a new immutable document version — the editing
 data model, including undo/redo and the `Editable` content facet, is
-doc 14.
+doc 14. Undo is the one case where a revision does not increase: it
+republishes the object's previous record verbatim, so the revision is
+*restored* rather than advanced (doc 14, § Per-object revisions), which is
+what makes the pre-edit tiles reachable again instead of merely stale.
