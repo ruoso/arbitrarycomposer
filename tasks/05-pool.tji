@@ -128,4 +128,10 @@ task pool "Memory pool" {
     depends !refcounts_in_store, model.workspace_backing
     note "Whether two typed views of the same SlotStore share a store depends on sizeof, which differs between debug and release because SlotRef carries a debug-only generation word (refs.hpp:77-87). In debug sizeof(HamtNode)==288 vs sizeof(ObjectRecord)==288+8=296, so the two views never share; in release sizeof(HamtNode)==152==sizeof(ObjectRecord) (after model.per_object_revision added the 8-byte stamp), so they do share — and Model::open's two finalize_open calls silently overwrote each other's live set, corrupting recovery. The fixer sub-agent resolved the bug by grouping live sets by SlotStore identity (model.cpp, Model::open), but the gate's debug build structurally cannot exercise the shared-store path: sizes diverge before the branch is reached. Fix: introduce a type-discriminated store key in SlotStore (so debug and release route identically), OR add a test hook that forces aliasing by artificially equalizing strides, so the shared-store finalize_open path has a reachable test in both lanes. Source-of-debt: tasks/refinements/model/per_object_revision.md (fixer sub-agent follow-up). Doc 15."
   }
+  task reclaim_ordering_has_no_deterministic_test "Deterministic test for reclaim generation-bump ordering" {
+    effort 1d
+    allocate team
+    depends !reclamation, !free_pools
+    note "The only coverage for the TypedStore::destroy/reclaim ordering invariant (destruct → bump generation → release slot) is the probabilistic TSan concurrency lane; reclaim has no interpose seam a single-threaded test can use. Add a testable seam (e.g. a hook called between generation-bump and slot-release) and a deterministic test that injects a delay at that point, confirming that a concurrent re-create on the recycled slot reads the post-bump generation and cannot see the stale pre-bump value. Source-of-debt: closer for serialize.zstd_dep (fixer sub-agent return summary); the ordered resequencing landed in src/pool/arbc/pool/refs.hpp and src/pool/arbc/pool/typed_store.hpp. Docs 15/16."
+  }
 }

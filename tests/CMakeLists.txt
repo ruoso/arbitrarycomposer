@@ -25,6 +25,21 @@ target_link_libraries(
   PRIVATE nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_serialize_json_dep_smoke_t)
 
+# serialize.zstd_dep build-integration smoke test for the tile-blob compress/decompress
+# seam. NOTE THE LINK LINE, which is the whole point: it links the umbrella `arbc` and
+# NOT arbc_zstd, NOT zstd::*, deliberately deviating from the json_dep probe directly
+# above (zstd_dep Decision 4). zstd is a COMPILED library, so unlike header-only
+# nlohmann it cannot wave away the transitive-burden question -- and a probe that linked
+# zstd standalone would exercise zstd while proving nothing about libarbc's interface.
+# Linking `arbc` alone proves both halves by construction: it COMPILES only if no zstd
+# type leaked into a public header, and LINKS only if the PRIVATE link onto
+# arbc_serialize is genuinely right. It also names kind_raster's public tile geometry to
+# size the realistic case. Carries the two doc-08 tile-blob claims.
+add_executable(arbc_serialize_zstd_dep_smoke_t serialize_zstd_dep_smoke.t.cpp)
+target_link_libraries(arbc_serialize_zstd_dep_smoke_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_serialize_zstd_dep_smoke_t)
+
 # serialize.writer byte-exact canonical golden + pinned-version fidelity: builds a
 # small document through the model transaction API, pins it, and asserts the
 # canonical `.arbc` bytes byte-for-byte, then that a held pin ignores later edits.

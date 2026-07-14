@@ -56,7 +56,7 @@ against this table:
 | `arbc::backend-cpu` | 3 | format-templated kernels + variant dispatch, CPU surfaces, wrap-or-copy import | 07, 09 | base, media, surface |
 | `arbc::compositor` | 4 | transform resolution, culling, request planning, scale ladder, damage routing over `inputs()`, aggregate revisions, cycle handling, `PullService` implementation | 02, 04, 05, 13 | contract, cache (+ below) |
 | `arbc::audio-engine` | 4 | pull-based mix, lookahead scheduler, block pipeline, clock mastering, latency pre-roll | 12 | contract, cache (+ below) |
-| `arbc::serialize` | 4 | JSON read/write, canonical form, unknown-kind placeholders, `LoadContext`, `$ref` resolution | 08 | contract, model (+ below); JSON dep |
+| `arbc::serialize` | 4 | JSON read/write, canonical form, unknown-kind placeholders, `LoadContext`, `$ref` resolution, tile-blob compress/decompress | 08 | contract, model (+ below); JSON dep, compressor (zstd) |
 | `arbc::kind-*` (six) | 4 | solid, tone, raster (CoW tile table, decoded-buffer input), fade, crossfade, nested | 03, 05, 11, 12, 13 | contract (+ below); nested uses only the `PullService` interface |
 | `arbc::runtime` | 5 | `Document` (arenas + model + registry + loaders), viewport/transport/monitor objects, interactive frame loop, offline/export drivers, `dlopen` loading, housekeeping thread | 01, 02, 14, 15 | everything below |
 | `arbc` | 6 | umbrella target; public symbol surface; built-in kind registration | — | runtime + all |
@@ -227,6 +227,17 @@ composition, and no compressor closes that gap, because photographic tiles are
 93% of the bytes and compress about 2.1x (doc 08 Principle 8). The codec line is
 usually argued as a *dependency-hygiene* rule; here it also turns out to be the
 thing that keeps project files small.
+
+**The compressor does not cross this line.** `libarbc` links `zstd` (doc 10) to
+compress the raster tile blobs, and that is not a hole in the rule: `zstd`
+compresses bytes *we* produced, in a container *we* defined, and parses no foreign
+file format. A codec decodes third-party formats — a large attack surface over
+untrusted input, platform baggage, and a format dependency in core. The distinction
+is what is being parsed, not whether bytes get smaller. So "we already depend on a
+compression library" is never an argument for linking an image codec into core, and
+the arithmetic says the same thing from the other direction: compression is the
+weakest size lever there is (2.9x, below dedup's 4.3x), and no amount of it closes
+the photograph gap that the codec line exists to close.
 
 The same line holds for **device backends**: an OS audio API (PortAudio /
 CoreAudio / ALSA / a miniaudio-class single-header backend) is the audio

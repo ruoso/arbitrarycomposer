@@ -302,6 +302,16 @@ These are core-owned placement, not `params`.
      for free. It also makes **saves incremental**: a save writes only the tiles
      that are new, because every untouched tile is already on disk under the
      same name.
+
+     The hash is over the tile's **uncompressed** bytes in the storage format —
+     *not* over the compressed blob. Compression is a storage encoding, never
+     content identity. This keeps the store decoupled from the compressor: a
+     different zstd version, or a different compression level, may emit different
+     bytes for the same tile without changing its name, invalidating the asset
+     directory, or breaking dedup between two collaborators on different machines.
+     It also makes a blob self-verifying at no cost — decompress it, hash it,
+     compare against the name it was fetched under — and it leaves the compression
+     level a free tuning knob rather than a format break.
    - **Mip levels are not persisted.** They are derived, and a rebuild is
      already proven byte-identical to the incremental recompute
      (`14-data-model-and-editing#paint-mip-recompute-matches-full-rebuild`).
@@ -367,8 +377,32 @@ These are core-owned placement, not `params`.
 
 ## Dependency note
 
-This is the first place the "minimal vetted deps" policy (doc 10) bites: the
-core needs a JSON reader/writer. Candidates evaluated in doc 10; the
-requirement here is: order-preserving-optional, exact round-trip of unknown
+This is the first place the "minimal vetted deps" policy (doc 10) bites, and it
+is where both of the core's dependencies come from.
+
+**A JSON reader/writer**, for the document graph. Candidates evaluated in doc 10;
+the requirement here is: order-preserving-optional, exact round-trip of unknown
 content, no exceptions across the plugin boundary (errors as values at the
 API), and unproblematic vendoring.
+
+**A compressor** (`zstd`, doc 10), for the tile blobs of Principle 8 — the core's
+*second* and, on present evidence, last dependency. Its requirements mirror the
+JSON library's: exact round-trip (a decompressed blob is the compressed input,
+byte for byte); errors as values across the boundary, never exceptions;
+**bounded decompression of untrusted input** — the output size comes from the
+tile geometry the document declares, never from the frame header, which on a
+hostile file is attacker-controlled and will happily claim to expand to 64 GB;
+and unproblematic (never-in-tree) consumption. The byte-shuffle that makes it pay
+on float tiles is ours, not the library's.
+
+Two bounds on the compressor, stated here so neither is quietly widened later.
+First, **compressed bytes are never content identity** (Principle 8): the store
+hashes uncompressed tiles, so the compressor is swappable and its version is not
+part of the format. Second, and more important: **a compressor is not a codec, and
+taking one is not a precedent for taking one.** `zstd` compresses bytes we produced
+ourselves, in a container we defined; it parses no foreign file format. An image
+codec decodes third-party formats, and it stays outside `libarbc` — in
+`arbc-plugin-image` / `arbc-plugin-imageseq`, behind doc 17's codec line. Nothing
+about compression relaxes that, least of all the arithmetic: compression is the
+*weakest* of the size levers above (2.9x, against content-addressed dedup's 4.3x).
+It is worth exactly one small, well-vetted dependency and no more.

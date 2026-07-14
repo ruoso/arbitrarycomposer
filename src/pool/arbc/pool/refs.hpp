@@ -235,14 +235,17 @@ private:
 // `generation_ref` accessors. Because the columns are separate from the data
 // pages, arbitrary pin/unpin traffic never dirties a data chunk.
 //
-// Threading (doc 15): `create` and `reclaim` are WRITER-THREAD-ONLY (they
-// allocate/release slots through the SlotStore, and grow the parallel tables).
-// Count operations -- `retain`, `release`, `resolve`, `peek`, `count`, and all
-// Ref copy/move/destroy -- are safe from ANY thread. The one caveat: a
-// `release` that drops the count to zero dispatches to the sink, and the
-// default immediate sink reclaims inline (writer-only). Drive counts to zero on
-// the writer thread, or install a deferred sink (pool.reclamation) whose
-// on_zero merely enqueues.
+// Threading (doc 15): `create` is WRITER-THREAD-ONLY (it allocates slots through
+// the SlotStore and grows the parallel tables). `reclaim` is SINGLE-DRAINER but
+// not writer-only (pool.free_pools relaxed it; see drain_pending) -- so it runs
+// CONCURRENTLY with the writer's `create`, and everything it does to a slot must
+// be ordered against that slot becoming re-allocatable. Count operations --
+// `retain`, `release`, `resolve`, `peek`, `count`, and all Ref
+// copy/move/destroy -- are safe from ANY thread. The one caveat: a `release`
+// that drops the count to zero dispatches to the sink, and the default immediate
+// sink reclaims inline on the releasing thread. Drive counts to zero on the
+// writer thread, or install a deferred sink (pool.reclamation) whose on_zero
+// merely enqueues.
 template <class T> class RefStore {
 public:
   // `refcount_backing` is null in production (portable `new[]` refcount chunks);
@@ -422,12 +425,22 @@ public:
   // pops. Runs on the single drainer (any one thread; see drain_pending); its
   // SlotStore::release now admits cross-thread release into a thread-local pool.
   void reclaim(SlotIndex index) {
-    d_typed.destroy(index);
+    d_typed.destruct(index);
 #ifndef NDEBUG
     // Bump the STORE-owned generation so any surviving stale reference faults --
     // including one held through a different typed view of this shared slot.
+    //
+    // STRICTLY BEFORE the slot goes back to the free pool. The drainer is not
+    // necessarily the writer (see drain_pending), and a released slot is
+    // re-allocatable the instant it spills to the global pool: bumping AFTER the
+    // release let the writer `create` on the recycled slot, read the stale
+    // pre-bump generation, and stamp it into live record edges -- which the next
+    // peek then faulted as "stale" even though nothing was stale. The free-pool
+    // handoff is mutex-mediated, so this acq_rel bump is visible to the writer's
+    // acquire-load of the generation in `create`.
     d_typed.store().generation_ref(index).fetch_add(1, std::memory_order_acq_rel);
 #endif
+    d_typed.release(index);
   }
 
   // Swap the zero-count sink (pool.reclamation installs a deferred queue).

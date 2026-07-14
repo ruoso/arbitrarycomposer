@@ -146,6 +146,92 @@ if(TARGET nlohmann_json)
   endif()
 endif()
 
+# zstd: the core's SECOND (and, on present evidence, last) dependency -- the raster
+# tile-blob compressor of design doc 08 Principle 8, decided in doc 10:27 and wired
+# in serialize.zstd_dep. Unconditional, exactly like the nlohmann block above and for
+# the same reason: it is a dependency of shipped code, not of the tests.
+#
+# Unlike nlohmann, zstd is a COMPILED C library, so it does not inherit the
+# "header-only, therefore no transitive burden" argument (json_dep Constraint 5).
+# What holds instead (zstd_dep Decision 2): it is linked PRIVATE onto arbc_serialize
+# and `zstd.h` appears in no installed header, so no embedder ever COMPILES against
+# zstd; a shared libarbc folds the static zstd's symbols in and exposes nothing
+# (hence POSITION_INDEPENDENT_CODE, set globally at the top of this file); a static
+# libarbc carries the requirement to its consumer's final link, as every static
+# library carries its dependencies. When libarbc grows an install/export
+# (packaging.shared_library_build), that exported config must express the zstd
+# requirement: find_dependency(zstd) when the system copy was used, nothing when the
+# pinned static build was folded in.
+#
+# Consumed find-first with a version-pinned FetchContent fallback (doc 10:32-33),
+# never an in-tree vendored copy. Two wrinkles a compiled library brings that a
+# header-only one did not:
+#   - SOURCE_SUBDIR: the zstd repo has NO CMakeLists.txt at its root; its CMake build
+#     lives in build/cmake/. Omitting this fails configure with a confusing "does not
+#     contain a CMakeLists.txt".
+#   - Target-name normalization: a system zstd (zstdConfig.cmake) presents
+#     zstd::libzstd_static / zstd::libzstd_shared; the fetched build presents a plain
+#     libzstd_static. The arbc_zstd shim below resolves that once, so component
+#     CMakeLists name exactly one thing (Decision 3).
+#
+# Find-first is genuinely find-first, and CI may well resolve a SYSTEM zstd on the
+# Linux lanes while Windows builds the pinned tag -- two zstd versions across the
+# matrix. That is fine, and it is fine only because the content hash is over
+# UNCOMPRESSED tile bytes (doc 08 Principle 8, zstd_dep Decision 1): nothing
+# observable depends on which zstd built. The frame format is standardized (RFC 8878)
+# and the four functions used (ZSTD_compress/_decompress/_compressBound/_isError) are
+# ABI-stable across all of 1.x, so version drift is unobservable -- and letting the
+# distro path actually run in CI is valuable, since it is the path downstream
+# packagers take. A lane needing determinism can set
+# FETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER; no new CI lane, no new pinning machinery.
+include(FetchContent)
+set(ZSTD_BUILD_PROGRAMS OFF CACHE INTERNAL "")
+set(ZSTD_BUILD_TESTS OFF CACHE INTERNAL "")
+set(ZSTD_BUILD_CONTRIB OFF CACHE INTERNAL "")
+set(ZSTD_BUILD_SHARED OFF CACHE INTERNAL "")
+set(ZSTD_BUILD_STATIC ON CACHE INTERNAL "")
+set(ZSTD_LEGACY_SUPPORT OFF CACHE INTERNAL "")
+FetchContent_Declare(
+  zstd
+  GIT_REPOSITORY https://github.com/facebook/zstd.git
+  GIT_TAG v1.5.7
+  SOURCE_SUBDIR build/cmake
+  FIND_PACKAGE_ARGS 1.5)
+FetchContent_MakeAvailable(zstd)
+
+# One name for the two consumption paths (zstd_dep Decision 3). Resolved ONCE here
+# rather than as an if(TARGET ...) cascade scattered across every consumer's
+# CMakeLists. Static is preferred over shared where both exist: it keeps a shared
+# libarbc from imposing a runtime libzstd.so on its embedder, which is the transitive
+# burden doc 10:34-35 is actually about.
+add_library(arbc_zstd INTERFACE)
+if(TARGET zstd::libzstd_static)
+  target_link_libraries(arbc_zstd INTERFACE zstd::libzstd_static)
+elseif(TARGET zstd::libzstd_shared)
+  target_link_libraries(arbc_zstd INTERFACE zstd::libzstd_shared)
+elseif(TARGET zstd::libzstd)
+  target_link_libraries(arbc_zstd INTERFACE zstd::libzstd)
+elseif(TARGET libzstd_static)
+  target_link_libraries(arbc_zstd INTERFACE libzstd_static)
+else()
+  message(FATAL_ERROR "zstd resolved but exposes no known target "
+                      "(zstd::libzstd_static/_shared, zstd::libzstd, libzstd_static)")
+endif()
+
+# The fetched (non-imported) static target needs both fixups; an imported target from
+# a system zstdConfig.cmake needs neither -- CMake already treats an IMPORTED target's
+# include dirs as SYSTEM, and a system library is already built PIC. SYSTEM matters
+# because arbc_build_flags carries -Wall -Wextra -Wpedantic -Werror, which must not
+# fire on third-party headers.
+if(TARGET libzstd_static)
+  set_property(TARGET libzstd_static PROPERTY POSITION_INDEPENDENT_CODE ON)
+  get_target_property(_arbc_zstd_incs libzstd_static INTERFACE_INCLUDE_DIRECTORIES)
+  if(_arbc_zstd_incs)
+    set_target_properties(
+      libzstd_static PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_arbc_zstd_incs}")
+  endif()
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
 endif()

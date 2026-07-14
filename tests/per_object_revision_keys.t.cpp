@@ -120,9 +120,12 @@ struct StrokeScene {
   ObjectId still_b{};
 
   StrokeScene() {
-    painted = doc.add_content(std::make_shared<SolidContent>(Rgba{0.5F, 0.2F, 0.1F, 1.0F}, canvas()));
-    still_a = doc.add_content(std::make_shared<SolidContent>(Rgba{0.1F, 0.6F, 0.2F, 0.5F}, canvas()));
-    still_b = doc.add_content(std::make_shared<SolidContent>(Rgba{0.2F, 0.1F, 0.7F, 0.5F}, canvas()));
+    painted =
+        doc.add_content(std::make_shared<SolidContent>(Rgba{0.5F, 0.2F, 0.1F, 1.0F}, canvas()));
+    still_a =
+        doc.add_content(std::make_shared<SolidContent>(Rgba{0.1F, 0.6F, 0.2F, 0.5F}, canvas()));
+    still_b =
+        doc.add_content(std::make_shared<SolidContent>(Rgba{0.2F, 0.1F, 0.7F, 0.5F}, canvas()));
     doc.add_layer(painted, Affine::identity());
     doc.add_layer(still_a, Affine::identity());
     doc.add_layer(still_b, Affine::identity());
@@ -224,8 +227,8 @@ struct NestedScene {
 
   explicit NestedScene(bool reversed_order) {
     child = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
-    const ObjectId lower_c = doc.add_content(
-        std::make_shared<SolidContent>(Rgba{0.60F, 0.10F, 0.10F, 1.00F}, canvas()));
+    const ObjectId lower_c =
+        doc.add_content(std::make_shared<SolidContent>(Rgba{0.60F, 0.10F, 0.10F, 1.00F}, canvas()));
     const ObjectId upper_c = doc.add_content(std::make_shared<SolidContent>(
         Rgba{0.05F, 0.35F, 0.60F, 0.50F}, Rect{0.0, 0.0, 256.0, 256.0}));
     lower_layer = doc.add_layer(lower_c, Affine::identity());
@@ -244,8 +247,8 @@ struct NestedScene {
     nested_id = doc.add_content(nested);
     doc.add_layer(nested_id, Affine::identity());
 
-    unrelated = doc.add_content(
-        std::make_shared<SolidContent>(Rgba{0.02F, 0.02F, 0.02F, 0.10F}, canvas()));
+    unrelated =
+        doc.add_content(std::make_shared<SolidContent>(Rgba{0.02F, 0.02F, 0.02F, 0.10F}, canvas()));
     doc.add_layer(unrelated, Affine::identity());
   }
 };

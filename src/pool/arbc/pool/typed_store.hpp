@@ -46,9 +46,15 @@ public:
   // Mark the slot reusable WITHOUT destroying the object (caller's obligation).
   void release(SlotIndex index) { d_store->release(index); }
 
+  // Run `~T` WITHOUT releasing the slot. Split out of `destroy` so a caller that
+  // must interpose between destruction and the slot becoming REUSABLE can do so
+  // — `RefStore::reclaim` arms the debug generation tripwire in that gap, and a
+  // slot handed to the free pool is re-allocatable by the writer immediately.
+  void destruct(SlotIndex index) { resolve(index)->~T(); }
+
   // Run `~T` then release the slot (inline reclamation).
   void destroy(SlotIndex index) {
-    resolve(index)->~T();
+    destruct(index);
     d_store->release(index);
   }
 
