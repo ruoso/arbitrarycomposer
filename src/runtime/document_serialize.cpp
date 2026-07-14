@@ -14,6 +14,7 @@
 #include <arbc/model/records.hpp>
 #include <arbc/runtime/builtin_codecs.hpp>
 #include <arbc/runtime/document_serialize.hpp>
+#include <arbc/runtime/external_asset_loader.hpp>
 #include <arbc/runtime/external_composition_loader.hpp>
 #include <arbc/serialize/codec.hpp>       // CodecTable (internal; names nlohmann::json)
 #include <arbc/serialize/deserialize.hpp> // DeserializeFn
@@ -402,7 +403,8 @@ DeserializeFn recording_deserialize(DeserializeFn base, std::string_view kind_id
 class LoadAssembly {
 public:
   LoadAssembly(Document& doc, KindBridge& bridge, const Registry& registry)
-      : d_sink(make_sink(doc)), d_loader(DocumentSerializeAccess::model(doc), registry, d_codecs,
+      : d_assets(DocumentSerializeAccess::model(doc), DocumentSerializeAccess::pending(doc)),
+        d_sink(make_sink(doc)), d_loader(DocumentSerializeAccess::model(doc), registry, d_codecs,
                                          d_sink, DocumentSerializeAccess::pending(doc)) {
     // The codec table and the loader are mutually referential and that is intentional
     // (nested_external_ref Constraint 3): the loader reads the table when it recurses into a
@@ -439,10 +441,12 @@ public:
     // Decision 2) -- the `Registry` is the plugin-present witness, exactly as it already is
     // for the placeholder path. Ungated, an image body would deserialize through a codec
     // whose factory does not exist; gated, it falls through to `PlaceholderContent` and the
-    // authored URI survives untouched. `org.arbc.image` is a LEAF: it takes no loader (it
-    // names no child composition) and adopts no inputs.
+    // authored URI survives untouched. `org.arbc.image` is a LEAF -- it names no child
+    // composition, so it takes no COMPOSITION loader and adopts no inputs -- but it does
+    // reference an external ASSET, and `d_assets` is the loader that gives that reference its
+    // third outcome (kinds.image_async_pending Decision 2).
     if (registry.factory(k_image_kind_id) != nullptr) {
-      Codec image = image_codec(registry);
+      Codec image = image_codec(registry, &d_assets);
       d_codecs.add(
           k_image_kind_id,
           Codec{image.serialize, recording_deserialize(image.deserialize, k_image_kind_id,
@@ -456,6 +460,7 @@ public:
   const CodecTable& codecs() const noexcept { return d_codecs; }
   const ContentSink& sink() const noexcept { return d_sink; }
   ExternalCompositionLoader& loader() noexcept { return d_loader; }
+  ExternalAssetLoader& assets() noexcept { return d_assets; }
 
 private:
   // The sink that binds each reconstructed content into the document. Provisional-root
@@ -490,15 +495,24 @@ private:
       const std::uint64_t kind = (it != d_session.end()) ? it->second : KindBridge::k_unknown_kind;
       const ObjectId id = doc.add_content(std::shared_ptr<Content>(std::move(c)), kind);
       d_minted.emplace(live, id);
+      // The one point where MINTING meets IDENTITY (kinds.image_async_pending Decision 3). A
+      // content whose asset is still in flight was registered by the codec against the raw
+      // pointer it had -- the only key available before an id exists; here, and only here, the
+      // real `ObjectId` is known, so it is bound onto the durable pending entry. That id is
+      // what the arrival installs into and what its damage names. A no-op for every content
+      // that awaits nothing, which is every content but a pending image.
+      d_assets.bind(live, id);
       return SunkContent{id, live};
     };
   }
 
-  // DECLARATION ORDER IS THE CONSTRUCTION CONTRACT: the sink closes over the session and the
-  // minted map, and the loader binds the (still-empty) codec table by reference.
+  // DECLARATION ORDER IS THE CONSTRUCTION CONTRACT: the sink closes over the session, the
+  // minted map and the asset loader, and the composition loader binds the (still-empty) codec
+  // table by reference.
   LoadSession d_session;
   std::unordered_map<const Content*, ObjectId> d_minted;
   CodecTable d_codecs;
+  ExternalAssetLoader d_assets;
   ContentSink d_sink;
   ExternalCompositionLoader d_loader;
 };
@@ -522,6 +536,76 @@ std::vector<Damage> arrival_damage(const Document& doc, ObjectId child) {
     }
   });
   return out;
+}
+
+// An ASSET arrival: the bytes behind an `org.arbc.image`'s `params.source`, landing after the
+// load that asked for them finished (kinds.image_async_pending).
+//
+// Asked FIRST, before the composition arm, because one queue carries both arrival kinds and
+// `take_pending_asset` is the discriminant: an id with no asset entry is a composition child
+// (or a duplicate arrival, which finds nothing pending and installs nothing -- the same
+// idempotence `ExternalCompositionLoader::settle` already relies on).
+//
+// Unlike a composition arrival, this mutates NO model state: the decoded pyramid is
+// plugin-owned and deliberately unversioned (`kinds.image` Decision 4 -- no CoW, no
+// `StateHandle`, no pool backing). So the model-side arrival is one DAMAGE-ONLY transaction
+// (Decision 5). `Transaction::commit()` publishes unconditionally -- one atomic store, one
+// revision increment, then exactly one damage flush -- so that is precisely "one new revision
+// carrying the reason to re-render", which is what doc 02 asks of every publish. Both halves
+// are needed and one commit gives both: the DAMAGE wakes the frame loop (doc 02:50-51, "no
+// damage -> no work"), and the REVISION is what stops the parent composition's composed-result
+// tiles from being served as stale hits (doc 02:255-284).
+//
+// The install happens BEFORE the commit. Under `HostViewport::step()` the settle runs at step
+// 0, before the pin, so no worker of the current frame can straddle the transition; only
+// workers still in flight from a PREVIOUS frame can observe it, and the pyramid's atomic,
+// monotonic publish (Decision 6) makes that benign in either order -- they see the empty state
+// (culled) or the complete pyramid, and this damage guarantees a following frame sees the
+// latter.
+//
+// The damage names the image content DIRECTLY, from the pending entry's own awaiting list.
+// There is no embedding indirection to reverse the way `arrival_damage` must for a
+// composition: an image IS the damaged object. `Rect::infinite()` / `TimeRange::all()` and not
+// the decoded extent, because the content's bounds were EMPTY and are now non-empty -- the
+// region that changed is not expressible in the old geometry at all, and the absorbing shape
+// is the honest answer.
+//
+// Returns whether the arrival was an ASSET arrival at all (so the caller knows not to hand it
+// to the composition loader), and reports through `installed` whether it actually landed
+// pixels. An arrival carrying empty or undecodable bytes changes nothing observable, so it
+// opens NO transaction, publishes NO revision and flushes NO damage (Constraint 9): it costs
+// exactly the one map erase `take_pending_asset` already did.
+bool settle_asset_arrival(Document& doc, const PendingExternalLoads::Arrival& arrival,
+                          bool& installed) {
+  PendingExternalLoads::AssetEntry entry;
+  if (!DocumentSerializeAccess::pending(doc)->take_pending_asset(arrival.child, entry)) {
+    return false;
+  }
+
+  std::vector<Damage> damage;
+  for (const ObjectId id : entry.awaiting) {
+    Content* const content = doc.resolve(id);
+    // `install_asset` is the contract-level virtual (`content.hpp`): the runtime reaches the
+    // plugin's pixels through it and never through a `dynamic_cast` to the kind, which would
+    // drag the decoder into `libarbc` -- the one thing doc 17's codec line forbids. A kind
+    // that does not override it returns false and stays unavailable, which is also what
+    // undecodable bytes yield: a value, never a throw (Constraint 11).
+    if (content != nullptr && content->install_asset(arrival.bytes)) {
+      damage_add(damage, Damage{id, Rect::infinite(), TimeRange::all()});
+    }
+  }
+  if (damage.empty()) {
+    installed = false;
+    return true; // unavailable, and free: no transaction, no revision, no damage
+  }
+
+  Model::Transaction txn = DocumentSerializeAccess::model(doc).transact();
+  for (const Damage& d : damage) {
+    txn.add_damage(d);
+  }
+  static_cast<void>(txn.commit());
+  installed = true;
+  return true;
 }
 
 } // namespace
@@ -584,6 +668,14 @@ std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Regis
     }
     LoadAssembly assembly(doc, bridge, registry);
     for (const PendingExternalLoads::Arrival& arrival : ready) {
+      // The ASSET arm first: one queue, two value shapes, and the asset map is the
+      // discriminant (kinds.image_async_pending Decision 2). An asset arrival never reaches
+      // the composition loader, and a composition arrival never finds an asset entry -- the
+      // two id spaces are one monotonic `Model::allocate_id()` counter, so they cannot collide.
+      if (bool landed = false; settle_asset_arrival(doc, arrival, landed)) {
+        installed += landed ? 1U : 0U;
+        continue;
+      }
       const std::vector<Damage> damage = arrival_damage(doc, arrival.child);
       if (assembly.loader().settle(arrival.child, arrival.bytes, damage).valid()) {
         ++installed;

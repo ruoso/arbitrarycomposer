@@ -1009,13 +1009,41 @@ catch_discover_tests(arbc_image_serialize_t)
 
 # render_thread_safe() == true means the renders run CONCURRENTLY on workers (unlike
 # imageseq, which the pool serializes): the tsan-lane driver for the immutable pyramid, the
-# shared tile free list, and the racing pyramid-cache construction.
+# shared tile free list, the racing pyramid-cache construction -- and, since
+# kinds.image_async_pending, the LATE INSTALL racing in-flight worker renders, which is the one
+# cross-thread edge that task adds and the reason the pyramid pointer is an atomic. Its
+# settle-renders-and-saves driver holds a CodecTable, and through it nlohmann::json (PRIVATE to
+# arbc_runtime); link it the same way image_serialize.t.cpp does.
 add_executable(arbc_image_concurrency_stress_t image_concurrency_stress.t.cpp)
-target_link_libraries(arbc_image_concurrency_stress_t
-                      PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_link_libraries(
+  arbc_image_concurrency_stress_t
+  PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain nlohmann_json::nlohmann_json
+          arbc_build_flags)
 target_compile_definitions(arbc_image_concurrency_stress_t
                            PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
 catch_discover_tests(arbc_image_concurrency_stress_t)
+
+# kinds.image_async_pending: the THIRD load state. A deferring AssetSource double whose on_ready
+# fires when the test says so, so pending-vs-unavailable is a scheduled sequence and not a timing.
+add_executable(arbc_image_async_pending_t image_async_pending.t.cpp)
+target_link_libraries(arbc_image_async_pending_t
+                      PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_image_async_pending_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_image_async_pending_t)
+
+# The pixel half: the empty layer REPLACED BY THE PHOTOGRAPH, byte-identically to the same scene
+# loaded through an inline-firing FilesystemAssetSource -- plus the save-while-pending fixed
+# point, which names `params` and therefore nlohmann::json (PRIVATE to arbc_runtime, linked here
+# the same way image_serialize.t.cpp does).
+add_executable(arbc_image_async_pending_golden_t image_async_pending_golden.t.cpp)
+target_link_libraries(
+  arbc_image_async_pending_golden_t
+  PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain nlohmann_json::nlohmann_json
+          arbc_build_flags)
+target_compile_definitions(arbc_image_async_pending_golden_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_image_async_pending_golden_t)
 
 # The codec-line containment proof: no decode symbol in libarbc OR arbc-testing, present in
 # the shared vendored archive, the plugin's impl archive, and its loadable module.

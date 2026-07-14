@@ -7,8 +7,12 @@
 #include <imdec.h> // the PRIVATE decode dep (arbc-plugin-imdec), never in libarbc
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <span>
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace arbc::image {
@@ -40,10 +44,9 @@ WorkingPixel Pyramid::pixel(std::size_t level, int x, int y) const {
   const Level& lvl = d_levels[level];
   const int cx = std::clamp(x, 0, lvl.width - 1);
   const int cy = std::clamp(y, 0, lvl.height - 1);
-  const std::size_t o =
-      (static_cast<std::size_t>(cy) * static_cast<std::size_t>(lvl.width) +
-       static_cast<std::size_t>(cx)) *
-      4U;
+  const std::size_t o = (static_cast<std::size_t>(cy) * static_cast<std::size_t>(lvl.width) +
+                         static_cast<std::size_t>(cx)) *
+                        4U;
   return {lvl.px[o], lvl.px[o + 1], lvl.px[o + 2], lvl.px[o + 3]};
 }
 
@@ -197,20 +200,60 @@ std::uint64_t TileStore::allocations() const noexcept {
 // --- ImageContent -----------------------------------------------------------
 
 ImageContent::ImageContent(std::string authored_uri, PyramidPtr pyramid)
-    : d_uri(std::move(authored_uri)), d_pyramid(std::move(pyramid)),
-      d_tiles(std::make_shared<TileStore>()) {}
+    : ImageContent(std::move(authored_uri), std::string{}, std::move(pyramid)) {}
+
+ImageContent::ImageContent(std::string authored_uri, std::string resolved_uri, PyramidPtr pyramid)
+    : d_uri(std::move(authored_uri)), d_resolved(std::move(resolved_uri)),
+      d_pyramid(std::move(pyramid)), d_tiles(std::make_shared<TileStore>()) {}
+
+bool ImageContent::install_asset(std::string_view encoded) {
+  // PUBLISH ONCE, MONOTONICALLY (Decision 6). A content that already holds pixels keeps
+  // them: a duplicate arrival must not replace a published pyramid, because a worker
+  // rendering a pinned earlier revision is allowed to observe only two values, and a
+  // non-null -> non-null transition would be a third. (`kinds.image_master_budget` will
+  // generalize this discipline when it makes eviction re-open the slot; it inherits this
+  // seam rather than inventing a second one.)
+  if (d_pyramid.load(std::memory_order_acquire) != nullptr) {
+    return true;
+  }
+
+  // Through the SAME cache the inline path resolves through, keyed on the SAME resolved
+  // URI the content was constructed with -- which is what makes a pending-then-settled
+  // image cost exactly one decode, and what makes N contents deferring on one URI share it.
+  // Empty or undecodable bytes yield nullptr: unavailable, a value, never a throw
+  // (Constraint 11).
+  const std::span<const unsigned char> bytes(reinterpret_cast<const unsigned char*>(encoded.data()),
+                                             encoded.size());
+  PyramidPtr decoded = default_pyramid_cache().resolve(d_resolved, bytes);
+  if (!decoded) {
+    return false;
+  }
+  // ONE release store, and the only one this content will ever take. Everything the pyramid
+  // points at was built before it, so an acquire-loading reader that sees the pointer sees a
+  // complete object.
+  d_pyramid.store(std::move(decoded), std::memory_order_release);
+  return true;
+}
 
 std::optional<Rect> ImageContent::bounds() const {
-  if (!d_pyramid) {
+  const PyramidPtr pyramid = d_pyramid.load(std::memory_order_acquire);
+  if (!pyramid) {
+    // Unavailable -- and PENDING, which is minted in the same shape and is culled for the
+    // same reason (doc 08:135-144: fabricating an extent would let a not-yet-arrived file
+    // change the composition's geometry, and it would change AGAIN at the install).
     return Rect{}; // EMPTY, not nullopt: nullopt means UNBOUNDED (doc 03:76-78)
   }
-  return Rect{0.0, 0.0, static_cast<double>(d_pyramid->width()),
-              static_cast<double>(d_pyramid->height())};
+  return Rect{0.0, 0.0, static_cast<double>(pyramid->width()),
+              static_cast<double>(pyramid->height())};
 }
 
 std::optional<RenderResult> ImageContent::render(const RenderRequest& request,
                                                  std::shared_ptr<RenderCompletion> done) {
-  if (!d_pyramid) {
+  // ONE acquire load for the whole render: a worker holding a pinned earlier revision may be
+  // in here while the writer thread publishes an arrival, and re-reading the member would
+  // let a single render straddle the transition.
+  const PyramidPtr master = pyramid();
+  if (!master) {
     // Unavailable: no pixels to answer with. A value, never UB and never a throw
     // (Constraint 7). In practice the empty `bounds()` culls this content before the
     // compositor ever asks.
@@ -228,9 +271,9 @@ std::optional<RenderResult> ImageContent::render(const RenderRequest& request,
   const double achieved = (request.exactness == Exactness::Exact) ? s : std::min(s, 1.0);
   const bool exact = (achieved == s);
 
-  const int w = d_pyramid->width();
-  const int h = d_pyramid->height();
-  const auto max_level = static_cast<int>(d_pyramid->level_count()) - 1;
+  const int w = master->width();
+  const int h = master->height();
+  const auto max_level = static_cast<int>(master->level_count()) - 1;
 
   // Decision 1: the provided surface covers EXACTLY THE REQUESTED REGION AT THE ACHIEVED
   // SCALE (doc 09:157-160) -- the target's extent -- never the whole decoded frame. This is
@@ -260,7 +303,7 @@ std::optional<RenderResult> ImageContent::render(const RenderRequest& request,
         // Interpolating Catmull-Rom: at integer phase its weights are exactly (0, 1, 0, 0),
         // so an on-rung or native-scale fetch reproduces the level pixel BIT-FOR-BIT.
         sample = sample_bicubic(x0, y0, fx, fy,
-                                [&](int sx, int sy) { return d_pyramid->pixel(l, sx, sy); });
+                                [&](int sx, int sy) { return master->pixel(l, sx, sy); });
       }
       const std::size_t o = (static_cast<std::size_t>(dy) * static_cast<std::size_t>(tw) +
                              static_cast<std::size_t>(dx)) *
@@ -280,8 +323,7 @@ std::optional<RenderResult> ImageContent::render(const RenderRequest& request,
   // callback captures BOTH the store and the surface, so the free list outlives this
   // content whenever a `SurfaceRef` does. The surface carries `k_working_rgba32f` -- the
   // composition working-space tag the CPU backend asserts on (doc 09:219-230).
-  result.provided.emplace(
-      *tile, [store, tile]() { store->release(tile); }, /*transient=*/false);
+  result.provided.emplace(*tile, [store, tile]() { store->release(tile); }, /*transient=*/false);
   return result;
 }
 
@@ -313,14 +355,20 @@ expected<std::unique_ptr<Content>, std::string> make_image_content(ContentConfig
   const std::string_view resolved = frame.substr(first + 1, second - first - 1);
   const std::string_view bytes = frame.substr(second + 1);
 
-  // Empty bytes == absence (`load_context.hpp:35-38`), and absence is the unavailable
-  // state, NOT an error: the URI is kept verbatim, the content reports empty bounds, and
-  // the document loads (Constraint 6, Decision 7).
+  // Empty bytes == absence (`load_context.hpp:35-38`), which is the unavailable state and
+  // NOT an error: the URI is kept verbatim, the content reports empty bounds, and the
+  // document loads (Constraint 6, Decision 7). It is ALSO the shape a PENDING image is
+  // minted in -- the kind cannot tell the two apart from the frame, and does not need to.
+  // Which one it is, is a fact about the LOAD (did the source answer?), and it lives in the
+  // core's `PendingExternalLoads`, never here.
+  //
+  // The RESOLVED URI rides into the content, not just into this decode: it is the identity
+  // a late `install_asset` re-keys the same cache entry on.
   const std::span<const unsigned char> encoded(reinterpret_cast<const unsigned char*>(bytes.data()),
                                                bytes.size());
   PyramidPtr pyramid = default_pyramid_cache().resolve(resolved, encoded);
-  return std::unique_ptr<Content>(
-      std::make_unique<ImageContent>(std::string(authored), std::move(pyramid)));
+  return std::unique_ptr<Content>(std::make_unique<ImageContent>(
+      std::string(authored), std::string(resolved), std::move(pyramid)));
 }
 
 } // namespace arbc::image

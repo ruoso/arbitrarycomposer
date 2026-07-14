@@ -1,0 +1,66 @@
+{
+  "arbc": {
+    "format": 1
+  },
+  "composition": {
+    "canvas": [
+      0,
+      0,
+      384,
+      320
+    ],
+    "layers": [
+      {
+        "kind": "org.arbc.image",
+        "kind_version": "1",
+        "opacity": 1.0,
+        "params": {
+          "source": "assets/never-answers.ppm"
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      },
+      {
+        "kind": "org.arbc.image",
+        "kind_version": "1",
+        "opacity": 1.0,
+        "params": {
+          "source": "assets/./never-answers.ppm"
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      },
+      {
+        "kind": "org.arbc.image",
+        "kind_version": "1",
+        "opacity": 1.0,
+        "params": {
+          "source": "input.arbc"
+        },
+        "transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "visible": true
+      }
+    ]
+  }
+}

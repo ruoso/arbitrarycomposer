@@ -140,6 +140,26 @@ public:
   // `composition` and a `params.ref` is malformed" check incoherent.
   virtual std::string_view external_asset_ref() const { return {}; }
 
+  // Install the encoded bytes of the external asset above, arriving LATE —
+  // after construction, on the WRITER THREAD, because the AssetSource deferred
+  // rather than answering inside request() (doc 08 Principle 3's three load
+  // states). Returns true iff the content is now available. Undecodable bytes
+  // are a `false` return, never a throw. A kind that does not override it has
+  // no late-install channel and its references are resolved-or-unavailable.
+  //
+  // A kind that DOES override it must publish the decoded result ATOMICALLY and
+  // AT MOST ONCE — so a worker rendering an earlier pinned revision observes
+  // either the pre-arrival state or the final one, never a partial install.
+  // That obligation is what lets an overriding kind keep render_thread_safe()
+  // == true across a late install: the render stays a pure read of a pointer
+  // that is either null or final, and the two observable values are both
+  // self-consistent (the empty state, which the compositor culls on empty
+  // bounds, and the finished result). It is monotonicity, not immutability, that
+  // buys the flag — which corrects the older "immutable after construction"
+  // rationale this section used to lean on. `org.arbc.image` keeps the flag on
+  // exactly these terms.
+  virtual bool install_asset(std::string_view encoded) { return false; }
+
   // --- change notification (outbound) ---
   // The core connects this on attach; content calls damage() when it changes.
   // An editable content's state sinks (doc 14's Editable facet) bind the same

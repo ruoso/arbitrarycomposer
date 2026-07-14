@@ -642,6 +642,29 @@ public:
   // channel, exactly as `external_composition_ref()` is.
   virtual std::string_view external_asset_ref() const { return {}; }
 
+  // Install the encoded bytes of the external asset `external_asset_ref()` names,
+  // arriving LATE -- after construction, on the WRITER THREAD, because the
+  // `AssetSource` deferred rather than answering inside `request()` (doc 08
+  // Principle 3). Returns true iff the content is now available. The resolved URI
+  // is deliberately not a parameter: the content received it at construction, so
+  // the core cannot hand it the bytes of an asset it does not reference.
+  //
+  // An external asset has three load states, not two, and they are split by WHETHER
+  // THE SOURCE ANSWERED, never by the bytes being empty: a source that answers with
+  // empty bytes (or none installed at all, which fires the continuation inline) is
+  // UNAVAILABLE; a source that has not answered yet is PENDING, and this is the
+  // channel its bytes arrive through. A kind that does not override it has no
+  // late-install channel, and its references are resolved-or-unavailable.
+  //
+  // A kind that DOES override it MUST publish the decoded result ATOMICALLY and AT
+  // MOST ONCE, so a worker rendering an earlier pinned revision observes either the
+  // pre-arrival state or the final one -- never a partial install. That obligation
+  // is what lets an overriding kind keep `render_thread_safe() == true` across a
+  // late install: a render stays a pure read of a pointer that is either null or
+  // final. Undecodable bytes are a `false` return, never a throw -- errors are
+  // values across the plugin boundary (doc 03:177-180).
+  virtual bool install_asset(std::string_view /*encoded*/) { return false; }
+
   // Map damage on input `input`'s given `rect` into damage on this content's
   // output (doc 13:54-57). Default: identity (pass-through-shaped content).
   //

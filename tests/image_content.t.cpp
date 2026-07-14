@@ -54,7 +54,13 @@ TEST_CASE("the ContentConfig frame carries the authored URI, the resolved URI, a
 TEST_CASE("empty bytes in the frame mean UNAVAILABLE, not an error") {
   // Empty bytes == absence (`load_context.hpp:35-38`), and absence is a perfectly ordinary
   // content: the URI is kept, there are no pixels, and the parent document still loads
-  // (Constraint 6). This is also what a DEFERRING AssetSource looks like to v1 (Decision 5).
+  // (Constraint 6).
+  //
+  // The FRAME still spells absence as empty bytes, and a PENDING image is minted in this very
+  // shape -- but which of the two it is, is a fact about the LOAD (did the source answer?), not
+  // about the frame, and it lives in the core's `PendingExternalLoads` where the kind never sees
+  // it (kinds.image_async_pending Decision 1). A pending content gains its pixels through
+  // `install_asset`; an unavailable one never does.
   const expected<std::unique_ptr<Content>, std::string> built =
       arbc::image::make_image_content(arbc::image::image_config("assets/bg.ppm", "/p/bg.ppm", ""));
   REQUIRE(built.has_value());

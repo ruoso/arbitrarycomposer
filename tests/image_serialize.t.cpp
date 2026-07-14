@@ -33,9 +33,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <nlohmann/json.hpp>
-
 #include "support/image_fixtures.hpp"
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -89,9 +88,10 @@ private:
 Registry image_registry() {
   Registry registry;
   REQUIRE(registry
-              .add(arbc::image::ImageContent::kind_id,
-                   [](ContentConfig config) { return arbc::image::make_image_content(config); },
-                   KindMetadata{"Image", "1"})
+              .add(
+                  arbc::image::ImageContent::kind_id,
+                  [](ContentConfig config) { return arbc::image::make_image_content(config); },
+                  KindMetadata{"Image", "1"})
               .has_value());
   return registry;
 }
@@ -112,8 +112,8 @@ std::string document_with_sources(const std::vector<std::string>& sources) {
                           {"visible", true}});
   }
   const json doc{{"arbc", json{{"format", 1}}},
-                 {"composition",
-                  json{{"canvas", json::array({0, 0, 1920, 1080})}, {"layers", std::move(layers)}}}};
+                 {"composition", json{{"canvas", json::array({0, 0, 1920, 1080})},
+                                      {"layers", std::move(layers)}}}};
   return doc.dump(2) + "\n";
 }
 
@@ -177,10 +177,8 @@ TEST_CASE("an org.arbc.image layer serializes as a URI and nothing more, byte-ex
   // The AUTHORED reference re-saves, not the resolved one. The resolved URI is an absolute
   // path under the OS temp dir; if the writer had absolutised, the document would carry it --
   // and moving the project directory would break every reference in it.
-  const std::string resolved = normalize_uri((std::filesystem::path(project.base_uri())
-                                                  .parent_path() /
-                                              "assets/bg.ppm")
-                                                 .string());
+  const std::string resolved = normalize_uri(
+      (std::filesystem::path(project.base_uri()).parent_path() / "assets/bg.ppm").string());
   CHECK(saved->find(resolved) == std::string::npos);
 
   // save -> load -> save is byte-identical.
@@ -205,7 +203,7 @@ TEST_CASE("a missing, unreadable, or undecodable image asset loads successfully 
     const auto* image = dynamic_cast<const arbc::image::ImageContent*>(live);
     REQUIRE(image != nullptr);
     CHECK_FALSE(image->available());
-    CHECK(image->bounds()->empty());                     // no pixels, and no fabricated extent
+    CHECK(image->bounds()->empty());                       // no pixels, and no fabricated extent
     CHECK(image->external_asset_ref() == "assets/bg.ppm"); // the ref survives verbatim
 
     CHECK(reload_and_resave(bytes, registry, project.base_uri(), &assets) == bytes);
@@ -230,9 +228,11 @@ TEST_CASE("a missing, unreadable, or undecodable image asset loads successfully 
 
   SECTION("no AssetSource installed at all") {
     // `LoadContext::load_asset` fires `on_ready` immediately with empty bytes when no source
-    // is installed -- unavailable, never blocking. This is also what a DEFERRING source (a
-    // future network source, which does not fire inside `request()`) looks like to v1
-    // (Decision 5); the true pending state is `kinds.image_async_pending`.
+    // is installed -- unavailable, never blocking. Note that "no source" ANSWERS, which is why
+    // it stays unavailable rather than becoming PENDING: the split is decided by whether the
+    // source answered, never by the bytes being empty (kinds.image_async_pending). A DEFERRING
+    // source -- one that does NOT fire inside `request()` -- is the third state, and it lives
+    // in `tests/image_async_pending.t.cpp`.
     KindBridge bridge;
     Document doc;
     REQUIRE(load_document(bytes, doc, bridge, registry, {}, nullptr).has_value());
@@ -354,7 +354,8 @@ TEST_CASE("params interiors the image codec does not consume survive the residua
   round_trips(json{{"source", 42}});
 }
 
-TEST_CASE("the image codec reports a registry without the kind, and a refusing factory, as values") {
+TEST_CASE(
+    "the image codec reports a registry without the kind, and a refusing factory, as values") {
   LoadContext ctx{""};
   const json params{{"source", "assets/bg.ppm"}};
 

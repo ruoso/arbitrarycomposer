@@ -22,6 +22,7 @@
 namespace arbc {
 
 class ExternalCompositionLoader; // runtime/external_composition_loader.hpp
+class ExternalAssetLoader;       // runtime/external_asset_loader.hpp
 
 // Per-built-in producer `kind_version` (Constraint 3): a fixed constant chosen and
 // pinned by this task, golden-pinned as the literal emitted beside `kind`. Advisory
@@ -128,14 +129,24 @@ void register_nested_binder();
 // URI, and the bytes to the plugin's `ContentFactory` through the opaque `ContentConfig`.
 // The kind performs no file I/O of its own (doc 08 Principle 3 as amended).
 //
-// `registry` is bound by CLOSURE, mirroring `nested_codec(ExternalCompositionLoader*)`: a
-// structural seam that one kind needs does not belong in the signature every kind
-// implements. The registry is where the codec finds the factory it cannot name.
+// `registry` and `loader` are bound by CLOSURE, mirroring
+// `nested_codec(ExternalCompositionLoader*)`: a structural seam that one kind needs does not
+// belong in the signature every kind implements. The registry is where the codec finds the
+// factory it cannot name; the `ExternalAssetLoader` is where the fetch acquires its THREE
+// outcomes instead of two (kinds.image_async_pending Decision 2).
+//
+// A NULL loader means "no deferral machinery": the codec falls back to a direct
+// `ctx.load_asset`, so a source that has not answered inside `request()` reads as
+// unavailable, exactly as it did before that task. That keeps `image_codec(registry)`
+// working standalone -- the save-path table (`builtin_codecs(const Registry&)`) never
+// deserializes, and the codec stays independently testable -- and it is the same benign
+// degradation `nested_codec()`'s no-argument overload already provides.
 //
 // Registration is GATED on the plugin being loaded (see `builtin_codecs(const Registry&)`):
 // no factory for the kind, no codec, and the layer round-trips verbatim as a
 // `PlaceholderContent` -- a user without the plugin opens the document, saves, and loses
 // nothing. That is the existing `CodecTable::find`-miss path; it needs no new machinery.
 Codec image_codec(const Registry& registry);
+Codec image_codec(const Registry& registry, ExternalAssetLoader* loader);
 
 } // namespace arbc

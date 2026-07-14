@@ -8,6 +8,7 @@
 #include <arbc/media/pixel_traits.hpp> // WorkingPixel
 #include <arbc/surface/surface.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -50,12 +51,20 @@ namespace arbc::image {
 //     the requested region at the achieved scale -- never a whole decoded frame
 //     (Decision 1). It is non-transient and refcounted; its release callback returns it
 //     to a small plugin-owned free list.
-//   * render_thread_safe() == true: the pyramid is immutable after construction, so a
-//     render is a pure read and the core may compute it on worker threads (Decision 4).
+//   * render_thread_safe() == true: the pyramid is immutable and PUBLISHED EXACTLY ONCE,
+//     atomically, so a render is a pure read of a pointer that is either null or final and
+//     the core may compute it on worker threads (Decision 4, as amended by
+//     kinds.image_async_pending Decision 6).
 //   * An UNAVAILABLE image (missing / unreadable / undecodable asset, or no `AssetSource`
 //     installed) reports EMPTY bounds and renders nothing, keeping its authored URI
 //     verbatim so the layer re-saves byte-identically (Decision 7). It is never a load
 //     error (doc 08:126-134).
+//   * A PENDING image -- one whose `AssetSource` has not ANSWERED yet -- is minted in
+//     exactly the unavailable shape and GAINS its pixels later, through `install_asset()`
+//     on the writer thread (kinds.image_async_pending). Pending and unavailable differ by
+//     whether the source answered, never by the bytes being empty; the kind cannot tell
+//     them apart and does not need to, because doc 08:135-144 already made an extent-less
+//     image render nothing.
 
 // An immutable mip pyramid over one decoded master. Level 0 is the decoded image in the
 // working space (`Rgba32fLinearPremul`); each level above is a 2:1 Lanczos-3 half-band
@@ -181,9 +190,19 @@ public:
   static constexpr const char* kind_id = "org.arbc.image";
 
   // `authored_uri` is the reference EXACTLY AS THE DOCUMENT SPELLED IT -- the thing that
-  // round-trips (Constraint 5). `pyramid` may be null: that is the unavailable state, and
-  // it is a perfectly ordinary content, not an error (Decision 7).
+  // round-trips (Constraint 5). `pyramid` may be null: that is the unavailable state (and
+  // also the PENDING one, which is minted in the same shape), and it is a perfectly
+  // ordinary content, not an error (Decision 7).
+  //
+  // The RESOLVED URI is kept too, because a pending image's bytes arrive after
+  // construction and `install_asset` must key the SAME `PyramidCache` entry the inline
+  // path would have -- which is what makes a pending-then-settled image cost exactly ONE
+  // decode, and N contents on one URI exactly one decode between them
+  // (kinds.image_async_pending Decision 6). The overload without it builds a content with
+  // no late-install identity: correct for a test that hands over an already-decoded
+  // pyramid, and for any caller that will never defer.
   ImageContent(std::string authored_uri, PyramidPtr pyramid);
+  ImageContent(std::string authored_uri, std::string resolved_uri, PyramidPtr pyramid);
 
   // --- Content (description) ---
   // The decoded master's extent, or an EMPTY rect when the asset is unavailable. Empty
@@ -198,24 +217,48 @@ public:
   // --- Content (render) ---
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion> done) override;
-  // The pyramid is immutable after construction, so a render is a pure read: the core may
-  // dispatch it to workers (doc 00:203's leaf-only worker dispatch). This is the real win
-  // over imageseq, whose stateful decoder + LRU force per-content serialization.
+  // The pyramid is immutable and PUBLISHED EXACTLY ONCE, atomically, so a render is a pure
+  // read of a pointer that is either null or final: the core may dispatch it to workers
+  // (doc 00:203's leaf-only worker dispatch). This is the real win over imageseq, whose
+  // stateful decoder + LRU force per-content serialization.
+  //
+  // The older argument -- "the pyramid is immutable AFTER CONSTRUCTION" -- was retired by
+  // kinds.image_async_pending Decision 6, which gave the kind a late install. It is the
+  // MONOTONICITY of that install (null -> non-null, never reverting, never replaced) that
+  // keeps the flag true: a racing worker can observe only two values, and both are
+  // self-consistent -- the empty state, which the compositor culls because bounds are
+  // empty, and the finished pyramid. There is no intermediate, so there is no lock.
   bool render_thread_safe() const override { return true; }
 
   // --- Content (discovery) ---
   // `editable()` is deliberately NOT overridden (Constraint 2).
   std::string_view external_asset_ref() const override { return d_uri; }
 
+  // The pixels of a PENDING asset, arriving after construction on the writer thread. One
+  // release store of the decoded pyramid, at most once per content: a second arrival for a
+  // content that already has pixels installs nothing and returns true. Empty or undecodable
+  // bytes leave the content unavailable and return false -- a value, never a throw.
+  bool install_asset(std::string_view encoded) override;
+
   // --- plugin-local observers ---
-  bool available() const noexcept { return d_pyramid != nullptr; }
-  const PyramidPtr& pyramid() const noexcept { return d_pyramid; }
+  bool available() const noexcept { return pyramid() != nullptr; }
+  // BY VALUE, not by reference: the pointer publishes concurrently with a worker's render,
+  // so every reader takes its own acquire-loaded copy.
+  PyramidPtr pyramid() const noexcept { return d_pyramid.load(std::memory_order_acquire); }
+  // The resolved identity the pyramid cache dedups this content's decode on. Empty when the
+  // content was built without one (see the two-argument constructor).
+  const std::string& resolved_ref() const noexcept { return d_resolved; }
   // How many surfaces the free list had to allocate rather than recycle.
   std::uint64_t tile_allocations() const noexcept { return d_tiles->allocations(); }
 
 private:
   std::string d_uri;
-  PyramidPtr d_pyramid;
+  std::string d_resolved;
+  // Neither a plain `shared_ptr` (a torn read across the late install) nor a mutex (which
+  // would serialize every worker render behind a lock taken on a pointer that changes at
+  // most once in the content's lifetime, on the hot path of the one leaf kind that has
+  // none). An atomic is what keeps `render_thread_safe()` a promise rather than a hope.
+  std::atomic<PyramidPtr> d_pyramid;
   std::shared_ptr<TileStore> d_tiles;
 };
 

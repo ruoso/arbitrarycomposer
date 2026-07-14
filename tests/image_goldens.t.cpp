@@ -51,7 +51,7 @@ Rendered render_region(arbc::image::ImageContent& content, Backend& backend, con
   auto target = backend.make_surface(w, h, k_working_rgba32f);
   REQUIRE(target.has_value());
   auto done = std::make_shared<RenderCompletion>();
-  const RenderRequest request{region,  scale,     Time::zero(), StateHandle{},
+  const RenderRequest request{region,   scale,     Time::zero(),    StateHandle{},
                               **target, exactness, Deadline::none()};
   const std::optional<RenderResult> r = content.render(request, done);
   REQUIRE(r.has_value());
@@ -85,8 +85,7 @@ std::vector<float> reference_resample(const fix::RefImage& level, const Rect& re
         const int y0 = static_cast<int>(std::floor(v));
         const auto fx = static_cast<float>(u - static_cast<double>(x0));
         const auto fy = static_cast<float>(v - static_cast<double>(y0));
-        sample = sample_bicubic(x0, y0, fx, fy,
-                                [&](int sx, int sy) { return level.at(sx, sy); });
+        sample = sample_bicubic(x0, y0, fx, fy, [&](int sx, int sy) { return level.at(sx, sy); });
       }
       const std::size_t o = (static_cast<std::size_t>(dy) * static_cast<std::size_t>(w) +
                              static_cast<std::size_t>(dx)) *
@@ -146,7 +145,8 @@ TEST_CASE("org.arbc.image renders byte-exact on the level-1 downscale rung") {
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 // enforces: 03-layer-plugin-interface#render-scale-honest
-TEST_CASE("org.arbc.image magnifies past native on an Exact request and says achieved == requested") {
+TEST_CASE(
+    "org.arbc.image magnifies past native on an Exact request and says achieved == requested") {
   CpuBackend backend;
   auto content = fix::make_content();
   const fix::RefImage master = fix::reference_master();

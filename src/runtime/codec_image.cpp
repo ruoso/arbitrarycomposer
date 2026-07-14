@@ -28,14 +28,25 @@
 // PLUGIN owns bytes -> pixels. This codec is the first production caller of
 // `LoadContext::load_asset`, the hook `serialize.reader` shipped as an interface and left
 // deliberately unused ("a filled-in loader lands with the kinds that first need it").
+// kinds.image_async_pending preserves that ownership boundary verbatim and changes only the
+// number of OUTCOMES the fetch can have.
 //
 // UNAVAILABLE IS NEVER A READ ERROR (doc 08:126-134, doc 05:77-83). A missing, unreadable,
 // or undecodable asset -- and a `LoadContext` with no `AssetSource` installed at all --
 // yields a content with no pixels; the authored URI is preserved verbatim, the layer
 // re-saves byte-identically, and the parent document LOADS SUCCESSFULLY. A missing external
 // file is a condition of the environment that may resolve later, not data loss.
+//
+// AND NEITHER IS PENDING (kinds.image_async_pending). A source that has not ANSWERED yet is
+// a third state: the content is minted in the unavailable shape, the parent load finishes at
+// revision 0 without waiting on any fetch, and the bytes are installed later on the writer
+// thread through `Content::install_asset`, on a new revision carrying damage that names the
+// image content. The split is decided by whether `on_ready` fired inside `request()` -- never
+// by the bytes being empty -- and the `ExternalAssetLoader` below is what asks that question
+// of the mutex-guarded arrival queue rather than of a captured stack flag.
 
 #include <arbc/runtime/builtin_codecs.hpp>
+#include <arbc/runtime/external_asset_loader.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -88,21 +99,42 @@ expected<json, SerializeError> serialize_image(const Content& content) {
 // idiom): it is then a param the codec did not consume, so it rides the core's residual diff
 // and round-trips verbatim, and no hostile input can turn a mistyped key into a load failure.
 //
-// V1 IS SYNCHRONOUS, and correct in production because of it: `FilesystemAssetSource` fires
-// `on_ready` INLINE, before `request` returns (`filesystem_asset_source.hpp:27`), so the
-// bytes are in hand here and no pending state arises. A DEFERRING source (a future network /
-// content-store source) simply has not fired: the buffer is empty, and v1 reads that as
-// UNAVAILABLE -- honest and lossless (the ref is preserved, the layer re-saves
-// byte-identically). The true pending state -- mint now, install pixels later on the writer
-// thread with a revision bump and a damage route -- is `kinds.image_async_pending`; it needs
-// a pixels-arrive-later install channel that `Content` does not have today.
+// The fetch, WITHOUT the deferral machinery: a direct `ctx.load_asset` whose continuation
+// writes into a `shared_ptr` buffer. A source that answered inline leaves the bytes here; a
+// source that has not answered leaves the buffer empty, and the content is minted unavailable.
+// That is exactly the two-outcome reading `kinds.image` shipped, and it is what a null loader
+// still gets -- a codec built off `image_codec(registry)` has no pending entries to install
+// into and no settle to install them on, so unavailable is the only honest answer it can give.
 //
-// The sink is a `shared_ptr` rather than a stack local precisely because a deferring source
+// The buffer is a `shared_ptr` rather than a stack local precisely because a deferring source
 // may retain the continuation and fire it after this frame is gone: the buffer then outlives
 // us and the late write is harmless, instead of scribbling on a dead stack.
+ExternalAssetLoader::FetchedAsset fetch_direct(LoadContext& ctx, const std::string& source) {
+  ExternalAssetLoader::FetchedAsset out;
+  const ResolvedRef ref = ctx.resolve(source);
+  out.resolved = ctx.resolved_uri(ref);
+  const auto bytes = std::make_shared<std::string>();
+  ctx.load_asset(ref, [bytes](std::string_view fetched) { bytes->assign(fetched); });
+  out.bytes = *bytes;
+  return out;
+}
+
+// Read `params.source`, resolve it, fetch its bytes, and hand both to the plugin's factory.
+//
+// A present-but-non-string `source` is treated LENIENTLY as absent (the `codec_nested.cpp`
+// idiom): it is then a param the codec did not consume, so it rides the core's residual diff
+// and round-trips verbatim, and no hostile input can turn a mistyped key into a load failure.
+//
+// The fetch has THREE outcomes when a loader is bound (kinds.image_async_pending). Only the
+// PENDING one is new work here, and it is one line: the minted content is registered as
+// awaiting the in-flight fetch, so the sink can bind its `ObjectId` onto the pending entry the
+// moment it assigns one (Decision 3) and the settle can find it. Resolved and unavailable are
+// byte-for-byte what they were -- a pending content is minted with EMPTY bytes, which is the
+// same wire shape unavailable already used, so the frame and the kind are untouched.
 expected<std::unique_ptr<Content>, ReaderError> deserialize_image(const json& params,
                                                                   LoadContext& ctx,
-                                                                  const Registry& registry) {
+                                                                  const Registry& registry,
+                                                                  ExternalAssetLoader* loader) {
   const ContentFactory* const factory = registry.factory(k_image_kind_id);
   if (factory == nullptr) {
     // Unreachable through the assembled table (the codec is registered only when the
@@ -120,12 +152,9 @@ expected<std::unique_ptr<Content>, ReaderError> deserialize_image(const json& pa
   // dedup: `bg.png` and `./bg.png` are two authored refs and one `ResolvedRef` -- and, on the
   // plugin side, one decode. An empty `source` resolves to nothing and fetches nothing; the
   // content is minted unavailable, keeping whatever the residual diff preserved.
-  std::string resolved;
-  auto bytes = std::make_shared<std::string>();
+  ExternalAssetLoader::FetchedAsset fetched;
   if (!source.empty()) {
-    const ResolvedRef ref = ctx.resolve(source);
-    resolved = ctx.resolved_uri(ref);
-    ctx.load_asset(ref, [bytes](std::string_view fetched) { bytes->assign(fetched); });
+    fetched = (loader != nullptr) ? loader->fetch(ctx, source) : fetch_direct(ctx, source);
   }
 
   // The `ContentConfig` frame (Decision 5): "<authored>\n<resolved>\n<encoded-bytes>", split
@@ -134,14 +163,9 @@ expected<std::unique_ptr<Content>, ReaderError> deserialize_image(const json& pa
   // framings over it, so this needs NO ABI change. A URI cannot contain a raw newline and
   // `normalize_uri` is purely lexical, so the framing is unambiguous. Both URIs ride it
   // because they answer different questions: the AUTHORED one is what the kind reads back for
-  // `params.source`, the RESOLVED one is the identity its pyramid cache dedups the decode on.
-  std::string config;
-  config.reserve(source.size() + resolved.size() + bytes->size() + 2);
-  config.append(source);
-  config.push_back('\n');
-  config.append(resolved);
-  config.push_back('\n');
-  config.append(*bytes);
+  // `params.source`, the RESOLVED one is the identity its pyramid cache dedups the decode on
+  // -- at construction AND, for a pending image, at its late `install_asset`.
+  const std::string config = source + '\n' + fetched.resolved + '\n' + fetched.bytes;
 
   expected<std::unique_ptr<Content>, std::string> built = (*factory)(config);
   if (!built) {
@@ -150,20 +174,26 @@ expected<std::unique_ptr<Content>, ReaderError> deserialize_image(const json& pa
     // hostile third-party factory reaches here; report it as a value, never a throw.
     return read_fail(ReaderError::Kind::MalformedField, "/params/source");
   }
+  if (fetched.pending.valid()) {
+    loader->await(built->get(), fetched.pending); // non-null: only a loader yields a pending id
+  }
   return std::move(*built);
 }
 
 } // namespace
 
-Codec image_codec(const Registry& registry) {
-  return Codec{serialize_image,
-               [&registry](const json& params, std::span<const ContentRef> /*inputs*/,
-                           ObjectId /*composition*/,
-                           LoadContext& ctx) -> expected<std::unique_ptr<Content>, ReaderError> {
-                 // Neither `inputs` nor `composition` is consumed: `org.arbc.image` is a
-                 // leaf kind with an empty `inputs()` and no child composition (Constraint 3).
-                 return deserialize_image(params, ctx, registry);
-               }};
+Codec image_codec(const Registry& registry) { return image_codec(registry, nullptr); }
+
+Codec image_codec(const Registry& registry, ExternalAssetLoader* loader) {
+  return Codec{
+      serialize_image,
+      [&registry, loader](const json& params, std::span<const ContentRef> /*inputs*/,
+                          ObjectId /*composition*/,
+                          LoadContext& ctx) -> expected<std::unique_ptr<Content>, ReaderError> {
+        // Neither `inputs` nor `composition` is consumed: `org.arbc.image` is a
+        // leaf kind with an empty `inputs()` and no child composition (Constraint 3).
+        return deserialize_image(params, ctx, registry, loader);
+      }};
 }
 
 } // namespace arbc

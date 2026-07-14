@@ -2,7 +2,7 @@ arbc_add_component(
   NAME runtime
   SOURCES document.cpp editable_binding.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp
           codec_fade.cpp codec_crossfade.cpp codec_nested.cpp codec_image.cpp
-          external_composition_loader.cpp filesystem_asset_source.cpp
+          external_composition_loader.cpp external_asset_loader.cpp filesystem_asset_source.cpp
           pending_external_loads.cpp
           operator_binding.cpp pull_identity.cpp
           offline.cpp
@@ -15,6 +15,7 @@ arbc_add_component(
   PUBLIC_HEADERS arbc/runtime/document.hpp arbc/runtime/editable_binding.hpp
                  arbc/runtime/document_serialize.hpp
                  arbc/runtime/external_composition_loader.hpp
+                 arbc/runtime/external_asset_loader.hpp
                  arbc/runtime/pending_external_loads.hpp
                  arbc/runtime/filesystem_asset_source.hpp
                  arbc/runtime/operator_binding.hpp

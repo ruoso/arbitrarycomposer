@@ -36,6 +36,42 @@ bool PendingExternalLoads::take_pending(ObjectId child, std::string& uri, std::s
   return true;
 }
 
+bool PendingExternalLoads::find_asset(const std::string& uri, ObjectId& fetch) const {
+  const auto it = d_asset_by_uri.find(uri);
+  if (it == d_asset_by_uri.end()) {
+    return false;
+  }
+  fetch = it->second;
+  return true;
+}
+
+void PendingExternalLoads::add_pending_asset(ObjectId fetch, std::string uri) {
+  d_asset_by_uri.insert_or_assign(uri, fetch);
+  d_pending_assets.insert_or_assign(fetch, AssetEntry{std::move(uri), {}});
+}
+
+void PendingExternalLoads::add_asset_waiter(ObjectId fetch, ObjectId content) {
+  const auto it = d_pending_assets.find(fetch);
+  if (it == d_pending_assets.end()) {
+    return; // the fetch answered inline, or was never pending: nothing awaits anything
+  }
+  it->second.awaiting.push_back(content);
+}
+
+bool PendingExternalLoads::take_pending_asset(ObjectId fetch, AssetEntry& entry) {
+  const auto it = d_pending_assets.find(fetch);
+  if (it == d_pending_assets.end()) {
+    return false;
+  }
+  entry = std::move(it->second);
+  d_pending_assets.erase(it);
+  // The URI leaves the in-flight dedup map with its entry: the fetch is no longer in flight,
+  // so a later reference to the same URI must issue an honest new request rather than join a
+  // fetch that already answered.
+  d_asset_by_uri.erase(entry.uri);
+  return true;
+}
+
 void PendingExternalLoads::complete(ObjectId child, std::string_view bytes) {
   // The ONLY method an `on_ready` calls, and it touches nothing but this queue: no `Model`,
   // no `Document`, no `LoadContext` (Constraint 4). The bytes are copied here because the

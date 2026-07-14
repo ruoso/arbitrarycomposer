@@ -43,12 +43,29 @@ namespace arbc {
 
 class PendingExternalLoads {
 public:
-  // One arrival: the child `ObjectId` the loader pre-allocated before the fetch, and the
-  // bytes `on_ready` delivered. EMPTY bytes mean the source answered ABSENCE -- unavailable,
-  // not an error (doc 05:50-52) -- which is a different thing from never having answered.
+  // One arrival: the `ObjectId` the loader pre-allocated before the fetch, and the bytes
+  // `on_ready` delivered. EMPTY bytes mean the source answered ABSENCE -- unavailable, not
+  // an error (doc 05:50-52) -- which is a different thing from never having answered.
+  //
+  // ONE queue serves BOTH arrival kinds (kinds.image_async_pending Decision 2). A composition
+  // child's id and an asset FETCH's id are both drawn from `Model::allocate_id()`'s monotonic
+  // space, so they cannot collide and need no discriminant on the wire: a settle asks the
+  // asset map first and the composition map second. That is what lets the queue, the mutex,
+  // the `weak_ptr` guard and the loop-to-quiescence settle be reused rather than duplicated --
+  // and it is what lets a pending IMAGE inside a pending nested CHILD interleave in one loop.
   struct Arrival {
     ObjectId child{};
     std::string bytes;
+  };
+
+  // A pending ASSET fetch: the resolved URI whose bytes are in flight, and the contents
+  // awaiting them. Usually one content, more when several layers spell one URI several ways
+  // -- they share one `request()` and one decode, and the single arrival damages all of them
+  // (Decision 4). The list is also the damage route: an image IS the damaged object, so
+  // unlike a composition arrival there is no embedding indirection to reverse.
+  struct AssetEntry {
+    std::string uri; // resolved
+    std::vector<ObjectId> awaiting;
   };
 
   // --- The load / writer thread half. NOT thread-safe (a load runs on one thread). ------
@@ -79,7 +96,33 @@ public:
   // depth 0 forever and the cap would silently stop capping (Decision 5).
   void add_pending(ObjectId child, std::string uri, std::size_t depth);
   bool take_pending(ObjectId child, std::string& uri, std::size_t& depth);
-  std::size_t pending() const noexcept { return d_pending.size(); }
+
+  // --- the ASSET half (kinds.image_async_pending) --------------------------------------
+
+  // An in-flight asset fetch, keyed by the RESOLVED URI so two authored spellings of one
+  // file join one request. Only IN-FLIGHT fetches are here: `take_pending_asset` drops the
+  // entry and its URI together, so a settled (or inline-answered) URI leaves no trace and a
+  // later reference re-fetches it honestly. Dedup lives on the FETCH, not on the content --
+  // a naive per-content fetch would break `#image-decodes-once-per-resolved-uri` the moment
+  // both contents deferred.
+  bool find_asset(const std::string& uri, ObjectId& fetch) const;
+  void add_pending_asset(ObjectId fetch, std::string uri);
+
+  // Bind a content's `ObjectId` onto the fetch it awaits. Called from the load's `ContentSink`,
+  // which is the exact and only point where MINTING meets IDENTITY: the codec builds the
+  // content but the sink assigns its id (Decision 3).
+  void add_asset_waiter(ObjectId fetch, ObjectId content);
+
+  // Pop the pending asset entry for `fetch`, if any. Absent means the fetch already settled
+  // (a duplicate arrival), was answered inline, or was never an asset at all -- which is how
+  // a settle tells an asset arrival from a composition one, and how a duplicate arrival
+  // installs nothing.
+  bool take_pending_asset(ObjectId fetch, AssetEntry& entry);
+
+  // Every reference this document is still waiting on -- compositions AND assets. The
+  // counter's name always meant "external fetches I am waiting on"; the asset arm is what
+  // made the second half of it real.
+  std::size_t pending() const noexcept { return d_pending.size() + d_pending_assets.size(); }
 
   // --- The queue. `complete` is ANY-THREAD; the takers are writer-thread. ---------------
 
@@ -107,6 +150,10 @@ private:
   // Writer/load-thread-only state.
   std::unordered_map<std::string, ObjectId> d_by_uri; // resolved URI -> child root composition
   std::unordered_map<ObjectId, Entry> d_pending;      // child id -> {resolved URI, reached depth}
+  // The asset half. Two maps rather than one because an asset URI and a composition URI are
+  // different namespaces reached by different seams, and a fetch id is not a composition id.
+  std::unordered_map<std::string, ObjectId> d_asset_by_uri;  // resolved URI -> IN-FLIGHT fetch id
+  std::unordered_map<ObjectId, AssetEntry> d_pending_assets; // fetch id -> {URI, awaiting contents}
   AssetSource* d_source{nullptr};
 
   // The one cross-thread channel.

@@ -34,8 +34,9 @@ task kinds "Reference kinds" {
   task image_async_pending "org.arbc.image true pending state for deferring AssetSource" {
     effort 2d
     allocate team
+    complete 100
     depends !image
-    note "Give org.arbc.image the true PENDING state for a deferring AssetSource (a network/content-store source that does not fire on_ready inline). Today such a source resolves to UNAVAILABLE (Decision 5 in tasks/refinements/kinds/image.md). Mint the content immediately, install the decoded pyramid later on the writer thread with a revision bump and a damage route naming the image content, so doc 02's Refine step replaces the empty layer live — reusing PendingExternalLoads / ExternalCompositionLoader's three-state machine (src/runtime/arbc/runtime/external_composition_loader.hpp:81-95, where pending vs unavailable is decided by whether on_ready fired inside request(), never by empty bytes). Requires a pixels-arrive-later install channel on the plugin content. Source-of-debt: tasks/refinements/kinds/image.md (Decision 5), commit kinds.image. Docs 03/05/08."
+    note "Give org.arbc.image the true PENDING state for a deferring AssetSource (a network/content-store source that does not fire on_ready inline). Today such a source resolves to UNAVAILABLE (Decision 5 in tasks/refinements/kinds/image.md). Mint the content immediately, install the decoded pyramid later on the writer thread with a revision bump and a damage route naming the image content, so doc 02's Refine step replaces the empty layer live — reusing PendingExternalLoads / ExternalCompositionLoader's three-state machine (src/runtime/arbc/runtime/external_composition_loader.hpp:81-95, where pending vs unavailable is decided by whether on_ready fired inside request(), never by empty bytes). Requires a pixels-arrive-later install channel on the plugin content. Source-of-debt: tasks/refinements/kinds/image.md (Decision 5), commit kinds.image. Docs 03/05/08. Refinement: tasks/refinements/kinds/image_async_pending.md"
   }
   task image_master_budget "org.arbc.image byte-budgeted LRU pyramid eviction" {
     effort 2d

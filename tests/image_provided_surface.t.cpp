@@ -75,8 +75,8 @@ TEST_CASE("org.arbc.image provides the requested region at the achieved scale, n
     auto target = backend.make_surface(c.width, c.height, k_working_rgba32f);
     REQUIRE(target.has_value());
     auto done = std::make_shared<RenderCompletion>();
-    const RenderRequest request{c.region,     c.scale,          Time::zero(), StateHandle{},
-                                **target,     Exactness::Exact, Deadline::none()};
+    const RenderRequest request{c.region, c.scale,          Time::zero(),    StateHandle{},
+                                **target, Exactness::Exact, Deadline::none()};
     const std::optional<RenderResult> r = content->render(request, done);
     REQUIRE(r.has_value());
     REQUIRE(r->provided.has_value());
@@ -107,8 +107,12 @@ TEST_CASE("org.arbc.image recycles its provided surfaces through the release cal
 
   const auto pull = [&]() {
     auto done = std::make_shared<RenderCompletion>();
-    const RenderRequest request{Rect{0.0, 0.0, 64.0, 64.0}, 1.0,           Time::zero(),
-                                StateHandle{},              **target,      Exactness::Exact,
+    const RenderRequest request{Rect{0.0, 0.0, 64.0, 64.0},
+                                1.0,
+                                Time::zero(),
+                                StateHandle{},
+                                **target,
+                                Exactness::Exact,
                                 Deadline::none()};
     const std::optional<RenderResult> r = content->render(request, done);
     REQUIRE(r.has_value());
@@ -138,8 +142,12 @@ TEST_CASE("org.arbc.image's provided surface is honored and released through the
   std::vector<float> expected;
   {
     auto done = std::make_shared<RenderCompletion>();
-    const RenderRequest request{Rect{0.0, 0.0, 16.0, 16.0}, 1.0,            Time::zero(),
-                                StateHandle{},              **probe_target, Exactness::Exact,
+    const RenderRequest request{Rect{0.0, 0.0, 16.0, 16.0},
+                                1.0,
+                                Time::zero(),
+                                StateHandle{},
+                                **probe_target,
+                                Exactness::Exact,
                                 Deadline::none()};
     const std::optional<RenderResult> r = probe->render(request, done);
     REQUIRE(r.has_value());
@@ -221,8 +229,12 @@ TEST_CASE("an unavailable org.arbc.image has empty bounds and renders nothing") 
   auto target = backend.make_surface(16, 16, k_working_rgba32f);
   REQUIRE(target.has_value());
   auto done = std::make_shared<RenderCompletion>();
-  const RenderRequest request{Rect{0.0, 0.0, 16.0, 16.0}, 1.0,      Time::zero(),
-                              StateHandle{},              **target, Exactness::Exact,
+  const RenderRequest request{Rect{0.0, 0.0, 16.0, 16.0},
+                              1.0,
+                              Time::zero(),
+                              StateHandle{},
+                              **target,
+                              Exactness::Exact,
                               Deadline::none()};
   // No pixels, reported as a VALUE -- never UB, never a throw (Constraint 7).
   CHECK(content->render(request, done) == std::nullopt);

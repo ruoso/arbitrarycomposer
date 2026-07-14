@@ -385,6 +385,26 @@ Initially-open questions, now decided in their own docs:
   placeholder round-trip rather than data loss. This is the general answer for
   every plugin kind's persistence, not a carve-out for `org.arbc.image`.
   Decided in doc 17 (§ The codec line) and doc 08 (Principle 3).
+- **An external *asset* has the same three load states as an external
+  composition — resolved, pending, unavailable — split by whether the source
+  answered, never by the bytes being empty.** They go through one resolution
+  seam, so they get one deferral substrate: an `AssetSource` that has not
+  answered inside `request()` leaves the reference *pending*, the document loads
+  at revision 0 without waiting, and the bytes are installed later on the writer
+  thread in one transaction that publishes a revision and flushes damage naming
+  the referencing content — doc 02's *Refine* step. Reading a deferring source as
+  *absence* instead is what would make every image behind a content store or a
+  network mount render as nothing, permanently, with no error and no recovery.
+  To carry the arrival, `Content` gains a writer-thread `install_asset` channel,
+  and **a kind that uses it keeps `render_thread_safe()` by publishing its
+  decoded result atomically and once.** That last clause is load-bearing and it
+  *replaces* an argument doc 03 and the image kind both rested on: the flag was
+  justified by the decoded result being immutable *after construction*, which a
+  late install makes false. The weaker, explicit promise — published atomically,
+  at most once, never reverting, so a racing worker observes either the empty
+  state or the final one and never a third — is what actually buys the flag, and
+  it is what a kind now owes to keep it. Decided in doc 08 (Principle 3), doc 03
+  (§ Reference kinds) and doc 05 (§ Pending).
 - **One CMake package, with the conformance suite as an optional component.**
   Everything a consumer needs arrives through a single
   `find_package(arbc CONFIG)`, which yields `arbc::arbc` and imposes nothing —

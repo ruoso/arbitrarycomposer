@@ -142,6 +142,34 @@ These are core-owned placement, not `params`.
    full when the file returns. Fabricating an extent so a placeholder could be
    drawn would let a *missing* file change the composition's geometry, which is
    strictly worse than drawing nothing.
+   **An external asset has three load states, not two.** *Resolved* (the source
+   answered with bytes that decode), *unavailable* (the source answered with
+   nothing, or with bytes that do not decode, or no `AssetSource` is installed
+   at all), and *pending* — **the source has not answered yet**. Pending and
+   unavailable are separated by **whether the source answered**, never by the
+   bytes being empty; that is the same one-bit distinction doc 05 draws for an
+   external *composition*, and it is the same distinction for the same reason,
+   because both go through this one resolution seam. Conflating them makes every
+   deferring source — a content store, an object store, a network mount, exactly
+   the schemes this Principle says "plug in later" — report a permanent
+   placeholder no matter how fast its bytes arrive.
+   A **pending** asset is minted in exactly the *unavailable* shape: reference
+   kept, no pixels, empty bounds, renders nothing — so it needs no new state at
+   the render layer, and the extent carve-out above already gives it its
+   behavior. The parent document loads at revision 0 without waiting on any
+   fetch. **The fetch may run on any thread; the install and its damage are
+   marshalled onto the single writer thread that owns the model** — one
+   transaction, publishing one revision and flushing one damage batch naming the
+   referencing content, so doc 02's *Refine* step turns the arrival into a
+   follow-up frame and the empty layer is replaced live. The revision bump is not
+   decoration: damage alone wakes the frame, but only a new revision stops the
+   parent composition's composed-result tiles from being served as stale hits. A
+   pending asset therefore *gains* its geometry at the install, which is the one
+   moment fabricating an extent would have been wrong to pre-empt. **Loading a
+   file is async — mutating the document is not.**
+   The state is invisible to the format: a document saved while its photograph is
+   still in flight is byte-identical to the same document saved with the
+   photograph loaded, and with it missing.
    **The core fetches asset bytes; the kind only decodes them.** The resolution
    and the fetch are the core's: a kind's codec resolves its URI through
    `LoadContext` and pulls the bytes through the `AssetSource` hook, then hands
