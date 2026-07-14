@@ -87,7 +87,8 @@ private:
 // reader hands it in as an already-allocated `ObjectId`). Constraint 1 / Decision 5.
 Codec nest_codec() {
   Codec c;
-  c.serialize = [](const Content& content) -> arbc::expected<json, SerializeError> {
+  c.serialize = [](const Content& content,
+                   arbc::SaveContext& /*ctx*/) -> arbc::expected<json, SerializeError> {
     if (dynamic_cast<const NestKind*>(&content) == nullptr) {
       return arbc::unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});
     }

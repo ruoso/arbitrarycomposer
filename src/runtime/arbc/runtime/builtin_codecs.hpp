@@ -23,6 +23,7 @@ namespace arbc {
 
 class ExternalCompositionLoader; // runtime/external_composition_loader.hpp
 class ExternalAssetLoader;       // runtime/external_asset_loader.hpp
+class RasterTileStore;           // runtime/raster_tile_store.hpp
 
 // Per-built-in producer `kind_version` (Constraint 3): a fixed constant chosen and
 // pinned by this task, golden-pinned as the literal emitted beside `kind`. Advisory
@@ -33,6 +34,7 @@ inline constexpr const char* k_fade_kind_version = "1";
 inline constexpr const char* k_crossfade_kind_version = "1";
 inline constexpr const char* k_nested_kind_version = "1";
 inline constexpr const char* k_image_kind_version = "1";
+inline constexpr const char* k_raster_kind_version = "1";
 
 // `org.arbc.image` ships OUT-OF-LIB (`arbc-plugin-image`), so `runtime` cannot name its
 // content type -- doing so would link the decoder into `libarbc`, which is the one thing
@@ -148,5 +150,24 @@ void register_nested_binder();
 // nothing. That is the existing `CodecTable::find`-miss path; it needs no new machinery.
 Codec image_codec(const Registry& registry);
 Codec image_codec(const Registry& registry, ExternalAssetLoader* loader);
+
+// org.arbc.raster: the content-addressed tile store (serialize.raster_tile_store). Unlike
+// every sibling above, this codec has BYTES to persist -- a painted layer's pixels are
+// document state with no source file (doc 08 Principle 8) -- so it is the first consumer
+// of the write-side `SaveContext`/`AssetSink` seam. It persists THE TILE TABLE, NOT THE
+// IMAGE: level-0 tiles only, each hashed and written once under its content hash, mips
+// rebuilt on load.
+//
+// `tiles` is the incremental-save hash memo, bound by CLOSURE -- the same pattern as
+// `nested_codec(loader)` / `image_codec(registry, loader)`, and for the same reason: a
+// structural seam one kind needs does not belong in the signature every kind implements.
+// The host owns one `RasterTileStore` per `Document`.
+//
+// The null overload is CORRECT BUT NON-MEMOIZING: it hashes every tile on every save.
+// That degradation is deliberate, and it is what lets every existing zero-argument
+// `builtin_codecs()` call site keep working and still save correct pixels -- it just does
+// not get the incremental CPU win.
+Codec raster_codec();
+Codec raster_codec(RasterTileStore* tiles);
 
 } // namespace arbc

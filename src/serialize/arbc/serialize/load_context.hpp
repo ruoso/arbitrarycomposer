@@ -1,5 +1,7 @@
 #pragma once
 
+#include <arbc/media/pixel_format.hpp> // PixelFormat (the document's storage format)
+
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -51,6 +53,16 @@ public:
 // request, and one loaded child composition.
 std::string normalize_uri(std::string_view uri);
 
+// Resolve `reference` against `base_uri` and normalize the result. A schemed or
+// absolute reference is taken verbatim; a relative one joins onto the base URI's
+// DIRECTORY (everything up to and including its last '/'), so a base of
+// `/p/project.arbc` resolves `assets/tiles/3f/ab` to `/p/assets/tiles/3f/ab`.
+//
+// Free, not a `LoadContext` member, because `SaveContext` must resolve identically:
+// one seam serves both directions (serialize.raster_tile_store Decision 1), and a
+// blob written under one spelling has to be readable under the other.
+std::string resolve_uri(std::string_view base_uri, std::string_view reference);
+
 // The single resolution / loading choke point a load threads through every kind
 // (doc 08:64-66,74-79; serialize.reader Decision 4 + Constraint 6): base-URI
 // resolution (v1 resolves relative paths against the document's base URI; the
@@ -93,13 +105,21 @@ public:
   // The seam kinds drive; v1 only forwards.
   void load_asset(ResolvedRef ref, std::function<void(std::string_view bytes)> on_ready);
 
-private:
-  std::string resolve_uri(std::string_view reference) const;
+  // The document-scoped STORAGE format the `arbc` meta block declared (doc 08
+  // Principle 8, serialize.raster_tile_store Decision 4), defaulting to `rgba16f` when
+  // the key is absent. The reader parses it out of the envelope and installs it here
+  // before any content body is routed, so a kind decoding content-addressed blobs knows
+  // what the bytes on disk mean. It is NOT the composition's working space (doc 07):
+  // a document may composite in `rgba32f` and store `rgba16f`.
+  void set_storage_format(PixelFormat format) noexcept { d_storage_format = format; }
+  PixelFormat storage_format() const noexcept { return d_storage_format; }
 
+private:
   std::string d_base_uri;
   std::vector<std::string> d_resolved;                   // index -> resolved URI
   std::unordered_map<std::string, std::size_t> d_by_uri; // resolved URI -> index (dedup)
   AssetSource* d_asset_source{nullptr};
+  PixelFormat d_storage_format{PixelFormat::Rgba16fLinearPremul};
 };
 
 } // namespace arbc

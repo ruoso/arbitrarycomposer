@@ -24,7 +24,7 @@ unexpected<ReaderError> read_fail(ReaderError::Kind kind, std::string path) {
 
 // Serialize a `ToneContent`'s `{frequency_hz, amplitude}`. `frequency_hz` is an
 // integer number of cycles/second; `amplitude` scales the unit waveform.
-expected<json, SerializeError> serialize_tone(const Content& content) {
+expected<json, SerializeError> serialize_tone(const Content& content, SaveContext& /*ctx*/) {
   const auto* tone = dynamic_cast<const ToneContent*>(&content);
   if (tone == nullptr) {
     return unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});

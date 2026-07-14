@@ -8,6 +8,7 @@
 #include <arbc/kind_crossfade/crossfade_content.hpp>
 #include <arbc/kind_fade/fade_content.hpp>
 #include <arbc/kind_nested/nested_content.hpp>
+#include <arbc/kind_raster/raster_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/kind_tone/tone_content.hpp>
 #include <arbc/model/damage.hpp> // Damage, damage_add (the arrival's own damage)
@@ -16,6 +17,7 @@
 #include <arbc/runtime/document_serialize.hpp>
 #include <arbc/runtime/external_asset_loader.hpp>
 #include <arbc/runtime/external_composition_loader.hpp>
+#include <arbc/runtime/raster_tile_store.hpp>
 #include <arbc/serialize/codec.hpp>       // CodecTable (internal; names nlohmann::json)
 #include <arbc/serialize/deserialize.hpp> // DeserializeFn
 #include <arbc/serialize/load_context.hpp>
@@ -114,6 +116,11 @@ bool builtin_kind_of(const Content& c, std::string_view& kind_id, std::string_vi
     kind_version = k_nested_kind_version;
     return true;
   }
+  if (dynamic_cast<const RasterContent*>(&c) != nullptr) {
+    kind_id = RasterContent::kind_id;
+    kind_version = k_raster_kind_version;
+    return true;
+  }
   return false;
 }
 
@@ -129,6 +136,7 @@ KindBridge::KindBridge() {
   intern(FadeContent::kind_id, k_fade_kind_version);
   intern(CrossfadeContent::kind_id, k_crossfade_kind_version);
   intern(NestedContent::kind_id, k_nested_kind_version);
+  intern(RasterContent::kind_id, k_raster_kind_version);
 }
 
 std::uint64_t KindBridge::intern(std::string_view kind_id, std::string_view kind_version) {
@@ -162,6 +170,17 @@ CodecTable builtin_codecs() {
   table.add(FadeContent::kind_id, fade_codec());
   table.add(CrossfadeContent::kind_id, crossfade_codec());
   table.add(NestedContent::kind_id, nested_codec());
+  // Correct but NON-MEMOIZING (serialize.raster_tile_store Decision 5): it hashes every
+  // tile on every save. Deliberate -- every existing sink-less call site keeps working and
+  // still saves correct pixels; it just does not get the incremental CPU win. A host that
+  // owns a `RasterTileStore` should save through `builtin_codecs(registry, &tiles)`.
+  table.add(RasterContent::kind_id, raster_codec());
+  return table;
+}
+
+CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles) {
+  CodecTable table = builtin_codecs(registry);
+  table.add(RasterContent::kind_id, raster_codec(tiles));
   return table;
 }
 
@@ -322,8 +341,8 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) 
   return snap;
 }
 
-expected<std::string, SerializeError> serialize_snapshot(const ContentSnapshot& snapshot,
-                                                         const CodecTable& codecs) {
+expected<std::string, SerializeError>
+serialize_snapshot(const ContentSnapshot& snapshot, const CodecTable& codecs, SaveContext& ctx) {
   // The provider resolves a content by its ObjectId off the pinned record's kind, so
   // the serialized kind reflects the pinned version (Constraint 2,
   // 08-serialization#writer-serializes-the-pinned-version). The meta provider keys by
@@ -347,12 +366,29 @@ expected<std::string, SerializeError> serialize_snapshot(const ContentSnapshot& 
   };
   // The unknown-field stash rides the SNAPSHOT's copy, never the live document's, so this
   // stays a pure read of immutable state (Decision 6, Constraint 9).
-  return serialize_document(*snapshot.state, provider, meta, codecs, &snapshot.unknown);
+  return serialize_document(*snapshot.state, provider, meta, codecs, ctx, &snapshot.unknown);
+}
+
+expected<std::string, SerializeError> serialize_snapshot(const ContentSnapshot& snapshot,
+                                                         const CodecTable& codecs) {
+  SaveContext ctx;
+  return serialize_snapshot(snapshot, codecs, ctx);
+}
+
+expected<std::string, SerializeError> save_document(const Document& doc, const KindBridge& bridge,
+                                                    const CodecTable& codecs, SaveContext& ctx) {
+  return serialize_snapshot(capture_snapshot(doc, bridge), codecs, ctx);
 }
 
 expected<std::string, SerializeError> save_document(const Document& doc, const KindBridge& bridge,
                                                     const CodecTable& codecs) {
-  return serialize_snapshot(capture_snapshot(doc, bridge), codecs);
+  // A sink-less context seeded from the document's own storage format. Every pre-existing
+  // call site lands here and is byte-identical -- and a document that DOES hold a raster
+  // layer fails loudly with `AssetSinkMissing` rather than silently dropping its pixels
+  // (serialize.raster_tile_store Constraint 5).
+  SaveContext ctx;
+  ctx.set_storage_format(doc.storage_format());
+  return save_document(doc, bridge, codecs, ctx);
 }
 
 expected<std::string, SerializeError> save_document(const Document& doc, const KindBridge& bridge) {
@@ -402,7 +438,7 @@ DeserializeFn recording_deserialize(DeserializeFn base, std::string_view kind_id
 // through exactly the codecs, exactly the sink, and exactly the loader a load would have.
 class LoadAssembly {
 public:
-  LoadAssembly(Document& doc, KindBridge& bridge, const Registry& registry)
+  LoadAssembly(Document& doc, KindBridge& bridge, const Registry& registry, RasterTileStore* tiles)
       : d_assets(DocumentSerializeAccess::model(doc), DocumentSerializeAccess::pending(doc)),
         d_sink(make_sink(doc)), d_loader(DocumentSerializeAccess::model(doc), registry, d_codecs,
                                          d_sink, DocumentSerializeAccess::pending(doc)) {
@@ -452,6 +488,15 @@ public:
           Codec{image.serialize, recording_deserialize(image.deserialize, k_image_kind_id,
                                                        k_image_kind_version, d_session, bridge)});
     }
+    // The hash memo rides the LOAD path too (Decision 5): every tile the reader decodes has
+    // a name it already knows, so seeding the memo here is what makes the first save after a
+    // load -- and the reader's own params-only residual re-serialize -- a pure memo sweep
+    // rather than a full re-hash of the document.
+    Codec raster = raster_codec(tiles);
+    d_codecs.add(
+        RasterContent::kind_id,
+        Codec{raster.serialize, recording_deserialize(raster.deserialize, RasterContent::kind_id,
+                                                      k_raster_kind_version, d_session, bridge)});
   }
 
   LoadAssembly(const LoadAssembly&) = delete;
@@ -612,7 +657,8 @@ bool settle_asset_arrival(Document& doc, const PendingExternalLoads::Arrival& ar
 
 expected<std::monostate, ReaderError> load_document(std::string_view bytes, Document& doc,
                                                     KindBridge& bridge, const Registry& registry,
-                                                    std::string base_uri, AssetSource* assets) {
+                                                    std::string base_uri, AssetSource* assets,
+                                                    RasterTileStore* tiles) {
   const JournalSuspension no_journal(doc);
   Model& into = DocumentSerializeAccess::model(doc);
 
@@ -637,13 +683,22 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
   // still the lowest-id composition, as `find_first_composition` requires.
   const ObjectId root_composition = into.allocate_id();
 
-  LoadAssembly assembly(doc, bridge, registry);
+  LoadAssembly assembly(doc, bridge, registry, tiles);
   assembly.loader().seed(ctx.base_uri(), root_composition);
 
   // The document's unknown-field stash is replaced wholesale by a successful load and
   // left untouched on any error, exactly like the model (doc 08 Principle 4).
-  return arbc::load_document(bytes, registry, assembly.codecs(), ctx, assembly.sink(), into,
-                             &DocumentSerializeAccess::unknown(doc), root_composition);
+  const expected<std::monostate, ReaderError> loaded =
+      arbc::load_document(bytes, registry, assembly.codecs(), ctx, assembly.sink(), into,
+                          &DocumentSerializeAccess::unknown(doc), root_composition);
+  if (loaded) {
+    // The reader parsed `arbc.storage_format` into the context; carry it onto the document
+    // so a subsequent save re-emits it (Decision 4). Re-saving at a format the user did not
+    // author would rename every blob in the store and rewrite their whole painting at a
+    // different precision.
+    doc.set_storage_format(ctx.storage_format());
+  }
+  return loaded;
 }
 
 std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Registry& registry) {
@@ -666,7 +721,7 @@ std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Regis
     if (ready.empty()) {
       break;
     }
-    LoadAssembly assembly(doc, bridge, registry);
+    LoadAssembly assembly(doc, bridge, registry, nullptr);
     for (const PendingExternalLoads::Arrival& arrival : ready) {
       // The ASSET arm first: one queue, two value shapes, and the asset map is the
       // discriminant (kinds.image_async_pending Decision 2). An asset arrival never reaches

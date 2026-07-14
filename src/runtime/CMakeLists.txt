@@ -1,8 +1,10 @@
 arbc_add_component(
   NAME runtime
   SOURCES document.cpp editable_binding.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp
-          codec_fade.cpp codec_crossfade.cpp codec_nested.cpp codec_image.cpp
+          codec_fade.cpp codec_crossfade.cpp codec_nested.cpp codec_image.cpp codec_raster.cpp
+          raster_tile_store.cpp
           external_composition_loader.cpp external_asset_loader.cpp filesystem_asset_source.cpp
+          filesystem_asset_sink.cpp
           pending_external_loads.cpp
           operator_binding.cpp pull_identity.cpp
           offline.cpp
@@ -18,6 +20,8 @@ arbc_add_component(
                  arbc/runtime/external_asset_loader.hpp
                  arbc/runtime/pending_external_loads.hpp
                  arbc/runtime/filesystem_asset_source.hpp
+                 arbc/runtime/filesystem_asset_sink.hpp
+                 arbc/runtime/raster_tile_store.hpp
                  arbc/runtime/operator_binding.hpp
                  arbc/runtime/pull_identity.hpp
                  arbc/runtime/offline.hpp
@@ -32,7 +36,7 @@ arbc_add_component(
                  arbc/runtime/device_monitor.hpp arbc/runtime/export_monitor.hpp
                  arbc/runtime/plugin_host.hpp
   DEPENDS base model contract compositor pool cache audio_engine serialize kind_solid kind_tone
-          kind_fade kind_crossfade kind_nested)
+          kind_fade kind_crossfade kind_nested kind_raster)
 
 # nlohmann/json is header-only; linking it PRIVATE keeps it off libarbc's public
 # interface, so the built-in-codec TUs (codec_solid.cpp, codec_tone.cpp) and the
@@ -59,6 +63,7 @@ arbc_component_test(COMPONENT runtime
                             t/editable_binding.t.cpp t/editable_sink_multiplex.t.cpp
                             t/document_serialize.t.cpp t/operator_codecs.t.cpp
                             t/nested_codec.t.cpp
+                            t/raster_tile_store.t.cpp t/filesystem_asset_sink.t.cpp
                             t/pull_identity.t.cpp
                             t/bench_smoke.t.cpp
                             t/plugin_host.t.cpp)

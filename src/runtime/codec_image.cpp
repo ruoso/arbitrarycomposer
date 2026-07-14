@@ -84,7 +84,7 @@ unexpected<ReaderError> read_fail(ReaderError::Kind kind, std::string path) {
 // accessor it reads is a contract-level virtual with a null default. An empty ref emits an
 // empty `params` object, which is also the right answer for the lenient mistyped-`source`
 // case below (the residual diff restores the authored key verbatim).
-expected<json, SerializeError> serialize_image(const Content& content) {
+expected<json, SerializeError> serialize_image(const Content& content, SaveContext& /*ctx*/) {
   json params = json::object();
   const std::string_view source = content.external_asset_ref();
   if (!source.empty()) {

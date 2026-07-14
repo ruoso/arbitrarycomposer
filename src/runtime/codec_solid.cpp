@@ -23,7 +23,7 @@ unexpected<ReaderError> read_fail(ReaderError::Kind kind, std::string path) {
 
 // Serialize a `SolidContent`'s premultiplied `Rgba` as `{"color": [r, g, b, a]}`.
 // A non-solid content is a codec/kind-routing mismatch -> CodecFailed as a value.
-expected<json, SerializeError> serialize_solid(const Content& content) {
+expected<json, SerializeError> serialize_solid(const Content& content, SaveContext& /*ctx*/) {
   const auto* solid = dynamic_cast<const SolidContent*>(&content);
   if (solid == nullptr) {
     return unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});

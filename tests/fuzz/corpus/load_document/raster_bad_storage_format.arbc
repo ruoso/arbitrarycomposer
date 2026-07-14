@@ -1,0 +1,16 @@
+{
+  "arbc": { "format": 1, "storage_format": "rgba16f-linear-premul" },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      {
+        "kind": "org.arbc.raster",
+        "kind_version": "1",
+        "params": {
+          "blobs": ["00000000000000000000000000000000"],
+          "edge": 16, "height": 16, "tiles": "assets/tiles/", "width": 16
+        }
+      }
+    ]
+  }
+}

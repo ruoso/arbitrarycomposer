@@ -254,6 +254,18 @@ public:
   // serializes byte-identically to before.
   const UnknownFieldStore& unknown_fields() const noexcept { return d_unknown; }
 
+  // The document-scoped STORAGE format (doc 08 Principle 8, serialize.raster_tile_store
+  // Decision 4): the precision `org.arbc.raster` tiles are written to the asset directory
+  // at, which is NOT the composition's working space (doc 07 -- a document may composite
+  // in `rgba32f` and store `rgba16f`). Set by a successful `load_document` from the `arbc`
+  // meta block, `rgba16f` for a document built programmatically.
+  //
+  // It is document state and not a save-time argument because the hash is over
+  // storage-format bytes: re-saving at a format the user did not author would rename every
+  // blob in the store and silently rewrite their whole painting at a different precision.
+  PixelFormat storage_format() const noexcept { return d_storage_format; }
+  void set_storage_format(PixelFormat format) noexcept { d_storage_format = format; }
+
   // How many external references have been fetched but not yet installed -- a nested
   // content holding a VALID child id that names no `CompositionRecord` yet, which renders
   // as the doc-05 placeholder (runtime.async_external_load). Drops to zero as
@@ -360,6 +372,9 @@ private:
   // edge and no state handle, so its destruction order is immaterial and it perturbs
   // nothing the contract above pins down.
   UnknownFieldStore d_unknown;
+  // The document's storage format (doc 08 Principle 8). A plain scalar, writer-thread
+  // like the stash above, owning nothing -- it perturbs the teardown contract not at all.
+  PixelFormat d_storage_format{PixelFormat::Rgba16fLinearPremul};
   // The load state that outlives one load (runtime.async_external_load Decision 2): the
   // resolved-identity dedup map, the not-yet-arrived entries, and the completion queue a
   // deferring `AssetSource` delivers into. Held by `shared_ptr` and never by value, because

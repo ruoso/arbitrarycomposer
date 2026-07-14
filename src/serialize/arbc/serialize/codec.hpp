@@ -20,8 +20,9 @@
 #include <arbc/contract/registry.hpp>
 #include <arbc/serialize/deserialize.hpp> // DeserializeFn (the read hook, serialize.reader)
 #include <arbc/serialize/load_context.hpp>
-#include <arbc/serialize/reader.hpp> // ReaderError
-#include <arbc/serialize/writer.hpp> // SerializeError
+#include <arbc/serialize/reader.hpp>       // ReaderError
+#include <arbc/serialize/save_context.hpp> // SaveContext (the write hook's asset seam)
+#include <arbc/serialize/writer.hpp>       // SerializeError
 
 #include <nlohmann/json.hpp>
 
@@ -37,7 +38,15 @@ namespace arbc {
 // The write hook, symmetric to `DeserializeFn` (doc 08 Principle 1 delta,
 // Decision 1): a live `Content` -> its `params` JSON, or a `SerializeError` value.
 // The core wraps the returned `params` with the core-owned `kind`/`kind_version`.
-using SerializeFn = std::function<expected<nlohmann::json, SerializeError>(const Content&)>;
+//
+// `SaveContext` is the write-side mirror of `DeserializeFn`'s `LoadContext`
+// (serialize.raster_tile_store Decision 1). Most codecs ignore it -- a kind whose whole
+// state fits in `params` has no bytes to store. A kind whose state is BYTES (painted
+// raster tiles, doc 08 Principle 8) hands them to the context's `AssetSink` under a
+// relative URI, and never opens a file itself: the core writes asset bytes, the kind
+// only encodes them.
+using SerializeFn =
+    std::function<expected<nlohmann::json, SerializeError>(const Content&, SaveContext&)>;
 
 // A per-kind codec pair. A kind registers both halves so its content round-trips;
 // a kind with no registered codec round-trips as a `PlaceholderContent`
@@ -106,6 +115,12 @@ private:
 // for an unknown kind (the placeholder already holds the whole body verbatim) or when
 // the codec cannot re-serialize (errors stay values -- a failed diff means "no preserved
 // fields", never a `ReaderError`).
+//
+// That re-run needs a `SaveContext`, and the one it gets is PARAMS-ONLY
+// (`save_context.hpp`): the codec is being asked for its `params` key set, not for its
+// bytes, and an asset-bearing kind's blobs are the ones this very load just read -- so
+// storing them again would re-encode and re-write the whole document on every open. The
+// mechanism is otherwise untouched (serialize.raster_tile_store Constraint 11).
 expected<std::unique_ptr<Content>, ReaderError>
 content_body_from_json(const nlohmann::json& body, std::span<const ContentRef> inputs,
                        ObjectId composition, const CodecTable& codecs, const Registry& registry,
@@ -120,9 +135,11 @@ content_body_from_json(const nlohmann::json& body, std::span<const ContentRef> i
 // registered `SerializeFn` for `kind_id`, wrapping the returned `params` as
 // `{kind, kind_version, params}`. A non-placeholder content with no registered codec
 // is `SerializeError::Kind::NoCodec`; a codec failure propagates.
-expected<nlohmann::json, SerializeError> content_body_to_json(std::string_view kind_id,
-                                                              std::string_view kind_version,
-                                                              const Content& content,
-                                                              const CodecTable& codecs);
+//
+// `ctx` carries the write-side asset seam to every codec (Decision 1). A kind with
+// bytes to store hands them to its `AssetSink`; a kind with none never touches it.
+expected<nlohmann::json, SerializeError>
+content_body_to_json(std::string_view kind_id, std::string_view kind_version,
+                     const Content& content, const CodecTable& codecs, SaveContext& ctx);
 
 } // namespace arbc

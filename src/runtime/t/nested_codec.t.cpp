@@ -34,6 +34,10 @@
 
 namespace {
 
+// The write-side asset seam (serialize.raster_tile_store Decision 1). `org.arbc.nested`
+// stores no asset bytes, so a default sink-less context is never consulted.
+arbc::SaveContext save_ctx;
+
 using arbc::Affine;
 using arbc::Codec;
 using arbc::Content;
@@ -63,7 +67,7 @@ TEST_CASE("serialize_nested emits an empty params object and never the child id"
   // present as an object, not omitted, matching what `content_body_to_json` frames for
   // every kind.
   const NestedContent nested(ObjectId{77});
-  const arbc::expected<json, SerializeError> params = codec.serialize(nested);
+  const arbc::expected<json, SerializeError> params = codec.serialize(nested, save_ctx);
   REQUIRE(params);
   CHECK(params->is_object());
   CHECK(params->empty());
@@ -76,7 +80,8 @@ TEST_CASE("serialize_nested on a non-nested content is a CodecFailed value") {
   const SolidContent solid(Rgba{1.0F, 0.0F, 0.0F, 1.0F});
 
   arbc::expected<json, SerializeError> out = json::object();
-  REQUIRE_NOTHROW(out = codec.serialize(solid)); // a routing mismatch is a VALUE, never a throw
+  REQUIRE_NOTHROW(
+      out = codec.serialize(solid, save_ctx)); // a routing mismatch is a VALUE, never a throw
   REQUIRE_FALSE(out);
   CHECK(out.error().kind == SerializeError::Kind::CodecFailed);
 }
@@ -139,7 +144,7 @@ TEST_CASE("deserialize_nested consumes params.ref and keeps the AUTHORED string"
   CHECK(nested->external_composition_ref() == "widgets/gauge.arbc");
 
   // ... and the codec emits exactly that back, so the round-trip is byte-stable.
-  const arbc::expected<json, SerializeError> out = codec.serialize(*nested);
+  const arbc::expected<json, SerializeError> out = codec.serialize(*nested, save_ctx);
   REQUIRE(out);
   CHECK(out->dump() == R"({"ref":"widgets/gauge.arbc"})");
 }

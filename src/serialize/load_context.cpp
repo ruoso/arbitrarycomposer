@@ -70,22 +70,23 @@ std::string normalize_uri(std::string_view uri) {
   return out;
 }
 
-std::string LoadContext::resolve_uri(std::string_view reference) const {
+std::string resolve_uri(std::string_view base_uri, std::string_view reference) {
   // An absolute path is already rooted; a relative one joins onto the base URI's
   // directory (everything up to and including its last '/'). The join is then
   // normalized, so the resolved URI is a canonical identity rather than a spelling.
   if (has_scheme(reference) || (!reference.empty() && reference.front() == '/')) {
     return normalize_uri(reference);
   }
-  const std::size_t slash = d_base_uri.find_last_of('/');
-  std::string resolved =
-      (slash == std::string::npos) ? std::string() : d_base_uri.substr(0, slash + 1);
+  const std::size_t slash = base_uri.find_last_of('/');
+  std::string resolved = (slash == std::string_view::npos)
+                             ? std::string()
+                             : std::string(base_uri.substr(0, slash + 1));
   resolved.append(reference);
   return normalize_uri(resolved);
 }
 
 ResolvedRef LoadContext::resolve(std::string_view reference) {
-  const std::string uri = resolve_uri(reference);
+  const std::string uri = arbc::resolve_uri(d_base_uri, reference);
   const auto it = d_by_uri.find(uri);
   if (it != d_by_uri.end()) {
     return ResolvedRef{it->second}; // dedup: same resolved identity

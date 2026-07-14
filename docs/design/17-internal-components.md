@@ -56,7 +56,7 @@ against this table:
 
 | Component | Level | Contents | Design docs | Depends on |
 | --- | --- | --- | --- | --- |
-| `arbc::base` | 0 | `expected`-style errors, `ObjectId`, `Rect`/geometry, affine math + singular values, `Time`/rational rates/time maps, debug counters | 03, 04, 11, 16 | — |
+| `arbc::base` | 0 | `expected`-style errors, `ObjectId`, `Rect`/geometry, affine math + singular values, `Time`/rational rates/time maps, debug counters, SHA-256 content hash | 03, 04, 08, 11, 16 | — |
 | `arbc::pool` | 1 | inside-out slab arenas, `arbc::ref`, deferred reclamation, mmap/anonymous backing, checkpoint protocol, generation tags | 15 | base |
 | `arbc::media` | 1 | pixel-format & color-space descriptors, premultiplication tags, channel layouts, typed pixel/sample span views, format-agnostic resampling filters over decoded working samples (audio + image) | 07, 12 | base |
 | `arbc::surface` | 2 | `Surface` handles, the backend contract, external import + sync tokens, format conversion *interfaces* | 09 | base, media |
@@ -66,7 +66,7 @@ against this table:
 | `arbc::backend-cpu` | 3 | format-templated kernels + variant dispatch, CPU surfaces, wrap-or-copy import | 07, 09 | base, media, surface |
 | `arbc::compositor` | 4 | transform resolution, culling, request planning, scale ladder, damage routing over `inputs()`, aggregate revisions, cycle handling, `PullService` implementation | 02, 04, 05, 13 | contract, cache (+ below) |
 | `arbc::audio-engine` | 4 | pull-based mix, lookahead scheduler, block pipeline, clock mastering, latency pre-roll | 12 | contract, cache (+ below) |
-| `arbc::serialize` | 4 | JSON read/write, canonical form, unknown-kind placeholders, `LoadContext`, `$ref` resolution, tile-blob compress/decompress | 08 | contract, model (+ below); JSON dep, compressor (zstd) |
+| `arbc::serialize` | 4 | JSON read/write, canonical form, unknown-kind placeholders, `LoadContext`/`AssetSource` + `SaveContext`/`AssetSink`, `$ref` resolution, content-addressed tile-blob store (hash, byte-shuffle, compress/decompress) | 08 | contract, model (+ below); JSON dep, compressor (zstd) |
 | `arbc::kind-*` (six) | 4 | solid, tone, raster (CoW tile table, decoded-buffer input), fade, crossfade, nested | 03, 05, 11, 12, 13 | contract (+ below); nested uses only the `PullService` interface |
 | `arbc::runtime` | 5 | `Document` (arenas + model + registry + loaders), viewport/transport/monitor objects, interactive frame loop, offline/export drivers, `dlopen` loading, housekeeping thread | 01, 02, 14, 15 | everything below |
 | `arbc` | 6 | umbrella target; public symbol surface; built-in kind registration | — | runtime + all |

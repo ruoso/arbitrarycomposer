@@ -13,6 +13,7 @@
 #include <arbc/runtime/document.hpp>
 #include <arbc/serialize/load_context.hpp> // AssetSource (the external-reference load hook)
 #include <arbc/serialize/reader.hpp>       // ReaderError
+#include <arbc/serialize/save_context.hpp> // SaveContext / AssetSink (the write-side seam)
 #include <arbc/serialize/writer.hpp>       // SerializeError
 
 #include <cstddef>
@@ -26,7 +27,8 @@
 namespace arbc {
 
 class Content;
-class CodecTable; // forward-declared (names nlohmann::json; off this public header)
+class CodecTable;      // forward-declared (names nlohmann::json; off this public header)
+class RasterTileStore; // runtime/raster_tile_store.hpp (the incremental-save hash memo)
 
 // The runtime-owned bijection realizing the `ContentRecord.kind` uint64 <->
 // reverse-DNS `kind_id` string bridge the model and writer deferred (Decision 1).
@@ -115,6 +117,13 @@ CodecTable builtin_codecs();
 // holds built-in kinds.
 CodecTable builtin_codecs(const Registry& registry);
 
+// The table a host that OWNS A TILE STORE should save through (serialize.raster_tile_store
+// Decision 5): `tiles` is the `org.arbc.raster` incremental-save hash memo, bound into the
+// raster codec by closure. `nullptr` yields exactly `builtin_codecs(registry)` -- correct,
+// and still saving correct pixels, but re-hashing every tile on every save rather than only
+// the ones the user actually touched.
+CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles);
+
 // Capture a pinned content-binding snapshot of `doc` (MUST run on the writer
 // thread): pins the current version and copies each layer-bound content's live
 // pointer + bridged kind into an immutable `ContentSnapshot`.
@@ -123,11 +132,27 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge);
 // Emit a captured snapshot to canonical `.arbc` bytes (thread-safe: reads only the
 // immutable snapshot). The content-body provider resolves each content from the
 // pinned `ContentRecord.kind`, so the serialized kind reflects the pinned version.
+//
+// `ctx` is the WRITE-SIDE asset seam (serialize.raster_tile_store Decision 1), the mirror
+// of the reader's `LoadContext`: the document's base URI, the `AssetSink` a codec hands
+// finished asset bytes to, and the document-scoped storage format -- and it is
+// AUTHORITATIVE for the `arbc` envelope's `storage_format` key.
+expected<std::string, SerializeError>
+serialize_snapshot(const ContentSnapshot& snapshot, const CodecTable& codecs, SaveContext& ctx);
+
+// The `ctx`-less overloads build a SINK-LESS `SaveContext` (seeded, where a `Document` is
+// in hand, from `doc.storage_format()`). That keeps every pre-existing call site working
+// and byte-identical -- and it means a document that DOES hold a raster layer fails there
+// with `SerializeError::Kind::AssetSinkMissing`, loudly, rather than by silently dropping
+// the user's pixels (Constraint 5).
 expected<std::string, SerializeError> serialize_snapshot(const ContentSnapshot& snapshot,
                                                          const CodecTable& codecs);
 
-// Convenience: `serialize_snapshot(capture_snapshot(doc, bridge), codecs)`. Pins,
+// Convenience: `serialize_snapshot(capture_snapshot(doc, bridge), codecs, ctx)`. Pins,
 // captures on the writer thread, then emits.
+expected<std::string, SerializeError> save_document(const Document& doc, const KindBridge& bridge,
+                                                    const CodecTable& codecs, SaveContext& ctx);
+
 expected<std::string, SerializeError> save_document(const Document& doc, const KindBridge& bridge,
                                                     const CodecTable& codecs);
 
@@ -156,10 +181,18 @@ expected<std::string, SerializeError> save_document(const Document& doc, const K
 // keeps its `ref` verbatim (so the document re-saves byte-identically), renders the doc-05
 // placeholder, and the parent load SUCCEEDS. A missing widget file never makes a project
 // unopenable.
+// `tiles` (optional) is the `org.arbc.raster` incremental-save hash memo the load SEEDS:
+// every tile it decodes has a name it already knows, so re-hashing it on the next save
+// would be pure waste. A null store simply loads without memoization.
+//
+// A successful load also installs the document's `arbc.storage_format` on `doc`, so a
+// subsequent `save_document` re-emits it rather than silently rewriting every tile at a
+// precision the user never authored (serialize.raster_tile_store Decision 4).
 expected<std::monostate, ReaderError> load_document(std::string_view bytes, Document& doc,
                                                     KindBridge& bridge, const Registry& registry,
                                                     std::string base_uri = {},
-                                                    AssetSource* assets = nullptr);
+                                                    AssetSource* assets = nullptr,
+                                                    RasterTileStore* tiles = nullptr);
 
 // Install every external child whose bytes have ARRIVED since the last call, and return how
 // many compositions were installed (runtime.async_external_load). WRITER-THREAD ONLY.

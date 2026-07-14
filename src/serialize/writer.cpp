@@ -151,8 +151,8 @@ json time_map_json(const TimeMap& m) {
 class ContentGraph {
 public:
   ContentGraph(const ContentBodyProvider& provider, const ContentMetaProvider& meta,
-               const CodecTable& codecs, const UnknownFieldStore* unknown)
-      : d_provider(provider), d_meta(meta), d_codecs(codecs), d_unknown(unknown) {}
+               const CodecTable& codecs, SaveContext& ctx, const UnknownFieldStore* unknown)
+      : d_provider(provider), d_meta(meta), d_codecs(codecs), d_ctx(ctx), d_unknown(unknown) {}
 
   // One reachable composition: its model id, its record, and (implicitly, by index) its
   // ordinal -- index 0 is the root, which keeps its home at `root["composition"]`.
@@ -312,7 +312,7 @@ private:
   json emit_definition(const Content* c, Emitter& em) {
     const MetaEntry& m = d_meta_of.at(c);
     expected<json, SerializeError> leaf =
-        content_body_to_json(m.kind, m.kind_version, *c, d_codecs);
+        content_body_to_json(m.kind, m.kind_version, *c, d_codecs, d_ctx);
     if (!leaf) {
       em.fail(leaf.error());
       return json::object();
@@ -366,6 +366,7 @@ private:
   const ContentBodyProvider& d_provider;
   const ContentMetaProvider& d_meta;
   const CodecTable& d_codecs;
+  SaveContext& d_ctx;                                      // the write-side asset seam
   const UnknownFieldStore* d_unknown;                      // content-tier stashes (nullable)
   const DocRoot* d_doc{nullptr};                           // set by build(); the composition source
   std::unordered_map<const Content*, int> d_counts;        // occurrences across the graph
@@ -470,12 +471,21 @@ json composition_json(const DocRoot& doc, ObjectId comp_id, const CompositionRec
 expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
                                                      const ContentBodyProvider* provider,
                                                      const ContentMetaProvider* meta,
-                                                     const CodecTable* codecs,
+                                                     const CodecTable* codecs, SaveContext* ctx,
                                                      const UnknownFieldStore* unknown) {
   Emitter em;
   json root = json::object();
   json envelope = json::object();
-  envelope["format"] = std::int64_t{1}; // format major only (Decision 5)
+  envelope["format"] = std::int64_t{1}; // format major (Decision 5)
+  // The document-scoped STORAGE format (doc 08 Principle 8,
+  // serialize.raster_tile_store Decision 4), omitted when it is the `rgba16f` default --
+  // the same omit-when-default idiom `working_space` uses one tier down, and what keeps
+  // a document with no painted raster byte-identical to today's goldens. It is NOT the
+  // composition's `format` (that is the WORKING space, doc 07): different concept,
+  // different key, deliberately at a different tier.
+  if (ctx != nullptr && ctx->storage_format() != PixelFormat::Rgba16fLinearPremul) {
+    envelope["storage_format"] = storage_format_token(ctx->storage_format());
+  }
   root["arbc"] = std::move(envelope);
 
   ObjectId comp_id;
@@ -486,8 +496,8 @@ expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
     // definition lands once in `contents` (Constraint 2). The `std::optional` holds the
     // graph only when all three content seams are supplied.
     std::optional<ContentGraph> graph;
-    if (provider != nullptr && meta != nullptr && codecs != nullptr) {
-      graph.emplace(*provider, *meta, *codecs, unknown);
+    if (provider != nullptr && meta != nullptr && codecs != nullptr && ctx != nullptr) {
+      graph.emplace(*provider, *meta, *codecs, *ctx, unknown);
       graph->build(doc, comp_id);
     }
     ContentGraph* graph_ptr = graph.has_value() ? &*graph : nullptr;
@@ -545,15 +555,15 @@ expected<std::string, SerializeError> serialize_impl(const DocRoot& doc,
 
 expected<std::string, SerializeError> serialize_document(const DocRoot& doc) {
   return serialize_impl(doc, /*provider=*/nullptr, /*meta=*/nullptr, /*codecs=*/nullptr,
-                        /*unknown=*/nullptr);
+                        /*ctx=*/nullptr, /*unknown=*/nullptr);
 }
 
 expected<std::string, SerializeError> serialize_document(const DocRoot& doc,
                                                          const ContentBodyProvider& provider,
                                                          const ContentMetaProvider& meta,
-                                                         const CodecTable& codecs,
+                                                         const CodecTable& codecs, SaveContext& ctx,
                                                          const UnknownFieldStore* unknown) {
-  return serialize_impl(doc, &provider, &meta, &codecs, unknown);
+  return serialize_impl(doc, &provider, &meta, &codecs, &ctx, unknown);
 }
 
 } // namespace arbc

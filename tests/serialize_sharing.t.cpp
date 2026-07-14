@@ -60,6 +60,11 @@ using json = nlohmann::json;
 
 namespace {
 
+// The write-side asset seam (serialize.raster_tile_store Decision 1). These codecs store
+// no asset bytes, so a default sink-less context is exactly right: it is threaded through
+// for the signature, never consulted.
+arbc::SaveContext save_ctx;
+
 // A leaf test kind (a clip): empty `inputs()`, so it serializes with no `inputs`
 // array (omit-when-empty, doc 08 Principle 6). Its `params` carry a source token.
 class ClipContent final : public Content {
@@ -118,7 +123,7 @@ arbc::DeserializeFn clip_deserialize() {
 }
 
 arbc::SerializeFn clip_serialize() {
-  return [](const Content& c) -> arbc::expected<json, SerializeError> {
+  return [](const Content& c, arbc::SaveContext& /*ctx*/) -> arbc::expected<json, SerializeError> {
     const auto* cc = dynamic_cast<const ClipContent*>(&c);
     if (cc == nullptr) {
       return arbc::unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});
@@ -144,7 +149,7 @@ arbc::DeserializeFn op_deserialize() {
 }
 
 arbc::SerializeFn op_serialize() {
-  return [](const Content& c) -> arbc::expected<json, SerializeError> {
+  return [](const Content& c, arbc::SaveContext& /*ctx*/) -> arbc::expected<json, SerializeError> {
     const auto* oc = dynamic_cast<const OpContent*>(&c);
     if (oc == nullptr) {
       return arbc::unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});
@@ -223,7 +228,8 @@ TEST_CASE("an inline operator graph round-trips with an inputs array beside para
     return std::nullopt;
   };
 
-  const std::string out = canonical(arbc::serialize_document(*pin, provider, meta, codecs));
+  const std::string out =
+      canonical(arbc::serialize_document(*pin, provider, meta, codecs, save_ctx));
 
   const char* const k_inline = R"json({
   "arbc": {
@@ -330,7 +336,8 @@ TEST_CASE("shared content is hoisted once into contents and dedups to one live n
     return std::nullopt;
   };
 
-  const std::string out = canonical(arbc::serialize_document(*pin, provider, meta, codecs));
+  const std::string out =
+      canonical(arbc::serialize_document(*pin, provider, meta, codecs, save_ctx));
 
   const char* const k_shared = R"json({
   "arbc": {
@@ -523,7 +530,8 @@ TEST_CASE("content shared across TWO compositions hoists into one contents entry
     }
     return std::nullopt;
   };
-  const std::string out = canonical(arbc::serialize_document(*pin, provider, meta, codecs));
+  const std::string out =
+      canonical(arbc::serialize_document(*pin, provider, meta, codecs, save_ctx));
   CHECK(out.find("\"src\": \"shared.png\"") != std::string::npos);
   CHECK(out.find("\"contents\"") != std::string::npos);
   CHECK(out.find("\"compositions\"") != std::string::npos);
@@ -625,7 +633,8 @@ TEST_CASE("a placeholder pass-through wires a parsed input and re-serializes byt
     return std::nullopt;
   };
 
-  const std::string s1 = canonical(arbc::serialize_document(*pin, provider, meta, codecs));
+  const std::string s1 =
+      canonical(arbc::serialize_document(*pin, provider, meta, codecs, save_ctx));
 
   // Load s1: the placeholder's parsed input surfaces and drives the pass-through.
   Registry registry;
@@ -687,6 +696,7 @@ TEST_CASE("a placeholder pass-through wires a parsed input and re-serializes byt
     }
     return std::nullopt;
   };
-  const std::string s2 = canonical(arbc::serialize_document(*lpin, provider2, meta2, codecs));
+  const std::string s2 =
+      canonical(arbc::serialize_document(*lpin, provider2, meta2, codecs, save_ctx));
   CHECK(s2 == s1);
 }

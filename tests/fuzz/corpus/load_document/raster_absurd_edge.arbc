@@ -1,0 +1,19 @@
+{
+  "arbc": { "format": 1 },
+  "composition": {
+    "canvas": [0, 0, 64, 64],
+    "layers": [
+      {
+        "kind": "org.arbc.raster",
+        "kind_version": "1",
+        "params": {
+          "blobs": ["00000000000000000000000000000000"],
+          "edge": 4294967296,
+          "height": 1099511627776,
+          "tiles": "assets/tiles/",
+          "width": 1099511627776
+        }
+      }
+    ]
+  }
+}

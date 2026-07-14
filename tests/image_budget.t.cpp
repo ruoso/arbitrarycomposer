@@ -165,7 +165,8 @@ TEST_CASE("a third pyramid past a two-pyramid budget evicts the least-recently-p
 
 // enforces: 15-memory-model#image-pyramid-evicts-under-byte-budget
 // enforces: 03-layer-plugin-interface#image-decodes-once-per-resolved-uri
-TEST_CASE("re-pulling an evicted image costs EXACTLY ONE decode; re-pulling a resident one costs ZERO") {
+TEST_CASE(
+    "re-pulling an evicted image costs EXACTLY ONE decode; re-pulling a resident one costs ZERO") {
   const std::string bytes = fix::fixture_bytes();
   PyramidCache cache(2 * pyramid_bytes() + pyramid_bytes() / 2);
 
@@ -344,9 +345,8 @@ TEST_CASE("an owning cache never answers ABSENCE with someone else's decode") {
 
   // ...so a pending content over that very URI is still PENDING: empty bounds, no pixels, exactly
   // as if the file had never been decoded by anyone.
-  const auto pending =
-      std::make_unique<ImageContent>(std::string("assets/photo.ppm"),
-                                     std::string("shared/photo.ppm"), PyramidPtr{}, cache);
+  const auto pending = std::make_unique<ImageContent>(
+      std::string("assets/photo.ppm"), std::string("shared/photo.ppm"), PyramidPtr{}, cache);
   CHECK_FALSE(pending->available());
   CHECK(pending->bounds()->empty());
   CHECK(pending->pyramid() == nullptr);

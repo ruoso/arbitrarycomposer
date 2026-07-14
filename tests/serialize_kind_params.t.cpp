@@ -59,6 +59,11 @@ using json = nlohmann::json;
 
 namespace {
 
+// The write-side asset seam (serialize.raster_tile_store Decision 1). These codecs store
+// no asset bytes, so a default sink-less context is exactly right: it is threaded through
+// for the signature, never consulted.
+arbc::SaveContext save_ctx;
+
 // A stand-in for a real known kind: it carries exactly what its `params` encode
 // (an integer gain and a source reference), so a codec can round-trip it. Never
 // rendered by these seam tests, so `render` is a trivial inline settle.
@@ -111,7 +116,7 @@ arbc::DeserializeFn gadget_deserialize() {
 // The gadget's write codec: a live GadgetContent -> its `params` JSON. A content of
 // the wrong dynamic type is a CodecFailed value (Constraint 5).
 arbc::SerializeFn gadget_serialize() {
-  return [](const Content& c) -> arbc::expected<json, SerializeError> {
+  return [](const Content& c, arbc::SaveContext& /*ctx*/) -> arbc::expected<json, SerializeError> {
     const auto* gc = dynamic_cast<const GadgetContent*>(&c);
     if (gc == nullptr) {
       return arbc::unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});
@@ -172,7 +177,7 @@ TEST_CASE("an unknown kind round-trips verbatim and byte-equivalent under canoni
   REQUIRE(placeholder != nullptr);
   CHECK_FALSE(placeholder->kind_registered()); // no plugin registered at all
 
-  auto out = arbc::content_body_to_json("com.example.gadget", "3.0", *content, codecs);
+  auto out = arbc::content_body_to_json("com.example.gadget", "3.0", *content, codecs, save_ctx);
   REQUIRE(out);
   // Byte-for-byte equal to the canonical form of the input -- sorted keys, canonical
   // numbers, every field (including future_field) preserved.
@@ -196,7 +201,7 @@ TEST_CASE("a known kind round-trips its params through a registered codec, not t
   CHECK(dynamic_cast<GadgetContent*>(content.get()) != nullptr);
   CHECK(ctx.resolved_count() == 1); // the codec resolved "a.png" through ctx
 
-  auto out = arbc::content_body_to_json("com.test.gadget", "1.0", *content, codecs);
+  auto out = arbc::content_body_to_json("com.test.gadget", "1.0", *content, codecs, save_ctx);
   REQUIRE(out);
   CHECK(canonical_dump(*out) == canonical_dump(body)); // params round-trip byte-equivalent
 }
@@ -353,7 +358,7 @@ TEST_CASE("serialize_document emits the content body through the provider, uncha
     return std::nullopt;
   };
 
-  const auto out = arbc::serialize_document(*pin, provider, meta, codecs);
+  const auto out = arbc::serialize_document(*pin, provider, meta, codecs, save_ctx);
   REQUIRE(out);
   const std::string& s = *out;
 
@@ -415,7 +420,7 @@ TEST_CASE("content-body codecs surface malformed params and missing codecs as di
   SECTION("a non-placeholder content with no registered codec -> NoCodec on write") {
     GadgetContent orphan(1, "y.png");
     const CodecTable empty;
-    const auto w = arbc::content_body_to_json("com.test.gadget", "1.0", orphan, empty);
+    const auto w = arbc::content_body_to_json("com.test.gadget", "1.0", orphan, empty, save_ctx);
     REQUIRE_FALSE(w);
     CHECK(w.error().kind == SerializeError::Kind::NoCodec);
   }

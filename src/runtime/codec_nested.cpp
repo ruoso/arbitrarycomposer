@@ -71,7 +71,7 @@ unexpected<ReaderError> read_fail(ReaderError::Kind kind, std::string path) {
 //
 // A non-nested content is a codec/kind-routing mismatch -> CodecFailed as a value, exactly
 // as every sibling codec reports it.
-expected<json, SerializeError> serialize_nested(const Content& content) {
+expected<json, SerializeError> serialize_nested(const Content& content, SaveContext& /*ctx*/) {
   const auto* const nested = dynamic_cast<const NestedContent*>(&content);
   if (nested == nullptr) {
     return unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});

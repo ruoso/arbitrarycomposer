@@ -50,7 +50,7 @@ constexpr std::int64_t k_format_major = 1;
 // while the writer DOES emit it. So it is an unknown at load and a known at save -- the
 // live never-shadow case (doc 08:96, Constraint 4).
 constexpr std::string_view k_root_keys[] = {"arbc", "composition", "compositions", "contents"};
-constexpr std::string_view k_envelope_keys[] = {"format"};
+constexpr std::string_view k_envelope_keys[] = {"format", "storage_format"};
 constexpr std::string_view k_composition_keys[] = {"canvas", "layers", "working_audio_format",
                                                    "working_space"};
 constexpr std::string_view k_working_space_keys[] = {"format", "premultiplied", "transfer"};
@@ -602,6 +602,31 @@ expected<json, ReaderError> parse_document(std::string_view input) {
   return root;
 }
 
+// The document-scoped STORAGE format (doc 08 Principle 8, serialize.raster_tile_store
+// Decision 4), installed on the `LoadContext` before any content body is routed so a
+// kind decoding content-addressed blobs knows what the bytes on disk mean. Absent means
+// the `rgba16f` default. A present-but-mistyped or unrecognized value is a clean
+// `ReaderError` and NOT a lenient fall-back to the default: the lossy/lossless call is
+// the user's to author (doc 08: "authored, not inferred"), and silently reading
+// `rgba32f` bytes as `rgba16f` would be a byte-for-byte misinterpretation of every tile
+// in the document.
+expected<std::monostate, ReaderError> apply_storage_format(const json& root, LoadContext& ctx) {
+  const auto ait = root.find("arbc"); // parse_document already proved this is an object
+  const auto sit = ait->find("storage_format");
+  if (sit == ait->end()) {
+    return std::monostate{};
+  }
+  if (!sit->is_string()) {
+    return fail(ReaderError::Kind::MalformedField, "/arbc/storage_format");
+  }
+  const std::optional<PixelFormat> format = storage_format_from_token(sit->get<std::string>());
+  if (!format.has_value()) {
+    return fail(ReaderError::Kind::MalformedField, "/arbc/storage_format");
+  }
+  ctx.set_storage_format(*format);
+  return std::monostate{};
+}
+
 // Resolve `root`'s whole composition graph into intermediates BEFORE touching the model
 // (Decision 5, 7), so a malformed body, a dangling `$ref`, or a `$ref` cycle returns a
 // `ReaderError` with no composition installed. `seeded_root` is the id the root
@@ -762,6 +787,11 @@ load_document(std::string_view input, const Registry& registry, const CodecTable
   if (!root) {
     return unexpected(root.error());
   }
+  // BEFORE any content body is routed: a kind decoding content-addressed blobs must know
+  // what the bytes on disk mean (Decision 4).
+  if (const expected<std::monostate, ReaderError> sf = apply_storage_format(*root, ctx); !sf) {
+    return unexpected(sf.error());
+  }
   // The caller may PRE-ALLOCATE the root composition's id (runtime.nested_external_ref
   // Constraint 6): the external loader needs it in hand before the read begins, so it can
   // seed its resolved-URI map with "this document -> this composition" and collapse a
@@ -810,6 +840,11 @@ expected<ObjectId, ReaderError> load_composition(std::string_view input, const R
   const expected<json, ReaderError> root = parse_document(input);
   if (!root) {
     return unexpected(root.error());
+  }
+  // An external child carries its OWN storage format, and it gets its OWN `LoadContext`
+  // (external_composition_loader.cpp:105-110), so this never clobbers the host's.
+  if (const expected<std::monostate, ReaderError> sf = apply_storage_format(*root, ctx); !sf) {
+    return unexpected(sf.error());
   }
   expected<DocumentGraph, ReaderError> graph =
       resolve_graph(*root, registry, codecs, ctx, sink, into, root_composition);

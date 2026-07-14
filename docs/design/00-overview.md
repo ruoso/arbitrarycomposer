@@ -445,6 +445,41 @@ Initially-open questions, now decided in their own docs:
   recorded in doc 03 (§ Reference kinds), doc 15 (§ Memory populations) and doc 02
   (§ Tile cache).
 
+- **The core's asset I/O is symmetric: the core writes asset bytes, and a kind
+  only encodes them.** Doc 08 Principle 3 already said the read half — the core
+  fetches, the kind decodes, and an asset-referencing kind never performs file
+  I/O of its own — but the write half simply did not exist: a serialize codec was
+  a pure `Content -> JSON` function with no context, and the writer returned a
+  string having touched no filesystem. That was survivable only while every asset
+  was an *import* with a URI to re-emit. Painted pixels have no source file, so
+  Principle 8's content-addressed tile store has bytes it must actually put
+  somewhere, and giving the codec a filesystem would have bought that at the cost
+  of a format that cannot be tested without a disk or hosted anywhere but a POSIX
+  directory. So `LoadContext`/`AssetSource` gains its mirror, `SaveContext`/
+  `AssetSink`, and codecs hand the sink finished bytes under a relative URI. The
+  sink is **write-if-absent** — which is what turns Principle 8's incremental save
+  from an aspiration into an observable counter — and a save **never deletes**,
+  because another version, another document, or a concurrent editor may reference
+  a blob. Decided in `serialize.raster_tile_store`; recorded in doc 08 (§ The
+  asset directory) and doc 17 (§ component table).
+
+- **Content hashing is in-tree SHA-256/128, not a third dependency.** Principle 8's
+  store is keyed by content hash and the tree had nothing that could serve
+  (`mix64` is a splitmix64 finalizer that disclaims itself in its own comment).
+  Doc 10's dependency bound holds at two — JSON and zstd, "one small, well-vetted
+  dependency and no more" — so the hash is written rather than bought. Hand-rolling
+  a primitive is normally a smell, and the reason it is safe *here specifically* is
+  worth stating: SHA-256 is a fixed public spec of ~150 lines with no key and no
+  secret, hence no side-channel surface, and its correctness is **completely**
+  pinned by the published NIST vectors — the hazard being hedged against, a subtly
+  wrong construction that still looks right, cannot survive an input whose reference
+  output is published. The name is the leading 128 bits: a 2^64 birthday bound, set
+  at the generous end and not the cheap one because a collision's failure mode is
+  *silent pixel corruption*. A faster hash (BLAKE3) would buy speed already
+  arranged away — a steady-state save re-hashes only the tiles the user touched.
+  Decided in `serialize.raster_tile_store`; recorded in doc 08 (Principle 8,
+  § Dependency note) and doc 17 (§ component table).
+
 ## Open questions
 
 - HDR output transforms / tone mapping and OCIO-grade color: structurally

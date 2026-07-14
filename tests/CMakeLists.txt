@@ -644,6 +644,31 @@ target_link_libraries(arbc_raster_runtime_binding_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_raster_runtime_binding_t)
 
+# The content-addressed tile store (serialize.raster_tile_store). These hold a CodecTable
+# and a SaveContext, so they name nlohmann::json (PRIVATE to arbc_runtime) and must link it
+# explicitly -- the idiom every codec-holding target here already uses.
+add_executable(arbc_raster_tile_store_golden_t raster_tile_store_golden.t.cpp)
+target_link_libraries(
+  arbc_raster_tile_store_golden_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_raster_tile_store_golden_t)
+
+# Hostile raster geometry (tier-8 loader hardening): the caps that must hold BEFORE an
+# allocation is sized by a hostile document's numbers.
+add_executable(arbc_raster_tile_store_hostile_t raster_tile_store_hostile.t.cpp)
+target_link_libraries(
+  arbc_raster_tile_store_hostile_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_raster_tile_store_hostile_t)
+
+# The save racing the editor (tier-6, tsan lane): the memo's retain races the writer's
+# release on the same pool slot -- the case doc 14:168-181 requires the store to admit.
+add_executable(arbc_raster_tile_store_concurrency_t raster_tile_store_concurrency.t.cpp)
+target_link_libraries(
+  arbc_raster_tile_store_concurrency_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_raster_tile_store_concurrency_t)
+
 # Raster render-vs-edit concurrency stress (tier-6, tsan lane): pinned-snapshot
 # readers race an editor painting new versions.
 add_executable(arbc_raster_concurrency_stress_t raster_concurrency_stress.t.cpp)

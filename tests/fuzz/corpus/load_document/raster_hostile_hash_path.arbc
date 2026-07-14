@@ -1,0 +1,19 @@
+{
+  "arbc": { "format": 1, "storage_format": "rgba16f" },
+  "composition": {
+    "canvas": [0, 0, 16, 16],
+    "layers": [
+      {
+        "kind": "org.arbc.raster",
+        "kind_version": "1",
+        "params": {
+          "blobs": ["../../../../../../etc/passwd"],
+          "edge": 16,
+          "height": 16,
+          "tiles": "../../../",
+          "width": 16
+        }
+      }
+    ]
+  }
+}

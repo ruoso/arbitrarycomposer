@@ -76,8 +76,19 @@ content_body_from_json(const json& body, std::span<const ContentRef> inputs, Obj
     // `params` would see a param the user later CLEARED as "dropped by the codec" and
     // resurrect it. Errors stay values: a codec that cannot re-serialize simply
     // preserves nothing.
+    //
+    // The re-run's `SaveContext` is PARAMS-ONLY (save_context.hpp): we want the codec's
+    // KEY SET, not its bytes. An asset-bearing kind (org.arbc.raster) would otherwise
+    // re-encode and re-store every blob it had just read back, on every open -- and it
+    // would need a sink installed on the READ path to do it. Params-only makes
+    // `store_asset` a no-op that needs no sink, so the residual diff keeps working for
+    // asset-bearing kinds at no cost (Constraint 11).
     if (produced && params_residual != nullptr && codec->serialize) {
-      if (const expected<json, SerializeError> back = codec->serialize(**produced); back) {
+      SaveContext params_ctx{ctx.base_uri()};
+      params_ctx.set_params_only(true);
+      params_ctx.set_storage_format(ctx.storage_format());
+      if (const expected<json, SerializeError> back = codec->serialize(**produced, params_ctx);
+          back) {
         *params_residual = unknown_residual_diff(params, *back);
       }
     }
@@ -112,7 +123,7 @@ content_body_from_json(const json& body, std::span<const ContentRef> inputs, Obj
 expected<json, SerializeError> content_body_to_json(std::string_view kind_id,
                                                     std::string_view kind_version,
                                                     const Content& content,
-                                                    const CodecTable& codecs) {
+                                                    const CodecTable& codecs, SaveContext& ctx) {
   // A placeholder re-emits its stored (inputs-free) LEAF body verbatim --
   // byte-equivalent under the writer's canonical dump (Principles 2/5) -- so its
   // `kind`/`kind_version`/`params` and any unknown fields survive without a codec.
@@ -129,7 +140,7 @@ expected<json, SerializeError> content_body_to_json(std::string_view kind_id,
   if (codec == nullptr || !codec->serialize) {
     return unexpected(SerializeError{SerializeError::Kind::NoCodec, ObjectId{}});
   }
-  expected<json, SerializeError> params = codec->serialize(content);
+  expected<json, SerializeError> params = codec->serialize(content, ctx);
   if (!params) {
     return unexpected(params.error());
   }

@@ -42,7 +42,7 @@ const char* shape_token(CrossfadeShape shape) {
 // `{"duration": <int flicks>, "shape": "linear", "start": <int flicks>}` -- flick
 // instants are integer core scalars (doc 08 Principle 5); canonical key sort orders
 // the keys. A non-crossfade content is a codec/kind-routing mismatch -> CodecFailed.
-expected<json, SerializeError> serialize_crossfade(const Content& content) {
+expected<json, SerializeError> serialize_crossfade(const Content& content, SaveContext& /*ctx*/) {
   const auto* cf = dynamic_cast<const CrossfadeContent*>(&content);
   if (cf == nullptr) {
     return unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});

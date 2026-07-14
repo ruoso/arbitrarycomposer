@@ -53,7 +53,7 @@ json window_json(const FadeWindow& w) {
 // `{"shape": "linear", "in"?: {...}, "out"?: {...}}` -- each optional window omitted
 // when absent (omit-when-default, doc 08 Principle 6). A non-fade content is a codec/
 // kind-routing mismatch -> CodecFailed as a value.
-expected<json, SerializeError> serialize_fade(const Content& content) {
+expected<json, SerializeError> serialize_fade(const Content& content, SaveContext& /*ctx*/) {
   const auto* fade = dynamic_cast<const FadeContent*>(&content);
   if (fade == nullptr) {
     return unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});

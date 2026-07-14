@@ -1,0 +1,26 @@
+{
+  "arbc": {
+    "format": 1,
+    "storage_format": "rgba32f"
+  },
+  "composition": {
+    "canvas": [0, 0, 64, 64],
+    "layers": [
+      {
+        "kind": "org.arbc.raster",
+        "kind_version": "1",
+        "opacity": 1.0,
+        "params": {
+          "blobs": ["3fa91c00000000000000000000000001", "3fa91c00000000000000000000000002",
+                    "3fa91c00000000000000000000000003", "3fa91c00000000000000000000000004"],
+          "edge": 16,
+          "height": 32,
+          "tiles": "assets/tiles/",
+          "width": 32
+        },
+        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "visible": true
+      }
+    ]
+  }
+}

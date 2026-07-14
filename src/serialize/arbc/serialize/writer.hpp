@@ -3,6 +3,7 @@
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/model/model.hpp>
+#include <arbc/serialize/save_context.hpp> // SaveContext / AssetSink (names no JSON type)
 #include <arbc/serialize/unknown_fields.hpp>
 
 #include <functional>
@@ -26,6 +27,14 @@ struct SerializeError {
     NonFiniteValue, // a transform/opacity/gain/canvas scalar was NaN or +/-Inf
     NoCodec,        // a non-placeholder content had no registered content-body codec
     CodecFailed,    // a registered codec could not serialize the content's params
+    // A codec had asset BYTES to store and no `AssetSink` was installed on the
+    // `SaveContext` (serialize.raster_tile_store Constraint 5). A save that would drop
+    // the user's pixels is an error, never a silent success -- and existing sink-less
+    // call sites keep working, because a document with no asset-bearing content never
+    // consults the sink.
+    AssetSinkMissing,
+    // A sink was installed and could not durably write (I/O, permissions, no space).
+    AssetWriteFailed,
   };
   Kind kind{Kind::NonFiniteValue};
   ObjectId object{}; // the offending object (layer / composition), when known
@@ -122,12 +131,20 @@ using ContentMetaProvider = std::function<std::optional<ContentMeta>(const Conte
 // so Principle 5 holds with no extra work. A stash whose bytes fail to re-parse is
 // treated as empty, never as an error. `nullptr` emits exactly today's bytes.
 //
-// Returns the byte buffer, or a `SerializeError` (a non-finite scalar, or a codec
-// that failed / had no registered codec / no metadata for a graph node); no nlohmann
-// exception crosses the API.
+// `ctx` is the WRITE-SIDE asset seam (serialize.raster_tile_store Decision 1), the
+// mirror of the reader's `LoadContext`: the document's base URI, the `AssetSink` a codec
+// hands finished asset bytes to, and the document-scoped storage format. It is
+// authoritative for the `arbc` envelope's `storage_format` key, which is emitted only
+// when it differs from the `rgba16f` default (the omit-when-default idiom the composition
+// tier already uses for `working_space`), so a document with no asset-bearing content
+// serializes byte-identically to today's goldens.
+//
+// Returns the byte buffer, or a `SerializeError` (a non-finite scalar; a codec that
+// failed / had no registered codec / no metadata for a graph node; or a codec with bytes
+// to store and no sink to store them in); no nlohmann exception crosses the API.
 expected<std::string, SerializeError>
 serialize_document(const DocRoot& doc, const ContentBodyProvider& provider,
-                   const ContentMetaProvider& meta, const CodecTable& codecs,
+                   const ContentMetaProvider& meta, const CodecTable& codecs, SaveContext& ctx,
                    const UnknownFieldStore* unknown = nullptr);
 
 } // namespace arbc

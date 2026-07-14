@@ -63,6 +63,11 @@ using json = nlohmann::json;
 
 namespace {
 
+// The write-side asset seam (serialize.raster_tile_store Decision 1). These codecs store
+// no asset bytes, so a default sink-less context is exactly right: it is threaded through
+// for the signature, never consulted.
+arbc::SaveContext save_ctx;
+
 // A leaf test kind, so a child composition has something to hold.
 class ClipContent final : public Content {
 public:
@@ -122,7 +127,7 @@ arbc::DeserializeFn clip_deserialize() {
 }
 
 arbc::SerializeFn clip_serialize() {
-  return [](const Content& c) -> arbc::expected<json, SerializeError> {
+  return [](const Content& c, arbc::SaveContext& /*ctx*/) -> arbc::expected<json, SerializeError> {
     const auto* cc = dynamic_cast<const ClipContent*>(&c);
     if (cc == nullptr) {
       return arbc::unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});
@@ -147,7 +152,7 @@ arbc::DeserializeFn nest_deserialize() {
 // Deliberately emits NO child reference: `SerializeFn` is unchanged by this task, because
 // the core appends the re-derived `"composition"` after the codec returns (Constraint 1).
 arbc::SerializeFn nest_serialize() {
-  return [](const Content& c) -> arbc::expected<json, SerializeError> {
+  return [](const Content& c, arbc::SaveContext& /*ctx*/) -> arbc::expected<json, SerializeError> {
     if (dynamic_cast<const NestKind*>(&c) == nullptr) {
       return arbc::unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});
     }
@@ -263,7 +268,7 @@ std::string reload_and_resave(const std::string& bytes, const CodecTable& codecs
     }
     return ContentMeta{kind, "1.0", ObjectId{}};
   };
-  return canonical(arbc::serialize_document(*pin, provider, meta, codecs));
+  return canonical(arbc::serialize_document(*pin, provider, meta, codecs, save_ctx));
 }
 
 } // namespace
@@ -297,8 +302,8 @@ TEST_CASE("a two-composition document round-trips byte-exact through the composi
   scene.ids.emplace(clip, clip_id);
 
   const CodecTable codecs = nest_table();
-  const std::string out = canonical(
-      arbc::serialize_document(*scene.model.current(), scene.provider(), scene.meta(), codecs));
+  const std::string out = canonical(arbc::serialize_document(
+      *scene.model.current(), scene.provider(), scene.meta(), codecs, save_ctx));
 
   const char* const k_golden = R"json({
   "arbc": {
@@ -415,8 +420,8 @@ TEST_CASE("a composition cycle round-trips as data, and is not an operator-input
     scene.bound.emplace(nest_id, nest);
     scene.ids.emplace(nest, nest_id);
 
-    const std::string out = canonical(
-        arbc::serialize_document(*scene.model.current(), scene.provider(), scene.meta(), codecs));
+    const std::string out = canonical(arbc::serialize_document(
+        *scene.model.current(), scene.provider(), scene.meta(), codecs, save_ctx));
     CHECK(out.find("\"composition\": \"0\"") != std::string::npos);
     CHECK(out.find("\"compositions\"") == std::string::npos);
 
@@ -462,8 +467,8 @@ TEST_CASE("a composition cycle round-trips as data, and is not an operator-input
     scene.ids.emplace(na, nest_a);
     scene.ids.emplace(nb, nest_b);
 
-    const std::string out = canonical(
-        arbc::serialize_document(*scene.model.current(), scene.provider(), scene.meta(), codecs));
+    const std::string out = canonical(arbc::serialize_document(
+        *scene.model.current(), scene.provider(), scene.meta(), codecs, save_ctx));
     // B lands under "1"; its own nesting body names the root back as "0".
     CHECK(out.find("\"compositions\"") != std::string::npos);
     CHECK(out.find("\"composition\": \"1\"") != std::string::npos);

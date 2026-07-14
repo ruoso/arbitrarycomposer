@@ -28,12 +28,29 @@ project.arbc            # the JSON graph: small, diffable, hand-inspectable
 project.assets/
   bg.png                # imported encoded images  (org.arbc.image, Principle 3)
   tiles/
-    3f/3fa91c….tile     # painted raster tile blobs (org.arbc.raster, Principle 8)
+    3f/3fa91c…          # painted raster tile blobs (org.arbc.raster, Principle 8)
 ```
 
 Everything inside is addressed by relative URI and resolved through the same
 `LoadContext` asset hook that external nested projects use (Principle 3), so
 one resolution seam serves both and a project directory stays relocatable.
+
+**The core's asset I/O is symmetric.** Principle 3's read-side rule — the core
+fetches asset bytes, the kind only decodes them, and an asset-referencing kind
+never performs file I/O of its own — holds in both directions: **the core
+*writes* asset bytes, and the kind only *encodes* them.** So `LoadContext` and
+its `AssetSource` have a write-side mirror, `SaveContext` and its `AssetSink`,
+threaded to the serialize codecs the same way. A codec hands the sink finished
+bytes under a relative URI; it never opens, creates, or renames a file. This is
+what lets a host keep documents somewhere other than a POSIX directory, and what
+keeps the format testable without a filesystem.
+
+The sink is **write-if-absent**: it reports whether a name was newly written or
+already present, which is what makes the incremental save of Principle 8 an
+observable property rather than an aspiration. A save **never deletes** a blob —
+another document version, another `.arbc`, or a concurrent editor may reference
+it — so reclaiming unreferenced blobs is an explicit sweep, never a side effect
+of saving.
 
 A directory rather than a single file is the deliberate choice. It is what makes
 content-addressed blobs work as *files* — an incremental save writes only the
@@ -47,7 +64,8 @@ depend on single-file-ness.
 
 ```jsonc
 {
-  "arbc": { "format": 1 },                 // format major version
+  "arbc": { "format": 1,                   // format major version
+            "storage_format": "rgba16f" }, // Principle 8; omitted = rgba16f
   "composition": {
     "working_space": { "primaries": "srgb", "transfer": "linear",
                        "format": "rgba16f" },      // doc 07; omitted = default
@@ -66,8 +84,9 @@ depend on single-file-ness.
         "kind": "org.arbc.raster",                 // PAINTED pixels: document state,
         "name": "retouch",                         // not an import (Principle 8)
         "params": { "tiles": "assets/tiles/",      // content-addressed blob store
-                    "edge": 256, "format": "rgba16f",
-                    "levels": [["3fa91c…", "0091ab…", …]] }
+                    "edge": 256,
+                    "width": 4096, "height": 3072,
+                    "blobs": ["3fa91c…", "0091ab…", …] }  // LEVEL 0 ONLY, row-major
       },
       {
         "kind": "org.arbc.nested",
@@ -342,13 +361,26 @@ These are core-owned placement, not `params`.
    sparsity and sharing that make it small, and then pays full price for both.
    So the on-disk form mirrors the in-memory one:
 
-   - **Blobs are keyed by content hash.** Each *distinct* tile is written once,
-     as `assets/tiles/<hash>`; the layer's `params` hold the per-level arrays of
-     hashes. Identical tiles — the empty ones, the flat ones — collapse to a
-     single blob, and dedup falls out across layers *and* across undo versions
-     for free. It also makes **saves incremental**: a save writes only the tiles
-     that are new, because every untouched tile is already on disk under the
-     same name.
+   - **Blobs are keyed by content hash.** Each *distinct* tile is written once;
+     the layer's `params` hold a flat, row-major array of the **level-0** tile
+     hashes (`blobs`), plus the store's base URI, the tile `edge`, and the
+     layer's `width`/`height`. Identical tiles — the empty ones, the flat ones —
+     collapse to a single blob, and dedup falls out across layers *and* across
+     undo versions for free. It also makes **saves incremental**: a save writes
+     only the tiles that are new, because every untouched tile is already on disk
+     under the same name.
+
+     The hash is **SHA-256 truncated to its leading 128 bits**, hex-encoded, and
+     a blob lives at `assets/tiles/<first-2-hex>/<full-hex>` — the two-level
+     fan-out every content-addressed store uses, because a flat directory of 10⁵
+     blobs is hostile to exactly the ordinary filesystem tooling this directory
+     exists to preserve. The fan-out is derived inside the store, so the JSON
+     never names a blob path and the layout can change without a format break.
+     128 bits puts the birthday bound at 2^64 — far beyond any document's tile
+     count across its whole undo history, and the margin is set there rather than
+     at the cheap end because the failure mode of a collision is *silent pixel
+     corruption*. Content hashing is deliberately **in-tree, not a third
+     dependency** (see the Dependency note).
 
      The hash is over the tile's **uncompressed** bytes in the storage format —
      *not* over the compressed blob. Compression is a storage encoding, never
@@ -356,24 +388,40 @@ These are core-owned placement, not `params`.
      different zstd version, or a different compression level, may emit different
      bytes for the same tile without changing its name, invalidating the asset
      directory, or breaking dedup between two collaborators on different machines.
-     It also makes a blob self-verifying at no cost — decompress it, hash it,
-     compare against the name it was fetched under — and it leaves the compression
-     level a free tuning knob rather than a format break.
+     It also makes a blob self-verifying at no cost — decompress it, unshuffle it,
+     hash it, compare against the name it was fetched under — and it leaves the
+     compression level a free tuning knob rather than a format break. A blob whose
+     bytes do not hash to the name they were fetched under is a load error, never
+     silent wrong pixels.
    - **Mip levels are not persisted.** They are derived, and a rebuild is
      already proven byte-identical to the incremental recompute
      (`14-data-model-and-editing#paint-mip-recompute-matches-full-rebuild`).
-     Rebuild on load.
+     Rebuild on load. This is why `params` carry one flat array and not a
+     per-level one.
    - **The storage format is document-carried and is not the working format.**
      A document may composite in `rgba32f` and store `rgba16f`; half-float's
      10-bit mantissa is ample for anything that originated as 8-bit sRGB, at
      half the bytes. Whether that trade is acceptable is a lossy/lossless
      judgment only the user can make, so it is authored, not inferred.
      `rgba16f` is the default.
+
+     It is carried **per document** — in the `arbc` block, not in a layer's
+     `params` — and one asset directory has exactly one storage format. This is
+     forced, not a convenience: the hash is over storage-format bytes, so two
+     layers storing at different formats would hash the same pixels to different
+     names and the cross-layer dedup this whole principle rests on would quietly
+     stop working. (Note the name: a composition's `format` is its *working*
+     space, doc 07. Different concept, different key.) Permitted values are
+     `rgba16f` and `rgba32f`; anything else is a load error.
    - **Compression is per blob: zstd with a byte-shuffle.** The shuffle (group
      all byte-0s, then all byte-1s, …) separates a float's noisy low mantissa
      bytes from its structured exponent and sign planes, which is what lifts
-     photographic tiles from 1.5x to 2.1x. zstd rather than LZMA: an interactive
-     editor saves incrementally and cannot pay LZMA's speed for the ratio.
+     photographic tiles from 1.5x to 2.1x. The stride is one **sample** — 2 bytes
+     at `rgba16f`, 4 at `rgba32f` — since it is a float's own bytes being
+     separated. The shuffle lives *inside* the blob, beneath the hash: a decode
+     decompresses, unshuffles, and only then hashes. zstd rather than LZMA: an
+     interactive editor saves incrementally and cannot pay LZMA's speed for the
+     ratio.
 
    *Why this shape, and not "just compress it".* Measured on a 30-layer, 24 MP
    composition (3 full-bleed photos, 4 cropped, 8 painted/retouch, 6 masks,
@@ -441,6 +489,23 @@ tile geometry the document declares, never from the frame header, which on a
 hostile file is attacker-controlled and will happily claim to expand to 64 GB;
 and unproblematic (never-in-tree) consumption. The byte-shuffle that makes it pay
 on float tiles is ours, not the library's.
+
+Note where the tile geometry itself now sits in the threat model. Bounding
+decompression by "the tile geometry the document declares" only helps if that
+geometry is *checked first*: on a hostile file the `edge`, the `width`/`height`,
+and the length of the `blobs` array are all attacker-controlled. A loader
+validates them — and rejects them as values — **before** any allocation is sized
+by them.
+
+**A content hash is *not* a third dependency.** Principle 8 needs one, and it is
+written in-tree (SHA-256, FIPS 180-4, ~150 lines) rather than bought. Doc 10's
+bound holds at two dependencies: the hash is a fixed public spec with no key and
+no secret, so it has no side-channel surface, and its correctness is *completely*
+pinned by the published NIST vectors — the usual hazard of a hand-rolled
+primitive, a subtly wrong construction that still looks right, cannot survive an
+input whose reference output is published. A faster hash (BLAKE3) would buy speed
+we have already arranged not to need: a steady-state save re-hashes only the tiles
+the user actually touched.
 
 Two bounds on the compressor, stated here so neither is quietly widened later.
 First, **compressed bytes are never content identity** (Principle 8): the store
