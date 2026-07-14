@@ -1037,3 +1037,43 @@ add_executable(arbc_per_object_revision_keys_t per_object_revision_keys.t.cpp)
 target_link_libraries(arbc_per_object_revision_keys_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_per_object_revision_keys_t)
+
+# --- quality.testing_artifact: the shipped-artifact proof -----------------------
+# The tree's first add_test() -- every other registration here is
+# catch_discover_tests, and rightly so: this one drives `cmake`, not a Catch2 binary.
+# It stages `cmake --install` into a prefix and configures tests/consumer/ against it
+# as a genuinely foreign project, twice (see consumer/run_staged_install.cmake). A
+# CTest test rather than a CI-only step, so scripts/gate runs exactly what CI runs.
+#
+# The consumer links the STATIC libarbc it just installed, so it must carry the same
+# sanitizer/coverage instrumentation that archive was built with -- else the
+# asan/tsan/rtsan/coverage lanes fail at link on the runtime's own symbols. These are
+# the flags the top-level CMakeLists puts on the project globally.
+set(arbc_consumer_flags "")
+if(ARBC_EFFECTIVE_SANITIZERS)
+  string(APPEND arbc_consumer_flags
+         " -fsanitize=${ARBC_EFFECTIVE_SANITIZERS} -fno-omit-frame-pointer")
+endif()
+if(ARBC_COVERAGE)
+  string(APPEND arbc_consumer_flags " --coverage")
+endif()
+string(STRIP "${arbc_consumer_flags}" arbc_consumer_flags)
+
+add_test(
+  NAME install.consumer
+  COMMAND
+    "${CMAKE_COMMAND}" "-DARBC_BUILD_DIR=${CMAKE_BINARY_DIR}"
+    "-DARBC_CONSUMER_SRC=${CMAKE_CURRENT_SOURCE_DIR}/consumer"
+    "-DARBC_STAGE_DIR=${CMAKE_BINARY_DIR}/_stage"
+    "-DARBC_CONSUMER_BUILD_DIR=${CMAKE_BINARY_DIR}/_consumer"
+    "-DARBC_CORE_ONLY_BUILD_DIR=${CMAKE_BINARY_DIR}/_consumer_core_only"
+    "-DARBC_GENERATOR=${CMAKE_GENERATOR}" "-DARBC_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+    "-DARBC_BUILD_TYPE=${CMAKE_BUILD_TYPE}" "-DARBC_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+    "-DARBC_CXX_FLAGS=${arbc_consumer_flags}"
+    "-DARBC_LINKER_FLAGS=${arbc_consumer_flags}"
+    "-DARBC_CATCH2_SOURCE_DIR=${catch2_SOURCE_DIR}"
+    "-DARBC_CTEST_COMMAND=${CMAKE_CTEST_COMMAND}" -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/consumer/run_staged_install.cmake")
+# It compiles two CMake projects of its own, so it gets the machine to itself and a
+# budget that survives a cold Catch2 build under a sanitizer.
+set_tests_properties(install.consumer PROPERTIES RUN_SERIAL TRUE TIMEOUT 3600)

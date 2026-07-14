@@ -373,6 +373,22 @@ Initially-open questions, now decided in their own docs:
   retouching *must* stack a raster over it. Decided in doc 08 (§ The asset
   directory, Principles 3 and 8), doc 03 (§ Reference kinds) and doc 17
   (§ The codec line).
+- **One CMake package, with the conformance suite as an optional component.**
+  Everything a consumer needs arrives through a single
+  `find_package(arbc CONFIG)`, which yields `arbc::arbc` and imposes nothing —
+  no test framework, no codec, no GPU SDK. The contract conformance suite, the
+  second shipped artifact (doc 17 § Shipped artifacts), is reached by asking
+  for it: `find_package(arbc COMPONENTS testing)` additionally yields
+  `arbc::testing` and pulls in Catch2, which the suite needs because it asserts
+  from inside the caller's own `TEST_CASE`. One package rather than two,
+  because the suite carries unresolved core symbols and is useless without
+  `libarbc` — two packages would only add a version-skew failure mode between
+  things that are always released together. The optional component is what lets
+  a *shipped* artifact depend publicly on a test framework without that
+  framework ever reaching an embedder of the core, keeping doc 10's promise
+  ("embedding the core must never transitively impose codecs, GPU SDKs, or a
+  GUI toolkit") literally true. Decided in `quality.testing_artifact`; recorded
+  in doc 10 (§ Dependency policy) and doc 17 (§ Shipped artifacts).
 
 ## Open questions
 

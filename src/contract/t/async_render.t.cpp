@@ -169,6 +169,57 @@ TEST_CASE("take() yields the single settlement once and reports settled state") 
   REQUIRE(c.settled()); // still records that a settlement occurred
 }
 
+// `settled_ok()` reads the settlement's KIND without consuming it -- the question a caller
+// asks when "has it settled?" is too coarse: a settled-with-a-result payload is waiting to
+// be taken, a settled-via-fail one yields nothing when taken. The compositor's dispatch
+// gate turns on exactly this distinction (`tile_in_flight`): it joins the first and
+// re-dispatches the second. Peeking must not consume, or the poll that follows would find
+// the settlement gone.
+//
+// enforces: 03-layer-plugin-interface#render-completion-settles-once
+TEST_CASE("settled_ok() reports the settlement kind without consuming it") {
+  SECTION("pending: settled, but not with a result") {
+    arbc::RenderCompletion c;
+    CHECK_FALSE(c.settled());
+    CHECK_FALSE(c.settled_ok());
+  }
+
+  SECTION("completed: settled with a result, and the peek leaves it takeable") {
+    arbc::RenderCompletion c;
+    c.complete(arbc::RenderResult{0.5, false});
+    CHECK(c.settled());
+    CHECK(c.settled_ok());
+    CHECK(c.settled_ok()); // non-consuming: still true the second time
+
+    std::optional<arbc::expected<arbc::RenderResult, arbc::RenderError>> taken = c.take();
+    REQUIRE(taken.has_value()); // ...and the peeks did not steal the settlement
+    REQUIRE(taken->has_value());
+    CHECK((**taken).achieved_scale == 0.5);
+
+    // Taken: the payload is gone, so there is no longer a result to join.
+    CHECK(c.settled());
+    CHECK_FALSE(c.settled_ok());
+  }
+
+  SECTION("failed: settled, but there is no result -- the caller must re-dispatch") {
+    arbc::RenderCompletion c;
+    c.fail(arbc::RenderError::ContentFailed);
+    CHECK(c.settled());
+    CHECK_FALSE(c.settled_ok());
+  }
+
+  SECTION("cancelled but unsettled: advisory, and no settlement of any kind yet") {
+    arbc::RenderCompletion c;
+    c.cancel();
+    CHECK(c.cancelled());
+    CHECK_FALSE(c.settled());
+    CHECK_FALSE(c.settled_ok());
+    // ...and a content that ignores the advisory cancel still settles with a result.
+    c.complete(arbc::RenderResult{});
+    CHECK(c.settled_ok());
+  }
+}
+
 // enforces: 03-layer-plugin-interface#render-completion-settles-once
 TEST_CASE("fail() surfaces the error through take()") {
   arbc::RenderCompletion c;

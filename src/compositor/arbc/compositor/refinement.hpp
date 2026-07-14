@@ -223,17 +223,34 @@ std::vector<TileKey> operator_wave_unmet(const RefinementQueue* queue, const Til
 // no queue; `render_frame_interactive`'s `pending` is optional by contract), so the
 // null path stays byte-identical.
 //
-// SETTLED and CANCELLED entries both answer `false`, and the `cancelled()` clause is
-// load-bearing, not defensive. `cancel` is ADVISORY: it does not settle the
-// completion, and it leaves a conformant content free to honor it and settle via
-// `fail` (`content.hpp:161-163`). `poll_refinements` drops a failed arrival with no
-// cache insert and NO DAMAGE (`refinement.cpp:122-124`) -- which is what stops a
-// persistently-failing tile from spinning the refinement loop forever. Suppress
-// against a cancelled entry and those two facts compose into a permanent hole: the
-// tile is in neither the cache nor the queue, nothing ever damaged it, and nothing
-// re-plans it. It shows a placeholder until some unrelated edit happens to repaint
-// the region. Re-dispatching a cancelled tile costs a render that was probably
-// going to land anyway; suppressing against one costs the tile.
+// The settlement is read by KIND, not merely by presence, and the three arms are each
+// load-bearing:
+//
+//  * UNSETTLED and uncancelled -> `true`. A worker is rendering exactly this tile.
+//
+//  * SETTLED WITH A RESULT, not yet drained -> `true`. Its pixels exist but are not in
+//    the CACHE: the insert happens in `poll_refinements`, on the frame thread, and the
+//    interactive driver runs that poll AFTER the frame's plan pass (doc 02 step 6 vs
+//    step 4). A worker settling between one frame's poll and the next frame's plan
+//    therefore lands the entry in a window where the cache says "miss" and a bare
+//    `!settled()` gate says "nobody is rendering it" -- and the plan dispatches a SECOND
+//    render of a tile that has already finished, throwing the finished result away. The
+//    gate cannot stall on such an entry: the poll is unconditional, and the very next one
+//    inserts it and emits the arrival damage that re-drives the tile.
+//
+//  * SETTLED VIA `fail` (or already taken), and CANCELLED-but-unsettled -> `false`.
+//    `cancel` is ADVISORY: it does not settle the completion, and it leaves a conformant
+//    content free to honor it and settle via `fail` (`content.hpp:161-163`).
+//    `poll_refinements` drops a failed arrival with no cache insert and NO DAMAGE -- which
+//    is what stops a persistently-failing tile from spinning the refinement loop forever.
+//    Suppress against either and those two facts compose into a permanent hole: the tile
+//    is in neither the cache nor the queue, nothing ever damaged it, and nothing re-plans
+//    it. It shows a placeholder until some unrelated edit happens to repaint the region.
+//    Re-dispatching such a tile costs a render that was probably going to land anyway;
+//    suppressing against one costs the tile.
+//
+// So `settled()` alone is NOT the disqualifier -- `settled_ok()` splits it, and that split
+// is the whole difference between joining a finished render and redoing it.
 //
 // The cross-thread reads are the same ones the interactive driver's own unsettled()
 // park predicate already makes (`interactive.cpp:369-372`) -- no lock, no new

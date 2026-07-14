@@ -8,8 +8,9 @@ task quality "Quality infrastructure" {
   task testing_artifact "arbc-testing shipped artifact" {
     effort 1d
     allocate team
+    complete 100
     depends contract.conformance_suite
-    note "Package the conformance suite as the second shipped artifact, linkable by plugin-author test binaries. Docs 16/17."
+    note "Package the conformance suite as the second shipped artifact, linkable by plugin-author test binaries. Docs 16/17. Refinement: tasks/refinements/quality/testing_artifact.md"
   }
   task stress_harness "Stress + schedule perturbation" {
     effort 2d

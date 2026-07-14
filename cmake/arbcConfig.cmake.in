@@ -1,0 +1,40 @@
+@PACKAGE_INIT@
+
+# The installed `arbc` package (doc 17:9-18, quality.testing_artifact).
+#
+#   find_package(arbc CONFIG REQUIRED)                      -> arbc::arbc
+#   find_package(arbc CONFIG REQUIRED COMPONENTS testing)   -> + arbc::testing
+#
+# The `testing` component is the contract conformance suite (doc 16:31-44). It is
+# OPTIONAL, and that is load-bearing: its assertion runtime is Catch2, so making it
+# unconditional would impose Catch2 on everyone who merely embeds the core --
+# precisely the transitive burden doc 10:33-35 forbids, and the edge doc 17:14 says
+# never exists ("linked by plugin authors' test binaries, never by libarbc").
+
+include(CMakeFindDependencyMacro)
+
+# zstd (doc 08 Principle 8): present only when libarbc was built against a SYSTEM
+# zstd, whose objects live in a library of its own that a static libarbc's consumer
+# must still link. A libarbc built against the pinned FetchContent copy folded those
+# objects in and asks for nothing here.
+@ARBC_ZSTD_FIND_DEPENDENCY@
+
+include("${CMAKE_CURRENT_LIST_DIR}/arbcTargets.cmake")
+
+@ARBC_ZSTD_LINK_INTERFACE@
+
+set(arbc_testing_FOUND FALSE)
+if("testing" IN_LIST arbc_FIND_COMPONENTS)
+  # Catch2 is the suite's PUBLIC assertion runtime -- the suite asserts from inside
+  # the CALLER's TEST_CASE (doc 16 Decision 1) -- so a consumer of arbc::testing
+  # links it. It is attached here rather than in the export set because a
+  # FetchContent-built Catch2 is a target of arbitrarycomposer's own build and
+  # cannot be exported; the requirement is the same either way.
+  find_dependency(Catch2 3)
+  include("${CMAKE_CURRENT_LIST_DIR}/arbcTestingTargets.cmake")
+  set_property(TARGET arbc::testing APPEND PROPERTY INTERFACE_LINK_LIBRARIES
+                                                    Catch2::Catch2)
+  set(arbc_testing_FOUND TRUE)
+endif()
+
+check_required_components(arbc)

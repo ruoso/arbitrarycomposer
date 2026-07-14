@@ -42,6 +42,20 @@ template <class Result> bool Completion<Result>::settled() const noexcept {
   return s == k_published || s == k_taken;
 }
 
+template <class Result> bool Completion<Result>::settled_ok() const noexcept {
+  // `k_published` only: in `k_taken` the payload has been moved out, so there is no
+  // settlement left to report the kind of. The acquire pairs with `try_settle`'s
+  // release store, so the payload read below never races the write that published it
+  // -- and no writer touches `d_payload` after that store (a second settle loses the
+  // CAS and returns before it reaches the payload). The only mutation of a published
+  // payload is `take()`, a caller-side method like this one: both run on the caller
+  // thread, so the read is unsequenced against nothing.
+  if (d_state.load(std::memory_order_acquire) != k_published) {
+    return false;
+  }
+  return d_payload.has_value() && d_payload->has_value();
+}
+
 template <class Result> std::optional<expected<Result, RenderError>> Completion<Result>::take() {
   if (d_state.load(std::memory_order_acquire) != k_published) {
     return std::nullopt; // pending, mid-claim, or already taken

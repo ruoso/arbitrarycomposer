@@ -80,22 +80,27 @@ option(ARBC_BENCHMARKS "Fetch Google Benchmark and build the benchmark targets" 
 option(ARBC_FUZZER "Build the -fsanitize=fuzzer libFuzzer targets (Clang only)" OFF)
 
 include(CTest)
-if(BUILD_TESTING)
-  # Test dependencies come before src/ so component unit tests can use them.
-  include(FetchContent)
-  FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.7.1
-    FIND_PACKAGE_ARGS 3)
-  FetchContent_MakeAvailable(Catch2)
-  if(catch2_SOURCE_DIR)
-    list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
-  elseif(Catch2_DIR)
-    list(APPEND CMAKE_MODULE_PATH "${Catch2_DIR}")
-  endif()
-  include(Catch)
+
+# Catch2 is acquired UNCONDITIONALLY (testing_artifact D3). It is not merely the
+# test framework any more: it is the public assertion runtime of `arbc-testing`, a
+# SHIPPED artifact (doc 17:14) that must exist in a packager's -DBUILD_TESTING=OFF
+# release build like the two plugin artifacts below it. Doc 10:28's promise is
+# unchanged -- an embedder of the core never sees Catch2, because the installed
+# package carries the suite behind an optional `testing` component (doc 10, D4).
+# Test dependencies still come before src/ so component unit tests can use them.
+include(FetchContent)
+FetchContent_Declare(
+  Catch2
+  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+  GIT_TAG v3.7.1
+  FIND_PACKAGE_ARGS 3)
+FetchContent_MakeAvailable(Catch2)
+if(catch2_SOURCE_DIR)
+  list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
+elseif(Catch2_DIR)
+  list(APPEND CMAKE_MODULE_PATH "${Catch2_DIR}")
 endif()
+include(Catch)
 
 # Google Benchmark: fetched ONLY when benchmarks are enabled (mirrors the Catch2
 # declare above, at a pinned tag). Its headers are marked SYSTEM so our
@@ -158,10 +163,12 @@ endif()
 # zstd; a shared libarbc folds the static zstd's symbols in and exposes nothing
 # (hence POSITION_INDEPENDENT_CODE, set globally at the top of this file); a static
 # libarbc carries the requirement to its consumer's final link, as every static
-# library carries its dependencies. When libarbc grows an install/export
-# (packaging.shared_library_build), that exported config must express the zstd
-# requirement: find_dependency(zstd) when the system copy was used, nothing when the
-# pinned static build was folded in.
+# library carries its dependencies. That requirement is now expressed by the exported
+# package config, exactly as this note asked (cmake/ArbcInstall.cmake, discharged by
+# quality.testing_artifact): find_dependency(zstd 1.5) when the system copy was used,
+# nothing when the pinned static build was folded in (its objects are archived into
+# libarbc, so the consumer links nothing extra). The shared-libarbc variant of the
+# same seam stays with packaging.shared_library_build.
 #
 # Consumed find-first with a version-pinned FetchContent fallback (doc 10:32-33),
 # never an in-tree vendored copy. Two wrinkles a compiled library brings that a
@@ -253,10 +260,18 @@ endif()
 
 # The contract conformance suite (arbc-testing) needs Catch2 for its assertion
 # runtime and the component targets (declared in src/) for their public-header
-# include dirs, so it is added after src/ and only under BUILD_TESTING.
-if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/testing/CMakeLists.txt")
+# include dirs, so it is added after src/. Like the two plugin artifacts above it
+# is a SHIPPED artifact (doc 17:14), so it builds regardless of BUILD_TESTING --
+# a packager's release build silently dropping the crown jewel is the bug
+# (testing_artifact D3). Its own tests live under tests/, gated there.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/testing/CMakeLists.txt")
   add_subdirectory(testing)
 endif()
+
+# The install/export seam for the two shipped artifacts. Last, because it exports
+# both `arbc` and `arbc-testing` and so must see them declared.
+include(ArbcInstall)
+arbc_install()
 
 if(BUILD_TESTING)
   add_subdirectory(tests)

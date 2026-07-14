@@ -64,6 +64,16 @@ jobs:
           # annotated graph is a failure. RTSan is Clang-only, so this rides the
           # clang lane; GCC/MSVC keep Layer B + the grep-lint.
           - { name: clang-rtsan, os: ubuntu-latest, cxx: clang++-20, preset: rtsan }
+          # The OTHER zstd consumption path (quality.testing_artifact; the
+          # CMakeLists zstd block asks for both to be exercised). Every lane above
+          # is find-first, so a machine with a system zstd never proves the pinned
+          # FetchContent copy works -- and the two paths install DIFFERENTLY: a
+          # system zstd becomes a find_dependency(zstd 1.5) in the generated package
+          # config, while the fetched static copy is installed nowhere and so has its
+          # objects folded into libarbc.a instead. The `install.consumer` CTest test
+          # links a foreign project against the staged prefix, so it is that
+          # difference this lane actually checks.
+          - { name: gcc-install-fetched, os: ubuntu-latest, cxx: g++, preset: install-fetched }
           - { name: msvc-debug, os: windows-latest, cxx: "", preset: win-dev }
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

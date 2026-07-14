@@ -177,6 +177,15 @@ public:
   // --- caller side ---
   void cancel() noexcept;
   bool settled() const noexcept;
+  // Has it settled with a RESULT (rather than a `fail`), and is that result
+  // still here to be taken? A non-consuming peek at the settlement's KIND, for
+  // a caller that must distinguish "the render finished and its payload is
+  // waiting for you" from "the render failed, and taking it yields nothing" --
+  // without taking it. `false` for pending, for failed, and for already-taken.
+  // The compositor's dispatch gate needs exactly this: a settled-but-undrained
+  // success is a render that must not be re-issued, a settled-via-fail is one
+  // that must be (`compositor/refinement.hpp`, `tile_in_flight`).
+  bool settled_ok() const noexcept;
   // The single settlement, or `nullopt` if not yet settled (non-blocking).
   // Yields the settlement at most once; subsequent calls return `nullopt`.
   std::optional<expected<Result, RenderError>> take();

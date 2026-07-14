@@ -80,7 +80,37 @@ bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept {
     // not consulted: the two record sites disagree about it (the driver stores the
     // tile cell, `pull` stores the whole pull region) and nothing reads it --
     // `poll_refinements` derives its damage rect from the key.
-    if (pending.key == key && !pending.done->settled() && !pending.done->cancelled()) {
+    if (!(pending.key == key)) {
+      continue;
+    }
+    // SETTLED-WITH-A-RESULT, not yet drained: suppress. Its pixels exist, but they are
+    // not in the CACHE -- the insert happens in `poll_refinements`, on the frame thread,
+    // and the interactive driver runs that poll AFTER the frame's plan pass. So a worker
+    // that settles between one frame's poll and the next frame's plan leaves this entry
+    // in a window where the cache says "miss" and a `!settled()` gate says "nobody is
+    // rendering it" -- and the plan re-dispatches a render that has ALREADY FINISHED,
+    // burning a worker to recompute pixels that are sitting right here, and throwing the
+    // result away. That is the same hazard `operator_wave_pending` already names for the
+    // wave gate; the dispatch gate has to answer it too. It cannot stall on one: the poll
+    // is unconditional and this entry is drained by the very next one, which inserts it
+    // into the cache and emits the arrival damage that re-drives the tile.
+    if (pending.done->settled_ok()) {
+      return true;
+    }
+    // SETTLED-VIA-FAIL (or already taken): do NOT suppress -- and this is the clause the
+    // `cancelled()` one below composes with, not a redundant restatement of it.
+    // `poll_refinements` drops a failed arrival with no cache insert and NO DAMAGE, so
+    // suppressing against one leaves the tile in neither the cache nor the queue with
+    // nothing to re-plan it: a permanent hole behind a placeholder. A failed tile must be
+    // re-dispatched by the next miss on its key.
+    if (pending.done->settled()) {
+      continue;
+    }
+    // UNSETTLED: in flight, and it suppresses unless it was cancelled. `cancel` is
+    // ADVISORY -- it does not settle, and a conformant content may honor it and settle
+    // via `fail`, landing in the no-insert-no-damage hole above. Nobody is GUARANTEED to
+    // still be rendering a cancelled tile, so a frame that wants it again dispatches it.
+    if (!pending.done->cancelled()) {
       return true;
     }
   }

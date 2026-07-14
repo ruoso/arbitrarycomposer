@@ -315,15 +315,26 @@ TEST_CASE("poll_refinements over an empty queue schedules no follow-up frame") {
 
 // --- The in-flight suppression key (compositor.in_flight_tile_dedup) ---------
 
-// The predicate itself, one case per arm. The two that carry the design are the
-// `cancelled()` arm (a cancelled render may honor the cancel and settle via `fail`,
-// which `poll_refinements` drops with no insert and NO DAMAGE -- so suppressing
-// against it would strand the tile behind a placeholder forever) and the
-// key-mismatch arm (a revision bump MUST re-render, and full `TileKey` equality is
-// the only thing that guarantees it).
+// The predicate itself, one case per arm. Three carry the design:
+//
+//  * the SETTLED-WITH-A-RESULT arm -- the pixels are done but they are not in the cache
+//    until `poll_refinements` puts them there, and the interactive driver polls AFTER it
+//    plans, so a worker that settles between two frames sits in a window where the cache
+//    misses and nothing looks in flight. Suppress, or the plan re-renders a tile that has
+//    already rendered and discards the result;
+//  * the `cancelled()` arm and its twin the SETTLED-VIA-FAIL arm -- a cancelled render may
+//    honor the cancel and settle via `fail`, which `poll_refinements` drops with no insert
+//    and NO DAMAGE, so suppressing against either would strand the tile behind a
+//    placeholder forever;
+//  * the key-mismatch arm (a revision bump MUST re-render, and full `TileKey` equality is
+//    the only thing that guarantees it).
+//
+// The first two pull in opposite directions across `settled()`, which is exactly why the
+// gate reads the settlement's KIND (`settled_ok()`) and not just its presence.
 //
 // enforces: 02-architecture#in-flight-tile-is-not-redispatched
 // enforces: 02-architecture#cancelled-tile-is-redispatched
+// enforces: 02-architecture#settled-undrained-tile-is-joined-not-redispatched
 TEST_CASE("tile_in_flight suppresses only a live, uncancelled, unsettled pending tile") {
   RefinementQueue queue;
   const TileKey key = tile_key(ScaleRung{0}, TileCoord{0, 0});
@@ -350,10 +361,37 @@ TEST_CASE("tile_in_flight suppresses only a live, uncancelled, unsettled pending
     CHECK(arbc::tile_in_flight(&queue, key));
   }
 
-  SECTION("a settled entry is not in flight -- its tile is in the cache, or was dropped") {
+  SECTION("a SETTLED-with-a-result entry, not yet drained, IS in flight -- its pixels are "
+          "not in the cache until the next poll puts them there") {
     auto done = std::make_shared<RenderCompletion>();
     record(key, done);
     done->complete(RenderResult{});
+    // The state the interactive driver's plan pass actually sees when a worker settles
+    // between two frames: settled, undrained, still queued -- and NOT in the cache. A
+    // gate keyed on `!settled()` calls this "nobody is rendering it" and dispatches a
+    // second render of a finished tile. Joining it is the whole point of the pending set.
+    REQUIRE(done->settled());
+    REQUIRE(done->settled_ok());
+    CHECK(arbc::tile_in_flight(&queue, key));
+  }
+
+  SECTION("a settled-VIA-FAIL entry is not in flight -- poll drops it with no insert and no "
+          "damage, so the next miss must dispatch its own render") {
+    auto done = std::make_shared<RenderCompletion>();
+    record(key, done);
+    done->fail(RenderError::ContentFailed);
+    REQUIRE(done->settled());
+    CHECK_FALSE(done->settled_ok()); // settled, but there is no result to join
+    CHECK_FALSE(arbc::tile_in_flight(&queue, key));
+  }
+
+  SECTION("an already-DRAINED entry is not in flight -- its settlement has been taken") {
+    auto done = std::make_shared<RenderCompletion>();
+    record(key, done);
+    done->complete(RenderResult{});
+    REQUIRE(done->take().has_value()); // the poll drained it; the payload is gone
+    CHECK(done->settled());
+    CHECK_FALSE(done->settled_ok());
     CHECK_FALSE(arbc::tile_in_flight(&queue, key));
   }
 
@@ -493,16 +531,23 @@ TEST_CASE("tile_wanted answers the frame's footprint, plus the unmet inputs of i
 
 // --- The refinement wave (compositor.operator_refinement_wave_amplification) --
 
-// The gate predicate, one case per arm. It is the SECOND predicate over this queue,
-// and it differs from `tile_in_flight` in exactly one clause -- the `cancelled()` one
-// -- which is the arm that carries the design and the arm that would silently void the
-// coalescing if it were copied from its sibling. The two answer two different
-// questions: "is someone rendering this?" (a cancelled render: no) and "is more coming
-// for this?" (a cancelled render: yes -- `cancel` is advisory, the content is free to
-// ignore it, and it usually lands). Copy `tile_in_flight`'s clause here and the
-// interactive driver's deadline sweep -- which cancels EVERY unsettled tile on expiry
-// -- opens every gate at every frame boundary, and the coalescing evaporates in exactly
-// the regime it exists for, while every unit test still passes.
+// The gate predicate, one case per arm. It is the SECOND predicate over this queue, and
+// the two answer two different questions: "is someone rendering this?" (`tile_in_flight`,
+// the dispatch gate) and "is more coming for this?" (this one, the re-render gate). They
+// AGREE that a settled-but-undrained entry holds -- its pixels are not in the cache until
+// the next poll, so neither gate may act as though the tile were absent -- and they part
+// company on the two arms where "more is coming" outlives "someone is rendering":
+//
+//  * CANCELLED-but-unsettled: nobody is guaranteed to be rendering it (so a dispatch must
+//    proceed, or the tile is stranded), but `cancel` is advisory and the render usually
+//    lands anyway (so the chain must not be re-driven yet). This is the arm that carries
+//    the design: copy `tile_in_flight`'s clause here and the interactive driver's deadline
+//    sweep -- which cancels EVERY unsettled tile on expiry -- opens every gate at every
+//    frame boundary, and the coalescing evaporates in exactly the regime it exists for,
+//    while every unit test still passes.
+//  * SETTLED-VIA-FAIL: dropped by the poll with no insert and no damage, so `tile_in_flight`
+//    must re-dispatch it -- while this gate keys on presence and simply waits for it to
+//    leave the queue.
 //
 // enforces: 02-architecture#refinement-wave-coalesces-chain-rerender
 TEST_CASE("operator_wave_pending holds while any recorded unmet input is still pending") {

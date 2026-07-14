@@ -129,4 +129,10 @@ task compositor "Compositor" {
     depends !refine_frame_composite_idempotence
     note "The repaint region is currently the bounding box of the frame's device dirty rects (Decision 2 of refine_frame_composite_idempotence): two small damages at opposite corners of the viewport repaint everything between them. Normalize the DirtyRegion into a disjoint rect set and clear/clip/repaint per rect instead. Waste, not incorrectness — the bbox repaint is byte-exact and re-composites from cache. Source-of-debt: tasks/refinements/compositor/refine_frame_composite_idempotence.md. Docs 02/09. Refinement: tasks/refinements/compositor/disjoint_dirty_repaint.md"
   }
+  task poll_before_replan "Hoist tile-arrival poll before plan step in render_frame" {
+    effort 1d
+    allocate team
+    depends !refinement
+    note "The interactive driver plans at step 4 and polls arrivals at step 6, while refinement.hpp's own comment asserts the poll 'runs unconditionally every frame, before any re-plan'. A worker that settles between one frame's poll and the next frame's plan sits in a gap where the cache says miss and the gate says nobody is rendering it; the dispatch gate's settled_ok() split (quality.testing_artifact) closes the behavioral hole, but the structural fix is to hoist the poll before the plan so arrivals composite in the frame they drain. Blocked on counter-semantic analysis: current frame counter tests observe poll-after-plan ordering and must be re-baselined. Source: tasks/refinements/quality/testing_artifact.md (fixer tech-debt). Docs 02/04."
+  }
 }

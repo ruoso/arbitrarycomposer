@@ -67,6 +67,15 @@
       }
     },
     {
+      "name": "install-fetched",
+      "displayName": "Debug + tests, every dependency FETCHED (never found)",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/install-fetched",
+      "cacheVariables": {
+        "FETCHCONTENT_TRY_FIND_PACKAGE_MODE": "NEVER"
+      }
+    },
+    {
       "name": "win-dev",
       "displayName": "Debug + tests (Ninja, for MSVC dev prompts)",
       "inherits": "dev",
@@ -91,6 +100,7 @@
     { "name": "rtsan", "configurePreset": "rtsan" },
     { "name": "coverage", "configurePreset": "coverage" },
     { "name": "fuzz", "configurePreset": "fuzz" },
+    { "name": "install-fetched", "configurePreset": "install-fetched" },
     { "name": "win-dev", "configurePreset": "win-dev" },
     { "name": "bench", "configurePreset": "bench" }
   ],
@@ -102,6 +112,7 @@
     { "name": "rtsan", "configurePreset": "rtsan", "output": { "outputOnFailure": true } },
     { "name": "coverage", "configurePreset": "coverage", "output": { "outputOnFailure": true } },
     { "name": "fuzz", "configurePreset": "fuzz", "output": { "outputOnFailure": true } },
+    { "name": "install-fetched", "configurePreset": "install-fetched", "output": { "outputOnFailure": true } },
     { "name": "win-dev", "configurePreset": "win-dev", "output": { "outputOnFailure": true } },
     { "name": "bench", "configurePreset": "bench", "output": { "outputOnFailure": true } }
   ]

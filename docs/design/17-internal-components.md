@@ -17,6 +17,16 @@ its unit tests, and its allowed-dependency list.
 | headers | `include/arbc/<component>/…`, one directory per public-facing component |
 | CMake/pkg-config/CPS metadata | doc 10 |
 
+These reach a consumer as **one CMake package**. `find_package(arbc CONFIG)`
+yields `arbc::arbc` (the umbrella library plus every component's public headers)
+and imposes nothing else. `arbc-testing` is an **optional component** of that
+same package: `find_package(arbc CONFIG COMPONENTS testing)` additionally yields
+`arbc::testing` and resolves the Catch2 the suite asserts through. The suite is
+one package with `libarbc` — not a package of its own — because it deliberately
+carries unresolved core symbols, which resolve at the consumer's final link
+against `arbc`; it is *never* linked by `libarbc` in the other direction. The
+plugin artifacts install alongside as loadable modules, not as link targets.
+
 ## The component graph
 
 ```
