@@ -120,11 +120,11 @@ TEST_CASE("the blob URI fans out two hex digits") {
 TEST_CASE("is_tile_hash rejects everything that is not a canonical name") {
   CHECK(is_tile_hash("0123456789abcdef0123456789abcdef"));
   CHECK_FALSE(is_tile_hash(""));
-  CHECK_FALSE(is_tile_hash("0123456789abcdef0123456789abcde"));  // 31 chars
+  CHECK_FALSE(is_tile_hash("0123456789abcdef0123456789abcde"));   // 31 chars
   CHECK_FALSE(is_tile_hash("0123456789abcdef0123456789abcdef0")); // 33 chars
-  CHECK_FALSE(is_tile_hash("0123456789ABCDEF0123456789abcdef")); // uppercase
-  CHECK_FALSE(is_tile_hash("0123456789abcdeg0123456789abcdef")); // 'g'
-  CHECK_FALSE(is_tile_hash("../../../../../../etc/passwd0000")); // a path, not a hash
+  CHECK_FALSE(is_tile_hash("0123456789ABCDEF0123456789abcdef"));  // uppercase
+  CHECK_FALSE(is_tile_hash("0123456789abcdeg0123456789abcdef"));  // 'g'
+  CHECK_FALSE(is_tile_hash("../../../../../../etc/passwd0000"));  // a path, not a hash
 }
 
 // enforces: 08-serialization#raster-tile-geometry-is-validated-before-allocation

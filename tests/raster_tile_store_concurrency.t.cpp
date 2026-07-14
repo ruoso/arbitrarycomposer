@@ -30,8 +30,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
-#include <map>
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>

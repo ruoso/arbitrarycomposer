@@ -661,6 +661,15 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_raster_tile_store_hostile_t)
 
+# The load's transient peak (kinds.raster_tilewise_load, doc 15). This TU REPLACES the global
+# operator new/delete with a counting pair, so it must be its own executable -- linking it into
+# a shared driver would measure every other test's allocations through it.
+add_executable(arbc_raster_tilewise_load_t raster_tilewise_load.t.cpp)
+target_link_libraries(
+  arbc_raster_tilewise_load_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_raster_tilewise_load_t)
+
 # The save racing the editor (tier-6, tsan lane): the memo's retain races the writer's
 # release on the same pool slot -- the case doc 14:168-181 requires the store to admit.
 add_executable(arbc_raster_tile_store_concurrency_t raster_tile_store_concurrency.t.cpp)

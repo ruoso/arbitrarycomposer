@@ -66,8 +66,9 @@ task kinds "Reference kinds" {
   task raster_tilewise_load "Stream level-0 blobs into pool tiles without a dense DecodedImage buffer" {
     effort 2d
     allocate team
+    complete 100
     depends !raster_pool_backing, serialize.raster_tile_store
-    note "Add RasterStore::build_from_tiles so a load streams level-0 blobs straight into pool blobs instead of materializing a dense w*h working buffer through DecodedImage (the load route serialize.raster_tile_store ships with, Decision 6). Bounds load peak RSS to O(tile) rather than O(image) — 384 MB transient per 24 MP layer today. Source-of-debt: tasks/refinements/serialize/raster_tile_store.md (Deferred follow-ups), commit serialize.raster_tile_store. Docs 08/14/15."
+    note "Add RasterStore::build_from_tiles so a load streams level-0 blobs straight into pool blobs instead of materializing a dense w*h working buffer through DecodedImage (the load route serialize.raster_tile_store ships with, Decision 6). Bounds load peak RSS to O(tile) rather than O(image) — 384 MB transient per 24 MP layer today. Source-of-debt: tasks/refinements/serialize/raster_tile_store.md (Deferred follow-ups), commit serialize.raster_tile_store. Docs 08/14/15. Refinement: tasks/refinements/kinds/raster_tilewise_load.md"
   }
   task raster_workspace_backing "Workspace-back org.arbc.raster tile blobs (crash recovery for a painting)" {
     effort 3d

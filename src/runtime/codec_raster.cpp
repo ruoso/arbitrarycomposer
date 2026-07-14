@@ -15,9 +15,17 @@
 // Identical tiles collapse to one blob, so dedup falls out across layers and across undo
 // versions, and INCREMENTAL SAVE falls out as a consequence: a save writes only the blobs
 // not already on disk under that name. Mip levels are not persisted; a load rebuilds them
-// through `RasterContent`'s existing `DecodedImage` constructor, which is already
-// claim-proven byte-identical to the incremental recompute
+// through `RasterContent::from_tiles`, which decimates the pyramid with the very same
+// (single) kernel the dense constructor does, and is therefore still byte-identical to
+// the incremental recompute
 // (`14-data-model-and-editing#paint-mip-recompute-matches-full-rebuild`).
+//
+// AND THE LOAD IS TILEWISE, symmetrically (doc 15; kinds.raster_tilewise_load). The read
+// side used to scatter each decoded blob into a dense `w * h` working buffer and hand THAT
+// to `RasterContent`, which immediately re-tiled it -- an O(image) transient (384 MB for a
+// 24 MP layer) in the middle of the one code path whose entire purpose is not being
+// O(image). It now streams: one blob fetched, verified, and written into one pool tile at
+// a time, so the load's peak is O(tile).
 //
 // THE LEVELIZATION LINE (doc 17, CI-enforced). `serialize` (L4) may not include
 // `kind_raster` (L4), and vice versa -- no same-level edges. So `arbc::serialize` owns
@@ -38,9 +46,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -203,8 +213,7 @@ deserialize_raster(const json& params, LoadContext& ctx, RasterTileStore* tiles)
   // that size is now derived from numbers a hostile document supplied, so this is the
   // extension of doc 08:440-442's promise from the frame header to the tile table.
   // NOTHING below this line allocates from unchecked numbers.
-  const expected<TileGeometry, TileBlobError> geom =
-      validate_tile_geometry(*edge, *width, *height);
+  const expected<TileGeometry, TileBlobError> geom = validate_tile_geometry(*edge, *width, *height);
   if (!geom) {
     return read_fail(ReaderError::Kind::MalformedField, "/params/edge");
   }
@@ -222,28 +231,31 @@ deserialize_raster(const json& params, LoadContext& ctx, RasterTileStore* tiles)
   const PixelFormat storage = ctx.storage_format();
   const std::size_t samples = geom->tile_samples();
 
-  // The dense working buffer the existing `RasterContent` constructor takes (Decision 6):
-  // correctness through the already-proven path first -- which is also what makes the mip
-  // rebuild byte-identical for free. Its honest cost is a transient w*h*16 buffer (384 MB
-  // for a 24 MP layer), and that cost is why `kinds.raster_tilewise_load` is a NAMED
-  // follow-up rather than a shrug.
-  DecodedImage image;
-  image.width = geom->width;
-  image.height = geom->height;
-  image.format = k_working_rgba32f;
-  image.bytes.assign(static_cast<std::size_t>(geom->width) *
-                         static_cast<std::size_t>(geom->height) * k_tile_channels * sizeof(float),
-                     std::byte{0});
-  auto* const dense = reinterpret_cast<float*>(image.bytes.data());
-
-  for (std::size_t t = 0; t < geom->tile_count(); ++t) {
+  // THE LOAD IS TILEWISE (doc 15 "Reconstructing a tiled payload is tilewise";
+  // kinds.raster_tilewise_load). There is no dense `w * h * 16` working buffer here, and
+  // there must not be one: the tile store exists because flattening a sparse tile table
+  // into a dense image throws away exactly the sparsity that makes it small, and a reader
+  // that flattens it back out on the way in gives that away transiently -- 384 MB for a
+  // 24 MP layer, on top of the table it is legitimately building. `build_from_tiles` hands
+  // this callback ONE pool blob's memory at a time; the fetched frame and the decoded
+  // samples below are scoped to a single invocation, so the O(tile) peak is a consequence
+  // of the CONTROL FLOW rather than of anyone's discipline.
+  //
+  // The failure a fill declines on is carried out here: `TileFill` is a bool, because
+  // `kind_raster` (L4) may not name a `ReaderError` (contract's, but the seam stays
+  // byte-oriented -- Constraint 6), and there is exactly one call site to thread it back
+  // through.
+  std::optional<ReaderError> failure;
+  auto fill = [&](std::size_t t, std::span<float> dst) -> bool {
     const json& entry = (*bit)[t];
     if (!entry.is_string()) {
-      return read_fail(ReaderError::Kind::MalformedField, "/params/blobs");
+      failure = ReaderError{ReaderError::Kind::MalformedField, "/params/blobs", ObjectId{}};
+      return false;
     }
     const std::string hash = entry.get<std::string>();
     if (!is_tile_hash(hash)) {
-      return read_fail(ReaderError::Kind::MalformedField, "/params/blobs");
+      failure = ReaderError{ReaderError::Kind::MalformedField, "/params/blobs", ObjectId{}};
+      return false;
     }
 
     // THE CORE FETCHES ASSET BYTES; THE KIND ONLY DECODES THEM (doc 08 Principle 3). The
@@ -252,66 +264,60 @@ deserialize_raster(const json& params, LoadContext& ctx, RasterTileStore* tiles)
     auto frame = std::make_shared<std::string>();
     ctx.load_asset(ref, [frame](std::string_view bytes) { frame->assign(bytes); });
     if (frame->empty()) {
-      // Tile blobs load SYNCHRONOUSLY; there is no pending state (Decision 7). An imported
-      // image has a source file that may be slow, missing, or remote, and a sensible "not
-      // yet" rendering. Painted pixels have none of that: they are document state, the
-      // asset directory is a sibling of the `.arbc` by construction, and a raster layer
-      // whose tiles have not arrived is not a layer in a pending state -- it is a BROKEN
+      // Tile blobs load SYNCHRONOUSLY; there is no pending state (Decision 7, unamended by
+      // this task -- streaming here buys MEMORY, not progressiveness). An imported image
+      // has a source file that may be slow, missing, or remote, and a sensible "not yet"
+      // rendering. Painted pixels have none of that: they are document state, the asset
+      // directory is a sibling of the `.arbc` by construction, and a raster layer whose
+      // tiles have not arrived is not a layer in a pending state -- it is a BROKEN
       // DOCUMENT.
-      return read_fail(ReaderError::Kind::UnresolvableReference, "/params/blobs");
+      failure = ReaderError{ReaderError::Kind::UnresolvableReference, "/params/blobs", ObjectId{}};
+      return false;
     }
 
-    const std::span<const std::byte> frame_bytes{
-        reinterpret_cast<const std::byte*>(frame->data()), frame->size()};
+    const std::span<const std::byte> frame_bytes{reinterpret_cast<const std::byte*>(frame->data()),
+                                                 frame->size()};
     const expected<std::vector<float>, TileBlobError> pixels =
         decode_tile_blob(frame_bytes, hash, storage, samples);
     if (!pixels) {
       // A blob that does not hash to the name it was fetched under -- a truncated file, a
       // bit-flipped frame, a substituted blob -- is a ReaderError. Never a crash, never
       // silent wrong pixels (doc 08 Principle 8: the blob is self-verifying).
-      return read_fail(ReaderError::Kind::MalformedField, "/params/blobs");
+      failure = ReaderError{ReaderError::Kind::MalformedField, "/params/blobs", ObjectId{}};
+      return false;
     }
 
-    // Scatter the tile into the dense buffer, dropping the tile's right/bottom padding.
-    const std::size_t tx = t % static_cast<std::size_t>(geom->tiles_x);
-    const std::size_t ty = t / static_cast<std::size_t>(geom->tiles_x);
-    for (int iy = 0; iy < geom->edge; ++iy) {
-      const std::size_t gy = ty * static_cast<std::size_t>(geom->edge) +
-                             static_cast<std::size_t>(iy);
-      if (gy >= static_cast<std::size_t>(geom->height)) {
-        break;
-      }
-      for (int ix = 0; ix < geom->edge; ++ix) {
-        const std::size_t gx = tx * static_cast<std::size_t>(geom->edge) +
-                               static_cast<std::size_t>(ix);
-        if (gx >= static_cast<std::size_t>(geom->width)) {
-          break;
-        }
-        const std::size_t src = (static_cast<std::size_t>(iy) *
-                                     static_cast<std::size_t>(geom->edge) +
-                                 static_cast<std::size_t>(ix)) *
-                                k_tile_channels;
-        const std::size_t dst =
-            (gy * static_cast<std::size_t>(geom->width) + gx) * k_tile_channels;
-        for (std::size_t c = 0; c < k_tile_channels; ++c) {
-          dense[dst + c] = (*pixels)[src + c];
-        }
-      }
-    }
+    // VERBATIM, PADDING INCLUDED (Decision 3). `decode_tile_blob` yields exactly
+    // `samples` == `dst.size()` floats, which is the whole blob: the save side `peek()`s
+    // the whole pool blob, so the padding is INSIDE the hash. Dropping it here -- as the
+    // dense route did -- would leave the memo below asserting a name the pool blob no
+    // longer hashes to, and the next save would publish that stale name over different
+    // bytes. Padding stays unobservable in output either way: every read clamps to
+    // `width`/`height`.
+    std::copy_n(pixels->begin(), dst.size(), dst.begin());
+    return true;
+  };
+
+  std::unique_ptr<RasterContent> content =
+      RasterContent::from_tiles(geom->width, geom->height, geom->edge, fill);
+  if (!content) {
+    return unexpected(failure.value_or(
+        ReaderError{ReaderError::Kind::MalformedField, "/params/blobs", ObjectId{}}));
   }
-
-  auto content = std::make_unique<RasterContent>(std::move(image), geom->edge);
 
   // SEED THE MEMO with the tiles we just decoded: we already know each one's name, so
   // re-hashing it would be pure waste -- and it is what makes both the reader's
   // params-only residual re-serialize and the FIRST save after a load a pure memo sweep.
   //
-  // Note the level-0 grid we seed against is the one `RasterStore::build` just minted, so
-  // its slots are fresh: two identical tiles in the document occupy two distinct slots and
-  // both map to the same hash, which is exactly right -- the dedup lives in the NAME, not
-  // in the pool.
+  // Note the level-0 grid we seed against is the one `build_from_tiles` just minted, so its
+  // slots are fresh: two identical tiles in the document occupy two distinct slots and both
+  // map to the same hash, which is exactly right -- the dedup lives in the NAME, not in the
+  // pool. The seeded name is now HONEST for a foreign blob too: the fill copied the blob
+  // verbatim, so the pool slot really does hash to the name we are asserting for it, which
+  // the dense route could not promise for a blob whose padding was not already zero.
   if (tiles != nullptr) {
-    if (const TileTablePtr built = content->store().base_table(); built && built->level_count() > 0) {
+    if (const TileTablePtr built = content->store().base_table();
+        built && built->level_count() > 0) {
       const Level& level0 = built->level(0);
       BigBlockPool& pool = content->store().pool();
       for (std::size_t t = 0; t < level0.tiles.size() && t < geom->tile_count(); ++t) {
@@ -327,17 +333,16 @@ deserialize_raster(const json& params, LoadContext& ctx, RasterTileStore* tiles)
 Codec raster_codec() { return raster_codec(nullptr); }
 
 Codec raster_codec(RasterTileStore* tiles) {
-  return Codec{
-      [tiles](const Content& content, SaveContext& ctx) -> expected<json, SerializeError> {
-        return serialize_raster(content, ctx, tiles);
-      },
-      [tiles](const json& params, std::span<const ContentRef> /*inputs*/,
-              ObjectId /*composition*/,
-              LoadContext& ctx) -> expected<std::unique_ptr<Content>, ReaderError> {
-        // Neither `inputs` nor `composition` is consumed: `org.arbc.raster` is a leaf
-        // kind with an empty `inputs()` and no child composition.
-        return deserialize_raster(params, ctx, tiles);
-      }};
+  return Codec{[tiles](const Content& content, SaveContext& ctx) -> expected<json, SerializeError> {
+                 return serialize_raster(content, ctx, tiles);
+               },
+               [tiles](const json& params, std::span<const ContentRef> /*inputs*/,
+                       ObjectId /*composition*/,
+                       LoadContext& ctx) -> expected<std::unique_ptr<Content>, ReaderError> {
+                 // Neither `inputs` nor `composition` is consumed: `org.arbc.raster` is a leaf
+                 // kind with an empty `inputs()` and no child composition.
+                 return deserialize_raster(params, ctx, tiles);
+               }};
 }
 
 } // namespace arbc

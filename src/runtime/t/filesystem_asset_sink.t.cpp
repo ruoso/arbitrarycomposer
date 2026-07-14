@@ -124,7 +124,8 @@ TEST_CASE("an unwritable target is an error value, never a throw") {
   // values all the way down (doc 10): no exception may escape into the writer, because the
   // one thing a hostile or broken filesystem must not do is take the process down.
   REQUIRE(sink.put(dir.at("blocker"), bytes_of("x")).has_value());
-  const expected<bool, AssetSinkError> blocked = sink.put(dir.at("blocker/3f/3fa91c"), bytes_of("y"));
+  const expected<bool, AssetSinkError> blocked =
+      sink.put(dir.at("blocker/3f/3fa91c"), bytes_of("y"));
   REQUIRE_FALSE(blocked.has_value());
   CHECK(blocked.error() == AssetSinkError{AssetSinkError::Kind::WriteFailed});
 }

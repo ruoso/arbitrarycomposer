@@ -167,20 +167,24 @@ TEST_CASE("a malformed hash string is rejected, and never becomes a path") {
   // The blob name is a canonical spelling, not a value: 32 lowercase hex chars. Anything
   // else must never be handed to a URI resolver -- a `blobs` entry is the one place a
   // hostile document gets to name a FILE.
-  p["blobs"] = json::array({"../../../../etc/passwd", "00000000000000000000000000000000",
-                            "00000000000000000000000000000000", "00000000000000000000000000000000"});
+  p["blobs"] =
+      json::array({"../../../../etc/passwd", "00000000000000000000000000000000",
+                   "00000000000000000000000000000000", "00000000000000000000000000000000"});
   CHECK_FALSE(try_load(p).has_value());
 
-  p["blobs"] = json::array({"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", "00000000000000000000000000000000",
-                            "00000000000000000000000000000000", "00000000000000000000000000000000"});
+  p["blobs"] =
+      json::array({"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", "00000000000000000000000000000000",
+                   "00000000000000000000000000000000", "00000000000000000000000000000000"});
   CHECK_FALSE(try_load(p).has_value());
 
-  p["blobs"] = json::array({"deadbeef", "00000000000000000000000000000000",
-                            "00000000000000000000000000000000", "00000000000000000000000000000000"});
+  p["blobs"] =
+      json::array({"deadbeef", "00000000000000000000000000000000",
+                   "00000000000000000000000000000000", "00000000000000000000000000000000"});
   CHECK_FALSE(try_load(p).has_value());
 
-  p["blobs"] = json::array({42, "00000000000000000000000000000000",
-                            "00000000000000000000000000000000", "00000000000000000000000000000000"});
+  p["blobs"] =
+      json::array({42, "00000000000000000000000000000000", "00000000000000000000000000000000",
+                   "00000000000000000000000000000000"});
   CHECK_FALSE(try_load(p).has_value());
 }
 

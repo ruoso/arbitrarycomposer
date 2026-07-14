@@ -110,46 +110,84 @@ WorkingPixel decimate_parent(const Level& child, const BigBlockPool& pool, int e
   });
 }
 
-// Build level 0 from the decoded grid, then a deterministic 2:1 Lanczos-3
-// half-band decimation chain down to a single 1x1 pixel (doc 14:219 scale rungs).
-// Fresh blobs are appended to `keep` (owning BlockRefs) so their allocate-counts
-// survive until the TileTable that will own them is constructed.
-std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, int h, int edge,
-                                BigBlockPool& pool, std::vector<BlockRef>& keep) {
-  std::vector<Level> levels;
+// An empty level-0 grid of the geometry `w x h` at `edge` implies: the tile counts and
+// the (as yet unfilled) `BlockSlotRef` row-major table. Shared by both level-0 routes so
+// neither can drift on tile ordering -- `tiles[ty * tiles_x + tx]` is the flat index the
+// codec's `blobs` array and its hash memo are both positionally keyed on.
+Level level0_shape(int w, int h, int edge) {
+  Level l0;
+  l0.width = w;
+  l0.height = h;
+  l0.tiles_x = tiles_across(w, edge);
+  l0.tiles_y = tiles_across(h, edge);
+  l0.tiles.resize(static_cast<std::size_t>(l0.tiles_x) * static_cast<std::size_t>(l0.tiles_y));
+  return l0;
+}
 
-  // Level 0.
-  {
-    Level l0;
-    l0.width = w;
-    l0.height = h;
-    l0.tiles_x = tiles_across(w, edge);
-    l0.tiles_y = tiles_across(h, edge);
-    l0.tiles.resize(static_cast<std::size_t>(l0.tiles_x) * static_cast<std::size_t>(l0.tiles_y));
-    for (int ty = 0; ty < l0.tiles_y; ++ty) {
-      for (int tx = 0; tx < l0.tiles_x; ++tx) {
-        BlockRef blob = new_blob(pool, edge);
-        auto* px = reinterpret_cast<float*>(blob.data());
-        for (int iy = 0; iy < edge; ++iy) {
-          for (int ix = 0; ix < edge; ++ix) {
-            const int gx = tx * edge + ix;
-            const int gy = ty * edge + iy;
-            if (gx < w && gy < h) {
-              put(px, edge, ix, iy,
-                  grid[static_cast<std::size_t>(gy) * static_cast<std::size_t>(w) +
-                       static_cast<std::size_t>(gx)]);
-            }
+// Level 0 from a dense decoded grid: one fresh blob per tile, in-bounds pixels copied in
+// and the right/bottom padding left at `new_blob`'s zeros.
+Level build_level0_from_grid(const std::vector<WorkingPixel>& grid, int w, int h, int edge,
+                             BigBlockPool& pool, std::vector<BlockRef>& keep) {
+  Level l0 = level0_shape(w, h, edge);
+  for (int ty = 0; ty < l0.tiles_y; ++ty) {
+    for (int tx = 0; tx < l0.tiles_x; ++tx) {
+      BlockRef blob = new_blob(pool, edge);
+      auto* px = reinterpret_cast<float*>(blob.data());
+      for (int iy = 0; iy < edge; ++iy) {
+        for (int ix = 0; ix < edge; ++ix) {
+          const int gx = tx * edge + ix;
+          const int gy = ty * edge + iy;
+          if (gx < w && gy < h) {
+            put(px, edge, ix, iy,
+                grid[static_cast<std::size_t>(gy) * static_cast<std::size_t>(w) +
+                     static_cast<std::size_t>(gx)]);
           }
         }
-        l0.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(l0.tiles_x) +
-                 static_cast<std::size_t>(tx)] = blob.slot();
-        keep.push_back(std::move(blob));
       }
+      l0.tiles[static_cast<std::size_t>(ty) * static_cast<std::size_t>(l0.tiles_x) +
+               static_cast<std::size_t>(tx)] = blob.slot();
+      keep.push_back(std::move(blob));
     }
-    levels.push_back(std::move(l0));
   }
+  return l0;
+}
 
-  // Higher levels: 2:1 half-band decimation of the level below.
+// Level 0 filled TILEWISE (kinds.raster_tilewise_load): the caller writes each tile
+// straight into its pool blob's own memory, so exactly ONE tile's pixels are live at a
+// time and no dense `w*h` buffer exists at any point. The blob is handed over WHOLESALE
+// -- all `edge*edge*4` samples including the padding -- because a persisted tile's
+// padding is inside its content hash (Decision 3).
+//
+// `false` on a declined fill. The in-flight blob dies with this frame and the `keep`
+// vector the caller owns drops the rest, so an abandoned build strands nothing: the pool
+// reclaims every slot by refcount and no TileTable is ever constructed.
+bool build_level0_from_fill(const TileFill& fill, int w, int h, int edge, BigBlockPool& pool,
+                            std::vector<BlockRef>& keep, Level& out) {
+  Level l0 = level0_shape(w, h, edge);
+  const std::size_t samples =
+      static_cast<std::size_t>(edge) * static_cast<std::size_t>(edge) * k_tile_channels;
+  for (std::size_t t = 0; t < l0.tiles.size(); ++t) {
+    BlockRef blob = new_blob(pool, edge);
+    auto* px = reinterpret_cast<float*>(blob.data());
+    if (!fill(t, std::span<float>{px, samples})) {
+      return false;
+    }
+    l0.tiles[t] = blob.slot();
+    keep.push_back(std::move(blob));
+  }
+  out = std::move(l0);
+  return true;
+}
+
+// The pyramid ABOVE level 0: a deterministic 2:1 Lanczos-3 half-band decimation chain
+// down to a single 1x1 pixel (doc 14:219 scale rungs). Both build routes -- the dense one
+// and the tilewise one -- call THIS, unmoved. Copy-pasting it for the second route is the
+// defect `decimate_parent`'s comment above already records: two divergent copies of a
+// byte-exact filter is exactly what
+// `14-data-model-and-editing#paint-mip-recompute-matches-full-rebuild` and
+// `08-serialization#raster-mips-are-not-persisted` both rest on there NOT being.
+void append_higher_levels(std::vector<Level>& levels, int edge, BigBlockPool& pool,
+                          std::vector<BlockRef>& keep) {
   while (levels.back().width > 1 || levels.back().height > 1) {
     const Level& child = levels.back();
     Level up;
@@ -178,6 +216,15 @@ std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, in
     }
     levels.push_back(std::move(up));
   }
+}
+
+// Fresh blobs are appended to `keep` (owning BlockRefs) so their allocate-counts survive
+// until the TileTable that will own them is constructed.
+std::vector<Level> build_levels(const std::vector<WorkingPixel>& grid, int w, int h, int edge,
+                                BigBlockPool& pool, std::vector<BlockRef>& keep) {
+  std::vector<Level> levels;
+  levels.push_back(build_level0_from_grid(grid, w, h, edge, pool, keep));
+  append_higher_levels(levels, edge, pool, keep);
   return levels;
 }
 
@@ -276,6 +323,29 @@ StateHandle RasterStore::build(const DecodedImage& image, int edge) {
   std::vector<Level> levels = build_levels(grid, image.width, image.height, edge, d_pool, keep);
   auto table = std::make_shared<const TileTable>(image.width, image.height, edge, std::move(levels),
                                                  &d_pool);
+  {
+    std::lock_guard<std::mutex> lock(d_mutex);
+    d_base_table = table;
+  }
+  return intern(std::move(table));
+}
+
+std::optional<StateHandle> RasterStore::build_from_tiles(int width, int height, int edge,
+                                                         const TileFill& fill) {
+  // `keep` is the whole abandoned-build story (Constraint 5): it holds the fresh blobs'
+  // allocate-counts until the TileTable ctor retains them, and on a declined fill it goes
+  // out of scope with NO table ever built -- so every blob the partial build allocated
+  // drops to count zero and its slot returns to the pool's class free list.
+  std::vector<BlockRef> keep;
+  std::vector<Level> levels;
+  Level l0;
+  if (!build_level0_from_fill(fill, width, height, edge, d_pool, keep, l0)) {
+    return std::nullopt;
+  }
+  levels.push_back(std::move(l0));
+  append_higher_levels(levels, edge, d_pool, keep);
+
+  auto table = std::make_shared<const TileTable>(width, height, edge, std::move(levels), &d_pool);
   {
     std::lock_guard<std::mutex> lock(d_mutex);
     d_base_table = table;
@@ -478,6 +548,28 @@ std::uint32_t RasterStore::version_refcount(StateHandle handle) const {
 RasterContent::RasterContent(DecodedImage image, int tile_edge)
     : d_bounds{0.0, 0.0, static_cast<double>(image.width), static_cast<double>(image.height)} {
   d_base = d_store.build(image, tile_edge);
+}
+
+RasterContent::RasterContent(int width, int height, int tile_edge, const TileFill& fill, bool& ok)
+    : d_bounds{0.0, 0.0, static_cast<double>(width), static_cast<double>(height)} {
+  const std::optional<StateHandle> built = d_store.build_from_tiles(width, height, tile_edge, fill);
+  ok = built.has_value();
+  d_base = ok ? *built : StateHandle{k_state_none};
+}
+
+std::unique_ptr<RasterContent> RasterContent::from_tiles(int width, int height, int tile_edge,
+                                                         const TileFill& fill) {
+  bool ok = false;
+  // The store is built IN PLACE inside the content: `RasterStore` is not movable and must
+  // not become so -- it owns a BigBlockPool, a mutex and a ChunkSource, and every live
+  // TileTable holds a raw `BigBlockPool*`, so moving the store would dangle every table it
+  // has minted (Decision 2, rejected alternative).
+  auto content =
+      std::unique_ptr<RasterContent>(new RasterContent(width, height, tile_edge, fill, ok));
+  if (!ok) {
+    return nullptr; // a declined fill destroys the half-built content here; none escapes
+  }
+  return content;
 }
 
 std::optional<Rect> RasterContent::bounds() const { return d_bounds; }

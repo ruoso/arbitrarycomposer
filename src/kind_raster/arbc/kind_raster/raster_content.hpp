@@ -10,9 +10,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace arbc {
@@ -48,6 +50,29 @@ struct DecodedImage {
   SurfaceFormat format{k_working_rgba32f};
   std::vector<std::byte> bytes;
 };
+
+// The tilewise construction seam (doc 15 "Reconstructing a tiled payload is tilewise";
+// kinds.raster_tilewise_load). A caller that already holds the payload TILE BY TILE --
+// the `org.arbc.raster` codec reading a persisted tile store, foremost -- fills each
+// level-0 blob straight into the pool's own memory instead of scattering the whole
+// image into a dense `w*h` working buffer that a whole-image constructor immediately
+// re-tiles. That makes a load's TRANSIENT peak O(tile) rather than O(image) -- 384 MB
+// of spare copy for a 24 MP layer, which is the difference between opening a document
+// and failing to.
+//
+// `index` is the FLAT ROW-MAJOR level-0 tile index (`ty * tiles_x + tx`), and `dst` is
+// exactly `edge * edge * 4` working-linear premultiplied RGBA floats, PRE-ZEROED. The
+// fill writes the tile WHOLESALE, padding included: a persisted blob's padding samples
+// are inside its content hash, so re-zeroing them here would make the tile store's
+// hash memo assert a name the pool blob no longer hashes to (Decision 3). Padding stays
+// unobservable in output regardless -- every read clamps to `width`/`height`.
+//
+// Returning false ABANDONS the build: no TileTable is constructed, every blob allocated
+// so far is returned to the pool, and the store stays reusable. It takes plain floats
+// and names no `serialize` type on purpose -- `kind_raster` and `serialize` are both L4
+// siblings (doc 17), so the decode, the hash, and the LoadContext stay on the codec's
+// side of the line and hand the kind nothing but pixels.
+using TileFill = std::function<bool(std::size_t index, std::span<float> dst)>;
 
 // One mip level: a grid of `tiles_x * tiles_y` tile blobs (row-major) covering a
 // `width x height` logical pixel field. Level 0 is the decoded buffer; each
@@ -159,6 +184,14 @@ public:
   // Build the native pyramid from a decoded buffer and intern it as a version.
   StateHandle build(const DecodedImage& image, int edge);
 
+  // The same build, level 0 filled TILEWISE through `fill` (see `TileFill`): no dense
+  // `w*h` buffer is ever materialized, so the peak is one tile's worth of pixels. The
+  // pyramid above level 0 is decimated by the SAME code `build` uses, unmoved, so every
+  // mip rung is byte-identical either way. `std::nullopt` if the fill declined -- no
+  // TileTable is constructed and the blobs allocated so far go back to the pool.
+  std::optional<StateHandle> build_from_tiles(int width, int height, int edge,
+                                              const TileFill& fill);
+
   // Resolve a version, or nullptr if the slot is unknown/absent.
   TileTablePtr resolve(StateHandle handle) const;
 
@@ -226,6 +259,12 @@ class RasterContent final : public Content, public Editable {
 public:
   explicit RasterContent(DecodedImage image, int tile_edge = k_default_tile_edge);
 
+  // The tilewise construction path (`TileFill`), and the one a load takes. A static
+  // factory because it is FALLIBLE and a constructor is not: a fill that declines
+  // yields `nullptr`, never a half-built content whose base version names no pixels.
+  static std::unique_ptr<RasterContent> from_tiles(int width, int height, int tile_edge,
+                                                   const TileFill& fill);
+
   static constexpr const char* kind_id = "org.arbc.raster";
 
   // --- Content ---
@@ -261,6 +300,11 @@ public:
   const RasterStore& store() const { return d_store; }
 
 private:
+  // The tilewise ctor `from_tiles` drives. Private because it is fallible: it reports
+  // through `ok`, and only `from_tiles` is allowed to see the object in the state a
+  // declined fill leaves it in (it destroys it and returns nullptr).
+  RasterContent(int width, int height, int tile_edge, const TileFill& fill, bool& ok);
+
   // Resolve the version a request pins: the snapshot handle if it names a known
   // version, else the live base (doc 14:181-187; an unknown/`k_state_none`
   // snapshot renders the current base state).

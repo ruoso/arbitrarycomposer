@@ -83,4 +83,10 @@ task serialize "Serialization" {
     depends !raster_tile_store
     note "Dispatch the per-tile encode pipeline (storage-convert -> hash -> shuffle -> compress) across pool workers. Already a pure function of immutable peek()ed bytes with a stateless compressor, so the parallelism is sound by construction; raster_tile_store ships it single-threaded and correct first. Behavioral-counter and TSan coverage, no wall-clock assertion. Source-of-debt: tasks/refinements/serialize/raster_tile_store.md (Deferred follow-ups), commit serialize.raster_tile_store. Doc 08."
   }
+  task tile_store_parallel_load "Fan per-tile decode pipeline across pool workers" {
+    effort 2d
+    allocate team
+    depends !raster_tile_store, kinds.raster_tilewise_load
+    note "Dispatch the per-tile decode pipeline (fetch -> decompress -> unshuffle -> verify hash) across pool workers with a bounded in-flight queue, mirroring tile_store_parallel_save. The pool's allocate is writer-only, so the parallel form is decode-on-workers / write-into-pool-on-the-loading-thread; the bounded queue preserves the O(tile)-per-in-flight-tile bound kinds.raster_tilewise_load establishes (peak becomes O(workers * tile), still independent of image size). Behavioral-counter and TSan coverage; no wall-clock assertion. Source-of-debt: tasks/refinements/kinds/raster_tilewise_load.md (Deferred follow-ups), commit kinds.raster_tilewise_load. Doc 08."
+  }
 }

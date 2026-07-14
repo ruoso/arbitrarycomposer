@@ -45,9 +45,9 @@ inline constexpr std::size_t k_tile_hash_chars = k_tile_hash_bytes * 2;
 // threat model. These are the bounds that get checked BEFORE any allocation is sized by
 // them -- generous enough that no real document meets them, small enough that a hostile
 // one cannot ask for an allocation that matters.
-inline constexpr std::int64_t k_max_tile_edge = 4096;      // and a power of two
-inline constexpr std::int64_t k_max_dimension = 1 << 20;   // 1 048 576 px per side
-inline constexpr std::int64_t k_max_tiles = 1 << 22;       // 4 194 304 tiles per level
+inline constexpr std::int64_t k_max_tile_edge = 4096;    // and a power of two
+inline constexpr std::int64_t k_max_dimension = 1 << 20; // 1 048 576 px per side
+inline constexpr std::int64_t k_max_tiles = 1 << 22;     // 4 194 304 tiles per level
 
 // A tile-blob format failure, as a value (doc 10). Never a throw, never a crash, and
 // never silently wrong pixels.

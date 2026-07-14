@@ -330,9 +330,9 @@ TEST_CASE("a painted document round-trips byte-exactly at rgba32f, and rebuilds 
   Document loaded;
   KindBridge lbridge;
   RasterTileStore ltiles;
-  REQUIRE(load_document(*saved, loaded, lbridge, scene.registry, project.base_uri(), &source,
-                        &ltiles)
-              .has_value());
+  REQUIRE(
+      load_document(*saved, loaded, lbridge, scene.registry, project.base_uri(), &source, &ltiles)
+          .has_value());
   CHECK(loaded.storage_format() == PixelFormat::Rgba32fLinearPremul);
 
   RasterContent* const back = only_raster(loaded);
@@ -395,9 +395,9 @@ TEST_CASE("at the rgba16f default, save -> load -> save writes zero new blobs") 
   Document loaded;
   KindBridge lbridge;
   RasterTileStore ltiles;
-  REQUIRE(load_document(*saved, loaded, lbridge, scene.registry, project.base_uri(), &source,
-                        &ltiles)
-              .has_value());
+  REQUIRE(
+      load_document(*saved, loaded, lbridge, scene.registry, project.base_uri(), &source, &ltiles)
+          .has_value());
   CHECK(loaded.storage_format() == PixelFormat::Rgba16fLinearPremul);
 
   FilesystemAssetSink resink;
@@ -450,8 +450,8 @@ TEST_CASE("the zero-argument codec table saves correct pixels, just without the 
   FilesystemAssetSource source;
   Document loaded;
   KindBridge lbridge;
-  REQUIRE(
-      load_document(*saved, loaded, lbridge, scene.registry, project.base_uri(), &source).has_value());
+  REQUIRE(load_document(*saved, loaded, lbridge, scene.registry, project.base_uri(), &source)
+              .has_value());
   RasterContent* const back = only_raster(loaded);
   REQUIRE(back != nullptr);
   CHECK(all_levels(*back) == all_levels(*scene.raster));

@@ -358,6 +358,15 @@ bug that silently corrupts documents under anonymous memory.
   inherit the same properties (and plugin authors don't hand-roll
   allocators); bulk pixel payloads go to the big-block pool with the tile
   *table* in slabs.
+- **Reconstructing a tiled payload is tilewise.** The pool discipline binds
+  the route that *fills* the pool, not just the resident form. A raster load
+  reads its persisted tile table (doc 08 Principle 8) tile by tile, straight
+  into pool blobs; it never materializes a dense `w × h` working buffer to
+  hand to a whole-image constructor. So a load's *transient* peak is
+  O(tile) — one blob's worth of decoded pixels live at a time — while its
+  *resident* cost stays the O(image) tile table it is genuinely reading. The
+  sparsity the on-disk form defends is not worth defending if the reader
+  flattens it back out on the way in.
 - The doc 03 no-STL-in-hot-structs rule extends: record types are
   standard-layout, fixed-size, and their references are slab refs — which
   also happens to be exactly what the future C ABI wants.

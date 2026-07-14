@@ -29,8 +29,8 @@ using namespace arbc;
 
 namespace {
 
-constexpr std::size_t k_samples = 16;                        // 4 pixels x 4 channels
-constexpr std::size_t k_blob = k_samples * sizeof(float);    // one tiny "tile"
+constexpr std::size_t k_samples = 16;                     // 4 pixels x 4 channels
+constexpr std::size_t k_blob = k_samples * sizeof(float); // one tiny "tile"
 
 // Allocate a blob filled with `value` in every float, and return a ref holding one count
 // (the caller stands in for the `TileTable` that would normally hold it).
