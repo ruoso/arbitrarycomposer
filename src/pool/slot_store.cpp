@@ -205,7 +205,9 @@ expected<SlotIndex, PoolError> SlotStore::allocate() {
     return index;
   }
 
-  const SlotIndex index = d_high_water;
+  // The writer is `d_high_water`'s only mutator, so its own relaxed load is its
+  // own latest value -- program order, no barrier needed.
+  const SlotIndex index = d_high_water.load(std::memory_order_relaxed);
   const std::uint32_t chunk_number = index >> d_chunk_bits;
   const std::uint32_t slot_in_chunk = index & d_slot_mask;
 
@@ -222,11 +224,13 @@ expected<SlotIndex, PoolError> SlotStore::allocate() {
     // Mint the inside-out columns for this chunk in lock-step so a typed view's
     // count/generation cell is always published before the slot is handed out.
     publish_parallel_columns(chunk_number);
-    d_slots_capacity += d_chunk_slots;
-    d_bytes_reserved += span->size;
+    // Relaxed: a host memory panel loads these from its own thread, but they
+    // publish no data and order nothing (pool.stats_counter_race).
+    d_slots_capacity.fetch_add(d_chunk_slots, std::memory_order_relaxed);
+    d_bytes_reserved.fetch_add(span->size, std::memory_order_relaxed);
   }
 
-  ++d_high_water;
+  d_high_water.fetch_add(1, std::memory_order_relaxed);
   d_slots_live.fetch_add(1, std::memory_order_relaxed);
   return index;
 }
@@ -264,7 +268,7 @@ std::vector<SlotIndex> SlotStore::reusable_slots() const {
 expected<std::monostate, PoolError> SlotStore::reserve_restored(std::uint32_t high_water) {
   assert_writer_thread();
   if (high_water == 0) {
-    d_high_water = 0;
+    d_high_water.store(0, std::memory_order_relaxed);
     return std::monostate{};
   }
   const std::uint32_t chunks_needed = ((high_water - 1) >> d_chunk_bits) + 1;
@@ -283,11 +287,11 @@ expected<std::monostate, PoolError> SlotStore::reserve_restored(std::uint32_t hi
       return unexpected(span.error());
     }
     d_directory.publish(chunk_number, static_cast<std::byte*>(span->base));
-    d_slots_capacity += d_chunk_slots;
-    d_bytes_reserved += span->size;
+    d_slots_capacity.fetch_add(d_chunk_slots, std::memory_order_relaxed);
+    d_bytes_reserved.fetch_add(span->size, std::memory_order_relaxed);
   }
-  d_free.reserve(d_slots_capacity);
-  d_high_water = high_water;
+  d_free.reserve(slots_capacity());
+  d_high_water.store(high_water, std::memory_order_relaxed);
   // Live count and free list are the walk's to establish (finalize_restore).
   d_slots_live.store(0, std::memory_order_relaxed);
   return std::monostate{};
@@ -295,17 +299,18 @@ expected<std::monostate, PoolError> SlotStore::reserve_restored(std::uint32_t hi
 
 void SlotStore::finalize_restore(const std::vector<SlotIndex>& live) {
   assert_writer_thread();
-  std::vector<bool> is_live(d_high_water, false);
+  const SlotIndex frontier = high_water();
+  std::vector<bool> is_live(frontier, false);
   for (const SlotIndex index : live) {
-    if (index < d_high_water) {
+    if (index < frontier) {
       is_live[index] = true;
     }
   }
   d_free.clear();
-  d_free.reserve(d_slots_capacity);
+  d_free.reserve(slots_capacity());
   // Below-high-water complement, pushed high-index-first so the lowest hole is
   // reused first (LIFO free list).
-  for (SlotIndex index = d_high_water; index-- > 0;) {
+  for (SlotIndex index = frontier; index-- > 0;) {
     if (!is_live[index]) {
       d_free.push_back(index);
     }
@@ -336,6 +341,12 @@ SlotStore& Arena::store_for(std::size_t slot_size, std::size_t slot_align, std::
   const std::size_t stride = align_up(std::max<std::size_t>(slot_size, 1), align);
   const std::uint32_t bits = chunk_bits != 0 ? chunk_bits : default_chunk_bits(stride);
 
+  // Held across the whole lookup-or-insert: a host thread may be walking `d_stores`
+  // in one of the aggregates right now, and the emplace below rebalances the tree
+  // under it (pool.stats_counter_race). The `SlotStore&` we return outlives this
+  // lock -- `std::map` nodes are address-stable, so a later insert cannot move it.
+  const std::lock_guard<std::mutex> guard(d_stores_mutex);
+
   const std::pair<std::size_t, std::size_t> key{stride, align};
   auto it = d_stores.find(key);
   if (it == d_stores.end()) {
@@ -358,7 +369,12 @@ SlotStore& Arena::store_for(std::size_t slot_size, std::size_t slot_align, std::
   return *it->second;
 }
 
+// The three aggregate walks. Each takes `d_stores_mutex` so the traversal cannot
+// race a `store_for` insert rebalancing the tree, then sums relaxed atomic
+// per-store counters. Any thread (a host memory panel polls these while the
+// writer allocates -- doc 15 `:186-198`).
 std::size_t Arena::total_slots_live() const noexcept {
+  const std::lock_guard<std::mutex> guard(d_stores_mutex);
   std::size_t total = 0;
   for (const auto& entry : d_stores) {
     total += entry.second->slots_live();
@@ -367,6 +383,7 @@ std::size_t Arena::total_slots_live() const noexcept {
 }
 
 std::size_t Arena::total_high_water() const noexcept {
+  const std::lock_guard<std::mutex> guard(d_stores_mutex);
   std::size_t total = 0;
   for (const auto& entry : d_stores) {
     total += entry.second->high_water();
@@ -375,6 +392,7 @@ std::size_t Arena::total_high_water() const noexcept {
 }
 
 std::size_t Arena::total_bytes_reserved() const noexcept {
+  const std::lock_guard<std::mutex> guard(d_stores_mutex);
   std::size_t total = 0;
   for (const auto& entry : d_stores) {
     total += entry.second->bytes_reserved();

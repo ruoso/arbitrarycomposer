@@ -743,6 +743,15 @@ target_link_libraries(arbc_stress_document_housekeeping_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_stress_document_housekeeping_t)
 
+# pool.stats_counter_race (tier-6, tsan lane): a host thread polling the memory-panel
+# accounting while the writer allocates -- the overlap the Document stress above never has,
+# because its every memory_stats() call is post-join. It spans runtime Document (L5) and
+# pool Arena/BigBlockPool (L1), so per doc 17:153 it lives here and links the umbrella.
+add_executable(arbc_stress_arena_accounting_poll_t stress_arena_accounting_poll.t.cpp)
+target_link_libraries(arbc_stress_arena_accounting_poll_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_stress_arena_accounting_poll_t)
+
 add_executable(arbc_arena_growth_litmus_t arena_growth_litmus.t.cpp)
 target_link_libraries(arbc_arena_growth_litmus_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)

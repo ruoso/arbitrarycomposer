@@ -112,8 +112,17 @@ public:
 // Threading (doc 15, pool.free_pools): the guard relaxation is ASYMMETRIC.
 // `allocate`/`reserve_restored`/`finalize_restore` stay WRITER-THREAD-ONLY (a
 // debug-build assert enforces it) because arena growth -- chunk publish, column
-// publish, capacity accounting -- is single-threaded and unsynchronized: the
-// writer is the only structural allocator. `release`/`free_now` admit ANY thread
+// publish -- is single-threaded: the writer is the only structural allocator.
+// The capacity ACCOUNTING it maintains along the way is a different matter: a
+// host memory panel reads it from its own thread while the writer allocates
+// (doc 15 `:186-198`), so `d_high_water`/`d_slots_capacity`/`d_bytes_reserved`
+// are RELAXED ATOMICS -- lock-free on the writer, legal to load from any thread
+// (pool.stats_counter_race). Relaxed, not release: they publish no data, they
+// are diagnostics on no correctness path, and each reader only needs a value the
+// counter actually held. `high_water()` stays correctness-load-bearing on the
+// writer (the checkpointer reads it to write the store table), which is sound
+// precisely because the writer is its only mutator: program order hands the
+// writer its own latest value. `release`/`free_now` admit ANY thread
 // (the low-priority housekeeping drain releases cross-thread): each thread pushes
 // freed slots onto its own thread-local LIFO pool with no lock and no allocation,
 // spilling a batch to the shared global pool only when its local pool fills, and
@@ -190,14 +199,14 @@ public:
   // count. Writer-only.
   void finalize_restore(const std::vector<SlotIndex>& live);
 
-  std::uint32_t high_water() const noexcept { return d_high_water; }
+  std::uint32_t high_water() const noexcept { return d_high_water.load(std::memory_order_relaxed); }
 
   // Debug checkpoint seal (doc 15): visit every FULLY-published data chunk base
   // (all chunks below the frontier chunk still being filled), so the caller can
   // mprotect published records read-only while continued allocation into the
   // frontier chunk stays writable. `fn(base, chunk_bytes)`.
   template <class Fn> void for_each_sealable_chunk(Fn&& fn) const {
-    const std::uint32_t frontier = d_high_water >> d_chunk_bits;
+    const std::uint32_t frontier = high_water() >> d_chunk_bits;
     for (std::uint32_t chunk_number = 0; chunk_number < frontier; ++chunk_number) {
       std::byte* base = d_directory.chunk(chunk_number);
       if (base != nullptr) {
@@ -244,10 +253,16 @@ public:
 #endif
 
   // Per-store accounting (doc 15 debug discipline; hosts want a memory panel).
+  // ANY THREAD: every one of these reads a relaxed atomic (or takes a lock), so a
+  // host panel may poll them while the writer allocates (pool.stats_counter_race).
+  // Each reads a value the counter actually held; the SET of them is not a
+  // coherent snapshot, and no correctness decision may be made from one.
   // `slots_live` is exact (atomic: the writer's `allocate` and a cross-thread
   // `release` both mutate it).
   std::size_t slots_live() const noexcept { return d_slots_live.load(std::memory_order_relaxed); }
-  std::size_t slots_capacity() const noexcept { return d_slots_capacity; }
+  std::size_t slots_capacity() const noexcept {
+    return d_slots_capacity.load(std::memory_order_relaxed);
+  }
   // BEST-EFFORT (pool.free_pools): the size of the SHARED global pool only, under
   // the pool lock. Slots cached in per-thread local pools are not counted -- they
   // are not globally visible. A diagnostic counter, never an invariant source.
@@ -255,7 +270,9 @@ public:
     std::lock_guard<std::mutex> guard(d_pool_mutex);
     return d_free.size();
   }
-  std::size_t bytes_reserved() const noexcept { return d_bytes_reserved; }
+  std::size_t bytes_reserved() const noexcept {
+    return d_bytes_reserved.load(std::memory_order_relaxed);
+  }
 
   // Behavioral counters (doc 16 `:54-62`): how many times a local pool spilled a
   // batch to, or refilled a batch from, the shared global pool -- i.e. how many
@@ -323,11 +340,15 @@ private:
   // Atomic because a cross-thread `release` reads/writes it concurrently with the
   // writer-only `set_release_fence` install.
   std::atomic<ReleaseFence*> d_release_fence{nullptr};
-  SlotIndex d_high_water{0};
+  // The accounting trio. All relaxed atomics (pool.stats_counter_race): the writer
+  // read-modify-writes them unlocked on its growth path while a host memory panel
+  // loads them from its own thread. Relaxed inc/store on the writer costs the same
+  // instruction the plain `++`/`+=` emitted before.
+  std::atomic<SlotIndex> d_high_water{0};
   // Atomic: mutated by the writer's `allocate` and a cross-thread `release`.
   std::atomic<std::size_t> d_slots_live{0};
-  std::size_t d_slots_capacity{0};
-  std::size_t d_bytes_reserved{0};
+  std::atomic<std::size_t> d_slots_capacity{0};
+  std::atomic<std::size_t> d_bytes_reserved{0};
   std::atomic<std::size_t> d_spill_count{0};  // global-pool spills (lock taken)
   std::atomic<std::size_t> d_refill_count{0}; // global-pool refills (lock taken)
 
@@ -363,16 +384,40 @@ public:
   // `refcount_backing` is consulted ONLY when the store is first minted (it
   // becomes the size-class store's count-column allocator); a later call for an
   // already-existing size class ignores it -- one backing per size class.
+  //
+  // WRITER-ONLY, and it takes `d_stores_mutex` for the whole lookup-or-insert:
+  // the aggregate walks below run on a HOST thread (a memory panel polls them),
+  // and a red-black insert rewrites the link and colour words such a walk is
+  // reading. That hazard is a tree rebalance, not a torn word, so no per-counter
+  // atomic can close it -- only this lock can (pool.stats_counter_race).
+  //
+  // The returned `SlotStore&` is used after the lock drops. That is legal ONLY
+  // because `d_stores` is a `std::map`: its nodes -- and so the `SlotStore`s the
+  // node values own -- are address-stable across later inserts. The safety of
+  // this whole scheme rests on that container choice; an `unordered_map` here
+  // would rehash and invalidate the reference, and the lock would not save it.
   SlotStore& store_for(std::size_t slot_size, std::size_t slot_align, std::uint32_t chunk_bits = 0,
                        RefcountTableBacking* refcount_backing = nullptr);
 
-  std::size_t store_count() const noexcept { return d_stores.size(); }
+  // Arena aggregates -- the host memory panel's read surface (doc 15 `:186-198`).
+  // ANY THREAD: each takes `d_stores_mutex` (so the walk cannot race a `store_for`
+  // insert) and sums relaxed atomic per-store counters. Deliberately weak: each
+  // counter contributes a value it actually held, but the SUM is not a coherent
+  // snapshot across stores -- a store may grow after it is visited. Diagnostics,
+  // never an invariant source.
+  std::size_t store_count() const noexcept {
+    std::lock_guard<std::mutex> guard(d_stores_mutex);
+    return d_stores.size();
+  }
   std::size_t total_slots_live() const noexcept;
   std::size_t total_high_water() const noexcept;
   std::size_t total_bytes_reserved() const noexcept;
 
-  // Visit every store in the arena (the checkpoint seal walks these). Writer-only.
+  // Visit every store in the arena (the checkpoint seal walks these). Writer-only,
+  // but it holds `d_stores_mutex` across the walk for the same reason the
+  // aggregates do -- `fn` must not call back into `store_for` on this arena.
   template <class Fn> void for_each_store(Fn&& fn) {
+    std::lock_guard<std::mutex> guard(d_stores_mutex);
     for (auto& entry : d_stores) {
       fn(*entry.second);
     }
@@ -383,7 +428,14 @@ private:
   RefusingChunkSource d_refusing;              // backs a store the router refused to bind
   ChunkSource* d_source;
   ChunkSourceRouter* d_router{nullptr}; // non-null only for the routed constructor
+  // A `std::map`, NOT an `unordered_map`: node stability is what lets `store_for`
+  // hand out a `SlotStore&` that outlives the lock (see `store_for`).
   std::map<std::pair<std::size_t, std::size_t>, std::unique_ptr<SlotStore>> d_stores;
+  // Guards `d_stores` against the writer's cold `store_for` insert racing a host
+  // thread's aggregate walk. Cold on both sides: an insert happens once per
+  // size class, a walk at a memory panel's frame cadence -- so it is uncontended
+  // in practice, and it is NOT on the writer's per-slot `allocate` path.
+  mutable std::mutex d_stores_mutex;
 };
 
 } // namespace arbc

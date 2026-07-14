@@ -183,6 +183,20 @@ reference (use-after-release — possible since slots recycle) faults
 loudly instead of silently reading a recycled object; leak check = arena
 live count at teardown.
 
+A memory panel polls, and it polls from the host's thread while the
+writer allocates — so **the accounting accessors are readable from any
+thread**, concurrently with allocation and with the creation of a new
+size-class store. This is the one place the "writer is the only
+structural allocator" rule (above) meets a genuine cross-thread reader,
+and it is bought cheaply: the counters are **relaxed atomics**, and the
+arena-level aggregate walk over the store map is guarded against store
+creation. They are diagnostics on no correctness path, so the guarantee
+is deliberately weak — each counter reads a value it actually held, but
+an aggregate is **not a coherent snapshot** across stores, and no
+correctness decision may be made from one. The alternative — declaring
+the panel writer-thread-only — would make the exposed accounting
+unreadable by the host that motivates it.
+
 ## File-backed arenas: mmap instead of process memory
 
 A deliberate departure from the PoC: arena buffers are **mmapped from a
