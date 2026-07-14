@@ -16,11 +16,34 @@
 #include <arbc/base/geometry.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
+#include <arbc/version.hpp>
 
 #include <cstdio>
+#include <cstring>
 
 // enforces: 17-internal-components#libarbc-never-requires-arbc-testing
+// enforces: 16-sdlc-and-quality#library-version-is-single-sourced
 int main() {
+  // packaging.version_api, and the half an in-tree test structurally cannot give:
+  // <arbc/version.hpp> is reached from the STAGED INSTALL PREFIX, at the include root
+  // rather than under an arbc/<component>/ subdirectory. An in-tree test would pass
+  // happily on a header that never ships; this one does not compile if the header did
+  // not install. Three paths out of the ONE project(VERSION ...) declaration meet here:
+  // the installed header (compiled_version, inlined from its macros), the installed
+  // archive (linked_version, an out-of-line symbol resolved at link), and the installed
+  // CMake package config (ARBC_PACKAGE_VERSION, from arbc_VERSION -- see CMakeLists.txt).
+  if (!(arbc::compiled_version() == arbc::linked_version())) {
+    std::puts("core_only: the installed header and the installed libarbc disagree on the "
+              "version");
+    return 1;
+  }
+  if (std::strcmp(arbc::linked_version_string(), ARBC_PACKAGE_VERSION) != 0 ||
+      std::strcmp(ARBC_VERSION_STRING, ARBC_PACKAGE_VERSION) != 0) {
+    std::printf("core_only: version disagreement -- header %s, library %s, package %s\n",
+                ARBC_VERSION_STRING, arbc::linked_version_string(), ARBC_PACKAGE_VERSION);
+    return 1;
+  }
+
   const arbc::Rect region = arbc::Rect::from_size(8.0, 4.0);
   if (region.width() != 8.0 || region.height() != 4.0 || region.empty()) {
     std::puts("core_only: geometry from the installed headers is wrong");

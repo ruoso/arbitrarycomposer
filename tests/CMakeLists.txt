@@ -1038,6 +1038,23 @@ target_link_libraries(arbc_per_object_revision_keys_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_per_object_revision_keys_t)
 
+# packaging.version_api: header, linked symbols, and the CMake package all report one
+# triple. ARBC_TEST_PROJECT_VERSION_* are injected HERE, on this target alone, straight
+# from `project(... VERSION ...)` -- a second, independent path from the single
+# declaration to the assertion, which is what stops the test passing vacuously against a
+# literal reintroduced next to the one it is checking (version_api Constraint 1). They are
+# scoped to this target on purpose: nothing else in the tree may read a version this way.
+add_executable(arbc_version_api_t version_api.t.cpp)
+target_link_libraries(arbc_version_api_t PRIVATE arbc Catch2::Catch2WithMain
+                                                 arbc_build_flags)
+target_compile_definitions(
+  arbc_version_api_t
+  PRIVATE ARBC_TEST_PROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+          ARBC_TEST_PROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+          ARBC_TEST_PROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+          ARBC_TEST_PROJECT_VERSION_STRING="${PROJECT_VERSION}")
+catch_discover_tests(arbc_version_api_t)
+
 # --- quality.testing_artifact: the shipped-artifact proof -----------------------
 # The tree's first add_test() -- every other registration here is
 # catch_discover_tests, and rightly so: this one drives `cmake`, not a Catch2 binary.

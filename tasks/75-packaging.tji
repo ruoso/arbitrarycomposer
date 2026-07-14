@@ -17,7 +17,8 @@ task packaging "Packaging and release" {
   task version_api "Version API + changelog discipline" {
     effort 0.5d
     allocate team
-    note "Real version symbols/macros, semver from first tag, hand-kept CHANGELOG.md. Docs 10/16."
+    complete 100
+    note "Real version symbols/macros, semver from first tag, hand-kept CHANGELOG.md. Docs 10/16. Refinement: tasks/refinements/packaging/version_api.md"
   }
   task examples "Host examples" {
     effort 2d

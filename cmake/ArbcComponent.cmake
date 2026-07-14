@@ -167,12 +167,41 @@ function(arbc_finalize_library)
   add_library(arbc::arbc ALIAS arbc)
   target_compile_features(arbc PUBLIC cxx_std_20)
   target_link_libraries(arbc PRIVATE "$<BUILD_INTERFACE:arbc_build_flags>")
-  # One FILE_SET, one BASE_DIR per component: CMake derives a $<BUILD_INTERFACE:>
-  # include dir from each base dir, so this replaces the per-component
-  # target_include_directories the pre-install umbrella carried.
+
+  # arbc/version.hpp (packaging.version_api, doc 10 § Versioning and the version API).
+  # Generated into the BUILD tree from one template, so `project(... VERSION ...)` in the
+  # top-level CMakeLists is the single source of truth and a bump is a one-line edit;
+  # configure_file also registers the template as a configure dependency, so that bump
+  # reconfigures. The header belongs to the UMBRELLA and to no component (doc 17:33 names
+  # "version" an umbrella responsibility), so its base dir is the generated root and it
+  # installs at <prefix>/include/arbc/version.hpp -- at the include root, not under an
+  # arbc/<component>/ subdirectory.
+  #
+  # That placement is also what keeps "no component may include it" true BY CONSTRUCTION
+  # rather than by lint: this BASE_DIRS entry exists only on the umbrella, and components
+  # link only their declared arbc_<dep> object libraries and never the umbrella, so a
+  # component that wrote `#include <arbc/version.hpp>` would simply fail to find the file.
+  # An L4 kind reaching up to L6 is the cycle doc 17:52-55 forbids, and the build already
+  # makes it impossible; scripts/check_levels.py needs no new rule (its INCLUDE_RE matches
+  # arbc/<component>/..., which arbc/version.hpp deliberately is not).
+  set(version_include_root "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  set(version_header "${version_include_root}/arbc/version.hpp")
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/arbc/version.hpp.in" "${version_header}"
+                 @ONLY)
+
+  # One FILE_SET, one BASE_DIR per component (plus the generated root above): CMake
+  # derives a $<BUILD_INTERFACE:> include dir from each base dir, so this replaces the
+  # per-component target_include_directories the pre-install umbrella carried.
   target_sources(
     arbc
-    PUBLIC FILE_SET HEADERS BASE_DIRS ${component_dirs} FILES ${component_headers})
+    PUBLIC FILE_SET
+           HEADERS
+           BASE_DIRS
+           ${component_dirs}
+           "${version_include_root}"
+           FILES
+           ${component_headers}
+           "${version_header}")
   foreach(name IN LISTS components)
     target_link_libraries(arbc PRIVATE "$<BUILD_INTERFACE:arbc_${name}>")
   endforeach()

@@ -1,0 +1,74 @@
+// arbc/version.hpp -- the library's version surface (packaging.version_api;
+// design doc 10 § Versioning and the version API, policy in doc 16:143-148).
+//
+// GENERATED from src/arbc/version.hpp.in by configure_file(). Do not edit the
+// generated copy, and do not write a version literal anywhere else: the ONE source
+// of truth is `project(arbitrarycomposer VERSION ...)` in the top-level
+// CMakeLists.txt, from which this header, the symbols in libarbc, and
+// arbcConfigVersion.cmake are all derived. A version bump is that one line.
+//
+// This header includes NOTHING, on purpose. It is owned by the L6 umbrella rather
+// than by any component (doc 17:33), so it installs at <prefix>/include/arbc/version.hpp
+// -- at the include root, not under an arbc/<component>/ subdirectory -- and it must
+// compile standalone and warning-clean under a CONSUMER's flags, which are not ours:
+// the exported interface is deliberately scrubbed of arbc_build_flags, so
+// -Wall -Wextra -Wpedantic -Werror is our discipline and cannot be assumed downstream.
+//
+// NOT to be confused with a *kind* version: serialize.kind_params puts a `kind_version`
+// STRING in each serialized content body, per-kind and independently evolving (doc 08
+// Principle 4). The macros below are the LIBRARY's semver. Neither is derived from the
+// other.
+
+#ifndef ARBC_VERSION_HPP
+#define ARBC_VERSION_HPP
+
+#define ARBC_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define ARBC_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define ARBC_VERSION_PATCH @PROJECT_VERSION_PATCH@
+
+// Comparable encoding, decimal-legible in a build log (0.1.0 -> 1000; 1.2.3 -> 1002003)
+// with 999 headroom per field. Consumers gate with the ENCODE macro rather than
+// hand-encoding:  #if ARBC_VERSION >= ARBC_VERSION_ENCODE(0, 2, 0)
+#define ARBC_VERSION_ENCODE(major, minor, patch) ((major) * 1000000 + (minor) * 1000 + (patch))
+
+#define ARBC_VERSION                                                                     \
+  ARBC_VERSION_ENCODE(ARBC_VERSION_MAJOR, ARBC_VERSION_MINOR, ARBC_VERSION_PATCH)
+
+#define ARBC_VERSION_STRING "@PROJECT_VERSION@"
+
+namespace arbc {
+
+/// The library's semantic version as a plain aggregate. Plain `int`, so the header
+/// needs no `<cstdint>`.
+struct Version {
+  int major;
+  int minor;
+  int patch;
+
+  friend constexpr bool operator==(const Version&, const Version&) = default;
+};
+
+/// The version of the HEADERS the caller compiled against -- inlined from the macros
+/// above, so it costs nothing at runtime and is usable in constant expressions.
+constexpr Version compiled_version() {
+  return Version{ARBC_VERSION_MAJOR, ARBC_VERSION_MINOR, ARBC_VERSION_PATCH};
+}
+
+/// The version of the libarbc actually LINKED (or loaded). Declared here, DEFINED
+/// out-of-line in src/version.cpp -- deliberately neither `inline` nor `constexpr`,
+/// because the whole point of the pair is that the two halves can disagree: this one
+/// reports whatever header the LIBRARY was built from, `compiled_version()` whatever
+/// header the CONSUMER was built from. Collapsing them into one number would make
+/// header/library skew structurally unobservable.
+///
+/// Skew is reported, never enforced (doc 10 § Versioning): the library exposes both
+/// numbers and lets the host decide. It does not abort, assert, or refuse to load --
+/// killing a host's process over a version comparison is a worse failure than the skew.
+Version linked_version();
+
+/// `ARBC_VERSION_STRING` as the LINKED library spells it. Same reasoning as above.
+const char* linked_version_string();
+
+} // namespace arbc
+
+#endif // ARBC_VERSION_HPP

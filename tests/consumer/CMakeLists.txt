@@ -51,10 +51,21 @@ else()
   endif()
 endif()
 
+# The version the CMake PACKAGE advertises (packaging.version_api). find_package set it
+# from the installed arbcConfigVersion.cmake, which write_basic_package_version_file
+# generated from PROJECT_VERSION -- so it reaches core_only.cpp by a path that touches
+# neither the installed header nor the installed archive, and comparing the three there
+# is a real three-way agreement rather than a number checked against itself.
+if(NOT arbc_VERSION)
+  message(FATAL_ERROR "find_package(arbc CONFIG) set no arbc_VERSION; the installed "
+                      "package advertises no version (doc 10 § Versioning)")
+endif()
+
 # Links arbc::arbc ALONE. In the Catch2-suppressed configuration it is the entire
 # build, and it is what proves the core half of the package stands on its own.
 add_executable(core_only core_only.cpp)
 target_link_libraries(core_only PRIVATE arbc::arbc)
+target_compile_definitions(core_only PRIVATE ARBC_PACKAGE_VERSION="${arbc_VERSION}")
 add_test(NAME core_only COMMAND core_only)
 
 if(ARBC_CONSUMER_WITH_TESTING)

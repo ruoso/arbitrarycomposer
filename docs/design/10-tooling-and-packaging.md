@@ -52,6 +52,59 @@ core must never transitively impose codecs, GPU SDKs, or a GUI toolkit.
   (`ARBC_PLUGIN_PATH` + platform-conventional locations) for
   application-style hosts.
 
+## Versioning and the version API
+
+Policy lives in doc 16 (§ Physical design and maintainability, 16:143-148):
+semver from the first tag, pre-1.0 moving freely with changelog honesty, ABI
+checking and a deprecation policy arriving at 1.0. This section records the
+*mechanism* that policy is carried by (`packaging.version_api`).
+
+- **One source of truth: `project(VERSION …)`.** The version is declared once,
+  in the top-level `CMakeLists.txt`, and everything else is derived from it —
+  the generated public header, the compiled-in symbols, and the
+  `arbcConfigVersion.cmake` the package config already writes
+  (`SameMajorVersion`). No second literal anywhere in the tree; a version bump
+  is a one-line edit.
+- **`arbc/version.hpp` — the compile-time half.** A public header owned by the
+  L6 umbrella (doc 17:33 names "version" as an umbrella responsibility), not by
+  any component, and therefore installed at `<prefix>/include/arbc/version.hpp`
+  rather than under a component subdirectory. Generated from a template by
+  `configure_file`. It carries `ARBC_VERSION_MAJOR/MINOR/PATCH`, a comparable
+  encoded `ARBC_VERSION` with an `ARBC_VERSION_ENCODE(major, minor, patch)`
+  macro to build comparands, `ARBC_VERSION_STRING`, and a `constexpr`
+  `arbc::compiled_version()` returning the triple as a plain struct. The header
+  includes nothing: it is the one header in the tree with no dependencies at
+  all, so it stays compilable standalone under `VERIFY_INTERFACE_HEADER_SETS`
+  and warning-clean for consumers who do not inherit our `-Wpedantic -Werror`.
+- **The linked symbols — the run-time half.** `arbc::linked_version()` and
+  `arbc::linked_version_string()` are compiled *into* `libarbc`, from the same
+  generated header. They report the version of the library actually linked or
+  loaded, which the macros cannot: macros describe the headers a consumer
+  compiled against. The pair exists precisely so header/library skew is
+  *observable* — a host that ships a prebuilt `libarbc`, or that `dlopen`s
+  plugins built elsewhere, can compare `compiled_version()` against
+  `linked_version()` and report the mismatch.
+- **Skew is reported, never enforced.** The library does not abort, assert, or
+  refuse to load on a version mismatch. It exposes both numbers and lets the
+  host decide — consistent with errors-as-values and no exceptions across the
+  public boundary (§ Language and toolchain, above). A library that kills its
+  host's process over a version comparison is a worse failure than the skew.
+- **No plugin ABI version in v1.** The `extern "C" arbc_plugin_register` seam
+  carries no ABI number and negotiates nothing. Versioned, semver-gated vtables
+  are Stage 2's C ABI (doc 03 § Stage 2), which doc 16:147 activates at 1.0;
+  minting an ABI number while the C++ interface still churns would advertise a
+  compatibility promise the v1 seam does not make (doc 03 accepts same-toolchain
+  coupling for Stage 1). The library version above is the *library's* version,
+  not a plugin contract.
+- **`SOVERSION` rides the shared build.** The static library needs none; the
+  shared one derives `VERSION`/`SOVERSION` from the same `project(VERSION …)`
+  when `packaging.shared_library_build` lands its `BUILD_SHARED_LIBS` lane.
+- **`CHANGELOG.md`** sits at the repository root in Keep-a-Changelog form
+  (`[Unreleased]` on top, `Added`/`Changed`/`Fixed`/`Removed` groups), hand-kept
+  per doc 16:143-145. It records the evolution of the *shipped surface* for
+  consumers, so it begins at the surface the first tag names — the git log
+  remains the per-commit record, and the changelog is not a transcription of it.
+
 ## Repository layout
 
 Superseded by doc 17 (internal components): the library ships as a single

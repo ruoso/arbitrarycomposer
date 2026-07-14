@@ -45,4 +45,10 @@ task quality "Quality infrastructure" {
     allocate team
     note "Nightly audit: registered claims map to living doc anchors and passing tests; enforces-tags without registry entries already fail the gate. Doc 16."
   }
+  task contributing_doc "CONTRIBUTING.md definition-of-done checklist" {
+    effort 0.5d
+    allocate team
+    depends packaging.version_api
+    note "Write CONTRIBUTING.md with DoD checklist (code + contract/claims tests + design-doc delta + benchmark clean + examples still building), scripts/gate invocation, claims-register ritual, and changelog discipline. Doc 16:138-142. Source-of-debt: tasks/refinements/packaging/version_api.md (Decision 8)."
+  }
 }
