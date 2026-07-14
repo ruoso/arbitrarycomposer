@@ -111,6 +111,28 @@ session-resuming one: same log path and archival, same model resolution, and an
 `implementer` replay still runs the post-implementer verify → fixer → closer
 chain.
 
+**`--resume` does not re-read `state/context_summary.md`.** The replayed prompt
+comes from the log's `---PROMPT---` block, and for an *orchestrator* step the
+context summary is inlined into that text rather than pointed at — so a resumed
+orchestrator turn re-runs against the summary it originally saw, edits to the
+file notwithstanding. To hand the orchestrator a new summary, edit the file and
+start a plain run (see `--archive`).
+
+### Starting a fresh run
+
+A plain `python3 driver.py` restarts iteration numbering at 0, which overwrites
+`iter-0000-*` onwards in place. `--archive` moves the previous run's logs,
+dispatch manifests and act event into a dated directory under `logs/` first:
+
+```
+python3 driver.py --archive
+```
+
+`state/context_summary.md` is *copied* into the archive but left where it is —
+it is the state the new run carries forward. Edit it before starting if you want
+the fresh run to begin from different context. `--archive` cannot be combined
+with `--resume` (archiving would move the log being replayed).
+
 No dependencies beyond stdlib (plus `tj3`, the C++ toolchain the gate
 needs, and `docker` + `act` for the CI-replay verification steps). Stop with Ctrl-C; in-flight sub-agent processes get SIGTERM'd
 cleanly. Prompt files are loaded immediately before each dispatch, so edits

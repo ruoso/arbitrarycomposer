@@ -32,6 +32,7 @@ import os
 import queue
 import re
 import shutil
+import shutil
 import string
 import subprocess
 import sys
@@ -1489,6 +1490,48 @@ def save_context_summary(text: str) -> None:
     CONTEXT_FILE.write_text(text.rstrip() + "\n")
 
 
+def archive_run() -> Optional[Path]:
+    """Move the previous run's per-iteration artifacts into a dated directory
+    under LOG_DIR, leaving a clean slate for a run that restarts at iteration
+    0 (which would otherwise overwrite iter-0000 onwards in place).
+
+    Archived: every `iter-*` log (including `.attempt-N` retries), every
+    dispatch manifest, and the synthesized act event. `context_summary.md` is
+    **copied, not moved** — it is the state the next run carries forward, so it
+    must stay in STATE_DIR; the copy is kept alongside the logs so the archive
+    records the summary those iterations actually ran against.
+
+    LOG_DIR and STATE_DIR are both gitignored, so the archive is too. Returns
+    the archive directory, or None if there was nothing to archive."""
+    sources = (
+        sorted(LOG_DIR.glob("iter-*"))
+        + sorted(STATE_DIR.glob("dispatch-iter-*.json"))
+        + [p for p in (STATE_DIR / "act-event.json",) if p.exists()]
+    )
+    sources = [p for p in sources if p.is_file()]
+    if not sources:
+        return None
+
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    dest = LOG_DIR / stamp
+    for n in range(2, 1000):
+        if not dest.exists():
+            break
+        dest = LOG_DIR / f"{stamp}-{n}"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    for path in sources:
+        shutil.move(str(path), str(dest / path.name))
+    if CONTEXT_FILE.exists():
+        shutil.copy2(CONTEXT_FILE, dest / CONTEXT_FILE.name)
+
+    print_wrapped(
+        f"{DIM}● archived {len(sources)} file(s) from the previous run to "
+        f"{dest} — context_summary.md kept in place{RESET}"
+    )
+    return dest
+
+
 def dispatch_manifest_path(iteration: int) -> Path:
     return STATE_DIR / f"dispatch-iter-{iteration:04d}.json"
 
@@ -1847,9 +1890,28 @@ def parse_args(argv: list[str]) -> "argparse.Namespace":
             "whatever the discarded attempt got wrong."
         ),
     )
+    parser.add_argument(
+        "--archive",
+        action="store_true",
+        help=(
+            "Before starting, move the previous run's logs, dispatch manifests "
+            "and act event into a dated directory under orchestrator/logs/ (a "
+            "gitignored path). A normal run restarts at iteration 0 and would "
+            "otherwise overwrite iter-0000 onwards in place. state/"
+            "context_summary.md is copied into the archive but LEFT IN PLACE, "
+            "so the new run still carries it forward — edit that file first if "
+            "you want the fresh run to start from different context. Cannot be "
+            "combined with --resume, which needs the log it would archive."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.fresh and args.resume is None:
         parser.error("--fresh only makes sense with --resume")
+    if args.archive and args.resume is not None:
+        parser.error(
+            "--archive cannot be combined with --resume: archiving moves the "
+            "log the resume would replay. Archive on the next plain run instead."
+        )
     return args
 
 
@@ -1968,6 +2030,9 @@ def main() -> int:
     if not SYSTEM_PROMPT_PATH.exists():
         print(f"missing system prompt: {SYSTEM_PROMPT_PATH}", file=sys.stderr)
         return 2
+    if args.archive:
+        archive_run()
+
     context_summary = load_context_summary()
     if context_summary:
         print_wrapped(
