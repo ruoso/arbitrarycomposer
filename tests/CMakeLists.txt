@@ -1094,3 +1094,25 @@ add_test(
 # It compiles two CMake projects of its own, so it gets the machine to itself and a
 # budget that survives a cold Catch2 build under a sanitizer.
 set_tests_properties(install.consumer PROPERTIES RUN_SERIAL TRUE TIMEOUT 3600)
+
+# --- quality.contributing_doc: CONTRIBUTING.md cannot go stale -------------------
+# The doc's whole value is that its commands work, so the scripts, presets, and links
+# it names are checked against the tree. A CTest and not a CI-only step, so
+# scripts/gate and CI run the same check (testing_artifact D5). Soft-skips without a
+# Python interpreter, the way the gate soft-skips a missing clang-format -- every
+# machine that can run the gate's structure checks has one.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+  add_test(
+    NAME docs.contributing
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_contributing.py")
+  # Doc 16:196-197: the lint scripts directory is a first-class part of the codebase
+  # with its own tests. Three negative fixtures (bogus preset, bogus script, bogus
+  # link) plus a valid control, each run through the real entry point.
+  add_test(
+    NAME docs.contributing.selftest
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_contributing.py"
+            --self-test)
+else()
+  message(STATUS "arbc: no Python3 interpreter; docs.contributing not registered")
+endif()

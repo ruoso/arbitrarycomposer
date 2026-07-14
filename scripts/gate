@@ -44,4 +44,7 @@ python3 scripts/check_claims.py
 echo "gate: rt-safety lint"
 python3 scripts/check_rt_safety.py
 
+echo "gate: worker-dispatch lint"
+python3 scripts/check_worker_dispatch.py
+
 echo "gate: OK"

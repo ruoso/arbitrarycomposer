@@ -29,7 +29,24 @@ so you retouch by stacking an editable raster over it.
 
 ## Status
 
-Design phase. No code yet. See the design documents:
+Implementation underway, pre-0.1. The library builds and tests: a levelized
+component tree under `src/`, a per-push CI matrix across GCC/Clang/MSVC ×
+Debug/Release/ASan/TSan/RTSan, and a claims register that pins the design docs'
+promises to tests. Nothing is released and the surface still moves freely; the
+first tag will be 0.1.0 ([CHANGELOG.md](CHANGELOG.md)).
+
+To build, test, and run the pre-push gate, see
+[CONTRIBUTING.md](CONTRIBUTING.md):
+
+```bash
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev
+scripts/gate
+```
+
+The design documents are normative — they are the specification the code is
+checked against, not a description of it:
 
 | Doc | Contents |
 | --- | --- |
