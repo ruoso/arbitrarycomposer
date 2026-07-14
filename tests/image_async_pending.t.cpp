@@ -146,9 +146,10 @@ private:
 Registry image_registry() {
   Registry registry;
   REQUIRE(registry
-              .add(ImageContent::kind_id,
-                   [](ContentConfig config) { return arbc::image::make_image_content(config); },
-                   KindMetadata{"Image", "1"})
+              .add(
+                  ImageContent::kind_id,
+                  [](ContentConfig config) { return arbc::image::make_image_content(config); },
+                  KindMetadata{"Image", "1"})
               .has_value());
   return registry;
 }
@@ -162,8 +163,8 @@ std::string image_doc(const std::vector<std::string>& sources) {
     if (!layers.empty()) {
       layers += ",";
     }
-    layers += R"({"kind":"org.arbc.image","kind_version":"1","params":{"source":")" + source +
-              R"("}})";
+    layers +=
+        R"({"kind":"org.arbc.image","kind_version":"1","params":{"source":")" + source + R"("}})";
   }
   return R"({"arbc":{"format":1},"composition":{"canvas":[0,0,384,320],"layers":[)" + layers +
          "]}}";
@@ -368,9 +369,9 @@ TEST_CASE("settling an image arrival installs the pyramid on a NEW revision and 
   CHECK(doc.pin()->revision() > 0);
   CHECK(root_composition_of(doc) == root_before);
   const auto [id_after, image_after] = only_image(doc);
-  CHECK(id_after == id);         // the SAME content, not a swapped-in replacement ...
-  CHECK(image_after == image);   // ... the very same object, in fact
-  CHECK(image->available());     // ... which now has pixels ...
+  CHECK(id_after == id);       // the SAME content, not a swapped-in replacement ...
+  CHECK(image_after == image); // ... the very same object, in fact
+  CHECK(image->available());   // ... which now has pixels ...
   CHECK(image->bounds() == Rect{0.0, 0.0, fix::k_width, fix::k_height}); // ... and geometry
 
   // EXACTLY ONE decode across the whole pending-then-settled life of the image -- not two (a
@@ -408,7 +409,8 @@ TEST_CASE("a source that ANSWERED is unavailable, not pending -- empty bytes, or
     AbsentAssetSource source;
     Document doc;
     KindBridge bridge;
-    REQUIRE(load_document(bytes, doc, bridge, registry, "absent/project.arbc", &source).has_value());
+    REQUIRE(
+        load_document(bytes, doc, bridge, registry, "absent/project.arbc", &source).has_value());
 
     const auto [id, image] = only_image(doc);
     CHECK_FALSE(image->available());
@@ -590,9 +592,9 @@ TEST_CASE("a source that answers TWICE for one URI installs once and publishes o
   CHECK(image->available());
 
   const std::uint64_t revision = doc.pin()->revision();
-  CHECK(revision == 1);                    // ONE revision, not two
-  CHECK(sink.flushes().size() == 1);       // ONE damage flush, not two
-  CHECK(decodes() == before + 1);          // ONE decode
+  CHECK(revision == 1);              // ONE revision, not two
+  CHECK(sink.flushes().size() == 1); // ONE damage flush, not two
+  CHECK(decodes() == before + 1);    // ONE decode
 
   // The pyramid survives a redundant install of the very same bytes, unreplaced.
   const arbc::image::PyramidPtr published = image->pyramid();
@@ -640,9 +642,9 @@ TEST_CASE("a pending image inside a pending nested child settles across two roun
   Document doc;
   KindBridge bridge;
   const Registry registry = image_registry();
-  REQUIRE(load_document(nesting_doc("child.arbc"), doc, bridge, registry, "chain/parent.arbc",
-                        &source)
-              .has_value());
+  REQUIRE(
+      load_document(nesting_doc("child.arbc"), doc, bridge, registry, "chain/parent.arbc", &source)
+          .has_value());
 
   // Round 0: the CHILD is pending. The image inside it is not even known to exist yet.
   CHECK(doc.pending_external_loads() == 1);

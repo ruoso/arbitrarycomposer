@@ -656,13 +656,30 @@ public:
   // channel its bytes arrive through. A kind that does not override it has no
   // late-install channel, and its references are resolved-or-unavailable.
   //
-  // A kind that DOES override it MUST publish the decoded result ATOMICALLY and AT
-  // MOST ONCE, so a worker rendering an earlier pinned revision observes either the
-  // pre-arrival state or the final one -- never a partial install. That obligation
-  // is what lets an overriding kind keep `render_thread_safe() == true` across a
-  // late install: a render stays a pure read of a pointer that is either null or
-  // final. Undecodable bytes are a `false` return, never a throw -- errors are
-  // values across the plugin boundary (doc 03:177-180).
+  // A kind that DOES override it MUST publish the decoded EXTENT -- the geometry the
+  // compositor culls on -- ATOMICALLY and AT MOST ONCE, so a worker rendering an
+  // earlier pinned revision observes either the pre-arrival state or the final one,
+  // never a partial install, and never a REVERSION to the pre-arrival state once the
+  // asset has arrived. An asset whose extent could revert would cull itself out of
+  // the composition and simply vanish.
+  //
+  // The decoded PIXELS carry no such obligation. A kind may treat them as BUDGETED
+  // DERIVED DATA -- evictable under a byte budget and re-derivable BYTE-IDENTICALLY
+  // from a retained encoded source -- so their history may legally be non-null ->
+  // null -> non-null. `render_thread_safe() == true` then rests on IMMUTABLE VALUES
+  // PLUS OWNING PINS: an evictable pixel store must hand a render an owning hold for
+  // the duration of the call, so a concurrent eviction can never free what the render
+  // is reading, and the value it holds is immutable for its whole life. That is what
+  // buys the flag -- not monotonicity of any one pointer, which is what an earlier
+  // form of this contract leaned on. A kind that does NOT evict keeps the simpler
+  // reading (publish once, never replace), and both are sound for the same reason: a
+  // worker never observes a partial or torn state.
+  //
+  // `org.arbc.image` takes the second form: its `PyramidCache` owns the decoded
+  // pyramids, bounds them by a byte budget, and hands each render a residency pin.
+  //
+  // Undecodable bytes are a `false` return, never a throw -- errors are values across
+  // the plugin boundary (doc 03:177-180).
   virtual bool install_asset(std::string_view /*encoded*/) { return false; }
 
   // Map damage on input `input`'s given `rect` into damage on this content's

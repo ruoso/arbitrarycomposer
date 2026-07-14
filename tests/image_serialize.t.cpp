@@ -284,9 +284,9 @@ TEST_CASE("N image layers resolving to one URI issue exactly one decode") {
     CHECK(image->pyramid().get() == images[0]->pyramid().get());
   }
 
-  // Re-rendering an unchanged image issues ZERO further decodes: render is a pure read of the
-  // immutable pyramid (Decision 4). Held open by the live document above, so the weak cache
-  // entry is still resident.
+  // Re-rendering an unchanged image issues ZERO further decodes: a render pins the pyramid the
+  // cache OWNS and reads it, and the process-wide budget is nowhere near tight enough to have
+  // evicted it (kinds.image_master_budget -- an evicted image would cost exactly one more).
   const std::uint64_t after_load = arbc::image::default_pyramid_cache().decodes_issued();
   KindBridge again_bridge;
   Document again;

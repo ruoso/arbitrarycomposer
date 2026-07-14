@@ -147,17 +147,27 @@ public:
   // are a `false` return, never a throw. A kind that does not override it has
   // no late-install channel and its references are resolved-or-unavailable.
   //
-  // A kind that DOES override it must publish the decoded result ATOMICALLY and
-  // AT MOST ONCE — so a worker rendering an earlier pinned revision observes
-  // either the pre-arrival state or the final one, never a partial install.
-  // That obligation is what lets an overriding kind keep render_thread_safe()
-  // == true across a late install: the render stays a pure read of a pointer
-  // that is either null or final, and the two observable values are both
-  // self-consistent (the empty state, which the compositor culls on empty
-  // bounds, and the finished result). It is monotonicity, not immutability, that
-  // buys the flag — which corrects the older "immutable after construction"
-  // rationale this section used to lean on. `org.arbc.image` keeps the flag on
-  // exactly these terms.
+  // A kind that DOES override it must publish the decoded EXTENT — the geometry
+  // the compositor culls on — ATOMICALLY and AT MOST ONCE, so a worker rendering
+  // an earlier pinned revision observes either the pre-arrival state or the final
+  // one, never a partial install, and never a REVERSION once the asset arrived.
+  // An asset whose extent could revert would cull itself out of the composition
+  // and vanish.
+  //
+  // The decoded PIXELS carry no such obligation. A kind may treat them as
+  // BUDGETED DERIVED DATA — evictable under a byte budget, re-derivable
+  // BYTE-IDENTICALLY from a retained encoded source (doc 15 § Memory
+  // populations) — so their history may legally be non-null → null → non-null.
+  // render_thread_safe() == true then rests on IMMUTABLE VALUES + OWNING PINS:
+  // an evictable pixel store hands each render an owning residency pin (doc
+  // 02 § Tile cache), so a concurrent eviction can never free what the render is
+  // reading, and the value it holds is immutable for its whole life. THAT is what
+  // buys the flag — not monotonicity of any one pointer, which is what an earlier
+  // form of this contract leaned on (and which itself replaced an even older
+  // "immutable after construction" argument). A kind that does NOT evict keeps
+  // the simpler reading — publish once, never replace — and both are sound for
+  // the same reason: a worker never observes a partial or torn state.
+  // `org.arbc.image` takes the second form.
   virtual bool install_asset(std::string_view encoded) { return false; }
 
   // --- change notification (outbound) ---

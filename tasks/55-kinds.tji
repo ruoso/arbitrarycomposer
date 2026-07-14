@@ -41,8 +41,21 @@ task kinds "Reference kinds" {
   task image_master_budget "org.arbc.image byte-budgeted LRU pyramid eviction" {
     effort 2d
     allocate team
+    complete 100
     depends !image
-    note "Byte-budgeted eviction of decoded pyramids from the plugin-side pyramid cache. A 24 MP rgba32f master plus mips is ~512 MB resident; a composition referencing many distinct photographs will exceed any sane budget. Add an LRU over the plugin-side pyramid cache under a configurable byte budget, re-decoding on demand, pinned by the existing decodes_issued() counter (an evicted-then-re-pulled image issues exactly one further decode; a re-pull within budget issues zero). Deliberately NOT in kinds.image: it needs the residency counter that task lands as its measuring instrument. Source-of-debt: tasks/refinements/kinds/image.md (Decision 4), commit kinds.image. Docs 03/17."
+    note "Byte-budgeted eviction of decoded pyramids from the plugin-side pyramid cache. A 24 MP rgba32f master plus mips is ~512 MB resident; a composition referencing many distinct photographs will exceed any sane budget. Add an LRU over the plugin-side pyramid cache under a configurable byte budget, re-decoding on demand, pinned by the existing decodes_issued() counter (an evicted-then-re-pulled image issues exactly one further decode; a re-pull within budget issues zero). Deliberately NOT in kinds.image: it needs the residency counter that task lands as its measuring instrument. Source-of-debt: tasks/refinements/kinds/image.md (Decision 4), commit kinds.image. Docs 03/17. Refinement: tasks/refinements/kinds/image_master_budget.md"
+  }
+  task image_level_granular_eviction "org.arbc.image per-mip-level eviction" {
+    effort 3d
+    allocate team
+    depends !image_master_budget
+    note "Evict individual mip levels rather than whole pyramids. Level 0 is ~3/4 of a pyramid's bytes; a zoomed-out view of a large composition reads only the small upper rungs, so whole-pyramid eviction thrashes when keeping all upper rungs resident would cost a few MB and issue zero re-decodes. Requires per-level residency accounting and a re-decode path that rebuilds only missing rungs from the retained encoded bytes. Source-of-debt: tasks/refinements/kinds/image_master_budget.md (Decision 6, Deferred follow-ups). Docs 03/17."
+  }
+  task image_decode_in_flight "org.arbc.image per-key in-flight decode promise" {
+    effort 2d
+    allocate team
+    depends !image_master_budget
+    note "Replace the decode-under-the-cache-mutex discipline (Decision 9 in image_master_budget.md) with a per-key in-flight promise: concurrent pins on distinct URIs decode in parallel instead of serializing behind one global mutex, while concurrent pins on one URI still wait on a single decode (preserving decodes_issued()==1). Matters because image_master_budget moves decoding onto render workers, where a ~24 MP re-decode under the global lock stalls every other image render in the frame. Latency refinement, not a correctness gap. Source-of-debt: tasks/refinements/kinds/image_master_budget.md (Decision 9, Deferred follow-ups). Docs 03/17."
   }
   task raster_brush_dab "org.arbc.raster masked, blended brush dab" {
     effort 2d

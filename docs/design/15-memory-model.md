@@ -19,6 +19,7 @@ first design act is refusing a single one:
 | **Content state nodes** | persistent tile *tables*, vector tree nodes (`Editable` states) | small, kind-defined, churn per gesture | render workers via pinned `StateHandle`s | same slabs, offered to kinds as a core utility |
 | **Bulk media data** | raster tile pixels, decoded frames, audio sample runs | page-scale blobs, immutable once filled | workers, backends | dedicated big-block pool (page-aligned, size-classed), refcounted from the owning nodes |
 | **Cache values** | composed tiles, audio blocks (docs 02/12), surfaces (doc 09) | backend-owned, budgeted, LRU | render/audio | backend pools, already designed; budgets are the eviction policy |
+| **Decoded source assets** | a kind's decoded image pyramid, decoded video frames (`org.arbc.image`, doc 03) | huge (a 24 MP master at rgba32f is ~384 MB; its mips add ~1/3), immutable once built | render workers, through a residency pin | kind-owned, **budgeted, LRU** — DERIVED data, re-derivable byte-identically from a retained encoded source, so the budget bounds it and eviction is model-invisible (below) |
 | **Frame transients** | frame plans, request lists, culling scratch | tiny, per-frame | one thread each | bump arenas, reset per frame, never freed piecemeal |
 
 The rest of this doc is about the first two rows — the version-structured
@@ -131,6 +132,31 @@ question, which is the goal:
   budgets (docs 02/12) decide how much *derived* data stays alive. Memory
   pressure maps to "trim journal tail, shrink caches" — both existing
   knobs, now with per-arena accounting to drive them.
+- **A kind's decoded source asset is derived data, and a budget governs it
+  too.** The rule above says budgets govern *derived* data, and a decoded
+  image pyramid qualifies: it is a pure function of encoded bytes the kind
+  retains, so it is re-derivable *byte-for-byte* on demand. The retained
+  source is ~1–2% of the decoded footprint (~8 MB of JPEG against a ~512 MB
+  pyramid), which is what makes the trade obviously right — keep the source,
+  budget the derivation. Without it the arithmetic is fatal: a thirty-layer
+  24 MP composition is ~15 GB resident, so the kind that exists to make large
+  photographic compositions affordable to *store* would make them impossible
+  to *open*. The policy is doc 02's, unchanged and not re-designed: **budgeted
+  bytes, LRU, with a residency pin** — a render holds an owning pin on the
+  pyramid it reads, eviction skips pinned entries, and the budget is a **soft
+  target**, so a single asset larger than the whole budget stays resident and
+  renders rather than failing (correctness outranks the budget, exactly as the
+  journal never trims below one entry).
+- **Eviction of derived data is model-invisible.** Dropping a pyramid bumps no
+  revision and emits no damage, because nothing a composed tile depends on
+  changed: the re-decode is byte-identical, and the asset's *extent* — the
+  only thing the compositor culls and keys on — is published once and never
+  cleared. Composed tiles keyed on `(content id, revision, …)` (doc 02) stay
+  valid across an eviction. Bumping a revision here would orphan every cached
+  tile in the document to announce that some pixels moved from RAM to
+  recomputable. **Residency is not composition state** — and the corollary the
+  kind must honor is that an *evicted* asset is not an *unavailable* one: it
+  keeps its bounds and it renders.
 - **Cascades are deferred, never inline.** Dropping the last reference to
   a big subtree (a render thread unpinning after an edit-heavy export)
   must not make that thread destroy thousands of nodes. Release enqueues

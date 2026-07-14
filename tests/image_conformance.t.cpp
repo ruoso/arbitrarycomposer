@@ -19,6 +19,7 @@
 #include "support/image_fixtures.hpp"
 
 #include <memory>
+#include <string>
 
 namespace {
 
@@ -27,6 +28,22 @@ namespace fix = arbc::image::testfix;
 
 testing::ContentFactory image_factory() {
   return []() -> std::unique_ptr<Content> { return fix::make_content(); };
+}
+
+// The same kind, built against a cache whose byte budget is ONE BYTE: no pyramid ever fits, so
+// every content the suite mints is evicted the moment nothing pins it and EVERY RENDER RE-DECODES
+// (kinds.image_master_budget). The cache is shared by every content the factory builds and
+// outlives them all, so it is held by `shared_ptr` in the closure.
+//
+// Each content gets its OWN resolved URI, so the suite is exercising N distinct cache entries
+// racing one budget rather than one entry everybody hits.
+testing::ContentFactory evicting_image_factory() {
+  auto cache = std::make_shared<arbc::image::PyramidCache>(1);
+  auto next = std::make_shared<int>(0);
+  return [cache, next]() -> std::unique_ptr<Content> {
+    return fix::make_cached_content(*cache,
+                                    "conformance/evicting/" + std::to_string((*next)++) + ".ppm");
+  };
 }
 
 } // namespace
@@ -40,6 +57,24 @@ testing::ContentFactory image_factory() {
 // enforces: 03-layer-plugin-interface#static-time-invariant
 TEST_CASE("org.arbc.image passes the contract conformance suite") {
   arbc::contract_tests(image_factory());
+}
+
+// The strongest single check in kinds.image_master_budget, and it is strong precisely because it
+// is not a new test: the WHOLE conformance suite, re-run under continuous eviction pressure. If
+// any contract property -- render-scale honesty, within-declared-bounds, undamaged-region
+// stability, static-time invariance, facet consistency -- turned out to depend on the pyramid
+// being RESIDENT rather than merely RE-DERIVABLE, this run is what finds it.
+//
+// It is the same argument the goldens make in pixel space: a memory policy is proved by showing
+// that nothing observable changed.
+//
+// enforces: 15-memory-model#image-pyramid-evicts-under-byte-budget
+// enforces: 03-layer-plugin-interface#render-scale-honest
+// enforces: 03-layer-plugin-interface#render-within-declared-bounds
+// enforces: 03-layer-plugin-interface#render-pure-over-pinned-state
+// enforces: 03-layer-plugin-interface#static-time-invariant
+TEST_CASE("org.arbc.image passes the contract conformance suite under a one-byte pyramid budget") {
+  arbc::contract_tests(evicting_image_factory());
 }
 
 // The load-bearing omission (doc 03:256-268). `org.arbc.image` and `org.arbc.raster` differ

@@ -3,8 +3,9 @@
 //
 // These sit below the document-level assertions in `image_serialize.t.cpp` (which drives the
 // same code through a real load) and pin the seams that a load exercises only in passing --
-// the framing's failure modes, the pyramid's rung structure, and what the cache does when the
-// last content holding a pyramid dies.
+// the framing's failure modes, the pyramid's rung structure, and what the cache does with the
+// pyramids it OWNS. The BUDGET over that ownership -- LRU eviction, the residency pin, the
+// re-decode -- is `image_budget.t.cpp`; the cache here is deliberately unbudgeted.
 
 #include <arbc/base/expected.hpp>
 #include <arbc/contract/content.hpp>
@@ -106,9 +107,10 @@ TEST_CASE("the pyramid is a half-band chain from the master down to a single pix
         pyramid->pixel(0, fix::k_width - 1, fix::k_height - 1));
 }
 
-TEST_CASE("the pyramid cache holds pyramids weakly and re-decodes once after the last one dies") {
+// enforces: 03-layer-plugin-interface#image-decodes-once-per-resolved-uri
+TEST_CASE("the pyramid cache OWNS its pyramids, so a re-pull of a resident one decodes nothing") {
   const std::string bytes = fix::fixture_bytes();
-  arbc::image::PyramidCache cache;
+  arbc::image::PyramidCache cache; // unbudgeted, as `Journal` is: eviction is opt-IN
 
   {
     const arbc::image::PyramidPtr first = cache.resolve("assets/bg.ppm", as_bytes(bytes));
@@ -127,13 +129,25 @@ TEST_CASE("the pyramid cache holds pyramids weakly and re-decodes once after the
     CHECK(cache.decodes_issued() == 2);
   }
 
-  // Every content holding those pyramids is gone, so the cache's `weak_ptr` entries are dead:
-  // it keeps no pixels alive on its own. A re-pull therefore issues EXACTLY ONE further decode
-  // -- the same property a byte-budgeted eviction (`kinds.image_master_budget`) will assert
-  // against its LRU, measured with this very counter.
+  // Every transient hold is gone -- and the pyramids are STILL THERE, because the CACHE owns them
+  // now (kinds.image_master_budget Decision 1). This is the inversion that made a byte budget
+  // possible: while `ImageContent` held the strong reference and the cache held a `weak_ptr`,
+  // evicting a map entry freed ZERO bytes for as long as the layer lived, so an LRU over it would
+  // have been a counter with no memory behind it.
+  CHECK(cache.resident_bytes() > 0);
+  CHECK(cache.evictions() == 0);
+
+  // So a re-pull issues ZERO further decodes -- "re-loading or re-rendering an unchanged image
+  // issues no further decodes WHILE THE PYRAMID REMAINS RESIDENT", which is the half of
+  // `#image-decodes-once-per-resolved-uri` the budget leaves untouched. Its complement -- an
+  // evicted image costs exactly one further decode -- lives in `image_budget.t.cpp`.
   const arbc::image::PyramidPtr again = cache.resolve("assets/bg.ppm", as_bytes(bytes));
   REQUIRE(again != nullptr);
-  CHECK(cache.decodes_issued() == 3);
+  CHECK(cache.decodes_issued() == 2);
+
+  // An unbudgeted cache never evicts, however many distinct images it holds.
+  CHECK(cache.budget() == arbc::image::PyramidCache::k_no_budget);
+  CHECK(cache.evictions() == 0);
 }
 
 TEST_CASE("an undecodable or unidentified asset caches nothing and decodes nothing") {

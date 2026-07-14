@@ -12,6 +12,14 @@
 //   * a downscale rung    -- level 1 of the pyramid, pinning the `decimate_half_band` path;
 //   * an upscale, Exact       -- bicubic magnify past native, achieved == requested;
 //   * an upscale, BestEffort  -- achieved_scale CLAMPS AT NATIVE and exact == false.
+//
+// EVERY case runs TWICE: once against a resident pyramid, and once against a content whose cache
+// has a ONE-BYTE budget, so the pyramid is evicted the instant nothing pins it and every render
+// re-decodes from the retained encoded bytes (kinds.image_master_budget). The second run must be
+// BYTE-IDENTICAL to the first, and no new golden data is authored for it -- which is exactly the
+// point. `Pyramid::decode` is a pure function of the encoded bytes over media's frozen kernels,
+// so eviction is a NO-OP IN PIXEL SPACE, and the strongest available proof of a memory policy is
+// that nothing observable changed. The existing goldens ARE the oracle.
 
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/geometry.hpp>
@@ -28,7 +36,9 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 using namespace arbc;
@@ -99,9 +109,30 @@ std::vector<float> reference_resample(const fix::RefImage& level, const Rect& re
   return out;
 }
 
+// The same region, scale and exactness, rendered by a content whose pyramid CANNOT stay resident:
+// a 1-byte budget evicts it the moment the previous render's pin drops, so this render re-decodes
+// from the cache's retained encoded bytes. Byte-identical to the resident render, or the memory
+// policy is not the no-op it claims to be.
+//
+// `re_decodes` reports the decodes the render actually cost, so a case where eviction silently
+// stopped happening (and the comparison became vacuous) fails loudly instead of passing quietly.
+Rendered render_under_eviction(const std::string& resolved, Backend& backend, const Rect& region,
+                               double scale, int w, int h, Exactness exactness,
+                               std::uint64_t& re_decodes) {
+  arbc::image::PyramidCache evicting(1);
+  auto content = fix::make_cached_content(evicting, resolved);
+  REQUIRE(content->available());
+  REQUIRE(evicting.resident_bytes() == 0); // already gone: nothing pins it
+  const std::uint64_t before = evicting.decodes_issued();
+  Rendered got = render_region(*content, backend, region, scale, w, h, exactness);
+  re_decodes = evicting.decodes_issued() - before;
+  return got;
+}
+
 } // namespace
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 03-layer-plugin-interface#image-re-decode-is-byte-identical-and-model-invisible
 TEST_CASE("org.arbc.image renders byte-exact against the computed reference at native scale") {
   CpuBackend backend;
   auto content = fix::make_content();
@@ -120,9 +151,18 @@ TEST_CASE("org.arbc.image renders byte-exact against the computed reference at n
   // exactly (0, 1, 0, 0) -- so the render reproduces the master's pixels BIT-FOR-BIT.
   const std::vector<float> want = reference_resample(master, region, 1.0, 1.0, 16, 12);
   CHECK(got.px == want);
+
+  std::uint64_t re_decodes = 0;
+  const Rendered evicted = render_under_eviction("goldens/native.ppm", backend, region, 1.0, 16, 12,
+                                                 Exactness::Exact, re_decodes);
+  CHECK(re_decodes == 1); // it really did have to rebuild the pyramid
+  CHECK(evicted.px == want);
+  CHECK(evicted.achieved_scale == got.achieved_scale);
+  CHECK(evicted.exact == got.exact);
 }
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 03-layer-plugin-interface#image-re-decode-is-byte-identical-and-model-invisible
 TEST_CASE("org.arbc.image renders byte-exact on the level-1 downscale rung") {
   CpuBackend backend;
   auto content = fix::make_content();
@@ -141,9 +181,18 @@ TEST_CASE("org.arbc.image renders byte-exact on the level-1 downscale rung") {
   CHECK(got.exact); // an Exact request at 0.5 IS honored exactly: the rung exists
   const std::vector<float> want = reference_resample(level1, region, 0.5, 2.0, 16, 12);
   CHECK(got.px == want);
+
+  // The rung a re-decode rebuilds is the same rung, down to the last float: the half-band chain
+  // is deterministic over frozen kernels, so eviction cannot perturb a mip.
+  std::uint64_t re_decodes = 0;
+  const Rendered evicted = render_under_eviction("goldens/rung1.ppm", backend, region, 0.5, 16, 12,
+                                                 Exactness::Exact, re_decodes);
+  CHECK(re_decodes == 1);
+  CHECK(evicted.px == want);
 }
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 03-layer-plugin-interface#image-re-decode-is-byte-identical-and-model-invisible
 // enforces: 03-layer-plugin-interface#render-scale-honest
 TEST_CASE(
     "org.arbc.image magnifies past native on an Exact request and says achieved == requested") {
@@ -161,9 +210,18 @@ TEST_CASE(
   CHECK(got.exact);
   const std::vector<float> want = reference_resample(master, region, 2.0, 1.0, 16, 12);
   CHECK(got.px == want);
+
+  std::uint64_t re_decodes = 0;
+  const Rendered evicted = render_under_eviction("goldens/magnify.ppm", backend, region, 2.0, 16,
+                                                 12, Exactness::Exact, re_decodes);
+  CHECK(re_decodes == 1);
+  CHECK(evicted.px == want);
+  CHECK(evicted.achieved_scale == 2.0);
+  CHECK(evicted.exact);
 }
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 03-layer-plugin-interface#image-re-decode-is-byte-identical-and-model-invisible
 // enforces: 03-layer-plugin-interface#render-scale-honest
 TEST_CASE("org.arbc.image clamps a BestEffort upscale at native and reports it honestly") {
   CpuBackend backend;
@@ -182,4 +240,15 @@ TEST_CASE("org.arbc.image clamps a BestEffort upscale at native and reports it h
   CHECK_FALSE(got.exact);
   const std::vector<float> want = reference_resample(master, region, 1.0, 1.0, 16, 12);
   CHECK(got.px == want);
+
+  // The scale HONESTY survives eviction too: a re-decoded content clamps at native and still says
+  // so. A memory policy that quietly changed what a render CLAIMS would be worse than one that
+  // changed its pixels.
+  std::uint64_t re_decodes = 0;
+  const Rendered evicted = render_under_eviction("goldens/besteffort.ppm", backend, region, 2.0, 16,
+                                                 12, Exactness::BestEffort, re_decodes);
+  CHECK(re_decodes == 1);
+  CHECK(evicted.px == want);
+  CHECK(evicted.achieved_scale == 1.0);
+  CHECK_FALSE(evicted.exact);
 }

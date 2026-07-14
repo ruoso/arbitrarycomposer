@@ -162,9 +162,27 @@ inline PyramidPtr decode_fixture() {
       reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()));
 }
 
-// A live `ImageContent` over the fixture, built the way a load builds it.
+// A live `ImageContent` over the fixture, built the way a load builds it. UN-KEYED: it owns its
+// pyramid directly, outside any cache and outside any budget (kinds.image_master_budget
+// Constraint 6) -- which is what keeps this helper's decode counter isolated from the
+// process-wide cache's.
 inline std::unique_ptr<ImageContent> make_content(std::string_view authored = "assets/photo.ppm") {
   return std::make_unique<ImageContent>(std::string(authored), decode_fixture());
+}
+
+// A live `ImageContent` over the fixture, KEYED into `cache` -- the shape a real load produces,
+// and the only one a byte budget governs: the cache owns the pyramid and the content pins it per
+// render. Pass a `PyramidCache{1}` to get a content whose every pull evicts and whose every
+// render re-decodes.
+inline std::unique_ptr<ImageContent>
+make_cached_content(PyramidCache& cache, std::string_view resolved,
+                    std::string_view authored = "assets/photo.ppm") {
+  const std::string bytes = fixture_bytes();
+  PyramidPtr admitted = cache.resolve(
+      resolved, std::span<const unsigned char>(reinterpret_cast<const unsigned char*>(bytes.data()),
+                                               bytes.size()));
+  return std::make_unique<ImageContent>(std::string(authored), std::string(resolved),
+                                        std::move(admitted), cache);
 }
 
 // A live `ImageContent` whose asset is UNAVAILABLE (missing / unreadable / undecodable, or

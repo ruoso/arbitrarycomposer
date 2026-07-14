@@ -35,9 +35,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <nlohmann/json.hpp>
-
 #include "support/image_fixtures.hpp"
+#include <nlohmann/json.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -150,9 +149,10 @@ std::string document_with_source(const std::string& source) {
 Registry image_registry() {
   Registry registry;
   REQUIRE(registry
-              .add(arbc::image::ImageContent::kind_id,
-                   [](ContentConfig config) { return arbc::image::make_image_content(config); },
-                   KindMetadata{"Image", "1"})
+              .add(
+                  arbc::image::ImageContent::kind_id,
+                  [](ContentConfig config) { return arbc::image::make_image_content(config); },
+                  KindMetadata{"Image", "1"})
               .has_value());
   return registry;
 }
@@ -309,8 +309,7 @@ TEST_CASE("save-while-pending is a fixed point") {
   CHECK(saved_through(&settling, /*settle=*/true) == while_pending);
 
   // `params` is EXACTLY one key, and it is the AUTHORED URI.
-  const json params =
-      json::parse(while_pending).at("composition").at("layers").at(0).at("params");
+  const json params = json::parse(while_pending).at("composition").at("layers").at(0).at("params");
   CHECK(params == json{{"source", "assets/photo.ppm"}});
   CHECK(params.size() == 1);
   CHECK(while_pending.find(project.resolved("assets/photo.ppm")) == std::string::npos);

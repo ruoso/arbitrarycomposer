@@ -968,13 +968,24 @@ target_compile_definitions(arbc_image_conformance_t
 catch_discover_tests(arbc_image_conformance_t)
 
 # The plugin-local unit surface: the ContentConfig framing (and its failure modes), the
-# immutable pyramid's rung chain, and the weak resolved-URI decode cache.
+# immutable pyramid's rung chain, and the owning resolved-URI decode cache.
 add_executable(arbc_image_content_t image_content.t.cpp)
 target_link_libraries(arbc_image_content_t
                       PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain arbc_build_flags)
 target_compile_definitions(arbc_image_content_t
                            PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
 catch_discover_tests(arbc_image_content_t)
+
+# kinds.image_master_budget: the byte budget over decoded pyramids -- LRU eviction, the residency
+# pin, the soft-overshoot rule, and the model-invisibility of an eviction. It loads a real
+# Document (to prove eviction bumps no revision and emits no damage), so it carries json.
+add_executable(arbc_image_budget_t image_budget.t.cpp)
+target_link_libraries(
+  arbc_image_budget_t PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain
+                              nlohmann_json::nlohmann_json arbc_build_flags)
+target_compile_definitions(arbc_image_budget_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_image_budget_t)
 
 # Byte-exact computed-reference goldens: native scale, the level-1 decimate rung, an Exact
 # magnify past native, and the BestEffort clamp-at-native honesty pair.

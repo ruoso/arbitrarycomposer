@@ -421,6 +421,29 @@ Initially-open questions, now decided in their own docs:
   ("embedding the core must never transitively impose codecs, GPU SDKs, or a
   GUI toolkit") literally true. Decided in `quality.testing_artifact`; recorded
   in doc 10 (§ Dependency policy) and doc 17 (§ Shipped artifacts).
+- **A kind's decoded pixels are *derived data*, not state — so residency is a
+  memory-policy question and never a composition-state one.** `org.arbc.image`
+  retains the *encoded* bytes of the photograph it references and treats the
+  decoded mip pyramid as a recomputable cache: the pyramid cache owns it, a byte
+  budget bounds it, an LRU evicts it, and the next pull rebuilds it
+  byte-for-byte. The arithmetic forces the question — a 24 MP master at rgba32f
+  is ~384 MB, so the thirty-photograph composition the kind exists to make
+  affordable is ~15 GB resident — and the ~64:1 ratio between encoded source and
+  decoded pyramid is what makes the answer cheap: keep the source, budget the
+  derivation. Three consequences are load-bearing. Eviction is **model-invisible**
+  (no revision bump, no damage), because a byte-identical re-decode changes
+  nothing a composed tile depends on, and bumping a revision would orphan every
+  cached tile in the document to announce that some pixels became recomputable.
+  An **evicted asset is not an unavailable one** — its *extent* publishes once and
+  is never cleared, so it keeps its bounds and renders, and a photograph never
+  vanishes from a composition because memory got tight. And `render_thread_safe()`
+  now rests on **immutable values plus owning residency pins**, not on the
+  monotonicity of any pointer — which *replaces* the argument the previous decision
+  bullet installed, exactly as that one replaced "immutable after construction".
+  Each retirement narrowed the claim to the property that actually holds: a worker
+  never observes a partial or torn state. Decided in `kinds.image_master_budget`;
+  recorded in doc 03 (§ Reference kinds), doc 15 (§ Memory populations) and doc 02
+  (§ Tile cache).
 
 ## Open questions
 

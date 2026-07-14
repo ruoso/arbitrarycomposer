@@ -6,22 +6,31 @@
 // genuinely runs CONCURRENTLY on workers (doc 00:203's leaf-only worker dispatch). That is
 // the win Decision 4 is claiming, so it is the thing this test has to hold to.
 //
-// Three races, all real:
+// Five races, all real:
 //
 //   * Concurrent RENDERS of one content across the worker pool. Every render allocates from
 //     (and releases back to) the plugin-owned tile free list, so the free list is genuinely
 //     shared mutable state on the hot path even though the pyramid is not.
 //   * Concurrent CONSTRUCTION of several contents resolving to ONE URI. The pyramid cache is
-//     the state at risk here (a `weak_ptr` map keyed by resolved URI); in production
-//     construction is writer-thread-only, but the counter claim -- one decode per resolved
-//     identity -- must hold under a race, not merely under a convention.
-//   * A LATE INSTALL racing in-flight worker renders (kinds.image_async_pending). This is the
-//     one cross-thread edge that task introduces, and it RETIRES the premise the two races
-//     above were written under -- "the pyramid is touched only at construction" is no longer
-//     true, because a deferring `AssetSource`'s bytes are published into a LIVE content on the
-//     writer thread while workers may still be rendering a pinned earlier revision. The kind
-//     keeps `render_thread_safe() == true` across that transition by publishing atomically and
-//     at most once (that task's Decision 6), and this is where that is held to.
+//     the state at risk here; in production construction is writer-thread-only, but the counter
+//     claim -- one decode per resolved identity -- must hold under a race, not merely under a
+//     convention. It survives kinds.image_master_budget UNCHANGED, and that is deliberate: the
+//     decode stays under the cache mutex (that task's Decision 9) precisely so this test does
+//     not have to move.
+//   * A LATE INSTALL racing in-flight worker renders (kinds.image_async_pending).
+//   * CONTINUOUS EVICTION racing worker renders (kinds.image_master_budget). The budget turns a
+//     construction-time-only cache into one TOUCHED FROM EVERY RENDER THREAD, so a render is no
+//     longer a read of a pointer nobody writes -- it takes a pin, may decode, and may drop the
+//     last reference to a pyramid on the way out.
+//   * An EVICTOR racing a live pin. The precise memory-safety risk the budget introduces:
+//     EVICT-WHILE-PINNED MUST NOT FREE. The pin is an owning `shared_ptr`, so an
+//     evicted-but-pinned pyramid outlives its cache entry.
+//
+// The kind keeps `render_thread_safe() == true` across all of it, and the legs it now stands on
+// are narrow and named (kinds.image_master_budget Decision 3): a `Pyramid` object is immutable
+// for its whole life, a pin OWNS the one a render reads, and the cache is mutex-guarded. What it
+// no longer rests on is monotonicity of a content-owned pointer -- eviction retires that, and
+// what publishes once instead is the content's EXTENT.
 //
 // Outcome-only assertions, no wall-clock. Runs green under dev, ASan/UBSan and
 // `ctest --preset tsan`.
@@ -289,14 +298,20 @@ TEST_CASE("concurrent construction against one resolved URI issues exactly one d
 // enforces: 03-layer-plugin-interface#image-pyramid-publishes-once
 TEST_CASE("a late install racing in-flight worker renders is atomic, monotonic, and once") {
   // THE one cross-thread edge kinds.image_async_pending introduces: a worker rendering a pinned
-  // EARLIER revision reads `d_pyramid` while the writer thread publishes the arrival into it.
+  // EARLIER revision reads the content's pixels while the writer thread publishes the arrival.
   //
-  // Monotonicity is what makes that race benign without a lock. A reader can observe exactly two
-  // values and both are self-consistent -- the empty state (which the compositor culls, because
-  // bounds are empty) and the FINISHED pyramid. There is no intermediate. So the assertion is
-  // not merely "TSan is quiet": every non-empty render is compared BYTE-FOR-BYTE against the
-  // fully-decoded reference, so a torn pointer or a half-built pyramid would surface as a pixel
-  // mismatch rather than only as a race report.
+  // What makes that race benign without a lock is that a reader can observe exactly two values
+  // and both are self-consistent -- the empty state (which the compositor culls, because bounds
+  // are empty) and the FINISHED pyramid. There is no intermediate. So the assertion is not merely
+  // "TSan is quiet": every non-empty render is compared BYTE-FOR-BYTE against the fully-decoded
+  // reference, so a torn pointer or a half-built pyramid would surface as a pixel mismatch rather
+  // than only as a race report.
+  //
+  // What publishes ONCE and MONOTONICALLY is the EXTENT (kinds.image_master_budget Decision 3).
+  // The pixels are now budgeted derived data, so the property "the pyramid pointer never changes
+  // once set" is GONE -- deliberately, and the two cases below are where its replacement is held
+  // to. The property that had to survive is the one doc 03's obligation actually cares about: a
+  // worker never observes a partial state, and the state the compositor CULLS on never reverts.
   CpuBackend backend;
   const std::string bytes = fix::fixture_bytes();
   REQUIRE_FALSE(bytes.empty());
@@ -358,13 +373,14 @@ TEST_CASE("a late install racing in-flight worker renders is atomic, monotonic, 
   // collected here and asserted after the join.
   const bool first_install = pending->install_asset(bytes);
   // ... and a burst of redundant installs behind it: publish-once must hold against a duplicate
-  // arrival too, and never replace a published pyramid (which would be a non-null -> non-null
-  // transition, the third value monotonicity forbids).
-  const arbc::image::PyramidPtr published = pending->pyramid();
-  bool reinstalls_ok = published != nullptr;
+  // arrival too. What must not move is the EXTENT: once it names a rectangle it names that
+  // rectangle forever, because `bounds()` reads it on the compositor's CULL path and an image
+  // whose bounds could revert would flicker out of the composition.
+  const Rect installed{0.0, 0.0, fix::k_width, fix::k_height};
+  bool reinstalls_ok = pending->available() && pending->bounds() == installed;
   for (int i = 0; i < k_rounds; ++i) {
     reinstalls_ok = reinstalls_ok && pending->install_asset(bytes) &&
-                    pending->pyramid().get() == published.get();
+                    pending->bounds() == installed && pending->pyramid() != nullptr;
   }
   stop.store(true, std::memory_order_release);
   for (std::thread& t : readers) {
@@ -372,14 +388,154 @@ TEST_CASE("a late install racing in-flight worker renders is atomic, monotonic, 
   }
 
   CHECK(first_install);
-  CHECK(reinstalls_ok); // published once, and never replaced by a redundant arrival
+  CHECK(reinstalls_ok); // the extent published once, and no redundant arrival moved it
   CHECK(harness_failures.load() == 0);
   CHECK(torn_reads.load() == 0); // never a third value
   CHECK(full_reads.load() > 0);  // the install genuinely became visible to the readers
   CHECK(pending->available());
-  CHECK(pending->bounds() == Rect{0.0, 0.0, fix::k_width, fix::k_height});
-  // EXACTLY ONE decode, however many installs were attempted: the pyramid publishes once.
+  CHECK(pending->bounds() == installed);
+  // EXACTLY ONE decode, however many installs were attempted: the arrival is admitted once, and
+  // the default cache's budget is nowhere near tight enough to evict it again.
   CHECK(arbc::image::default_pyramid_cache().decodes_issued() == before + 1);
+}
+
+// enforces: 03-layer-plugin-interface#image-pyramid-publishes-once
+// enforces: 03-layer-plugin-interface#image-re-decode-is-byte-identical-and-model-invisible
+TEST_CASE("N workers rendering one image under continuous eviction never read a torn pyramid") {
+  // kinds.image_master_budget puts the pyramid cache on EVERY RENDER THREAD, and this is the
+  // race that buys: a one-byte budget means the pyramid is evicted the moment the last pin drops,
+  // so the readers below are continuously decoding, publishing, reading and freeing pyramids
+  // against each other -- the pointer they resolve through changes constantly, which is exactly
+  // the history the retired monotonicity invariant forbade.
+  //
+  // The assertion is not "TSan is quiet". Every non-empty read is compared BYTE-FOR-BYTE against
+  // the resident reference, so a half-built pyramid, a torn pin, or a pyramid freed out from
+  // under a reader surfaces as a PIXEL MISMATCH -- the same discipline the late-install race
+  // established, applied to the harder case.
+  CpuBackend backend;
+  auto reference = fix::make_content(); // un-keyed: outside the cache, outside the budget
+  const std::optional<std::vector<float>> reference_tile = render_tile(*reference, backend);
+  REQUIRE(reference_tile.has_value());
+  REQUIRE_FALSE(reference_tile->empty());
+  const std::vector<float>& expected = *reference_tile;
+
+  arbc::image::PyramidCache cache(1); // no pyramid ever fits: every unpinned one is dropped
+  auto content = fix::make_cached_content(cache, "stress/evicting/photo.ppm");
+  REQUIRE(content->available());
+  REQUIRE(content->render_thread_safe()); // the flag survives eviction -- that IS the claim
+  REQUIRE(cache.resident_bytes() == 0);   // already evicted: nothing pins it
+
+  constexpr int k_readers = 6;
+  constexpr int k_renders = 40;
+  std::atomic<bool> go{false};
+  std::atomic<std::uint64_t> full_reads{0};
+  std::atomic<std::uint64_t> torn_reads{0};
+  std::atomic<std::uint64_t> empty_reads{0};
+  std::atomic<std::uint64_t> harness_failures{0};
+
+  std::vector<std::thread> readers;
+  readers.reserve(k_readers);
+  for (int r = 0; r < k_readers; ++r) {
+    readers.emplace_back([&] {
+      CpuBackend local; // each reader owns its backend: the race under test is the cache's
+      while (!go.load(std::memory_order_acquire)) {
+      }
+      for (int i = 0; i < k_renders; ++i) {
+        const std::optional<std::vector<float>> got = render_tile(*content, local);
+        if (!got.has_value()) {
+          harness_failures.fetch_add(1, std::memory_order_relaxed);
+        } else if (got->empty()) {
+          empty_reads.fetch_add(1, std::memory_order_relaxed);
+        } else if (*got == expected) {
+          full_reads.fetch_add(1, std::memory_order_relaxed);
+        } else {
+          torn_reads.fetch_add(1, std::memory_order_relaxed); // the bug
+        }
+      }
+    });
+  }
+  go.store(true, std::memory_order_release);
+  for (std::thread& t : readers) {
+    t.join();
+  }
+
+  CHECK(harness_failures.load() == 0);
+  CHECK(torn_reads.load() == 0);
+  // An EVICTED image is not an UNAVAILABLE one: it always has pixels to answer with, because the
+  // pull re-decodes. So NO render was ever culled -- which is the vanishing-layer regression, in
+  // its concurrent form.
+  CHECK(empty_reads.load() == 0);
+  CHECK(full_reads.load() == static_cast<std::uint64_t>(k_readers) * k_renders);
+  // ...and it genuinely thrashed rather than quietly staying resident: the budget really is being
+  // enforced, so the byte-for-byte comparison above was not vacuous.
+  CHECK(cache.evictions() > 1);
+  CHECK(cache.decodes_issued() > 1);
+  CHECK(content->bounds() == Rect{0.0, 0.0, fix::k_width, fix::k_height}); // never reverted
+}
+
+// enforces: 03-layer-plugin-interface#image-pyramid-publishes-once
+TEST_CASE("an evictor racing a live pin never frees pixels a render is reading") {
+  // EVICT-WHILE-PINNED MUST NOT FREE -- the precise memory-safety risk the byte budget
+  // introduces, and the reason the pin is an OWNING `shared_ptr` rather than a bare index into
+  // the store (which is what makes it strictly stronger than `KeyedStore`'s `CacheHold`).
+  //
+  // One thread holds pins and reads pixels through them; another admits a stream of fresh decodes
+  // that force `evict_to_fit` to run on every insert. ASan says no use-after-free; TSan says no
+  // data race; and the pixel comparison says the pin was reading a COHERENT pyramid the whole
+  // time, not merely a live allocation.
+  const std::string bytes = fix::fixture_bytes();
+  const std::size_t one_pyramid = fix::decode_fixture()->resident_bytes();
+
+  // A budget of one pyramid: every admit must evict something, and the reader's pinned entry is
+  // the one thing it may not choose (doc 02:268-277).
+  arbc::image::PyramidCache cache(one_pyramid);
+  const std::span<const unsigned char> span(reinterpret_cast<const unsigned char*>(bytes.data()),
+                                            bytes.size());
+  REQUIRE(cache.resolve("stress/pinned/photo.ppm", span) != nullptr);
+
+  constexpr int k_rounds = 200;
+  std::atomic<bool> go{false};
+  std::atomic<bool> stop{false};
+  std::atomic<std::uint64_t> good_reads{0};
+  std::atomic<std::uint64_t> bad_reads{0};
+
+  std::thread reader([&] {
+    while (!go.load(std::memory_order_acquire)) {
+    }
+    while (!stop.load(std::memory_order_acquire)) {
+      const arbc::image::PyramidPin pin = cache.pin("stress/pinned/photo.ppm");
+      if (!pin) {
+        bad_reads.fetch_add(1, std::memory_order_relaxed); // a pull must ALWAYS get pixels
+        continue;
+      }
+      // Read THROUGH the pin while the evictor races. If eviction could free a pinned pyramid,
+      // this is where ASan would fire; if it could hand out a half-built one, the corners would
+      // disagree with the extent.
+      const bool coherent = pin->width() == fix::k_width && pin->height() == fix::k_height &&
+                            pin->level_count() == 10 &&
+                            pin->pixel(0, -4, -4) == pin->pixel(0, 0, 0);
+      (coherent ? good_reads : bad_reads).fetch_add(1, std::memory_order_relaxed);
+    }
+  });
+
+  std::thread evictor([&] {
+    while (!go.load(std::memory_order_acquire)) {
+    }
+    for (int i = 0; i < k_rounds; ++i) {
+      // A fresh URI every round, so every admit is a genuine decode that must evict to fit --
+      // and the reader's pinned entry is never a legal victim while its pin is live.
+      static_cast<void>(cache.resolve("stress/pinned/fill_" + std::to_string(i) + ".ppm", span));
+    }
+    stop.store(true, std::memory_order_release);
+  });
+
+  go.store(true, std::memory_order_release);
+  evictor.join();
+  reader.join();
+
+  CHECK(bad_reads.load() == 0);
+  CHECK(good_reads.load() > 0);
+  CHECK(cache.evictions() > 0); // the evictor really was evicting under the reader
 }
 
 // enforces: 03-layer-plugin-interface#image-pyramid-publishes-once
