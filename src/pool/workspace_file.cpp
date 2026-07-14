@@ -65,10 +65,18 @@ WorkspaceChunkEntry* WorkspaceFileChunkSource::directory() noexcept {
                                                 sizeof(WorkspaceHeader));
 }
 
-WorkspaceStoreEntry* WorkspaceFileChunkSource::store_table(int ab) noexcept {
-  auto* base = reinterpret_cast<WorkspaceStoreEntry*>(static_cast<std::byte*>(d_header_map) +
-                                                      d_store_table_offset);
-  return base + static_cast<std::size_t>(ab) * d_max_stores;
+WorkspaceStoreSnapshot* WorkspaceFileChunkSource::store_snapshot(int ab) const noexcept {
+  // One page per snapshot (create lays them out that way; open re-checks the recorded
+  // geometry before trusting either), so a snapshot's stamp and its rows are one unit
+  // of kernel writeback and neither snapshot shares a page with the root slots.
+  return reinterpret_cast<WorkspaceStoreSnapshot*>(static_cast<std::byte*>(d_header_map) +
+                                                   d_store_table_offset +
+                                                   static_cast<std::size_t>(ab) * d_page);
+}
+
+WorkspaceStoreEntry* WorkspaceFileChunkSource::store_table(int ab) const noexcept {
+  return reinterpret_cast<WorkspaceStoreEntry*>(reinterpret_cast<std::byte*>(store_snapshot(ab)) +
+                                                sizeof(WorkspaceStoreSnapshot));
 }
 
 void WorkspaceFileChunkSource::init_store_directory(std::uint32_t max_stores,
@@ -102,6 +110,18 @@ void WorkspaceFileChunkSource::publish_store_high_water(int ab, std::uint32_t id
   // `id` always came from `store_id`, and `register_store` drops the no-owner answer.
   assert(id < d_max_stores);
   store_table(ab)[id].high_water = high_water;
+}
+
+std::uint32_t WorkspaceFileChunkSource::snapshot_generation(int ab) const noexcept {
+  return store_snapshot(ab)->generation;
+}
+
+void WorkspaceFileChunkSource::publish_snapshot_generation(int ab,
+                                                           std::uint32_t generation) noexcept {
+  // A plain store, like the high-waters it stamps and into the same page: the header
+  // msync that publishes the flipped root publishes this with it, so the pair a
+  // recovery reads is the pair a commit wrote. No new syscall, no new seam.
+  store_snapshot(ab)->generation = generation;
 }
 
 ChunkSource* WorkspaceFileChunkSource::Router::source_for(std::size_t slot_stride,
@@ -488,16 +508,25 @@ WorkspaceFileChunkSource::create(const std::string& path, const WorkspaceLayout&
       layout.max_stores == 0 ? k_workspace_default_max_stores : layout.max_stores;
   const std::size_t directory_bytes =
       static_cast<std::size_t>(max_chunks) * sizeof(WorkspaceChunkEntry);
-  // The two store-table snapshots sit AFTER the chunk directory and before the
-  // page-aligned data region, so the directory's offset (immediately after the
-  // header) does not move. Both struct sizes are multiples of 8, so the table
-  // stays 8-aligned. For the default layout the tables fit entirely in the page
-  // slack the directory already leaves, so the file grows by zero pages --
-  // `data_offset` is a stored header field either way, so the layout is
-  // self-describing regardless.
-  const std::size_t store_table_offset = sizeof(WorkspaceHeader) + directory_bytes;
-  const std::size_t store_table_bytes = std::size_t{2} * max_stores * sizeof(WorkspaceStoreEntry);
-  const std::size_t header_bytes = align_up(store_table_offset + store_table_bytes, page);
+  // The two store-table snapshots sit AFTER the chunk directory and before the data
+  // region, each PAGE-ALIGNED and one page long. A snapshot's generation stamp only
+  // proves it belongs to the root beside it if the stamp cannot become durable
+  // without its rows, and a page is the unit of kernel writeback -- so the rows and
+  // their stamp must share one page, and no other writer may dirty it. That costs
+  // exactly two pages of `data_offset` over format 1 and makes the invariant
+  // unconditional rather than a coincidence of `max_chunks`
+  // (pool.header_writeback_ordering, Decision 3).
+  const std::size_t snapshot_bytes =
+      sizeof(WorkspaceStoreSnapshot) +
+      static_cast<std::size_t>(max_stores) * sizeof(WorkspaceStoreEntry);
+  if (snapshot_bytes > page) {
+    // A snapshot that straddles a page boundary could have its stamp land while stale
+    // rows sat on the next page: the pairing check would silently stop working. Refuse
+    // the geometry at create time instead, as a value.
+    return unexpected(WorkspaceFileError{WorkspaceFileErrc::MaxStoresExceeded, 0});
+  }
+  const std::size_t store_table_offset = align_up(sizeof(WorkspaceHeader) + directory_bytes, page);
+  const std::size_t header_bytes = store_table_offset + 2 * page;
 
 #if defined(_WIN32)
   HANDLE fd = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
@@ -932,17 +961,25 @@ WorkspaceFileChunkSource::open(const std::string& path) {
     return unexpected(WorkspaceFileError{WorkspaceFileErrc::UnsupportedFormat, 0});
   }
 
-  // The store table must lie wholly between the chunk directory's end and the data
-  // region, so every later `store_table(ab)[r]` is inside the header mapping. A
-  // corrupt/torn header is a value error, never an out-of-bounds map read.
+  // The two store-table snapshots must lie wholly between the chunk directory's end
+  // and the data region, so every later `store_table(ab)[r]` is inside the header
+  // mapping. A corrupt/torn header is a value error, never an out-of-bounds map read.
+  // RE-CHECK THE PAGE RESIDENCY the create-time cap established, rather than trust it:
+  // each snapshot must be page-aligned and hold its stamp plus every row inside one
+  // page, or the generation stamp would no longer share a writeback unit with the rows
+  // it stamps and the root/snapshot pairing check would be vacuous.
+  const std::uint64_t page = fixed.page_size != 0 ? fixed.page_size : 4096;
   const std::uint64_t directory_end =
       sizeof(WorkspaceHeader) +
       static_cast<std::uint64_t>(fixed.max_chunks) * sizeof(WorkspaceChunkEntry);
-  const std::uint64_t store_table_bytes =
-      static_cast<std::uint64_t>(fixed.max_stores) * 2u * sizeof(WorkspaceStoreEntry);
-  if (fixed.max_stores == 0 || fixed.store_table_offset < directory_end ||
-      fixed.store_table_offset > fixed.data_offset ||
-      store_table_bytes > fixed.data_offset - fixed.store_table_offset) {
+  // Bounding `max_stores` by what one page holds first keeps the row arithmetic below
+  // (and every later row address) free of overflow on a torn `max_stores`.
+  const std::uint64_t max_rows_per_page =
+      (page - sizeof(WorkspaceStoreSnapshot)) / sizeof(WorkspaceStoreEntry);
+  if (page <= sizeof(WorkspaceStoreSnapshot) || fixed.max_stores == 0 ||
+      fixed.max_stores > max_rows_per_page || fixed.store_table_offset % page != 0 ||
+      fixed.store_table_offset < directory_end || fixed.store_table_offset > fixed.data_offset ||
+      2u * page > fixed.data_offset - fixed.store_table_offset) {
     close_fd();
     return unexpected(WorkspaceFileError{WorkspaceFileErrc::HeaderIoFailed, 0});
   }

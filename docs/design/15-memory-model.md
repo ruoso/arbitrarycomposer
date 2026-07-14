@@ -259,7 +259,11 @@ slot alignment)** pair: the same key the arena already uses to find the
 store for a type. The header's **store table** carries one entry per
 store — stride, alignment, slots per chunk, and the store's **slot
 high-water mark as of the checkpoint that published it** — and the arena
-directory tags every data chunk with the store that owns it. Reopen
+directory tags every data chunk with the store that owns it. The table is
+snapshotted per root slot, and each snapshot is **page-resident**: it
+begins on a page boundary and its rows, plus the generation stamp below,
+fit inside that one page, so the whole snapshot is a single unit of kernel
+writeback. Reopen
 therefore does no guessing: each store re-binds exactly the chunks the
 file says are its own, in slot order, and reserves exactly the high-water
 the file records. Chunk *byte size* is emphatically not an identity — two
@@ -281,7 +285,18 @@ checkpoint N" fence. The store table rides the same A/B discipline: each
 root slot owns its own store-table snapshot, written before that root is
 flipped, so the high-water a recovery reads is always the one belonging to
 the root it selected — a crash mid-commit lands on the old root *and* the
-old high-water, never a mismatched pair. Checkpoint cadence is policy
+old high-water, never a mismatched pair. That pairing is **verified on
+open, not assumed**, because the root slot and the snapshot it owns live
+on different pages of the header and the kernel orders their writeback not
+at all: one header `msync` can be interrupted with the new root page
+durable and the stale snapshot page still in flight. Each root slot
+therefore carries a monotonically increasing **generation**, and the
+commit stamps that same generation into the snapshot it writes; open reads
+both roots newest-first and accepts a root only if its snapshot's stamp
+matches its own generation, falling back to the older root otherwise. A
+torn header is detected rather than mis-read, and the check costs no extra
+syscall — the stamp is published by the header `msync` that publishes the
+root. Checkpoint cadence is policy
 (timer, transaction count, explicit host call); the doc 14 autosave
 scenario becomes "msync + root flip" — cheaper than serializing, though
 the JSON autosave remains the belt to this suspender. Cadence decides

@@ -73,12 +73,15 @@ struct WorkspaceHeader {
   std::uint64_t root_slot_a;
   std::uint64_t root_slot_b;
   // The arena directory's store table (pool.workspace_store_directory): file
-  // offset of snapshot A (snapshot B follows it immediately) and the row count of
-  // each snapshot. TWO snapshots, one per root slot: a commit writes only the
-  // INACTIVE one, so the high-water a recovery reads always belongs to the root it
-  // selected (doc 15, "the store table rides the same A/B discipline"). Placed
-  // after the chunk directory and before the page-aligned `data_offset`, so the
-  // directory does not move and the default layout costs zero extra pages.
+  // offset of snapshot A and the row count of each snapshot. TWO snapshots, one per
+  // root slot: a commit writes only the INACTIVE one, so the high-water a recovery
+  // reads always belongs to the root it selected (doc 15, "the store table rides the
+  // same A/B discipline"). Each snapshot is PAGE-RESIDENT: `store_table_offset` is
+  // page-aligned, the snapshots are one page apart, and stamp + rows fit inside a
+  // single page -- one unit of kernel writeback, so a snapshot's generation stamp
+  // cannot become durable without the rows it stamps
+  // (pool.header_writeback_ordering). Snapshot `ab` therefore begins at
+  // `store_table_offset + ab * page_size`.
   std::uint64_t store_table_offset;
   std::uint64_t max_stores;
   std::uint64_t reserved[5]; // zeroed padding, room for future header fields
@@ -120,6 +123,23 @@ struct WorkspaceStoreEntry {
   std::uint32_t high_water;
 };
 
+// The head of one store-table snapshot, immediately followed by that snapshot's
+// `max_stores` rows inside the same page. `generation` is the root generation of the
+// commit that wrote this snapshot -- the SAME value that commit put in the root slot
+// it flipped. Open trusts a root only when its snapshot's stamp equals its
+// generation, which is what turns the root/snapshot pairing from an assumption about
+// kernel writeback ordering (the header's root-slot page and its snapshot pages are
+// distinct pages, and nothing orders their writeback) into a checkable fact: a torn
+// header that persists the new root without its snapshot is DETECTED, and open falls
+// back to the older root that is still coherent. `generation == 0` is the create-time
+// zero, which matches a never-written root slot -- so a fresh file is trivially
+// paired. Written by the commit as a plain store into a page the header msync
+// already covers: zero extra syscalls (pool.header_writeback_ordering).
+struct WorkspaceStoreSnapshot {
+  std::uint32_t generation;
+  std::uint32_t reserved; // zeroed padding, keeps the rows 8-aligned
+};
+
 // A chunk grown through the source's own `acquire` rather than through a
 // per-store view belongs to no store; the untagged reopen queue serves it back in
 // directory order, exactly as format 1 did.
@@ -127,12 +147,15 @@ inline constexpr std::uint32_t k_workspace_no_owner = 0xFFFF'FFFFu;
 
 inline constexpr std::uint64_t k_workspace_magic = 0x4642'5357'4342'5241ull; // "ARBCWSBF" LE
 // 2: the arena directory. A format-1 file's chunks are untagged and it has no
-// store table, so a two-store reopen could only GUESS at ownership -- the exact
-// bug this format bump fixes. v1 files are refused as an UnsupportedFormat value;
-// the workspace file is a same-machine session artifact beside the doc 08 JSON
-// document (doc 15:214-218), so a refused v1 file costs a reload from JSON, never
-// data (Decision 5).
-inline constexpr std::uint32_t k_workspace_format_major = 2;
+// store table, so a two-store reopen could only GUESS at ownership.
+// 3: the generation-stamped, page-resident store-table snapshot. A format-2 snapshot
+// carries no stamp and shares its page with its twin and the directory's tail, so a
+// format-3 reader could not tell whether it belongs to the root beside it -- which is
+// the exact hole (an unordered partial writeback of the header) this bump fixes.
+// Older files are refused as an UnsupportedFormat value; the workspace file is a
+// same-machine session artifact beside the doc 08 JSON document (doc 15:214-218), so
+// a refused file costs a reload from JSON, never data (Decision 7).
+inline constexpr std::uint32_t k_workspace_format_major = 3;
 inline constexpr std::uint32_t k_workspace_format_minor = 0;
 inline constexpr std::uint32_t k_workspace_default_max_chunks = 16384;
 inline constexpr std::uint32_t k_workspace_default_max_stores = 16;
@@ -141,6 +164,8 @@ static_assert(sizeof(WorkspaceHeader) == 112, "on-disk header layout is a contra
 static_assert(sizeof(WorkspaceHeader) % 8 == 0, "directory must stay 8-aligned after header");
 static_assert(sizeof(WorkspaceChunkEntry) == 24, "on-disk directory entry layout is a contract");
 static_assert(sizeof(WorkspaceStoreEntry) == 16, "on-disk store-table row layout is a contract");
+static_assert(sizeof(WorkspaceStoreSnapshot) == 8, "on-disk snapshot head layout is a contract");
+static_assert(sizeof(WorkspaceStoreSnapshot) % 8 == 0, "rows must stay 8-aligned after the stamp");
 
 // Construction-time policy knobs for a fresh workspace file.
 struct WorkspaceLayout {
@@ -261,7 +286,10 @@ class WorkspaceFileChunkSource final : public ChunkSource {
 public:
   // Create a fresh workspace file at `path` (truncating any existing file) and
   // return a source backed by it. Fails as a value on any syscall error (with
-  // errno) and on unsupported platforms.
+  // errno) and on unsupported platforms. A `max_stores` whose snapshot (stamp +
+  // rows) would not fit inside one page is `MaxStoresExceeded`: a straddling
+  // snapshot could have its stamp made durable on one page while stale rows sat on
+  // the next, which is precisely the pairing the stamp exists to prove.
   static expected<std::unique_ptr<WorkspaceFileChunkSource>, WorkspaceFileError>
   create(const std::string& path, const WorkspaceLayout& layout = {});
 
@@ -354,6 +382,16 @@ public:
   // (Decision 4).
   void publish_store_high_water(int ab, std::uint32_t id, std::uint32_t high_water) noexcept;
 
+  // Read / write snapshot `ab`'s generation stamp: the generation of the root slot
+  // that owns it. The commit stamps the snapshot it just wrote with the same
+  // generation it flips into the root slot, in the same critical section, and both
+  // are published by the one `sync_header()` -- another plain store into a page that
+  // msync already covers, so the stamp is free. `Checkpointer`'s root selection
+  // trusts a root only when `snapshot_generation(ab) == root(ab).generation`
+  // (pool.header_writeback_ordering).
+  std::uint32_t snapshot_generation(int ab) const noexcept;
+  void publish_snapshot_generation(int ab, std::uint32_t generation) noexcept;
+
   // Debug hardening (doc 15): mprotect every live data mapping read-only after a
   // checkpoint publishes it, or a single range writable when a quarantined slot
   // is handed back for reuse. No-op / unsupported outside POSIX debug builds.
@@ -391,8 +429,12 @@ private:
 
   WorkspaceHeader* header() noexcept;
   WorkspaceChunkEntry* directory() noexcept;
-  // Row 0 of store-table snapshot `ab` (0 = A, 1 = B), inside the mapped header.
-  WorkspaceStoreEntry* store_table(int ab) noexcept;
+  // Store-table snapshot `ab` (0 = A, 1 = B) inside the mapped header: its stamp,
+  // and row 0 of the rows that follow the stamp in the same page. The snapshots are
+  // one page apart, so `store_table(0)` and `store_table(1)` never share a page --
+  // nor does either share one with the root slots.
+  WorkspaceStoreSnapshot* store_snapshot(int ab) const noexcept;
+  WorkspaceStoreEntry* store_table(int ab) const noexcept;
 
   // Size the per-store state to the file's store table and arm the router. Called
   // once by `create` / `open`, after the header mapping is established.

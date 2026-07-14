@@ -58,6 +58,41 @@ inline WorkspaceRoot decode_root(std::uint64_t value) noexcept {
                        static_cast<std::uint32_t>(value & 0xFFFF'FFFFu)};
 }
 
+// The outcome of the A/B root selection: which header slot a reopen resumes from.
+struct RootSelection {
+  int slot{0};          // header root slot (0 = A, 1 = B)
+  WorkspaceRoot root{}; // the root that slot holds
+  bool eligible{false}; // its store-table snapshot's stamp matches its generation
+};
+
+// THE ONE root-selection rule, used by both `Checkpointer::open` and the
+// `Checkpointer` constructor (pool.header_writeback_ordering). Two copies of it would
+// let the constructor pick a `d_next_slot` that overwrites the very snapshot the open
+// path just recovered from.
+//
+// Newest generation first (ties to A), but a root is only ELIGIBLE when the snapshot
+// it owns is stamped with its generation. The root slots and the store-table snapshots
+// live on different pages of the header mapping, and the kernel orders their writeback
+// not at all: a crash during the one header msync can persist the new root paired with
+// the STALE snapshot, whose too-low high-water would make the recovery hole-punch the
+// very chunks that root's records live in. The stamp makes the pairing checkable, so
+// such a root is skipped and the older, still-coherent root is resumed instead. A fresh
+// file's zeroed slots and zeroed stamps pair trivially (generation 0 == stamp 0).
+inline RootSelection select_root(const WorkspaceFileChunkSource& source) noexcept {
+  const WorkspaceRoot a = decode_root(source.root_slot(0));
+  const WorkspaceRoot b = decode_root(source.root_slot(1));
+  const int newest = a.generation >= b.generation ? 0 : 1;
+  for (const int slot : {newest, newest ^ 1}) {
+    const WorkspaceRoot root = slot == 0 ? a : b;
+    if (source.snapshot_generation(slot) == root.generation) {
+      return RootSelection{slot, root, true};
+    }
+  }
+  // Neither root owns the snapshot beside it: the header is corrupt beyond what A/B
+  // redundancy can repair. Refusing beats a silent under-restore.
+  return RootSelection{};
+}
+
 // The durability-epoch quarantine buffer, installed on a workspace-backed
 // Arena's SlotStores via SlotStore::set_release_fence (the clean interposition
 // point pool.reclamation left below reclaim). A freed slot is stamped with the
@@ -102,18 +137,17 @@ public:
   // store via `slot_fence()`.
   Checkpointer(WorkspaceFileChunkSource& source, Arena& arena)
       : d_source(&source), d_arena(&arena), d_slot_fence(d_epoch) {
-    const WorkspaceRoot a = decode_root(source.root_slot(0));
-    const WorkspaceRoot b = decode_root(source.root_slot(1));
-    if (a.generation == 0 && b.generation == 0) {
-      d_generation = 0;
-      d_next_slot = 0; // fresh file: publish into slot A first
-    } else if (a.generation >= b.generation) {
-      d_generation = a.generation;
-      d_next_slot = 1; // A is current: publish into B next
-    } else {
-      d_generation = b.generation;
-      d_next_slot = 0;
-    }
+    // The SAME eligibility rule `Checkpointer::open` resumed from: the next commit
+    // must publish into the OTHER slot, or it would overwrite the snapshot the open
+    // path just recovered from -- the only coherent one left after a torn header.
+    // `open` refuses a file with no eligible root, and a fresh file's zeroed slots are
+    // trivially eligible, so every path that reaches here has one.
+    const RootSelection selected = select_root(source);
+    assert(selected.eligible && "a Checkpointer over a file with no root/snapshot pair");
+    d_generation = selected.root.generation;
+    // Generation 0 is "never written": there is no durable root to preserve, so a fresh
+    // file publishes into slot A first (and its snapshot A with it).
+    d_next_slot = d_generation == 0 ? 0 : (selected.slot ^ 1);
     d_durable_epoch = d_generation;
     d_epoch = d_generation + 1;
     d_chunk_fence.self = this;
@@ -187,6 +221,16 @@ public:
                                          static_cast<std::uint32_t>(entry.store->high_water()));
     }
 
+    // (2b) Stamp that snapshot with the generation this commit is about to put in the
+    // root slot. The rows above and this stamp share one page, so the kernel cannot
+    // write back the stamp without them; the root slot lives on a DIFFERENT page, whose
+    // writeback nothing orders against this one. A crash that persists the new root but
+    // not its snapshot therefore leaves a root whose stamp does not match -- detectable,
+    // and `select_root` falls back to the older root that still pairs. Plain stores, on
+    // the writer thread, in the same critical section as the flip below: no syscall, no
+    // new cross-thread state.
+    d_source->publish_snapshot_generation(d_next_slot, new_generation);
+
     d_source->publish_root_slot(d_next_slot,
                                 encode_root(WorkspaceRoot{new_generation, root_index}));
     expected<std::monostate, WorkspaceFileError> header = d_source->sync_header();
@@ -251,26 +295,33 @@ public:
     if (!source) {
       return unexpected(source.error());
     }
-    const WorkspaceRoot a = decode_root((*source)->root_slot(0));
-    const WorkspaceRoot b = decode_root((*source)->root_slot(1));
-    const int chosen_slot = a.generation >= b.generation ? 0 : 1;
-    const WorkspaceRoot chosen = chosen_slot == 0 ? a : b;
+    // The newest root whose store-table snapshot is stamped with its own generation --
+    // VERIFIED, not assumed (see `select_root`). A root the check rejects is not a
+    // corrupt file, merely one whose snapshot a torn header left behind, so the older
+    // root is tried; only when NEITHER pairs is the file refused. That is a
+    // root-selection predicate, upstream of `adopt_snapshot`: a snapshot that fails
+    // adoption's CONTENT validation stays a hard failure, never a retry on the older
+    // root (Decision 1).
+    const RootSelection chosen = select_root(**source);
+    if (!chosen.eligible) {
+      return unexpected(WorkspaceFileError{WorkspaceFileErrc::StoreDirectoryInconsistent, 0});
+    }
 
     // Adopt the store-table snapshot the SELECTED root published (doc 15's A/B
     // discipline extended to the store table). This validates that every store's
     // chunk set covers its recorded high-water and hole-punches the chunks a
     // crashed commit appended above it -- so what the caller restores below is a
     // lookup, never a guess.
-    expected<std::monostate, WorkspaceFileError> adopted = (*source)->adopt_snapshot(chosen_slot);
+    expected<std::monostate, WorkspaceFileError> adopted = (*source)->adopt_snapshot(chosen.slot);
     if (!adopted) {
       return unexpected(adopted.error());
     }
 
     OpenState state;
     state.source = std::move(*source);
-    state.root_index = chosen.root_index;
-    state.generation = chosen.generation;
-    state.valid = chosen.generation != 0;
+    state.root_index = chosen.root.root_index;
+    state.generation = chosen.root.generation;
+    state.valid = chosen.root.generation != 0;
     return state;
   }
 

@@ -212,6 +212,40 @@ void write_at(const std::string& path, std::size_t offset, const void* data, std
 #endif
 }
 
+// Read `size` bytes at `offset` straight out of the file -- the on-disk truth, read
+// without going through any mapping. The other half of the surgery kit: a page captured
+// here is written back over itself later to model a writeback that never happened.
+std::vector<std::uint8_t> read_bytes(const std::string& path, std::uint64_t offset,
+                                     std::size_t size) {
+  std::vector<std::uint8_t> out(size, 0);
+#if defined(_WIN32)
+  HANDLE h = ::CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  REQUIRE(h != INVALID_HANDLE_VALUE);
+  LARGE_INTEGER li;
+  li.QuadPart = static_cast<LONGLONG>(offset);
+  const BOOL sought = ::SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+  DWORD got = 0;
+  const BOOL ok = sought != 0 && ::ReadFile(h, out.data(), static_cast<DWORD>(size), &got, nullptr);
+  ::CloseHandle(h);
+  REQUIRE(ok != 0);
+  REQUIRE(got == size);
+#else
+  const int fd = ::open(path.c_str(), O_RDONLY);
+  REQUIRE(fd >= 0);
+  const ssize_t got = ::pread(fd, out.data(), size, static_cast<off_t>(offset));
+  ::close(fd);
+  REQUIRE(got == static_cast<ssize_t>(size));
+#endif
+  return out;
+}
+
+// File offset of store-table snapshot `ab` (0 = A, 1 = B): the snapshots are one PAGE
+// apart, each page-resident (pool.header_writeback_ordering).
+std::uint64_t snapshot_offset(const arbc::WorkspaceHeader& hdr, int ab) {
+  return hdr.store_table_offset + static_cast<std::uint64_t>(ab) * hdr.page_size;
+}
+
 // Truncate `path` to `length` bytes (POSIX truncate / Windows SetEndOfFile).
 void truncate_file(const std::string& path, std::uint64_t length) {
 #if defined(_WIN32)
@@ -797,7 +831,9 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
 
   const auto header = arbc::WorkspaceFileChunkSource::read_header(path.str());
   REQUIRE(header.has_value());
-  const std::uint64_t data_offset = header->data_offset; // == header_bytes (one page)
+  // == header_bytes: one page of header + directory, then a page per store-table
+  // snapshot (each is page-resident, pool.header_writeback_ordering).
+  const std::uint64_t data_offset = header->data_offset;
 
   const auto truncate_copy = [&](std::uint64_t length) {
     TempPath dst;
@@ -855,13 +891,12 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
   }
 
   SECTION("truncation inside store-table snapshot B -> HeaderIoFailed, never a partial table") {
-    // The store tables sit between the chunk directory and the page-aligned data
-    // region, so a file cut inside table B is short of its own header region. Refuse
+    // The snapshots sit between the chunk directory and the data region, one page each,
+    // so a file cut inside snapshot B's page is short of its own header region. Refuse
     // rather than map a half-present table and read a torn row as geometry.
-    const std::uint64_t table_b =
-        header->store_table_offset + header->max_stores * sizeof(arbc::WorkspaceStoreEntry);
-    REQUIRE(table_b < data_offset);
-    TempPath dst = truncate_copy(table_b + sizeof(arbc::WorkspaceStoreEntry) / 2);
+    const std::uint64_t snapshot_b = snapshot_offset(*header, 1);
+    REQUIRE(snapshot_b < data_offset);
+    TempPath dst = truncate_copy(snapshot_b + sizeof(arbc::WorkspaceStoreEntry) / 2);
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
     REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::HeaderIoFailed);
@@ -901,6 +936,138 @@ TEST_CASE("short / truncated / corrupt workspace files surface as values", "[poo
     const std::uint64_t torn = arbc::encode_root(arbc::WorkspaceRoot{0, 0xFFFF'FFFFu});
     write_at(dst.str(), offsetof(arbc::WorkspaceHeader, root_slot_b), &torn, sizeof(torn));
     assert_recovers(dst.str(), 1u, 100u, high_water);
+  }
+}
+
+// enforces: 15-memory-model#torn-header-falls-back-to-matching-root
+TEST_CASE("a torn header pairs the root it recovers with the snapshot that root wrote", "[pool]") {
+  // THE HOLE THIS TASK CLOSES. One `sync_header()` msyncs the whole header region, but
+  // the root slots live on page 0 and each store-table snapshot on a page of its own,
+  // and the kernel orders their writeback NOT AT ALL. A crash inside that msync can
+  // therefore persist the NEW ROOT beside the STALE SNAPSHOT -- a state no kill sweep
+  // can manufacture, because a kill only lands on whole-syscall boundaries. So the
+  // partial writeback is modelled by file surgery on a copy: capture a snapshot page
+  // before the commit that writes it, then paste it back over the committed file. That
+  // is byte-exactly "the root page landed, the snapshot page did not".
+  //
+  // Against the pre-fix code the torn image below opens on the NEW root while restoring
+  // the OLD high-water: every chunk above it is treated as post-checkpoint garbage and
+  // hole-punched -- under the very root whose records live there. The generation stamp
+  // makes the pairing checkable, so the new root is skipped and the older, coherent one
+  // is resumed instead.
+  constexpr std::uint32_t gen1_slots = 200; // nodes: 2 chunks, records: 1 -- gen 2 doubles both
+  constexpr arbc::SlotIndex k_gen1_root = 7;
+  constexpr arbc::SlotIndex k_gen2_root = 301; // above gen 1's high-water: a mis-pairing shows
+
+  TempPath path;
+  auto src = arbc::WorkspaceFileChunkSource::create(path.str());
+  REQUIRE(src.has_value());
+  arbc::WorkspaceFileChunkSource& ws = **src;
+  arbc::Arena arena(ws.router());
+  arbc::SlotStore& nodes = arena.store_for(k_node_stride, k_two_align, k_node_bits);
+  arbc::SlotStore& records = arena.store_for(k_record_stride, k_two_align, k_record_bits);
+  arbc::Checkpointer ckpt(ws, arena);
+  ckpt.register_store(nodes);
+  ckpt.register_store(records);
+
+  const auto grow = [&](std::uint32_t from, std::uint32_t to) {
+    for (std::uint32_t i = from; i < to; ++i) {
+      two_fill(nodes.resolve(*nodes.allocate()), k_node_stride, 1, i);
+      two_fill(records.resolve(*records.allocate()), k_record_stride, 2, i);
+    }
+  };
+
+  const auto header = arbc::WorkspaceFileChunkSource::read_header(path.str());
+  REQUIRE(header.has_value());
+  const std::size_t page = static_cast<std::size_t>(header->page_size);
+  // Both snapshot pages as they are BEFORE any commit writes them: stamp 0, identity
+  // rows, zero high-waters. Snapshot A's next writer is commit 1 and snapshot B's is
+  // commit 2, so this one capture is each page's pre-commit durable content.
+  const std::vector<std::uint8_t> stale_a =
+      read_bytes(path.str(), snapshot_offset(*header, 0), page);
+  const std::vector<std::uint8_t> stale_b =
+      read_bytes(path.str(), snapshot_offset(*header, 1), page);
+
+  grow(0, gen1_slots);
+  REQUIRE(ckpt.commit(k_gen1_root).has_value()); // generation 1: root slot A, snapshot A
+  grow(gen1_slots, 2 * gen1_slots);
+  REQUIRE(ckpt.commit(k_gen2_root).has_value()); // generation 2: root slot B, snapshot B
+
+  // Reopen `image`, assert it resumes generation 1 on root A with generation 1's
+  // high-waters, and that every record that root reaches still resolves -- i.e. the
+  // recovery punched nothing root A references.
+  const auto assert_recovers_generation_1 = [&](const std::string& image) {
+    auto opened = arbc::Checkpointer::open(image);
+    REQUIRE(opened.has_value());
+    REQUIRE(opened->valid);
+    REQUIRE(opened->generation == 1);
+    REQUIRE(opened->root_index == k_gen1_root);
+
+    arbc::WorkspaceFileChunkSource& ws2 = *opened->source;
+    arbc::Arena arena2(ws2.router());
+    arbc::Checkpointer ckpt2(ws2, arena2);
+    REQUIRE(ckpt2.reserve_restored_all(arena2).has_value());
+    arbc::SlotStore& nodes2 = arena2.store_for(k_node_stride, k_two_align, k_node_bits);
+    arbc::SlotStore& records2 = arena2.store_for(k_record_stride, k_two_align, k_record_bits);
+    REQUIRE(nodes2.high_water() == gen1_slots);
+    REQUIRE(records2.high_water() == gen1_slots);
+    for (std::uint32_t i = 0; i < gen1_slots; ++i) {
+      const auto* node = static_cast<const std::uint8_t*>(nodes2.resolve(i));
+      const auto* record = static_cast<const std::uint8_t*>(records2.resolve(i));
+      for (std::size_t b = 0; b < k_node_stride; ++b) {
+        REQUIRE(node[b] == two_pattern(1, i, b));
+      }
+      for (std::size_t b = 0; b < k_record_stride; ++b) {
+        REQUIRE(record[b] == two_pattern(2, i, b));
+      }
+    }
+  };
+
+  SECTION("the untorn file recovers generation 2 -- the control") {
+    // Without surgery the same file opens on the new root with the new high-waters, so
+    // what the sections below observe is the tear, not a broken commit.
+    TempPath dst;
+    copy_file(path.str(), dst.str());
+    auto opened = arbc::Checkpointer::open(dst.str());
+    REQUIRE(opened.has_value());
+    REQUIRE(opened->generation == 2);
+    REQUIRE(opened->root_index == k_gen2_root);
+  }
+
+  SECTION("root page landed, snapshot page did not -> the older, matching root") {
+    TempPath dst;
+    copy_file(path.str(), dst.str());
+    write_at(dst.str(), static_cast<std::size_t>(snapshot_offset(*header, 1)), stale_b.data(),
+             stale_b.size());
+    // Root B still says generation 2; snapshot B is stamped 0. The pair is refused and
+    // root A -- generation 1, stamped 1 -- is resumed with ITS high-waters, intact.
+    assert_recovers_generation_1(dst.str());
+  }
+
+  SECTION("snapshot page landed, root page did not -> the older root too") {
+    // The mirror tear: already safe (the old root's own snapshot is untouched by a
+    // commit that only ever writes the INACTIVE one), now pinned so it stays safe.
+    TempPath dst;
+    copy_file(path.str(), dst.str());
+    const std::uint64_t never_written = 0;
+    write_at(dst.str(), offsetof(arbc::WorkspaceHeader, root_slot_b), &never_written,
+             sizeof(never_written));
+    assert_recovers_generation_1(dst.str());
+  }
+
+  SECTION("neither snapshot page landed -> a refusal, never a silent mis-restore") {
+    // Both roots durable, both snapshot pages rolled back: no root owns the snapshot
+    // beside it, so A/B redundancy has nothing coherent left to fall back to. The one
+    // thing recovery must not do is pick one anyway and under-restore it.
+    TempPath dst;
+    copy_file(path.str(), dst.str());
+    write_at(dst.str(), static_cast<std::size_t>(snapshot_offset(*header, 0)), stale_a.data(),
+             stale_a.size());
+    write_at(dst.str(), static_cast<std::size_t>(snapshot_offset(*header, 1)), stale_b.data(),
+             stale_b.size());
+    auto opened = arbc::Checkpointer::open(dst.str());
+    REQUIRE_FALSE(opened.has_value());
+    REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::StoreDirectoryInconsistent);
   }
 }
 

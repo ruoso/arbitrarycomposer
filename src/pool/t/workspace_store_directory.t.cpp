@@ -223,16 +223,38 @@ std::vector<arbc::WorkspaceChunkEntry> read_directory(const std::string& path,
   return entries;
 }
 
+// File offset of store-table snapshot `ab` (0 = A, 1 = B). The snapshots are one PAGE
+// apart -- each is page-resident so its generation stamp shares a writeback unit with
+// the rows it stamps (pool.header_writeback_ordering).
+std::uint64_t snapshot_offset(const arbc::WorkspaceHeader& hdr, int ab) {
+  return hdr.store_table_offset + static_cast<std::uint64_t>(ab) * hdr.page_size;
+}
+
+// File offset of row `row` of snapshot `ab`: the rows follow the stamp inside the page.
+std::uint64_t store_row_offset(const arbc::WorkspaceHeader& hdr, int ab, std::uint32_t row) {
+  return snapshot_offset(hdr, ab) + sizeof(arbc::WorkspaceStoreSnapshot) +
+         static_cast<std::uint64_t>(row) * sizeof(arbc::WorkspaceStoreEntry);
+}
+
 // One store-table row, read from disk. `ab` selects the snapshot (0 = A, 1 = B).
 arbc::WorkspaceStoreEntry read_store_row(const std::string& path, const arbc::WorkspaceHeader& hdr,
                                          int ab, std::uint32_t row) {
-  const std::uint64_t offset =
-      hdr.store_table_offset +
-      (static_cast<std::uint64_t>(ab) * hdr.max_stores + row) * sizeof(arbc::WorkspaceStoreEntry);
-  const std::vector<std::uint8_t> raw = read_bytes(path, offset, sizeof(arbc::WorkspaceStoreEntry));
+  const std::vector<std::uint8_t> raw =
+      read_bytes(path, store_row_offset(hdr, ab, row), sizeof(arbc::WorkspaceStoreEntry));
   arbc::WorkspaceStoreEntry entry{};
   std::memcpy(&entry, raw.data(), sizeof(entry));
   return entry;
+}
+
+// Snapshot `ab`'s generation stamp, read from disk: the generation of the root slot
+// the commit that wrote this snapshot flipped.
+std::uint32_t read_snapshot_stamp(const std::string& path, const arbc::WorkspaceHeader& hdr,
+                                  int ab) {
+  const std::vector<std::uint8_t> raw =
+      read_bytes(path, snapshot_offset(hdr, ab), sizeof(arbc::WorkspaceStoreSnapshot));
+  arbc::WorkspaceStoreSnapshot snap{};
+  std::memcpy(&snap, raw.data(), sizeof(snap));
+  return snap.generation;
 }
 
 } // namespace
@@ -397,13 +419,30 @@ TEST_CASE("a reopening build whose geometry disagrees with the store table is re
   }
 
   SECTION("a format-1 file -> UnsupportedFormat, never an untagged-chunk guess") {
-    // v1 chunks are untagged; a v2 reader could only guess at ownership -- the very
+    // v1 chunks are untagged; a later reader could only guess at ownership -- the very
     // bug being fixed. Refuse. The workspace file is a same-machine session artifact
     // beside the doc 08 JSON document, so this costs a reload from JSON, not data.
     TempPath dst;
     copy_file(path.str(), dst.str());
     const std::uint32_t v1 = 1;
     write_at(dst.str(), offsetof(arbc::WorkspaceHeader, format_major), &v1, sizeof(v1));
+    auto opened = arbc::Checkpointer::open(dst.str());
+    REQUIRE_FALSE(opened.has_value());
+    REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::UnsupportedFormat);
+    auto hdr = arbc::WorkspaceFileChunkSource::read_header(dst.str());
+    REQUIRE_FALSE(hdr.has_value());
+    REQUIRE(hdr.error().code == arbc::WorkspaceFileErrc::UnsupportedFormat);
+  }
+
+  SECTION("a format-2 file -> UnsupportedFormat, never an unstamped snapshot read as stamped") {
+    // A v2 store table sits at a different offset, has no generation stamp, and shares
+    // its page with its twin. Reading one under the v3 layout would pair a root with
+    // bytes that are not its snapshot -- exactly the distrust this format bump exists
+    // to enforce. Pre-release: no migration is owed (Decision 7).
+    TempPath dst;
+    copy_file(path.str(), dst.str());
+    const std::uint32_t v2 = 2;
+    write_at(dst.str(), offsetof(arbc::WorkspaceHeader, format_major), &v2, sizeof(v2));
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
     REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::UnsupportedFormat);
@@ -423,7 +462,8 @@ TEST_CASE("a reopening build whose geometry disagrees with the store table is re
     // The first commit published into snapshot A. Claim a high-water needing 3 chunks
     // where the store has 1.
     const std::uint32_t inflated = 3u * (1u << k_node_bits);
-    write_at(dst.str(), hdr->store_table_offset + offsetof(arbc::WorkspaceStoreEntry, high_water),
+    write_at(dst.str(),
+             store_row_offset(*hdr, 0, 0) + offsetof(arbc::WorkspaceStoreEntry, high_water),
              &inflated, sizeof(inflated));
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
@@ -450,7 +490,8 @@ TEST_CASE("a reopening build whose geometry disagrees with the store table is re
     const auto hdr = arbc::WorkspaceFileChunkSource::read_header(dst.str());
     REQUIRE(hdr.has_value());
     const std::uint32_t not_a_power_of_two = 100;
-    write_at(dst.str(), hdr->store_table_offset + offsetof(arbc::WorkspaceStoreEntry, chunk_slots),
+    write_at(dst.str(),
+             store_row_offset(*hdr, 0, 0) + offsetof(arbc::WorkspaceStoreEntry, chunk_slots),
              &not_a_power_of_two, sizeof(not_a_power_of_two));
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
@@ -467,7 +508,8 @@ TEST_CASE("a reopening build whose geometry disagrees with the store table is re
     const auto hdr = arbc::WorkspaceFileChunkSource::read_header(dst.str());
     REQUIRE(hdr.has_value());
     const std::uint32_t under_aligned = 8; // a power of two, but below the canonical floor
-    write_at(dst.str(), hdr->store_table_offset + offsetof(arbc::WorkspaceStoreEntry, slot_align),
+    write_at(dst.str(),
+             store_row_offset(*hdr, 0, 0) + offsetof(arbc::WorkspaceStoreEntry, slot_align),
              &under_aligned, sizeof(under_aligned));
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
@@ -495,9 +537,8 @@ TEST_CASE("a reopening build whose geometry disagrees with the store table is re
     REQUIRE(hdr.has_value());
     const std::uint32_t junk = 7;
     write_at(dst.str(),
-             hdr->store_table_offset + sizeof(arbc::WorkspaceStoreEntry) +
-                 offsetof(arbc::WorkspaceStoreEntry, high_water),
-             &junk, sizeof(junk));
+             store_row_offset(*hdr, 0, 1) + offsetof(arbc::WorkspaceStoreEntry, high_water), &junk,
+             sizeof(junk));
     auto opened = arbc::Checkpointer::open(dst.str());
     REQUIRE_FALSE(opened.has_value());
     REQUIRE(opened.error().code == arbc::WorkspaceFileErrc::StoreDirectoryInconsistent);
@@ -538,11 +579,13 @@ TEST_CASE("binding more size classes than the store table holds is refused as a 
   REQUIRE_FALSE(overflow.allocate().has_value());
 }
 
-TEST_CASE("the default layout's store tables cost zero extra pages") {
-  // The tables live in the slack the chunk directory already leaves before the first
-  // page boundary, so a format-2 file's data region begins at exactly the offset
-  // format 1 put it. Pins the "no extra pages" claim -- if a future field pushes the
-  // tables over the boundary, this fails rather than silently growing every file.
+TEST_CASE("the default layout's store tables cost exactly two extra pages") {
+  // Format 3 buys the root/snapshot pairing check with page residency: each snapshot
+  // gets a page of its own, so its stamp cannot become durable without its rows and no
+  // other writer dirties the page. The bill is two pages of `data_offset` over format 1
+  // -- 8 KiB on a 4 KiB-page machine, 0.5% of the 388 KiB default header region (112 B
+  // header + 16384 * 24 B directory = 393328 B, rounded up to 397312). This pins that
+  // price: a future field that silently doubled it fails here.
   TempPath path;
   auto src = arbc::WorkspaceFileChunkSource::create(path.str()); // default layout
   REQUIRE(src.has_value());
@@ -555,14 +598,17 @@ TEST_CASE("the default layout's store tables cost zero extra pages") {
       sizeof(arbc::WorkspaceHeader) +
           std::size_t{arbc::k_workspace_default_max_chunks} * sizeof(arbc::WorkspaceChunkEntry),
       hdr->page_size);
-  REQUIRE(hdr->data_offset == format1_data_offset);
+  // The snapshots begin where format 1's data region did, and the data region moves up
+  // by exactly the two pages they occupy -- no third page of slack, no rounding slop.
+  REQUIRE(hdr->store_table_offset == format1_data_offset);
+  REQUIRE(hdr->data_offset == format1_data_offset + 2u * hdr->page_size);
 
-  // ... and the tables really do fit inside that slack.
-  REQUIRE(hdr->store_table_offset ==
-          sizeof(arbc::WorkspaceHeader) + std::uint64_t{arbc::k_workspace_default_max_chunks} *
-                                              sizeof(arbc::WorkspaceChunkEntry));
-  REQUIRE(hdr->store_table_offset + 2u * hdr->max_stores * sizeof(arbc::WorkspaceStoreEntry) <=
-          hdr->data_offset);
+  // ... and each snapshot really is page-resident: stamp + every row inside one page,
+  // which is what makes the generation stamp prove the pairing (Decision 3).
+  REQUIRE(sizeof(arbc::WorkspaceStoreSnapshot) +
+              hdr->max_stores * sizeof(arbc::WorkspaceStoreEntry) <=
+          hdr->page_size);
+  REQUIRE(hdr->store_table_offset % hdr->page_size == 0);
 }
 
 TEST_CASE("commit publishes every registered store's high-water with zero extra syscalls",
@@ -625,6 +671,156 @@ TEST_CASE("commit publishes every registered store's high-water with zero extra 
   // The OTHER snapshot -- the one the surviving root owns -- was not touched.
   REQUIRE(read_store_row(path.str(), *hdr, 1, 0).high_water == 0);
   REQUIRE(read_store_row(path.str(), *hdr, 1, 1).high_water == 0);
+}
+
+TEST_CASE("a commit stamps the snapshot it writes with the generation it flips into the root",
+          "[pool]") {
+  // The pairing the torn-header check rests on: the snapshot a commit writes and the
+  // root slot it flips carry the SAME generation, and the other snapshot -- the one the
+  // surviving root owns -- is left alone. Read back off disk, not through the mapping.
+  TempPath path;
+  auto src = arbc::WorkspaceFileChunkSource::create(path.str());
+  REQUIRE(src.has_value());
+  arbc::WorkspaceFileChunkSource& ws = **src;
+  arbc::Arena arena(ws.router());
+  arbc::SlotStore& nodes = arena.store_for(k_node_stride, k_align, k_node_bits);
+  arbc::Checkpointer ckpt(ws, arena);
+  ckpt.register_store(nodes);
+
+  for (std::uint32_t i = 0; i < 10; ++i) {
+    fill_slot(nodes.resolve(*nodes.allocate()), k_node_stride, 1, i);
+  }
+  REQUIRE(ckpt.commit(0).has_value()); // generation 1, root slot A, snapshot A
+
+  const auto hdr = arbc::WorkspaceFileChunkSource::read_header(path.str());
+  REQUIRE(hdr.has_value());
+  REQUIRE(arbc::decode_root(ws.root_slot(0)).generation == 1);
+  REQUIRE(read_snapshot_stamp(path.str(), *hdr, 0) == 1);
+  REQUIRE(read_snapshot_stamp(path.str(), *hdr, 1) == 0); // untouched: B's root is still 0
+
+  for (std::uint32_t i = 10; i < 20; ++i) {
+    fill_slot(nodes.resolve(*nodes.allocate()), k_node_stride, 1, i);
+  }
+  REQUIRE(ckpt.commit(0).has_value()); // generation 2, root slot B, snapshot B
+
+  REQUIRE(arbc::decode_root(ws.root_slot(1)).generation == 2);
+  REQUIRE(read_snapshot_stamp(path.str(), *hdr, 1) == 2);
+  REQUIRE(read_snapshot_stamp(path.str(), *hdr, 0) == 1); // generation 1's snapshot, intact
+  // ... and each stamp still names the root that owns it: A pairs with the old
+  // high-water, B with the new one. Never a mixture.
+  REQUIRE(read_store_row(path.str(), *hdr, 0, 0).high_water == 10);
+  REQUIRE(read_store_row(path.str(), *hdr, 1, 0).high_water == 20);
+}
+
+TEST_CASE("a fresh file's zeroed roots and zeroed stamps pair trivially", "[pool]") {
+  // Generation 0 is "never written" in BOTH the root slot and the snapshot stamp, so a
+  // fresh file's roots are eligible by the same rule that governs a committed one -- no
+  // special case in the selection, and no refusal of a file that simply has no root yet.
+  TempPath path;
+  auto src = arbc::WorkspaceFileChunkSource::create(path.str());
+  REQUIRE(src.has_value());
+  (*src).reset(); // close it: recovery reads the file, not the live source
+
+  const auto hdr = arbc::WorkspaceFileChunkSource::read_header(path.str());
+  REQUIRE(hdr.has_value());
+  REQUIRE(hdr->root_slot_a == 0);
+  REQUIRE(hdr->root_slot_b == 0);
+  REQUIRE(read_snapshot_stamp(path.str(), *hdr, 0) == 0);
+  REQUIRE(read_snapshot_stamp(path.str(), *hdr, 1) == 0);
+
+  auto opened = arbc::Checkpointer::open(path.str());
+  REQUIRE(opened.has_value());
+  REQUIRE_FALSE(opened->valid); // no durable root -- but a clean open, not a refusal
+  REQUIRE(opened->generation == 0);
+}
+
+TEST_CASE("a max_stores whose snapshot would straddle a page is refused as a value") {
+  // The stamp only proves the pairing if it cannot land without its rows, which holds
+  // only while stamp + rows share one page. A `max_stores` that would push the rows
+  // onto a second page is therefore a geometry the format cannot honour -- refused at
+  // create time as a value, never laid out and silently mis-trusted (Decision 3).
+  TempPath probe_path;
+  auto probe = arbc::WorkspaceFileChunkSource::create(probe_path.str());
+  REQUIRE(probe.has_value());
+  const std::size_t page = (*probe)->page();
+
+  arbc::WorkspaceLayout layout;
+  layout.max_stores = static_cast<std::uint32_t>(
+      ((page - sizeof(arbc::WorkspaceStoreSnapshot)) / sizeof(arbc::WorkspaceStoreEntry)) + 1);
+  TempPath path;
+  auto src = arbc::WorkspaceFileChunkSource::create(path.str(), layout);
+  REQUIRE_FALSE(src.has_value());
+  REQUIRE(src.error().code == arbc::WorkspaceFileErrc::MaxStoresExceeded);
+
+  // One row fewer fits exactly, and is accepted.
+  layout.max_stores -= 1;
+  TempPath fits;
+  auto ok = arbc::WorkspaceFileChunkSource::create(fits.str(), layout);
+  REQUIRE(ok.has_value());
+}
+
+TEST_CASE("alternating commits reopen on the newest root with that root's high-waters", "[pool]") {
+  // The round trip the generation stamp must not disturb: N commits alternate A/B, and
+  // every reopen lands on the newest root and restores exactly the high-waters that
+  // root's snapshot published -- not the other snapshot's, which is a whole batch behind.
+  constexpr std::uint32_t k_batch = 40;
+  for (std::uint32_t commits = 1; commits <= 4; ++commits) {
+    TempPath path;
+    auto src = arbc::WorkspaceFileChunkSource::create(path.str());
+    REQUIRE(src.has_value());
+    arbc::WorkspaceFileChunkSource& ws = **src;
+    arbc::Arena arena(ws.router());
+    arbc::SlotStore& nodes = arena.store_for(k_node_stride, k_align, k_node_bits);
+    arbc::SlotStore& records = arena.store_for(k_record_stride, k_align, k_record_bits);
+    arbc::Checkpointer ckpt(ws, arena);
+    ckpt.register_store(nodes);
+    ckpt.register_store(records);
+
+    std::uint32_t written = 0;
+    for (std::uint32_t c = 0; c < commits; ++c) {
+      for (std::uint32_t i = written; i < written + k_batch; ++i) {
+        fill_slot(nodes.resolve(*nodes.allocate()), k_node_stride, 1, i);
+        fill_slot(records.resolve(*records.allocate()), k_record_stride, 2, i);
+      }
+      written += k_batch;
+      REQUIRE(ckpt.commit(written - 1).has_value());
+    }
+    REQUIRE(ckpt.generation() == commits);
+
+    // The commits really did alternate slots, and each snapshot is stamped with the
+    // generation of the root beside it.
+    const auto hdr = arbc::WorkspaceFileChunkSource::read_header(path.str());
+    REQUIRE(hdr.has_value());
+    for (int ab = 0; ab < 2; ++ab) {
+      REQUIRE(read_snapshot_stamp(path.str(), *hdr, ab) ==
+              arbc::decode_root(ws.root_slot(ab)).generation);
+    }
+
+    TempPath recovered;
+    copy_file(path.str(), recovered.str());
+    auto opened = arbc::Checkpointer::open(recovered.str());
+    REQUIRE(opened.has_value());
+    REQUIRE(opened->valid);
+    REQUIRE(opened->generation == commits);
+    REQUIRE(opened->root_index == written - 1);
+
+    arbc::WorkspaceFileChunkSource& ws2 = *opened->source;
+    arbc::Arena arena2(ws2.router());
+    arbc::Checkpointer ckpt2(ws2, arena2);
+    REQUIRE(ckpt2.reserve_restored_all(arena2).has_value());
+    arbc::SlotStore& nodes2 = arena2.store_for(k_node_stride, k_align, k_node_bits);
+    arbc::SlotStore& records2 = arena2.store_for(k_record_stride, k_align, k_record_bits);
+    REQUIRE(nodes2.high_water() == written);
+    REQUIRE(records2.high_water() == written);
+    for (std::uint32_t i = 0; i < written; ++i) {
+      REQUIRE(slot_matches(nodes2.resolve(i), k_node_stride, 1, i));
+      REQUIRE(slot_matches(records2.resolve(i), k_record_stride, 2, i));
+    }
+    // The reopened checkpointer must publish into the OTHER slot than the one it
+    // recovered from, or its next commit would overwrite the only coherent snapshot.
+    REQUIRE(ckpt2.commit(0).has_value());
+    REQUIRE(arbc::decode_root(ws2.root_slot(commits % 2)).generation == commits + 1);
+  }
 }
 
 TEST_CASE("chunks appended after the last checkpoint are hole-punched on reopen", "[pool]") {
@@ -779,15 +975,23 @@ namespace {
 
 constexpr std::uint32_t k_golden_max_chunks = 8;
 constexpr std::uint32_t k_golden_max_stores = 4;
+// Header + chunk directory (contiguous from offset 0), then each page-resident
+// snapshot's occupied head. The pad between the directory's end and snapshot A, and
+// between the two snapshots, is page-size-dependent zero fill -- a platform fact, not a
+// format fact -- so the golden splices the three occupied runs together instead.
+constexpr std::size_t k_golden_dir_bytes =
+    sizeof(arbc::WorkspaceHeader) + k_golden_max_chunks * sizeof(arbc::WorkspaceChunkEntry);
+constexpr std::size_t k_golden_snapshot_bytes =
+    sizeof(arbc::WorkspaceStoreSnapshot) + k_golden_max_stores * sizeof(arbc::WorkspaceStoreEntry);
 constexpr std::size_t k_golden_bytes =
-    sizeof(arbc::WorkspaceHeader) + k_golden_max_chunks * sizeof(arbc::WorkspaceChunkEntry) +
-    2 * k_golden_max_stores * sizeof(arbc::WorkspaceStoreEntry); // 112 + 192 + 128 = 432
+    k_golden_dir_bytes + 2 * k_golden_snapshot_bytes; // 304 + 2*72 = 448
 
 // Build the golden file: a fresh fixed-layout workspace with the two colliding size
-// classes bound and one chunk grown through the first, then read back the whole
-// header region. `page_size` and `data_offset` are normalized to zero (they are
-// platform facts, not format facts); the 4 KiB page guard keeps the rest -- including
-// the directory entry's offset and size -- deterministic.
+// classes bound and one chunk grown through the first, then read back the header +
+// directory and both snapshots. `page_size` and `data_offset` are normalized to zero
+// (they are platform facts, not format facts); the 4 KiB page guard keeps the rest --
+// including `store_table_offset` and the directory entry's offset and size --
+// deterministic.
 std::vector<std::uint8_t> golden_region(const std::string& path) {
   arbc::WorkspaceLayout layout;
   layout.max_chunks = k_golden_max_chunks;
@@ -802,7 +1006,14 @@ std::vector<std::uint8_t> golden_region(const std::string& path) {
   REQUIRE(records.has_value());
   REQUIRE((*nodes)->acquire(1024, k_align).has_value()); // one owner-tagged directory entry
 
-  std::vector<std::uint8_t> bytes = read_bytes(path, 0, k_golden_bytes);
+  const auto hdr = arbc::WorkspaceFileChunkSource::read_header(path);
+  REQUIRE(hdr.has_value());
+  std::vector<std::uint8_t> bytes = read_bytes(path, 0, k_golden_dir_bytes);
+  for (int ab = 0; ab < 2; ++ab) {
+    const std::vector<std::uint8_t> snap =
+        read_bytes(path, snapshot_offset(*hdr, ab), k_golden_snapshot_bytes);
+    bytes.insert(bytes.end(), snap.begin(), snap.end());
+  }
   std::memset(bytes.data() + offsetof(arbc::WorkspaceHeader, page_size), 0,
               sizeof(arbc::WorkspaceHeader::page_size));
   std::memset(bytes.data() + offsetof(arbc::WorkspaceHeader, data_offset), 0,
@@ -811,20 +1022,21 @@ std::vector<std::uint8_t> golden_region(const std::string& path) {
 }
 
 // FROZEN EXPECTED TABLE -- regenerate only via the procedure above.
-// Reads, for the record, as: magic "ARBCWSBF"; format 2.0; max_chunks 8;
-// chunk_count 1; both roots zero; store_table_offset 0x130 (== 112 + 8*24, right
-// after the directory); max_stores 4. Then one live directory entry at file offset
-// 0x1000, 0x1000 bytes, owner row 0. Then BOTH store-table snapshots carrying the
-// identical identity rows {288, 16, 128, hw 0} and {144, 16, 256, hw 0}.
+// Reads, for the record, as: magic "ARBCWSBF"; format 3.0; max_chunks 8;
+// chunk_count 1; both roots zero; store_table_offset 0x1000 (page-aligned, so each
+// snapshot owns its page); max_stores 4. Then one live directory entry at file offset
+// 0x3000 (== store_table_offset + two snapshot pages), 0x9000 bytes, owner row 0. Then
+// BOTH snapshots: a zero generation stamp (never committed) followed by the identical
+// identity rows {288, 16, 128, hw 0} and {144, 16, 256, hw 0}.
 constexpr std::uint8_t k_golden_header_region[k_golden_bytes] = {
-    0x41, 0x52, 0x42, 0x43, 0x57, 0x53, 0x42, 0x46, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x41, 0x52, 0x42, 0x43, 0x57, 0x53, 0x42, 0x46, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -836,8 +1048,9 @@ constexpr std::uint8_t k_golden_header_region[k_golden_bytes] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x20, 0x01, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x90, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x01, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x20, 0x01, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
