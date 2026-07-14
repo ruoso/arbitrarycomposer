@@ -164,6 +164,19 @@ CodecTable builtin_codecs() {
   return table;
 }
 
+CodecTable builtin_codecs(const Registry& registry) {
+  CodecTable table = builtin_codecs();
+  // The OUT-OF-LIB kinds' codecs, each GATED ON ITS PLUGIN BEING LOADED (kinds.image
+  // Decision 2). The witness is the `Registry`: a registered factory for the kind IS "the
+  // plugin is present". With no plugin there is no codec, and the layer round-trips verbatim
+  // as a `PlaceholderContent` through the ordinary `CodecTable::find`-miss path -- a missing
+  // plugin must never destroy data (doc 08 Principles 2/4).
+  if (registry.factory(k_image_kind_id) != nullptr) {
+    table.add(k_image_kind_id, image_codec(registry));
+  }
+  return table;
+}
+
 // ---- Save path --------------------------------------------------------------
 
 ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) {
@@ -422,6 +435,19 @@ public:
         NestedContent::kind_id,
         Codec{nested.serialize, recording_deserialize(nested.deserialize, NestedContent::kind_id,
                                                       k_nested_kind_version, d_session, bridge)});
+    // The out-of-lib kinds' codecs, gated on their plugin being loaded (kinds.image
+    // Decision 2) -- the `Registry` is the plugin-present witness, exactly as it already is
+    // for the placeholder path. Ungated, an image body would deserialize through a codec
+    // whose factory does not exist; gated, it falls through to `PlaceholderContent` and the
+    // authored URI survives untouched. `org.arbc.image` is a LEAF: it takes no loader (it
+    // names no child composition) and adopts no inputs.
+    if (registry.factory(k_image_kind_id) != nullptr) {
+      Codec image = image_codec(registry);
+      d_codecs.add(
+          k_image_kind_id,
+          Codec{image.serialize, recording_deserialize(image.deserialize, k_image_kind_id,
+                                                       k_image_kind_version, d_session, bridge)});
+    }
   }
 
   LoadAssembly(const LoadAssembly&) = delete;

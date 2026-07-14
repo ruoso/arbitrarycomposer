@@ -132,6 +132,25 @@ These are core-owned placement, not `params`.
    self-inconsistent bytes are a malformed document, whereas a missing
    external file is a condition of the environment that may resolve later, and
    doc 05 already assigns that state the placeholder.
+   **"Renders the placeholder" presumes an extent to draw it over.** A nested
+   embedding has one, so it draws one. A leaf kind referencing an *asset* may
+   not: `org.arbc.image`'s intrinsic size is knowable only by decoding the
+   asset, and this Principle forbids caching it in the document ("a URI and
+   nothing more", below). An unavailable asset on a leaf kind with **no
+   intrinsic extent** therefore reports **empty bounds and renders nothing** —
+   the layer stays present, its reference stays verbatim, and it reappears in
+   full when the file returns. Fabricating an extent so a placeholder could be
+   drawn would let a *missing* file change the composition's geometry, which is
+   strictly worse than drawing nothing.
+   **The core fetches asset bytes; the kind only decodes them.** The resolution
+   and the fetch are the core's: a kind's codec resolves its URI through
+   `LoadContext` and pulls the bytes through the `AssetSource` hook, then hands
+   those bytes to the kind's `ContentFactory` through the opaque, kind-defined
+   `ContentConfig`. **An asset-referencing kind never performs file I/O of its
+   own** — that is what makes "one resolution seam serves both" (above) true
+   rather than aspirational, and it is what keeps resolved-identity dedup, the
+   unavailable path, and relative-URI resolution in one place instead of once
+   per kind.
    **Imported images are references; painted pixels are not.** An *imported*
    image has a file it came from, so it serializes as a URI and nothing more —
    that is `org.arbc.image` (doc 03), which carries the decode dependency and

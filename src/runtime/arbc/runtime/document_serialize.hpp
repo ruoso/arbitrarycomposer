@@ -102,6 +102,19 @@ struct ContentSnapshot {
 // caller holds it; `CodecTable` is complete at the caller through `codec.hpp`).
 CodecTable builtin_codecs();
 
+// The same table PLUS the codecs of every OUT-OF-LIB kind whose plugin is actually loaded
+// (kinds.image Decision 2). The `Registry` is the plugin-present witness: a registered
+// factory for `org.arbc.image` IS "the image plugin is here", so its codec joins the table;
+// with no plugin there is no codec and the layer round-trips verbatim as a
+// `PlaceholderContent`, losing nothing (doc 08 Principles 2/4).
+//
+// A HOST WITH PLUGINS LOADED SHOULD SAVE THROUGH THIS TABLE, not the no-argument one: a live
+// `org.arbc.image` content has no codec in the plain built-in table, and serializing it would
+// be `SerializeError::Kind::NoCodec`. The load path (`load_document`) already assembles its
+// table this way. The no-argument overload remains exactly right for a caller that only ever
+// holds built-in kinds.
+CodecTable builtin_codecs(const Registry& registry);
+
 // Capture a pinned content-binding snapshot of `doc` (MUST run on the writer
 // thread): pins the current version and copies each layer-bound content's live
 // pointer + bridged kind into an immutable `ContentSnapshot`.

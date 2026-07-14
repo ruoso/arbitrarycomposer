@@ -622,6 +622,26 @@ public:
   // the core cannot set it, exactly as it cannot set `composition_ref()`.
   virtual std::string_view external_composition_ref() const { return {}; }
 
+  // The authored URI of the external ASSET this content references -- an encoded
+  // image, not a child composition (doc 08 Principle 3). This is the read-back
+  // channel the kind's serialize codec uses to re-emit `params.source` VERBATIM AS
+  // AUTHORED: never absolutised, never rewritten to the resolved URI, so a project
+  // directory stays relocatable and `save(load(bytes)) == bytes` (doc 08:124-137).
+  // Whether the asset actually loaded is invisible here -- an unavailable reference
+  // is preserved exactly as a present one is, which is what makes a missing file a
+  // condition of the environment rather than data loss (doc 08:126-134).
+  //
+  // Distinct from `external_composition_ref()` on purpose: an asset and a child
+  // composition are different targets reached by different seams, and conflating
+  // them would make the nested codec's "a body carrying BOTH a `composition` and a
+  // `params.ref` is malformed" check incoherent. Named in `string_view`, so
+  // `contract` still names no serialize type and no JSON.
+  //
+  // Empty means "this content references no external asset" -- the default, and the
+  // answer for every kind but `org.arbc.image`. Read-only discovery, never a write
+  // channel, exactly as `external_composition_ref()` is.
+  virtual std::string_view external_asset_ref() const { return {}; }
+
   // Map damage on input `input`'s given `rect` into damage on this content's
   // output (doc 13:54-57). Default: identity (pass-through-shaped content).
   //

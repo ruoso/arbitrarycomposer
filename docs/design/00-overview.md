@@ -373,6 +373,18 @@ Initially-open questions, now decided in their own docs:
   retouching *must* stack a raster over it. Decided in doc 08 (§ The asset
   directory, Principles 3 and 8), doc 03 (§ Reference kinds) and doc 17
   (§ The codec line).
+- **The codec line is a *decoder* line.** An out-of-lib kind still has to
+  persist, and persisting means a serialize codec. That codec parses *our own*
+  JSON and a URI string — never an encoded image byte — so by doc 17's own
+  "what is being parsed, not whether bytes get smaller" test it does not cross
+  the line: it lives in `runtime` beside the built-in codecs, while only the
+  **decoder** ships in the plugin. The core resolves the URI and fetches the
+  bytes through the one `LoadContext` / `AssetSource` seam; the plugin turns
+  bytes into pixels and performs no file I/O of its own. Codec registration is
+  gated on the plugin being loaded, so an absent plugin degrades to a verbatim
+  placeholder round-trip rather than data loss. This is the general answer for
+  every plugin kind's persistence, not a carve-out for `org.arbc.image`.
+  Decided in doc 17 (§ The codec line) and doc 08 (Principle 3).
 - **One CMake package, with the conformance suite as an optional component.**
   Everything a consumer needs arrives through a single
   `find_package(arbc CONFIG)`, which yields `arbc::arbc` and imposes nothing —

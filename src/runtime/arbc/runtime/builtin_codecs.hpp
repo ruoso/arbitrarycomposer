@@ -31,6 +31,13 @@ inline constexpr const char* k_tone_kind_version = "1";
 inline constexpr const char* k_fade_kind_version = "1";
 inline constexpr const char* k_crossfade_kind_version = "1";
 inline constexpr const char* k_nested_kind_version = "1";
+inline constexpr const char* k_image_kind_version = "1";
+
+// `org.arbc.image` ships OUT-OF-LIB (`arbc-plugin-image`), so `runtime` cannot name its
+// content type -- doing so would link the decoder into `libarbc`, which is the one thing
+// doc 17's codec line forbids. Its reverse-DNS id is the persistent contract the codec
+// routes on, so the id (and only the id) is spelled here.
+inline constexpr const char* k_image_kind_id = "org.arbc.image";
 
 // org.arbc.solid: encodes/decodes `SolidContent`'s premultiplied `Rgba` as a
 // `{"color": [r, g, b, a]}` params object.
@@ -104,5 +111,31 @@ Codec nested_codec(ExternalCompositionLoader* loader);
 // binders. Nested is the kind that consumes the `BindContext`'s resolver and pinned
 // `DocRoot` as well as the services.
 void register_nested_binder();
+
+// org.arbc.image: the codec for an OUT-OF-LIB kind, and the worked example of doc 17's
+// "the codec line is a DECODER line" (kinds.image Decision 2). It parses only our own JSON
+// and a URI string -- never an encoded image byte -- so it does not cross the line and it
+// lives here; the decoder that parses a third-party format over untrusted input stays in
+// `arbc-plugin-image`. It is also forced: the plugin ABI is `arbc_plugin_register(Registry&)`
+// and a `Registry` traffics in content factories, not codecs, so a plugin CANNOT register a
+// codec without putting `nlohmann::json` in every plugin's link surface.
+//
+// Serialize emits `{"source": "<authored URI>"}` verbatim as the document authored it (read
+// back off `Content::external_asset_ref()`) -- never absolutised, so the project directory
+// stays relocatable and the bytes stay stable. Deserialize resolves that URI through the
+// `LoadContext`, fetches the encoded bytes through the `AssetSource` hook -- the FIRST
+// production caller of `LoadContext::load_asset` -- and hands the authored URI, the resolved
+// URI, and the bytes to the plugin's `ContentFactory` through the opaque `ContentConfig`.
+// The kind performs no file I/O of its own (doc 08 Principle 3 as amended).
+//
+// `registry` is bound by CLOSURE, mirroring `nested_codec(ExternalCompositionLoader*)`: a
+// structural seam that one kind needs does not belong in the signature every kind
+// implements. The registry is where the codec finds the factory it cannot name.
+//
+// Registration is GATED on the plugin being loaded (see `builtin_codecs(const Registry&)`):
+// no factory for the kind, no codec, and the layer round-trips verbatim as a
+// `PlaceholderContent` -- a user without the plugin opens the document, saves, and loses
+// nothing. That is the existing `CodecTable::find`-miss path; it needs no new machinery.
+Codec image_codec(const Registry& registry);
 
 } // namespace arbc

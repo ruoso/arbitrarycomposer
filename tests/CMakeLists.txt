@@ -946,6 +946,94 @@ target_compile_definitions(
           ARBC_IMAGESEQ_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-imageseq>")
 catch_discover_tests(arbc_imageseq_containment_t)
 
+# --- org.arbc.image (kinds.image) ---------------------------------------------
+# The out-of-lib reference STILL image kind: imageseq's sibling, and the half of the
+# pixel-persistence split that stores NOTHING in the document (doc 08 Principle 3). Its
+# enforcing tests live here for the same reason imageseq's do -- check_claims.py /
+# check_levels.py scan src/tests/testing, never plugins/ -- and they construct the content by
+# linking the plugin's impl archive (`arbc-plugin-image-impl`), so no dlopen is involved.
+#
+# Note what does NOT appear on these link lines: nothing pulls the decode dependency into
+# libarbc or arbc-testing. `arbc_image_containment_t` below is the byte scan that proves it.
+set(ARBC_IMAGE_FIXTURE_DIR "${CMAKE_SOURCE_DIR}/plugins/image/t/fixtures")
+
+# Contract conformance over org.arbc.image + the no-Editable-facet claim (arbc-testing before
+# arbc; impl archive before both so ImageContent resolves -- the house link order).
+add_executable(arbc_image_conformance_t image_conformance.t.cpp)
+target_link_libraries(
+  arbc_image_conformance_t
+  PRIVATE arbc-plugin-image-impl arbc-testing arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_image_conformance_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_image_conformance_t)
+
+# The plugin-local unit surface: the ContentConfig framing (and its failure modes), the
+# immutable pyramid's rung chain, and the weak resolved-URI decode cache.
+add_executable(arbc_image_content_t image_content.t.cpp)
+target_link_libraries(arbc_image_content_t
+                      PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_image_content_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_image_content_t)
+
+# Byte-exact computed-reference goldens: native scale, the level-1 decimate rung, an Exact
+# magnify past native, and the BestEffort clamp-at-native honesty pair.
+add_executable(arbc_image_goldens_t image_goldens.t.cpp)
+target_link_libraries(arbc_image_goldens_t
+                      PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_image_goldens_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_image_goldens_t)
+
+# The provided surface covers the REQUESTED REGION at the achieved scale, never the whole
+# decoded frame (doc 09:157-160) -- plus honored/released through the compositor's consume path.
+add_executable(arbc_image_provided_surface_t image_provided_surface.t.cpp)
+target_link_libraries(arbc_image_provided_surface_t
+                      PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_image_provided_surface_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_image_provided_surface_t)
+
+# URI-only persistence, the unavailable-is-not-a-read-error path, resolved-identity decode
+# dedup, and the plugin-absent placeholder fall-through. It drives the runtime codec directly,
+# so it names `Codec` -- and through it nlohmann::json, which is PRIVATE to arbc_runtime; link
+# it the same way every target holding a CodecTable already does.
+add_executable(arbc_image_serialize_t image_serialize.t.cpp)
+target_link_libraries(
+  arbc_image_serialize_t
+  PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain nlohmann_json::nlohmann_json
+          arbc_build_flags)
+target_compile_definitions(arbc_image_serialize_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_image_serialize_t)
+
+# render_thread_safe() == true means the renders run CONCURRENTLY on workers (unlike
+# imageseq, which the pool serializes): the tsan-lane driver for the immutable pyramid, the
+# shared tile free list, and the racing pyramid-cache construction.
+add_executable(arbc_image_concurrency_stress_t image_concurrency_stress.t.cpp)
+target_link_libraries(arbc_image_concurrency_stress_t
+                      PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_image_concurrency_stress_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_image_concurrency_stress_t)
+
+# The codec-line containment proof: no decode symbol in libarbc OR arbc-testing, present in
+# the shared vendored archive, the plugin's impl archive, and its loadable module.
+add_executable(arbc_image_containment_t image_containment.t.cpp)
+target_link_libraries(arbc_image_containment_t PRIVATE Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(
+  arbc_image_containment_t
+  PRIVATE ARBC_LIBARBC_FILE="$<TARGET_FILE:arbc>"
+          ARBC_TESTING_FILE="$<TARGET_FILE:arbc-testing>"
+          ARBC_IMDEC_FILE="$<TARGET_FILE:arbc-plugin-imdec>"
+          ARBC_IMAGE_IMPL_FILE="$<TARGET_FILE:arbc-plugin-image-impl>"
+          ARBC_IMAGE_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-image>")
+# $<TARGET_FILE:...> in COMPILE_DEFINITIONS names a path but does NOT make the named target a
+# dependency, so the artifacts this scans must be ordered explicitly.
+add_dependencies(arbc_image_containment_t arbc-plugin-imdec arbc-plugin-image-impl
+                 arbc-plugin-image)
+catch_discover_tests(arbc_image_containment_t)
+
 # --- arbc-plugin-miniaudio (audio.device_monitor reference backend) -----------
 # The out-of-lib reference DeviceSink backend's tests. Like imageseq, they live
 # here (not in plugins/) because check_claims.py / check_levels.py scan

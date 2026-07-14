@@ -243,11 +243,27 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
 endif()
 
+# The ONE vendored stb-class decode dependency, shared by both out-of-lib image kinds
+# (doc 17:228-229; kinds/image.md Decision 6). Added BEFORE its consumers. It links no
+# `arbc` target at all, and every consumer links it PRIVATE, so the decode symbols stay in
+# the plugin tier and never reach `libarbc` / `arbc-testing` (doc 17 "the codec line").
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/plugins/imdec/CMakeLists.txt")
+  add_subdirectory(plugins/imdec)
+endif()
+
 # The out-of-lib reference plugin (own deps, doc 17:171). Added after src/ so the
 # umbrella `arbc` target it links exists; it is a shipped artifact, so it builds
 # regardless of BUILD_TESTING (its tests live under tests/, gated there).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/plugins/imageseq/CMakeLists.txt")
   add_subdirectory(plugins/imageseq)
+endif()
+
+# The out-of-lib STILL image kind, `org.arbc.image` (doc 03:236) -- imageseq's sibling and
+# the half of the pixel-persistence split that stores nothing in the document (doc 08
+# Principle 3). Same shape and same reasons; its serialize codec, unlike its decoder, lives
+# in `runtime` (doc 17 "the codec line is a decoder line").
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/plugins/image/CMakeLists.txt")
+  add_subdirectory(plugins/image)
 endif()
 
 # The out-of-lib reference device backend (own deps; doc 17 "the codec line"

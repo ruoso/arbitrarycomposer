@@ -25,10 +25,10 @@
 // org.arbc.raster codec. All are serialize.raster_tile_store's, composed ON TOP of
 // this seam (doc 10:27 -- "the shuffle is ours, not the library's").
 
-#include <catch2/catch_test_macros.hpp>
-
 #include <arbc/kind_raster/raster_content.hpp> // k_default_tile_edge, k_tile_channels
 #include <arbc/serialize/blob_compress.hpp>
+
+#include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -61,8 +61,8 @@ std::vector<std::byte> random_bytes(std::size_t n, std::uint32_t seed) {
 // (src/kind_raster/raster_content.cpp:54-56), which at the default 256 edge
 // (raster_content.hpp:33) is exactly 1 MiB in the rgba32f working format.
 std::size_t working_tile_bytes(int edge) {
-  return static_cast<std::size_t>(edge) * static_cast<std::size_t>(edge) *
-         arbc::k_tile_channels * sizeof(float);
+  return static_cast<std::size_t>(edge) * static_cast<std::size_t>(edge) * arbc::k_tile_channels *
+         sizeof(float);
 }
 
 // The round-trip every case below reduces to: compress, decompress against the
@@ -89,8 +89,7 @@ TEST_CASE("tile blobs round-trip through the compressor byte-exactly") {
   SECTION("an all-zero tile collapses to a tiny frame") {
     // The empty-tile case -- an untouched region of a painting. It must not cost a
     // megabyte on disk; this is where dedup and compression compound.
-    const std::vector<std::byte> blob(working_tile_bytes(arbc::k_default_tile_edge),
-                                      std::byte{0});
+    const std::vector<std::byte> blob(working_tile_bytes(arbc::k_default_tile_edge), std::byte{0});
     require_byte_exact_round_trip(blob);
 
     const auto frame = compress_blob(bytes_of(blob));
@@ -139,9 +138,8 @@ TEST_CASE("tile blobs round-trip through the compressor byte-exactly") {
     require_byte_exact_round_trip(tile);
 
     // The rgba16f storage default is half the working size (doc 08 Principle 8).
-    const std::vector<std::byte> storage_tile(tile.begin(),
-                                              tile.begin() + static_cast<std::ptrdiff_t>(
-                                                                 working / 2));
+    const std::vector<std::byte> storage_tile(
+        tile.begin(), tile.begin() + static_cast<std::ptrdiff_t>(working / 2));
     REQUIRE(storage_tile.size() == 512U * 1024U);
     require_byte_exact_round_trip(storage_tile);
   }
@@ -181,9 +179,8 @@ TEST_CASE("decompressing a hostile blob is bounded and fails as a value") {
     const auto frame = compress_blob(bytes_of(blob));
     REQUIRE(frame.has_value());
 
-    std::vector<std::byte> truncated(frame->begin(),
-                                     frame->begin() + static_cast<std::ptrdiff_t>(
-                                                          frame->size() / 2));
+    std::vector<std::byte> truncated(
+        frame->begin(), frame->begin() + static_cast<std::ptrdiff_t>(frame->size() / 2));
     const auto back = decompress_blob(bytes_of(truncated), blob.size());
     REQUIRE_FALSE(back.has_value());
     REQUIRE(back.error().kind == BlobCompressError::Kind::CorruptFrame);

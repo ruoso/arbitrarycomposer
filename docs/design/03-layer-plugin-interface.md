@@ -128,6 +128,18 @@ public:
   // default, and the answer for every kind but nested.
   virtual std::string_view external_composition_ref() const { return {}; }
 
+  // The authored URI of the external ASSET this content references — an
+  // encoded image, not a child composition (doc 08 Principle 3). The
+  // serializer reads it back to re-emit `params.source` VERBATIM AS AUTHORED,
+  // never absolutised and never rewritten to the resolved URI, so a project
+  // directory stays relocatable and the bytes stay stable. Empty means "this
+  // content references no external asset" — the default, and the answer for
+  // every kind but image. Distinct from `external_composition_ref` because an
+  // asset and a child composition are different targets reached by different
+  // seams; conflating them would make doc 08's "a body carrying both a
+  // `composition` and a `params.ref` is malformed" check incoherent.
+  virtual std::string_view external_asset_ref() const { return {}; }
+
   // --- change notification (outbound) ---
   // The core connects this on attach; content calls damage() when it changes.
   // An editable content's state sinks (doc 14's Editable facet) bind the same

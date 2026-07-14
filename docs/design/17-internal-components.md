@@ -249,6 +249,29 @@ the arithmetic says the same thing from the other direction: compression is the
 weakest size lever there is (2.9x, below dedup's 4.3x), and no amount of it closes
 the photograph gap that the codec line exists to close.
 
+**The codec line is a *decoder* line.** The same "what is being parsed" test that
+keeps `zstd` in core answers a question the rule's name obscures: an out-of-lib
+kind still has to *persist*, and persisting means a **serialize codec** — a
+`{kind, kind_version, params}` reader/writer. That codec parses **our own JSON
+and a URI string**; it never sees an encoded image byte. So it does not cross the
+line, and it lives in `runtime` beside the built-in codecs, while the **decoder** —
+the thing that parses a third-party format over untrusted input — ships in the
+plugin. `org.arbc.image` is the worked example: `runtime` owns the codec that reads
+`params.source`, resolves it through `LoadContext`, and fetches the bytes through the
+`AssetSource` hook (doc 08 Principle 3); `arbc-plugin-image` owns the decoder that
+turns those bytes into pixels, and touches no file itself.
+
+This is not a hole in the rule but a consequence of it, and it is forced besides: the
+plugin ABI is `arbc_plugin_register(Registry&)`, and a `Registry` traffics in content
+factories, not codecs. Putting codec registration across that boundary would put the
+JSON library in every plugin's link surface — the exact dependency the `contract` layer
+was cleaned of. Registration is **gated on the plugin being loaded**: no factory for the
+kind, no codec registered, and the layer round-trips verbatim as a placeholder. A user
+without the image plugin opens the document, sees a placeholder, saves, and **loses
+nothing** — the same promise doc 08 Principle 4 makes for an unknown kind. The vendored
+stb-class decoder itself is shared, not duplicated: it lives beside its consumers, and
+both `arbc-plugin-image` and `arbc-plugin-imageseq` link it privately.
+
 The same line holds for **device backends**: an OS audio API (PortAudio /
 CoreAudio / ALSA / a miniaudio-class single-header backend) is the audio
 analog of a codec — a system dependency that must never ride into an

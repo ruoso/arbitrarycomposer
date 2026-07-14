@@ -40,8 +40,8 @@ TEST_CASE("the version is single-sourced from project(VERSION ...)", "[version]"
           ARBC_VERSION_ENCODE(ARBC_VERSION_MAJOR, ARBC_VERSION_MINOR, ARBC_VERSION_PATCH));
     // The decimal-legible 1000-radix of D5, spelled out so a bad encoding cannot hide
     // behind the macro that produced it.
-    CHECK(ARBC_VERSION == ARBC_VERSION_MAJOR * 1000000 + ARBC_VERSION_MINOR * 1000 +
-                              ARBC_VERSION_PATCH);
+    CHECK(ARBC_VERSION ==
+          ARBC_VERSION_MAJOR * 1000000 + ARBC_VERSION_MINOR * 1000 + ARBC_VERSION_PATCH);
     // Comparands are built with the macro, which is the whole point of shipping it:
     // a consumer writes `#if ARBC_VERSION >= ARBC_VERSION_ENCODE(0, 2, 0)`.
     CHECK(ARBC_VERSION >= ARBC_VERSION_ENCODE(0, 1, 0));
@@ -56,8 +56,7 @@ TEST_CASE("the version is single-sourced from project(VERSION ...)", "[version]"
   SECTION("all three halves equal the ONE declaration in the top-level CMakeLists") {
     // The independent path. ARBC_TEST_PROJECT_VERSION_* come from PROJECT_VERSION_*, not
     // from the header or the .cpp, so a second literal anywhere in the tree fails here.
-    const arbc::Version declared{ARBC_TEST_PROJECT_VERSION_MAJOR,
-                                 ARBC_TEST_PROJECT_VERSION_MINOR,
+    const arbc::Version declared{ARBC_TEST_PROJECT_VERSION_MAJOR, ARBC_TEST_PROJECT_VERSION_MINOR,
                                  ARBC_TEST_PROJECT_VERSION_PATCH};
     CHECK(arbc::compiled_version() == declared);
     CHECK(arbc::linked_version() == declared);

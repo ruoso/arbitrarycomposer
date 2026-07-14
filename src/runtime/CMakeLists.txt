@@ -1,7 +1,7 @@
 arbc_add_component(
   NAME runtime
   SOURCES document.cpp editable_binding.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp
-          codec_fade.cpp codec_crossfade.cpp codec_nested.cpp
+          codec_fade.cpp codec_crossfade.cpp codec_nested.cpp codec_image.cpp
           external_composition_loader.cpp filesystem_asset_source.cpp
           pending_external_loads.cpp
           operator_binding.cpp pull_identity.cpp
