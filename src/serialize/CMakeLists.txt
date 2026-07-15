@@ -11,10 +11,11 @@ arbc_add_component(
   NAME serialize
   SOURCES writer.cpp reader.cpp load_context.cpp save_context.cpp codec.cpp
           placeholder_content.cpp unknown_fields.cpp blob_compress.cpp tile_blob.cpp
+          asset_reaper.cpp
   PUBLIC_HEADERS arbc/serialize/writer.hpp arbc/serialize/reader.hpp
                  arbc/serialize/load_context.hpp arbc/serialize/save_context.hpp
                  arbc/serialize/unknown_fields.hpp arbc/serialize/blob_compress.hpp
-                 arbc/serialize/tile_blob.hpp
+                 arbc/serialize/tile_blob.hpp arbc/serialize/asset_reaper.hpp
   DEPENDS contract model)
 
 # nlohmann/json is header-only, so linking it PRIVATE keeps it off libarbc's
@@ -33,7 +34,8 @@ target_link_libraries(arbc_serialize PRIVATE nlohmann_json::nlohmann_json)
 # an external target is invisible to it and ALLOWED needs no entry (Constraint 5).
 target_link_libraries(arbc_serialize PRIVATE arbc_zstd)
 
-arbc_component_test(COMPONENT serialize SOURCES t/writer.t.cpp t/reader.t.cpp t/tile_blob.t.cpp)
+arbc_component_test(COMPONENT serialize
+                    SOURCES t/writer.t.cpp t/reader.t.cpp t/tile_blob.t.cpp t/asset_reaper.t.cpp)
 
 # t/reader.t.cpp drives `load_composition` (runtime.nested_external_ref), which takes a
 # `CodecTable` -- and through it nlohmann::json, which is PRIVATE to arbc_serialize. Link it

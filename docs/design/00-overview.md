@@ -463,6 +463,19 @@ Initially-open questions, now decided in their own docs:
   a blob. Decided in `serialize.raster_tile_store`; recorded in doc 08 (§ The
   asset directory) and doc 17 (§ component table).
 
+- **Reclamation completes the write-if-absent story: an explicit, caller-rooted,
+  fail-safe mark-and-sweep.** Because a save never deletes, the asset directory
+  grows monotonically; the honest remedy is not per-blob reference counting (a
+  crash-unsafe distributed-consensus problem across processes and undo histories)
+  but a `git`-style mark-and-sweep recomputed from the documents each run. GC takes
+  its roots from the *caller* — the one place that knows which documents are open —
+  unions their referenced tile hashes, and deletes the on-disk `tiles/**` blobs no
+  root names. A mark that cannot be fully computed deletes nothing (over-preservation
+  is always safe), and over-deleting a still-resident tile is repaired by the next
+  save's write-if-absent. The reap seam (`AssetReaper`) is L4 beside `AssetSource`/
+  `AssetSink`; the filesystem reaper and mark walk are L5. Decided in
+  `serialize.asset_gc`; recorded in doc 08 (§ The asset directory) and doc 17.
+
 - **Content hashing is in-tree SHA-256/128, not a third dependency.** Principle 8's
   store is keyed by content hash and the tree had nothing that could serve
   (`mix64` is a splitmix64 finalizer that disclaims itself in its own comment).

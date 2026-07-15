@@ -2,7 +2,7 @@ arbc_add_component(
   NAME runtime
   SOURCES document.cpp editable_binding.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp
           codec_fade.cpp codec_crossfade.cpp codec_nested.cpp codec_image.cpp codec_raster.cpp
-          raster_tile_store.cpp
+          raster_tile_store.cpp asset_gc.cpp
           external_composition_loader.cpp external_asset_loader.cpp filesystem_asset_source.cpp
           filesystem_asset_sink.cpp
           pending_external_loads.cpp
@@ -22,6 +22,7 @@ arbc_add_component(
                  arbc/runtime/filesystem_asset_source.hpp
                  arbc/runtime/filesystem_asset_sink.hpp
                  arbc/runtime/raster_tile_store.hpp
+                 arbc/runtime/asset_gc.hpp
                  arbc/runtime/operator_binding.hpp
                  arbc/runtime/pull_identity.hpp
                  arbc/runtime/offline.hpp
@@ -64,6 +65,7 @@ arbc_component_test(COMPONENT runtime
                             t/document_serialize.t.cpp t/operator_codecs.t.cpp
                             t/nested_codec.t.cpp
                             t/raster_tile_store.t.cpp t/filesystem_asset_sink.t.cpp
+                            t/filesystem_asset_reaper.t.cpp
                             t/pull_identity.t.cpp
                             t/bench_smoke.t.cpp
                             t/plugin_host.t.cpp)

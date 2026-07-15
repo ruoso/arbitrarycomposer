@@ -52,6 +52,25 @@ another document version, another `.arbc`, or a concurrent editor may reference
 it — so reclaiming unreferenced blobs is an explicit sweep, never a side effect
 of saving.
 
+That sweep is the **`AssetReaper`**, the third asset role symmetric to
+`AssetSource` (read) and `AssetSink` (write). Reclamation is an **explicit,
+caller-rooted mark-and-sweep**: the caller names the set of documents to preserve,
+GC unions every hash their `params.blobs` reference (the mark), enumerates the
+on-disk `tiles/**` blobs, and deletes present-minus-referenced (the sweep). It is
+**fail-safe** — a mark that cannot be fully computed (an unparseable root, a
+`blobs` entry that is not a valid tile hash, a directory that will not enumerate)
+deletes **nothing**, because over-preservation is always safe and a partial mark
+that then deleted would be data loss. Its scope is **`tiles/**` only**: an imported
+image is referenced by URI, not by content hash, and is outside this reference
+model. The **safety contract is the caller's** — the root set must name every
+document (including every in-memory-open document's current serialized state) that
+must survive; a document GC is not told about can have its unique blobs reclaimed,
+which is why GC is explicit and never inferred on save. The one forgiving case:
+over-deleting a blob a **still-resident** document holds costs only re-compression,
+because the source of truth is the pinned pool tile and the next save re-writes the
+blob through write-if-absent; only a **closed, unnamed** document's unique blobs are
+truly at risk.
+
 A directory rather than a single file is the deliberate choice. It is what makes
 content-addressed blobs work as *files* — an incremental save writes only the
 new tiles and touches nothing else, which a monolithic container cannot do
