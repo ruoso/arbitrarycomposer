@@ -312,6 +312,24 @@ current-revision entries qualify.
   structural, hoisted into runtime's single worker-backed dispatch helper,
   so a driver obtains a worker-backed dispatch only by obtaining one that
   already enforces it.
+- **The pool also runs a generic, cache-free work lane.** Beside the render
+  lane the pool carries a second lane: a plain movable-callable *work job*
+  that settles a caller-owned completion, submitted through a distinct seam
+  (`submit_work`, not the render `submit`). Its first use is the parallel
+  tile-encode save (doc 08 Principle 8): the save thread fans each tile's
+  pure encode — hash and shuffle-then-compress, both a pure function of one
+  immutable pinned tile — across the pool's workers, then reaps by index on
+  the save thread where every mutation stays. The leaf-only rule governs the
+  *render* lane specifically; the work lane needs no such rule because its
+  jobs are pure by construction — they touch only their own caller-owned
+  output buffer and the immutable pinned document version, never the tile
+  cache — so "workers never touch the cache" holds for *both* lanes, one by
+  the leaf-only policy and the other because a work job has nothing cache-
+  shaped to touch. The two lanes share the pool's threads, its completion
+  wake and drain-cursor park machinery, its owner-scoped teardown, and its
+  behavioral counters (a work job closes the same `submitted == completed +
+  dropped + outstanding` identity a render does); the work lane has no
+  per-content serialization gate, because a pure job never needs one.
 - **The interactive driver ships with a non-zero worker count.** Not as a
   performance tuning, but because Step 4's deadline promise is otherwise
   unkeepable: with zero workers the pool is the degenerate inline executor,

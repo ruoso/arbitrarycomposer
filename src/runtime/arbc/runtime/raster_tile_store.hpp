@@ -48,6 +48,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -71,6 +72,30 @@ public:
   // `pool` must be the pool the ref came from, and the CALLER must already hold a count
   // on `ref` (the pinned `TileTablePtr` does). Returns the 32-char hex blob name.
   std::string hash_of(BigBlockPool& pool, BlockSlotRef ref);
+
+  // The PARALLEL-SAVE split of `hash_of` (serialize.tile_store_parallel_save Decision 2).
+  // `hash_of` fuses two things the single-threaded save could keep together but the
+  // parallel one must separate: the memo LOOKUP (cheap, save-thread) and the miss HASH
+  // (the CPU-bound `peek`->`to_storage_bytes`->`sha256`, fanned across pool workers).
+  //
+  // `probe` is the save-thread lookup half: a HIT against the previous pass carries the
+  // hash AND the pin forward into the pass being built and returns it -- never touching a
+  // byte of the tile, never advancing `tiles_hashed`, exactly as `hash_of`'s hit path. A
+  // MISS returns `nullopt`: the caller dispatches the pure hash+encode to a worker and
+  // commits the result with `record` on the reap thread. Two layers sharing a tile (or an
+  // all-empty layer's every-slot-is-one-slot) hit the pass on the second occurrence, so a
+  // ref-shared tile costs no encode -- the common sparse case fans out zero jobs.
+  std::optional<std::string> probe(BigBlockPool& pool, BlockSlotRef ref);
+
+  // The reap-thread commit half (serialize.tile_store_parallel_save Decision 2 /
+  // Constraint 2-3): record a MISS tile's worker-computed `hash` into the pass, taking
+  // the memo's own pin, and advance `tiles_hashed` by one -- the pin (a refcount bump) is
+  // taken HERE, on the save/reap thread, never on a worker (doc 15 L178-184: the writer
+  // is the only structural allocator). Idempotent per key within a pass: a key already
+  // carried (an aliased ref-duplicate whose first occurrence already committed) is a
+  // no-op, so `tiles_hashed` counts exactly once per distinct tile actually hashed,
+  // identically to the serial `hash_of`.
+  void record(BigBlockPool& pool, BlockSlotRef ref, const std::string& hash);
 
   // Finish the pass: the memo being built becomes the memo, and the previous one is
   // dropped -- releasing the pins of every tile that is no longer in the saved version.

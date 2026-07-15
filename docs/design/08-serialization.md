@@ -441,6 +441,21 @@ These are core-owned placement, not `params`.
      decompresses, unshuffles, and only then hashes. zstd rather than LZMA: an
      interactive editor saves incrementally and cannot pay LZMA's speed for the
      ratio.
+   - **The per-tile encode fans across workers, byte-identically.** Each
+     tile's encode — storage-convert, hash, shuffle, compress — is a pure
+     function of that one tile's immutable bytes over a reentrant compressor,
+     so a save may run them concurrently on the runtime worker pool's work
+     lane (doc 02 § Threading model) rather than one at a time. The output is
+     **independent of completion order**: the hash is over the tile's own
+     *uncompressed storage* bytes (above), never anything shared or ordered,
+     and the `blobs` array is fixed **row-major** (above), filled by index and
+     not by the order encodes finish. So a parallel save and a single-threaded
+     save produce **bit-for-bit identical** canonical bytes, `blobs` array, and
+     asset directory — parallelism is a pure throughput change. Every mutation
+     the encode feeds (the content-hash dedup, the write-if-absent sink, the
+     incremental-save memo) stays on the one save thread; the workers only read
+     the pinned tiles and return bytes. The property follows from the *format*
+     — content-addressed, row-major — not from careful scheduling.
 
    *Why this shape, and not "just compress it".* Measured on a 30-layer, 24 MP
    composition (3 full-bleed photos, 4 cropped, 8 painted/retouch, 6 masks,

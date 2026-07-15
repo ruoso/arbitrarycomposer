@@ -653,6 +653,15 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_raster_tile_store_golden_t)
 
+# The parallel tile-encode save (serialize.tile_store_parallel_save): the fan-out across
+# pool workers, diffed byte-for-byte against the inline save. Holds a CodecTable + a
+# WorkerPool, so it links nlohmann like every codec-holding target here.
+add_executable(arbc_raster_tile_store_parallel_t raster_tile_store_parallel.t.cpp)
+target_link_libraries(
+  arbc_raster_tile_store_parallel_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_raster_tile_store_parallel_t)
+
 # Hostile raster geometry (tier-8 loader hardening): the caps that must hold BEFORE an
 # allocation is sized by a hostile document's numbers.
 add_executable(arbc_raster_tile_store_hostile_t raster_tile_store_hostile.t.cpp)

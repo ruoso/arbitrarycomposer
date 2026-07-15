@@ -81,8 +81,9 @@ task serialize "Serialization" {
   task tile_store_parallel_save "Fan per-tile encode pipeline across pool workers" {
     effort 2d
     allocate team
+    complete 100
     depends !raster_tile_store
-    note "Dispatch the per-tile encode pipeline (storage-convert -> hash -> shuffle -> compress) across pool workers. Already a pure function of immutable peek()ed bytes with a stateless compressor, so the parallelism is sound by construction; raster_tile_store ships it single-threaded and correct first. Behavioral-counter and TSan coverage, no wall-clock assertion. Source-of-debt: tasks/refinements/serialize/raster_tile_store.md (Deferred follow-ups), commit serialize.raster_tile_store. Doc 08."
+    note "Dispatch the per-tile encode pipeline (storage-convert -> hash -> shuffle -> compress) across pool workers. Already a pure function of immutable peek()ed bytes with a stateless compressor, so the parallelism is sound by construction; raster_tile_store ships it single-threaded and correct first. Behavioral-counter and TSan coverage, no wall-clock assertion. Source-of-debt: tasks/refinements/serialize/raster_tile_store.md (Deferred follow-ups), commit serialize.raster_tile_store. Doc 08. Refinement: tasks/refinements/serialize/tile_store_parallel_save.md"
   }
   task tile_store_parallel_load "Fan per-tile decode pipeline across pool workers" {
     effort 2d

@@ -184,6 +184,16 @@ CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles) {
   return table;
 }
 
+CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles,
+                          TileEncodeDispatch* dispatch) {
+  // The parallel-save table (serialize.tile_store_parallel_save): the raster codec fans its
+  // per-tile encode across `dispatch`'s executor. A null `dispatch` degenerates to the
+  // inline save, byte-identical to `builtin_codecs(registry, tiles)`.
+  CodecTable table = builtin_codecs(registry);
+  table.add(RasterContent::kind_id, raster_codec(tiles, dispatch));
+  return table;
+}
+
 CodecTable builtin_codecs(const Registry& registry) {
   CodecTable table = builtin_codecs();
   // The OUT-OF-LIB kinds' codecs, each GATED ON ITS PLUGIN BEING LOADED (kinds.image

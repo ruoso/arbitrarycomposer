@@ -63,6 +63,48 @@ struct RenderTask {
   const void* owner{nullptr};
 };
 
+// The SECOND lane on the pool: a generic, non-render unit of work
+// (serialize.tile_store_parallel_save Decision 1). The runtime pool's only render seam
+// takes a `RenderTask` -- a `Content*` rendering into a caller `Surface&`, guarded
+// leaf-only by `check_worker_dispatch.py`. A tile-encode job is neither a `Content` nor
+// a render, so it cannot ride the render lane; this lane carries it instead. A `WorkTask`
+// is a plain movable-callable that the pool runs on a worker (or inline at
+// `worker_count == 0`) and whose caller-owned `done` it settles when the callable
+// returns.
+//
+// It shares the render lane's threads, its `poke`/`wait_completions`/`CompletionCursor`
+// park machinery, its `drain_owner` teardown, and its counters -- but NOT the render
+// lane's leaf-only policy or its per-content serialization gate: a work job is pure by
+// construction, so every one is free to run on any worker with no gate. The leaf-only
+// rule governs the RENDER lane specifically; this lane is cache-free because its jobs
+// touch only their OWN caller-owned buffers and the immutable pinned document version
+// (never the `TileCache`), so doc 02's "workers never touch the cache" holds for it by
+// construction. Errors are values: the callable converts any failure into its own
+// caller-owned result and never throws across the worker boundary (a body that threw
+// would terminate, exactly as a `RenderTask` body that throws does).
+//
+// A work job carries no result payload -- its output goes into the caller-owned buffer the
+// job writes, exactly as the audio pump's fills go into pump-owned staging -- so
+// `WorkCompletion` is a bare settle-once flag rather than a `Completion<Result>`: the pool
+// settles it when the job returns, and a waiter reads `settled()`. (It is deliberately NOT
+// `Completion<T>`, whose out-of-line template body is explicitly instantiated in `contract`
+// (L4) for the render/audio result types only; a runtime-defined result cannot be
+// instantiated there without an L4->L5 edge.)
+class WorkCompletion {
+public:
+  bool settled() const noexcept { return d_settled.load(std::memory_order_acquire); }
+  void settle() noexcept { d_settled.store(true, std::memory_order_release); }
+
+private:
+  std::atomic<bool> d_settled{false};
+};
+
+struct WorkTask {
+  std::function<void()> job;            // pure, movable; settles nothing itself
+  std::shared_ptr<WorkCompletion> done; // caller-owned; the pool settles it post-run
+  const void* owner{nullptr};           // the opaque submitter tag, as `RenderTask`
+};
+
 // A caller-owned drain cursor (`runtime.shared_worker_pool` Decision 1). The
 // POOL holds the settle counter; the CURSOR holds how much of it one waiter has
 // already seen.
@@ -125,6 +167,18 @@ public:
   // is a no-op: it does not enqueue and leaves the completion unsettled (never
   // lost to UB).
   void submit(RenderTask task);
+
+  // Enqueue a generic work job on the pool's SECOND lane (Decision 1). Deliberately NOT
+  // named `submit`: the render-dispatch grep-lint (`check_worker_dispatch.py`) anchors on
+  // the token `submit(` (and on `RenderTask`), and a work job is neither. A work job is
+  // pure, so there is no per-content serialization gate and no `serialize_predicate`
+  // call: every one is free to run on any worker. In inline mode (`worker_count == 0`) it
+  // runs immediately on the calling thread. Post-stop `submit_work` is a no-op that leaves
+  // the completion unsettled, exactly as `submit`. The job is counted in the SAME
+  // accounting identity as renders (`tasks_submitted`/`tasks_completed`/`tasks_dropped`),
+  // so a mix of `submit` and `submit_work` still closes `tasks_submitted() ==
+  // tasks_completed() + tasks_dropped() + <outstanding>` at quiescence.
+  void submit_work(WorkTask task);
 
   // The async-completion wake handle (`content.hpp:117-118`): any settler -- a
   // worker after an inline-in-worker settle, or externally-async content on its
@@ -241,6 +295,8 @@ private:
   void run();                                     // worker loop (started per thread)
   void run_task(RenderTask task, bool serialize); // render + settle + counters
   void submit_inline(RenderTask task);            // worker_count == 0 executor
+  void run_work_task(WorkTask task);              // generic-lane job + settle + counters
+  void submit_work_inline(WorkTask task);         // worker_count == 0 work executor
 
   // --- owner bookkeeping (all called with `d_mutex` held) ---
   // A task is OUTSTANDING from the moment `submit` admits it until its `run_task`
@@ -251,6 +307,7 @@ private:
   // Drop a queued task without running it: count it and release its outstanding
   // claim. The completion is left unsettled.
   void drop_queued(const RenderTask& task);
+  void drop_queued_work(const WorkTask& task); // the work-lane mirror of drop_queued
   // Drop every queued (never-started) task, whatever its owner: what `run()` does
   // to the ready queue and the parked FIFOs when it observes stop.
   void abandon_queued();
@@ -261,7 +318,8 @@ private:
   std::condition_variable d_work_cv;       // parks idle workers
   std::condition_variable d_completion_cv; // parks a render thread in wait_completions
   std::condition_variable d_drain_cv;      // parks a dying driver in drain_owner
-  std::deque<RenderTask> d_ready;          // shared FIFO of runnable tasks
+  std::deque<RenderTask> d_ready;          // shared FIFO of runnable render tasks
+  std::deque<WorkTask> d_work_ready;       // shared FIFO of runnable generic-lane jobs
   std::unordered_map<const Content*, SerialState> d_serial; // per-content gate
   // Outstanding tasks per submitter (`RenderTask::owner`) -- the whole mechanism
   // behind `drain_owner`. Keyed on the opaque tag exactly as `d_serial` is keyed on

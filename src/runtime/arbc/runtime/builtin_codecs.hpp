@@ -24,6 +24,7 @@ namespace arbc {
 class ExternalCompositionLoader; // runtime/external_composition_loader.hpp
 class ExternalAssetLoader;       // runtime/external_asset_loader.hpp
 class RasterTileStore;           // runtime/raster_tile_store.hpp
+class TileEncodeDispatch;        // runtime/tile_encode_dispatch.hpp
 
 // Per-built-in producer `kind_version` (Constraint 3): a fixed constant chosen and
 // pinned by this task, golden-pinned as the literal emitted beside `kind`. Advisory
@@ -169,5 +170,12 @@ Codec image_codec(const Registry& registry, ExternalAssetLoader* loader);
 // not get the incremental CPU win.
 Codec raster_codec();
 Codec raster_codec(RasterTileStore* tiles);
+
+// The PARALLEL-SAVE overload (serialize.tile_store_parallel_save): `dispatch` fans the
+// per-tile encode across pool workers (or, null / default-constructed, runs it inline).
+// Byte-identical to the serial save under any executor (Constraint 1); the fan-out lives
+// wholly in `runtime` (L5) -- `arbc::serialize` gains no pool edge. `dispatch` must
+// outlive the codec.
+Codec raster_codec(RasterTileStore* tiles, TileEncodeDispatch* dispatch);
 
 } // namespace arbc

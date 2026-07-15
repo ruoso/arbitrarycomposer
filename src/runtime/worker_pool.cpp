@@ -86,6 +86,11 @@ void WorkerPool::drop_queued(const RenderTask& task) {
   release_outstanding(task.owner);
 }
 
+void WorkerPool::drop_queued_work(const WorkTask& task) {
+  d_dropped.fetch_add(1, std::memory_order_release);
+  release_outstanding(task.owner);
+}
+
 void WorkerPool::abandon_queued() {
   for (const RenderTask& task : d_ready) {
     drop_queued(task);
@@ -97,6 +102,13 @@ void WorkerPool::abandon_queued() {
     }
     state.parked.clear();
   }
+  // The generic lane too: queued work jobs are abandoned on stop, counted so the
+  // accounting identity closes over BOTH lanes (Decision 1 / Constraint 6). No parked
+  // FIFO here -- work jobs have no per-content gate.
+  for (const WorkTask& task : d_work_ready) {
+    drop_queued_work(task);
+  }
+  d_work_ready.clear();
 }
 
 void WorkerPool::drain_owner(const void* owner) {
@@ -163,6 +175,21 @@ void WorkerPool::drain_owner(const void* owner) {
   if (handed_on) {
     d_work_cv.notify_all();
   }
+
+  // (2b) The owner's queued WORK jobs. No gate and no parked FIFO, so a straight filter
+  //      of the work-ready queue; a STARTED work job is waited out by the same
+  //      `d_outstanding` condition below, exactly as a started render.
+  std::deque<WorkTask> kept_work;
+  while (!d_work_ready.empty()) {
+    WorkTask task = std::move(d_work_ready.front());
+    d_work_ready.pop_front();
+    if (task.owner == owner) {
+      drop_queued_work(task);
+    } else {
+      kept_work.push_back(std::move(task));
+    }
+  }
+  d_work_ready = std::move(kept_work);
 
   // (3) Wait out the owner's STARTED tasks. Nothing of this owner is queued any more,
   //     so what is left is exactly the renders a worker is inside right now -- and
@@ -246,6 +273,53 @@ void WorkerPool::submit_inline(RenderTask task) {
   }
 }
 
+void WorkerPool::submit_work(WorkTask task) {
+  {
+    std::lock_guard<std::mutex> lock(d_mutex);
+    if (d_stop) {
+      return; // refuse new work after stop; the completion is left unsettled
+    }
+    d_submitted.fetch_add(1, std::memory_order_release);
+    claim_outstanding(task.owner);
+  }
+
+  if (d_config.worker_count == 0) {
+    submit_work_inline(std::move(task));
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(d_mutex);
+    d_work_ready.push_back(std::move(task)); // no gate: a pure job runs on any worker
+  }
+  d_work_cv.notify_one();
+}
+
+void WorkerPool::submit_work_inline(WorkTask task) { run_work_task(std::move(task)); }
+
+void WorkerPool::run_work_task(WorkTask task) {
+  // Run the pure job, then settle the caller's completion. Unlike a render, there is no
+  // off-thread settle path: a work job is synchronous by construction, so it always
+  // settles here. Errors are values inside the job's own caller-owned buffer -- the job
+  // returns `void` and never throws across this boundary (Constraint 7).
+  if (task.job) {
+    task.job();
+  }
+  if (task.done) {
+    task.done->settle();
+  }
+  d_completed.fetch_add(1, std::memory_order_release);
+  poke(); // bump the settle generation and broadcast, exactly as a settled render does
+
+  // Outstanding until the job returns, not until anything downstream reaps it -- the same
+  // termination argument `drain_owner` relies on for renders.
+  {
+    std::lock_guard<std::mutex> lock(d_mutex);
+    release_outstanding(task.owner);
+  }
+  d_drain_cv.notify_all();
+}
+
 void WorkerPool::run_task(RenderTask task, bool serialize) {
   Content* const content = task.content;
   if (serialize) {
@@ -290,7 +364,7 @@ void WorkerPool::run() {
     std::optional<RenderTask> task;
     {
       std::unique_lock<std::mutex> lock(d_mutex);
-      d_work_cv.wait(lock, [this] { return d_stop || !d_ready.empty(); });
+      d_work_cv.wait(lock, [this] { return d_stop || !d_ready.empty() || !d_work_ready.empty(); });
       if (d_stop) {
         // In-flight renders already finished; queued work is abandoned. It always
         // was -- `tasks_dropped()` is what makes that visible, so the accounting
@@ -300,6 +374,19 @@ void WorkerPool::run() {
         abandon_queued();
         d_drain_cv.notify_all(); // a drain parked on abandoned work is now satisfied
         return;
+      }
+      // Render lane first: the generic lane is background encode work, and starving an
+      // interactive frame behind a save's fan-out is exactly what the bounded window
+      // (the fan-out's own concern) exists to prevent. When no render is ready, take a
+      // work job and run it unlocked. Holding it by value (not `std::optional`) keeps
+      // its lifetime inside this branch -- gcc 13's -Wmaybe-uninitialized otherwise
+      // false-positives on the reaped `WorkTask`'s `shared_ptr` at end-of-scope.
+      if (d_ready.empty()) {
+        WorkTask work = std::move(d_work_ready.front());
+        d_work_ready.pop_front();
+        lock.unlock();
+        run_work_task(std::move(work)); // no gate, no per-content bookkeeping
+        continue;
       }
       task.emplace(std::move(d_ready.front()));
       d_ready.pop_front();

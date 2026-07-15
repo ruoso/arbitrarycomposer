@@ -27,8 +27,9 @@
 namespace arbc {
 
 class Content;
-class CodecTable;      // forward-declared (names nlohmann::json; off this public header)
-class RasterTileStore; // runtime/raster_tile_store.hpp (the incremental-save hash memo)
+class CodecTable;         // forward-declared (names nlohmann::json; off this public header)
+class RasterTileStore;    // runtime/raster_tile_store.hpp (the incremental-save hash memo)
+class TileEncodeDispatch; // runtime/tile_encode_dispatch.hpp (the parallel-save executor)
 
 // The runtime-owned bijection realizing the `ContentRecord.kind` uint64 <->
 // reverse-DNS `kind_id` string bridge the model and writer deferred (Decision 1).
@@ -123,6 +124,14 @@ CodecTable builtin_codecs(const Registry& registry);
 // and still saving correct pixels, but re-hashing every tile on every save rather than only
 // the ones the user actually touched.
 CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles);
+
+// The PARALLEL-SAVE table (serialize.tile_store_parallel_save): as above, plus a
+// `TileEncodeDispatch` bound into the raster codec that fans the per-tile encode across
+// pool workers. A null `dispatch` is exactly `builtin_codecs(registry, tiles)` (the inline
+// save). The save is byte-identical under any executor (Constraint 1); `dispatch` must
+// outlive the returned table.
+CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles,
+                          TileEncodeDispatch* dispatch);
 
 // Capture a pinned content-binding snapshot of `doc` (MUST run on the writer
 // thread): pins the current version and copies each layer-bound content's live

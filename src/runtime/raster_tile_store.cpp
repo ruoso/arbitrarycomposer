@@ -2,7 +2,9 @@
 #include <arbc/runtime/raster_tile_store.hpp>
 #include <arbc/serialize/tile_blob.hpp>
 
+#include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -89,6 +91,52 @@ std::string RasterTileStore::hash_of(BigBlockPool& pool, BlockSlotRef ref) {
   // A pin we could not take (a count at its 2^32 ceiling) simply means no memo entry:
   // correct, just not memoized. Never a stale hash.
   return hash;
+}
+
+std::optional<std::string> RasterTileStore::probe(BigBlockPool& /*pool*/, BlockSlotRef ref) {
+  const std::lock_guard<std::mutex> lock(d_mutex);
+  const Key key{ref.index(), ref.size(), d_storage};
+
+  // Already carried into this pass -- two layers sharing a tile, or the all-empty layer
+  // where every slot IS the same slot. The second and later occurrences hit here, so a
+  // ref-shared tile dispatches no second job (the save-thread ref-level dedup).
+  if (const auto it = d_pass.find(key); it != d_pass.end()) {
+    return it->second.hash;
+  }
+
+  // A hit against the last completed pass: carry the hash AND the pin forward without
+  // touching a byte of the tile -- the whole incremental-save win, sound only because the
+  // pin proves the slot behind the key was never recycled. No `tiles_hashed` advance.
+  if (const auto it = d_live.find(key); it != d_live.end()) {
+    Entry carried = it->second; // copies the BlockRef -> retains
+    std::string hash = carried.hash;
+    d_pass.emplace(key, std::move(carried));
+    return hash;
+  }
+
+  return std::nullopt; // a MISS: the caller hashes+encodes off-thread and calls `record`
+}
+
+void RasterTileStore::record(BigBlockPool& pool, BlockSlotRef ref, const std::string& hash) {
+  const std::lock_guard<std::mutex> lock(d_mutex);
+  const Key key{ref.index(), ref.size(), d_storage};
+
+  // An aliased ref-duplicate whose first occurrence already committed this pass: a no-op,
+  // so `tiles_hashed` never double-counts a key `probe` already resolved as a pass hit.
+  if (d_pass.find(key) != d_pass.end()) {
+    return;
+  }
+
+  d_tiles_hashed.fetch_add(1, std::memory_order_relaxed);
+
+  // Take our OWN count on the reap/save thread -- NEVER on a worker (Constraint 3). The
+  // caller already holds one (the pinned `TileTablePtr`), so this is always "add a count
+  // to something already >= 1" and can never resurrect a dead slot. A pin we could not
+  // take (a count at its 2^32 ceiling) simply means no memo entry: correct, just not
+  // memoized -- never a stale hash.
+  if (expected<BlockRef, RefError> pin = pool.resolve(ref); pin) {
+    d_pass.emplace(key, Entry{hash, std::move(*pin)});
+  }
 }
 
 void RasterTileStore::seed(BigBlockPool& pool, BlockSlotRef ref, PixelFormat storage,

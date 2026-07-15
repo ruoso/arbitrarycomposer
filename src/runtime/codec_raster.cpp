@@ -42,6 +42,7 @@
 #include <arbc/kind_raster/raster_content.hpp>
 #include <arbc/runtime/builtin_codecs.hpp>
 #include <arbc/runtime/raster_tile_store.hpp>
+#include <arbc/runtime/tile_encode_dispatch.hpp>
 #include <arbc/serialize/tile_blob.hpp>
 
 #include <nlohmann/json.hpp>
@@ -54,6 +55,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -87,7 +89,8 @@ BigBlockPool& pool_of(const RasterContent& raster) {
 // --- SAVE -------------------------------------------------------------------------
 
 expected<json, SerializeError> serialize_raster(const Content& content, SaveContext& ctx,
-                                                RasterTileStore* tiles) {
+                                                RasterTileStore* tiles,
+                                                TileEncodeDispatch* dispatch) {
   const auto* const raster = dynamic_cast<const RasterContent*>(&content);
   if (raster == nullptr) {
     return write_fail(SerializeError::Kind::CodecFailed);
@@ -121,42 +124,104 @@ expected<json, SerializeError> serialize_raster(const Content& content, SaveCont
   RasterTileStore& memo = (tiles != nullptr) ? *tiles : local;
   memo.begin_pass(storage);
 
-  json blobs = json::array();
+  // The executor. A null `dispatch` means the shipped inline path -- byte-identical to the
+  // single-threaded save (Constraint 5); the offline export defaults here. A host that
+  // wants the encode fanned across pool workers hands in a worker-backed dispatch, and the
+  // two produce bit-for-bit identical output (Constraint 1, Decision 3).
+  TileEncodeDispatch inline_dispatch; // the default executor when none is injected
+  TileEncodeDispatch& enc = (dispatch != nullptr) ? *dispatch : inline_dispatch;
+
+  // --- Phase 1: classify every tile row-major, ON THE SAVE THREAD ---------------------
+  // A HIT (an untouched, ref-shared tile: the common sparse case) is resolved for free by
+  // the memo and its `blobs[i]` filled now. A MISS is a job: its distinct SLOT keys one
+  // encode, and every later tile sharing that slot (two layers sharing a tile, or the
+  // all-empty layer where every slot IS one slot) aliases it -- so a ref-shared layer
+  // dispatches AT MOST ONE encode (Decision 2, the save-thread ref-level dedup). No
+  // mutation leaves this thread; workers only `peek` and encode into their own buffer.
+  const std::vector<BlockSlotRef>& grid = level0.tiles;
+  std::vector<std::string> blob_names(grid.size());       // row-major, filled positionally
+  std::vector<BlockSlotRef> job_refs;                     // one per distinct miss slot
+  std::vector<std::vector<std::size_t>> job_tiles;        // job -> the tile indices aliasing it
+  std::unordered_map<std::uint64_t, std::size_t> pending; // packed slot key -> job index
+
+  for (std::size_t i = 0; i < grid.size(); ++i) {
+    const BlockSlotRef ref = grid[i];
+    // The slot key: the storage format is constant across the save, so (index, size) alone
+    // distinguishes the pending-job map's slots (the memo carries the format in its own
+    // key). Two tiles with this same key ARE the same pool slot.
+    const std::uint64_t key = (static_cast<std::uint64_t>(ref.index()) << 32) | ref.size();
+    if (const auto it = pending.find(key); it != pending.end()) {
+      job_tiles[it->second].push_back(i); // an already-dispatched miss slot: alias it
+    } else if (std::optional<std::string> hit = memo.probe(pool, ref)) {
+      blob_names[i] = std::move(*hit); // a memo hit: no encode, no job
+    } else {
+      const std::size_t j = job_refs.size();
+      pending.emplace(key, j);
+      job_refs.push_back(ref);
+      job_tiles.push_back(std::vector<std::size_t>{i});
+    }
+  }
+
+  // --- Phase 2: fan the pure encode across the executor, reap BY INDEX on this thread --
+  // The encode is a pure function of one `peek()`ed immutable tile (hash + shuffle+zstd
+  // frame), safe to run on any worker. The reap -- the memo commit, the in-save/on-disk
+  // dedup, the positional `blobs[i]`, the sink write -- runs only here, single-threaded,
+  // exactly as the serial loop's stateful tail did (Constraint 2).
   std::set<std::string> seen; // distinct blobs THIS save has already dealt with
-  for (const BlockSlotRef& ref : level0.tiles) {
-    // The memo is keyed by slot and PINNED BY A REFCOUNT (Decision 5). An untouched tile
-    // keeps its `BlockSlotRef` identity across a CoW paint, so this is a hit and costs no
-    // hash at all -- which is what makes a re-save after one dab O(dab) and not
-    // O(document).
-    const std::string hash = memo.hash_of(pool, ref);
-    blobs.push_back(hash);
+  std::optional<SerializeError::Kind> failure;
 
-    if (!seen.insert(hash).second) {
-      continue; // an identical tile, already handled: ONE blob, however many slots
-    }
-    const std::string uri = tile_blob_uri(k_default_tiles_base, hash);
-    if (ctx.has_asset(uri)) {
-      continue; // already on disk under this name; content-addressed, so it IS this tile
-    }
-
-    // Only now -- for a tile that is genuinely new to the store -- do we pay to produce
-    // bytes: storage-convert, shuffle, compress. shuffle -> compress -> hash-named file,
-    // exactly the composition `blob_compress.hpp` prescribed when it deferred to us.
+  const TileEncodeDispatch::EncodeFn encode = [&pool, storage,
+                                               &job_refs](std::size_t j) -> TileEncodeOutput {
+    const BlockSlotRef ref = job_refs[j];
+    // `peek` is any-thread and takes no refcount (the pinned `TileTablePtr` keeps the slot
+    // alive); the encode allocates only its OWN output buffer (Constraint 3).
     const std::span<const std::byte> raw = pool.peek(ref);
     const std::span<const float> working{reinterpret_cast<const float*>(raw.data()),
                                          raw.size() / sizeof(float)};
     const std::vector<std::byte> storage_bytes = to_storage_bytes(working, storage);
-    const expected<std::vector<std::byte>, TileBlobError> frame =
-        frame_tile_blob(storage_bytes, storage);
-    if (!frame) {
-      return write_fail(SerializeError::Kind::CodecFailed);
+    TileEncodeOutput out;
+    out.hash = hash_tile(storage_bytes);
+    expected<std::vector<std::byte>, TileBlobError> frame = frame_tile_blob(storage_bytes, storage);
+    if (frame) {
+      out.frame = std::move(*frame);
+    } else {
+      out.error = frame.error(); // a value across the lane, not a throw (Constraint 7)
     }
-    const expected<bool, AssetSinkError> stored = ctx.store_asset(uri, *frame);
+    return out;
+  };
+
+  const TileEncodeDispatch::ReapFn reap = [&](std::size_t j, TileEncodeOutput& out) -> bool {
+    if (out.error) {
+      failure = SerializeError::Kind::CodecFailed;
+      return false; // abort: the dispatch drains outstanding jobs before returning
+    }
+    const BlockSlotRef ref = job_refs[j];
+    // Commit the miss into the memo (takes the pin, advances `tiles_hashed`) and fill every
+    // tile aliasing this slot -- all on the save thread.
+    memo.record(pool, ref, out.hash);
+    for (const std::size_t i : job_tiles[j]) {
+      blob_names[i] = out.hash;
+    }
+    if (!seen.insert(out.hash).second) {
+      return true; // an identical tile, already handled: ONE blob, however many slots
+    }
+    const std::string uri = tile_blob_uri(k_default_tiles_base, out.hash);
+    if (ctx.has_asset(uri)) {
+      return true; // already on disk under this name; content-addressed, so it IS this tile
+    }
+    const expected<bool, AssetSinkError> stored = ctx.store_asset(uri, out.frame);
     if (!stored) {
-      return write_fail(stored.error().kind == AssetSinkError::Kind::NoSink
-                            ? SerializeError::Kind::AssetSinkMissing
-                            : SerializeError::Kind::AssetWriteFailed);
+      failure = stored.error().kind == AssetSinkError::Kind::NoSink
+                    ? SerializeError::Kind::AssetSinkMissing
+                    : SerializeError::Kind::AssetWriteFailed;
+      return false;
     }
+    return true;
+  };
+
+  enc.run(job_refs.size(), encode, reap);
+  if (failure.has_value()) {
+    return write_fail(*failure); // a failed save abandons the pass; `d_live` is untouched
   }
   memo.end_pass();
 
@@ -165,7 +230,7 @@ expected<json, SerializeError> serialize_raster(const Content& content, SaveCont
   params["edge"] = static_cast<std::int64_t>(table->edge());
   params["width"] = static_cast<std::int64_t>(table->width());
   params["height"] = static_cast<std::int64_t>(table->height());
-  params["blobs"] = std::move(blobs);
+  params["blobs"] = std::move(blob_names);
   return params;
 }
 
@@ -330,11 +395,14 @@ deserialize_raster(const json& params, LoadContext& ctx, RasterTileStore* tiles)
 
 } // namespace
 
-Codec raster_codec() { return raster_codec(nullptr); }
+Codec raster_codec() { return raster_codec(nullptr, nullptr); }
 
-Codec raster_codec(RasterTileStore* tiles) {
-  return Codec{[tiles](const Content& content, SaveContext& ctx) -> expected<json, SerializeError> {
-                 return serialize_raster(content, ctx, tiles);
+Codec raster_codec(RasterTileStore* tiles) { return raster_codec(tiles, nullptr); }
+
+Codec raster_codec(RasterTileStore* tiles, TileEncodeDispatch* dispatch) {
+  return Codec{[tiles, dispatch](const Content& content,
+                                 SaveContext& ctx) -> expected<json, SerializeError> {
+                 return serialize_raster(content, ctx, tiles, dispatch);
                },
                [tiles](const json& params, std::span<const ContentRef> /*inputs*/,
                        ObjectId /*composition*/,

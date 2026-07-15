@@ -493,6 +493,24 @@ Initially-open questions, now decided in their own docs:
   Decided in `serialize.raster_tile_store`; recorded in doc 08 (Principle 8,
   § Dependency note) and doc 17 (§ component table).
 
+- **The runtime worker pool gains a generic work lane for the parallel
+  tile-encode save.** `raster_tile_store` shipped the per-tile encode
+  single-threaded and correct; the encode is embarrassingly parallel (each
+  tile's hash-and-compress is a pure function of one immutable pinned tile
+  over a reentrant compressor), so it now fans across the runtime pool. The
+  pool's only render seam is leaf-only and takes a `Content` render, which an
+  encode is not, so the pool grows a *second* lane — a generic movable-callable
+  work job settling a caller-owned completion, distinct from the render lane
+  and its leaf-only policy — driven from `runtime` (the codec), never from
+  `serialize` (which stays pool-free, so no L4→L5 edge). The save thread keeps
+  **every** mutation — the memo, the dedup, the positional `blobs[i]`, the sink
+  write — and hands workers only the pure encode, bounded to O(worker_count)
+  jobs in flight; a worker-backed save is **byte-identical** to the inline one
+  (the offline-export default), which is the load-bearing correctness property.
+  Decided in `serialize.tile_store_parallel_save`; recorded in doc 02
+  (§ Threading model) and doc 08 (Principle 8). Doc 17 is unchanged — the
+  `WorkerPool` is a class inside `runtime`, not a component the table names.
+
 - **The compositor's remainder resample is single-rung Catmull-Rom over a
   Lanczos-decimated ladder.** The ≤1-octave remainder (doc 04) is reconstructed
   by the composite tap with the Catmull-Rom bicubic; the octave steps are the

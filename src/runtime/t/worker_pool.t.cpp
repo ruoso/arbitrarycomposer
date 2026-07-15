@@ -13,6 +13,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -773,5 +774,208 @@ TEST_CASE("drain_owner waits out one owner's started renders, purges its queued 
     CHECK(serial.render_calls() == 1);
     CHECK(pool.max_in_flight_per_content() <= 1);
     CHECK(pool.tasks_submitted() == pool.tasks_completed() + pool.tasks_dropped());
+  }
+}
+
+// --- The generic (non-render) work lane (serialize.tile_store_parallel_save Decision 1) --
+// The pool's SECOND lane: a plain movable-callable `WorkTask` that settles a caller-owned
+// `WorkCompletion`, distinct from the leaf-only render lane. It shares the pool's threads,
+// its `poke`/`wait_completions` park machinery, its `drain_owner` teardown, and its
+// counters -- but has no per-content gate (a work job is pure). These cases pin
+// submit/settle on both executors, the ONE accounting identity across both lanes, and the
+// drain/stop discipline over work jobs.
+
+// enforces: 02-architecture#worker-pool-runs-a-generic-work-lane
+TEST_CASE("the generic work lane runs pure jobs inline and on workers") {
+  SECTION("inline executor runs the job on the calling thread and settles it") {
+    arbc::WorkerPoolConfig cfg; // worker_count == 0: the degenerate inline executor
+    arbc::WorkerPool pool(cfg);
+
+    int ran = 0;
+    std::thread::id ran_on;
+    const std::thread::id caller = std::this_thread::get_id();
+    auto done = std::make_shared<arbc::WorkCompletion>();
+    pool.submit_work(arbc::WorkTask{[&] {
+                                      ran_on = std::this_thread::get_id();
+                                      ++ran;
+                                    },
+                                    done, nullptr});
+
+    CHECK(ran == 1);         // the job ran synchronously, before submit_work returned
+    CHECK(ran_on == caller); // ON the submitting thread (inline == no thread)
+    CHECK(done->settled());  // and the completion is settled
+    CHECK(pool.tasks_submitted() == 1);
+    CHECK(pool.tasks_completed() == 1);
+    CHECK(pool.tasks_dropped() == 0);
+  }
+
+  SECTION("a real pool runs work jobs OFF the calling thread and wakes the waiter") {
+    arbc::WorkerPoolConfig cfg;
+    cfg.worker_count = 4;
+    arbc::WorkerPool pool(cfg);
+    arbc::CompletionCursor cursor;
+
+    constexpr int k = 64;
+    std::atomic<int> sum{0};
+    std::atomic<int> off_thread{0};
+    const std::thread::id caller = std::this_thread::get_id();
+    std::vector<std::shared_ptr<arbc::WorkCompletion>> dones;
+    for (int i = 0; i < k; ++i) {
+      dones.push_back(std::make_shared<arbc::WorkCompletion>());
+      pool.submit_work(arbc::WorkTask{[&, i] {
+                                        if (std::this_thread::get_id() != caller) {
+                                          off_thread.fetch_add(1, std::memory_order_relaxed);
+                                        }
+                                        sum.fetch_add(i, std::memory_order_relaxed);
+                                      },
+                                      dones.back(), nullptr});
+    }
+
+    int got = 0;
+    while (got < k) {
+      pool.wait_completions(cursor, hang_guard());
+      got = 0;
+      for (const std::shared_ptr<arbc::WorkCompletion>& d : dones) {
+        if (d->settled()) {
+          ++got;
+        }
+      }
+    }
+    CHECK(sum.load() == k * (k - 1) / 2); // every job ran exactly once
+    CHECK(off_thread.load() > 0);         // at least some ran on a worker
+    CHECK(pool.tasks_submitted() == static_cast<std::uint64_t>(k));
+    CHECK(pool.tasks_completed() == static_cast<std::uint64_t>(k));
+    CHECK(pool.tasks_submitted() == pool.tasks_completed() + pool.tasks_dropped());
+  }
+
+  SECTION("work jobs and renders share ONE accounting identity") {
+    arbc::WorkerPoolConfig cfg;
+    cfg.worker_count = 4;
+    arbc::WorkerPool pool(cfg);
+    arbc::CompletionCursor cursor;
+
+    StubContent content(/*thread_safe=*/true, /*wait_for_overlap=*/false);
+    constexpr int k = 16;
+    std::vector<std::shared_ptr<arbc::RenderCompletion>> renders;
+    std::vector<std::unique_ptr<MemSurface>> targets;
+    std::vector<std::shared_ptr<arbc::WorkCompletion>> works;
+    for (int i = 0; i < k; ++i) {
+      targets.push_back(std::make_unique<MemSurface>(2, 2));
+      renders.push_back(std::make_shared<arbc::RenderCompletion>());
+      pool.submit(arbc::RenderTask{&content, make_request(*targets.back(), 1.5), renders.back()});
+      works.push_back(std::make_shared<arbc::WorkCompletion>());
+      pool.submit_work(arbc::WorkTask{[] {}, works.back(), nullptr});
+    }
+
+    const auto all_settled = [&] {
+      for (const std::shared_ptr<arbc::RenderCompletion>& d : renders) {
+        if (!d->settled()) {
+          return false;
+        }
+      }
+      for (const std::shared_ptr<arbc::WorkCompletion>& d : works) {
+        if (!d->settled()) {
+          return false;
+        }
+      }
+      return true;
+    };
+    while (!all_settled()) {
+      pool.wait_completions(cursor, hang_guard());
+    }
+    CHECK(pool.tasks_submitted() == static_cast<std::uint64_t>(2 * k)); // both lanes counted
+    CHECK(pool.tasks_completed() == static_cast<std::uint64_t>(2 * k));
+    CHECK(pool.tasks_submitted() == pool.tasks_completed() + pool.tasks_dropped());
+  }
+}
+
+// enforces: 02-architecture#worker-pool-runs-a-generic-work-lane
+TEST_CASE("the generic work lane drains by owner and abandons queued jobs on stop") {
+  SECTION("drain_owner waits out a started work job and purges the owner's queued ones") {
+    arbc::WorkerPoolConfig cfg;
+    cfg.worker_count = 1; // one worker, held open, so nothing behind the blocker can start
+    arbc::WorkerPool pool(cfg);
+    int owner_a = 0;
+    int owner_b = 0;
+
+    Gate gate;
+    std::atomic<int> ran_b{0};
+    std::atomic<int> ran_a_queued{0};
+    auto held = std::make_shared<arbc::WorkCompletion>();
+    pool.submit_work(arbc::WorkTask{[&] { gate.arrive_and_wait(); }, held, &owner_a});
+    gate.await_arrivals(1); // the only worker is inside owner_a's job
+
+    // A SIBLING (owner_a) job queued behind the blocker: drain_owner(owner_b) must KEEP it.
+    auto a_queued = std::make_shared<arbc::WorkCompletion>();
+    pool.submit_work(arbc::WorkTask{[&] { ran_a_queued.fetch_add(1, std::memory_order_relaxed); },
+                                    a_queued, &owner_a});
+
+    constexpr int k = 4;
+    std::vector<std::shared_ptr<arbc::WorkCompletion>> bs;
+    for (int i = 0; i < k; ++i) {
+      bs.push_back(std::make_shared<arbc::WorkCompletion>());
+      pool.submit_work(arbc::WorkTask{[&] { ran_b.fetch_add(1, std::memory_order_relaxed); },
+                                      bs.back(), &owner_b});
+    }
+    REQUIRE(pool.tasks_submitted() == static_cast<std::uint64_t>(2 + k));
+
+    pool.drain_owner(&owner_b); // purges owner_b's queued jobs; owner_a's queued one is KEPT
+    CHECK(pool.tasks_dropped() == static_cast<std::uint64_t>(k));
+    CHECK(ran_b.load() == 0); // never started
+    for (const std::shared_ptr<arbc::WorkCompletion>& d : bs) {
+      CHECK_FALSE(d->settled()); // purged, left unsettled, never lost to UB
+    }
+
+    gate.open(); // let owner_a's blocker finish; its queued sibling then runs too
+    arbc::CompletionCursor cursor;
+    while (!held->settled() || !a_queued->settled()) {
+      pool.wait_completions(cursor, hang_guard());
+    }
+    CHECK(ran_a_queued.load() == 1); // the kept sibling job ran, not dropped
+    pool.drain_owner(&owner_a);      // returns at once: nothing of owner_a's is outstanding
+    CHECK(pool.tasks_completed() == 2);
+    CHECK(pool.tasks_submitted() == pool.tasks_completed() + pool.tasks_dropped());
+  }
+
+  SECTION("queued work abandoned on stop is COUNTED") {
+    arbc::WorkerPoolConfig cfg;
+    cfg.worker_count = 1;
+    arbc::WorkerPool pool(cfg);
+
+    Gate gate;
+    auto held = std::make_shared<arbc::WorkCompletion>();
+    pool.submit_work(arbc::WorkTask{[&] { gate.arrive_and_wait(); }, held, nullptr});
+    gate.await_arrivals(1);
+
+    constexpr int k = 5;
+    std::vector<std::shared_ptr<arbc::WorkCompletion>> dones;
+    for (int i = 0; i < k; ++i) {
+      dones.push_back(std::make_shared<arbc::WorkCompletion>());
+      pool.submit_work(arbc::WorkTask{[] {}, dones.back(), nullptr});
+    }
+    REQUIRE(pool.tasks_submitted() == static_cast<std::uint64_t>(1 + k));
+    REQUIRE(pool.tasks_dropped() == 0);
+
+    pool.request_stop();
+    gate.open(); // the in-flight job finishes; the worker then sees stop and abandons the rest
+
+    const auto guard = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (pool.tasks_dropped() < static_cast<std::uint64_t>(k) &&
+           std::chrono::steady_clock::now() < guard) {
+      std::this_thread::yield();
+    }
+    CHECK(pool.tasks_dropped() == static_cast<std::uint64_t>(k));
+    CHECK(pool.tasks_completed() == 1);
+    for (const std::shared_ptr<arbc::WorkCompletion>& d : dones) {
+      CHECK_FALSE(d->settled());
+    }
+    CHECK(pool.tasks_submitted() == pool.tasks_completed() + pool.tasks_dropped());
+
+    // Post-stop submit_work is refused: not enqueued, not counted, completion left unsettled.
+    const std::uint64_t submitted_before = pool.tasks_submitted();
+    auto late = std::make_shared<arbc::WorkCompletion>();
+    pool.submit_work(arbc::WorkTask{[] {}, late, nullptr});
+    CHECK(pool.tasks_submitted() == submitted_before);
+    CHECK_FALSE(late->settled());
   }
 }

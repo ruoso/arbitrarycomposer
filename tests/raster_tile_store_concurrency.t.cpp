@@ -24,13 +24,17 @@
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/document_serialize.hpp>
 #include <arbc/runtime/raster_tile_store.hpp>
+#include <arbc/runtime/tile_encode_dispatch.hpp>
+#include <arbc/runtime/worker_pool.hpp>
 #include <arbc/serialize/codec.hpp>
 #include <arbc/serialize/save_context.hpp>
+#include <arbc/serialize/tile_blob.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -88,6 +92,23 @@ DecodedImage textured(int w, int h) {
   const auto* src = reinterpret_cast<const std::byte*>(f.data());
   img.bytes.assign(src, src + f.size() * sizeof(float));
   return img;
+}
+
+// The pure per-tile encode a fan-out worker runs: `peek` the immutable pinned tile, convert
+// to storage bytes, hash, and frame (shuffle+zstd). A pure function of the pinned bytes over
+// a reentrant compressor -- exactly what makes the fan-out data-race-free by construction.
+TileEncodeOutput encode_tile(BigBlockPool& pool, BlockSlotRef ref, PixelFormat storage) {
+  const std::span<const std::byte> raw = pool.peek(ref);
+  const std::span<const float> working{reinterpret_cast<const float*>(raw.data()),
+                                       raw.size() / sizeof(float)};
+  const std::vector<std::byte> storage_bytes = to_storage_bytes(working, storage);
+  TileEncodeOutput out;
+  out.hash = hash_tile(storage_bytes);
+  expected<std::vector<std::byte>, TileBlobError> frame = frame_tile_blob(storage_bytes, storage);
+  if (frame) {
+    out.frame = std::move(*frame);
+  }
+  return out;
 }
 
 } // namespace
@@ -169,4 +190,147 @@ TEST_CASE("a save on a non-writer thread races the writer painting and dropping 
   const TileTablePtr final_table = raster->store().base_table();
   REQUIRE(final_table);
   CHECK(final_table->level(0).tiles.size() == 16);
+}
+
+// enforces: 08-serialization#raster-save-is-executor-independent
+TEST_CASE("a worker-backed encode races the writer and matches the inline encode of the pin") {
+  // The concurrency surface serialize.tile_store_parallel_save INTRODUCES: N workers `peek`
+  // the pinned tile table while the writer thread paints new versions and drops old ones. The
+  // pin holds a count on every slot it names, so the workers' `peek`s are valid for the whole
+  // save even as the writer recycles OTHER slots -- and running the SAME pinned version
+  // through the inline and worker executors must produce byte-identical encodes (Constraint
+  // 1). TSan-clean is the first assertion; executor-equality is the second.
+  Document doc;
+  KindBridge bridge;
+  Registry registry;
+  const auto raster = std::make_shared<RasterContent>(textured(64, 64), /*edge=*/16);
+  const ObjectId comp = doc.add_composition(64.0, 64.0);
+  const ObjectId content = doc.add_content(raster, bridge.intern(RasterContent::kind_id, "1"));
+  doc.attach_layer(comp, doc.add_layer(content, Affine::identity(), 1.0));
+
+  WorkerPoolConfig cfg;
+  cfg.worker_count = 4;
+  WorkerPool pool(cfg);
+  int owner = 0;
+
+  constexpr int k_paints = 64;
+  constexpr int k_saves = 24;
+  constexpr PixelFormat storage = PixelFormat::Rgba32fLinearPremul;
+  std::atomic<bool> painting{true};
+  std::atomic<int> saved_ok{0};
+  // The saver thread must NOT touch Catch2's assertion macros -- they are not thread-safe, and
+  // the writer thread is asserting concurrently. It records outcomes into atomics; the main
+  // thread asserts after the join.
+  std::atomic<bool> mismatch{false};
+  std::atomic<bool> unbounded{false};
+
+  std::thread saver([&] {
+    for (int i = 0; i < k_saves && painting.load(); ++i) {
+      const TileTablePtr pinned = raster->store().base_table();
+      if (!pinned) {
+        mismatch.store(true);
+        break;
+      }
+      BigBlockPool& p = const_cast<RasterStore&>(raster->store()).pool();
+      const std::vector<BlockSlotRef>& grid = pinned->level(0).tiles;
+      const auto encode = [&](std::size_t j) { return encode_tile(p, grid[j], storage); };
+
+      // Inline reference, then the worker-backed fan-out, both over the SAME pinned version.
+      std::vector<TileEncodeOutput> inline_out(grid.size());
+      TileEncodeDispatch inline_disp;
+      inline_disp.run(grid.size(), encode, [&](std::size_t j, TileEncodeOutput& o) {
+        inline_out[j] = std::move(o);
+        return true;
+      });
+      std::vector<TileEncodeOutput> worker_out(grid.size());
+      TileEncodeDispatch worker_disp(pool, &owner);
+      worker_disp.run(grid.size(), encode, [&](std::size_t j, TileEncodeOutput& o) {
+        worker_out[j] = std::move(o);
+        return true;
+      });
+
+      for (std::size_t j = 0; j < grid.size(); ++j) {
+        if (inline_out[j].hash != worker_out[j].hash ||
+            inline_out[j].frame != worker_out[j].frame) {
+          mismatch.store(true); // executor divergence on the same pinned version
+        }
+      }
+      if (worker_disp.peak_in_flight() > worker_disp.window()) {
+        unbounded.store(true);
+      }
+      saved_ok.fetch_add(1);
+    }
+  });
+
+  for (int i = 0; i < k_paints; ++i) {
+    const double x = static_cast<double>((i * 7) % 48);
+    const double y = static_cast<double>((i * 13) % 48);
+    Model::Transaction txn = doc.transact("dab");
+    raster->paint(txn, content, Rect{x, y, x + 8.0, y + 8.0},
+                  WorkingPixel{static_cast<float>(i % 8) / 8.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(txn.commit());
+    doc.drain(); // recycle slots NOT named by any live pin -- the race the pin defends against
+  }
+  painting.store(false);
+  saver.join();
+  CHECK(saved_ok.load() > 0);
+  CHECK_FALSE(mismatch.load());  // every worker-backed encode matched the inline one
+  CHECK_FALSE(unbounded.load()); // the window held even under the race
+}
+
+// enforces: 08-serialization#raster-save-is-executor-independent
+TEST_CASE("the encode fan-out is executor-independent across many seeded schedules") {
+  // Seeded schedule perturbation (doc 16 tier 6): the same fan-out over a static pinned
+  // version, run under many worker-yield schedules, must produce the SAME hashes every time
+  // and equal to the inline reference. Completion order is perturbed on purpose; the output
+  // follows from the format (hash over uncompressed storage bytes, blobs fixed row-major),
+  // not from the schedule.
+  Document doc;
+  KindBridge bridge;
+  Registry registry;
+  const auto raster = std::make_shared<RasterContent>(textured(96, 96), /*edge=*/16);
+  const ObjectId comp = doc.add_composition(96.0, 96.0);
+  const ObjectId content = doc.add_content(raster, bridge.intern(RasterContent::kind_id, "1"));
+  doc.attach_layer(comp, doc.add_layer(content, Affine::identity(), 1.0));
+
+  const TileTablePtr pinned = raster->store().base_table();
+  REQUIRE(pinned);
+  BigBlockPool& p = const_cast<RasterStore&>(raster->store()).pool();
+  const std::vector<BlockSlotRef>& grid = pinned->level(0).tiles;
+  REQUIRE(grid.size() == 36); // 6x6
+  constexpr PixelFormat storage = PixelFormat::Rgba32fLinearPremul;
+
+  // The inline reference, computed once.
+  std::vector<std::string> reference(grid.size());
+  TileEncodeDispatch inline_disp;
+  inline_disp.run(
+      grid.size(), [&](std::size_t j) { return encode_tile(p, grid[j], storage); },
+      [&](std::size_t j, TileEncodeOutput& o) {
+        reference[j] = std::move(o.hash);
+        return true;
+      });
+
+  WorkerPoolConfig cfg;
+  cfg.worker_count = 4;
+  WorkerPool pool(cfg);
+  int owner = 0;
+
+  for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+    const auto perturbed = [&, seed](std::size_t j) {
+      // A deterministic, seed-derived number of yields reshuffles the worker interleaving
+      // without any wall-clock dependence.
+      std::uint32_t s = (seed * 2654435761U) ^ (static_cast<std::uint32_t>(j) * 40503U);
+      for (std::uint32_t y = 0; y < (s % 5U); ++y) {
+        std::this_thread::yield();
+      }
+      return encode_tile(p, grid[j], storage);
+    };
+    std::vector<std::string> got(grid.size());
+    TileEncodeDispatch disp(pool, &owner);
+    disp.run(grid.size(), perturbed, [&](std::size_t j, TileEncodeOutput& o) {
+      got[j] = std::move(o.hash);
+      return true;
+    });
+    CHECK(got == reference); // same output under every schedule
+  }
 }
