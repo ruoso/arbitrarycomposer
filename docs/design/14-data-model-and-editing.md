@@ -210,6 +210,23 @@ each rung, so no stale filtered pixel survives near a painted tile's boundary.
 Copy-on-write economy applies to level 0's touched tiles (only those are
 copied); the rungs above necessarily touch a slightly wider set.
 
+The paint's per-pixel **mutation is a coverage-masked source-over composite**,
+not a replace. A dab carries a per-pixel coverage source (a soft/hard round-dab
+falloff, or an explicit alpha mask) alongside the colour; at each covered pixel,
+with destination `dst` and coverage `a = clamp(coverage, 0, 1)`, the write is
+`out = color·a + dst·(1 − color[3]·a)` in the composition's **premultiplied
+linear working floats** (doc 07 rules 2–3 are the blend-space authority — a
+premultiplied colour scaled by the scalar `a` is a coverage-attenuated source, so
+no unpremultiply round-trip is needed), each output channel clamped to
+non-negative (RGB is *not* clamped to ≤ alpha — HDR headroom above alpha is
+legitimate), computed in a fixed operation order with no `libm` so the result is
+byte-exact. The blend op is source-over only (doc 01:29) and source-over is
+non-idempotent for anything but fully-opaque content (doc 02:95-100), so a
+**fully-opaque, full-coverage dab is the special case** that reduces to a replace
+(`out = color`) — which is why the CoW/capture/coalesce/mip/damage discipline
+above is unchanged by the blend, while a partial-coverage or translucent dab
+composites against the destination exactly once per covered pixel.
+
 **Live content opts out.** A camera feed, a capture source, a 3D engine
 view (the OBS-style sources) have no meaningful document state — they are
 `Live` (doc 11) and simply don't implement `Editable`: never journaled,

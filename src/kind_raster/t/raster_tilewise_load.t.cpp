@@ -37,9 +37,9 @@ namespace {
 // lands at the wrong index, or a padding sample that leaks into a level, shows up as a
 // mismatch rather than as a coincidence.
 float sample_at(int x, int y, std::size_t c) {
-  const std::uint32_t k = (static_cast<std::uint32_t>(y) * 7919U + static_cast<std::uint32_t>(x)) *
-                              4U +
-                          static_cast<std::uint32_t>(c);
+  const std::uint32_t k =
+      (static_cast<std::uint32_t>(y) * 7919U + static_cast<std::uint32_t>(x)) * 4U +
+      static_cast<std::uint32_t>(c);
   const std::uint32_t s = k * 2654435761U;
   return static_cast<float>(s >> 8U) / static_cast<float>(1U << 24U);
 }
@@ -50,8 +50,7 @@ DecodedImage dense_image(int w, int h) {
   img.width = w;
   img.height = h;
   img.format = k_working_rgba32f;
-  std::vector<float> f(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) *
-                       k_tile_channels);
+  std::vector<float> f(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * k_tile_channels);
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
       for (std::size_t c = 0; c < k_tile_channels; ++c) {
@@ -236,15 +235,13 @@ TEST_CASE("an abandoned build releases every blob it allocated, and the store st
   // reserved bytes both match the store that never failed -- had the partial build leaked,
   // `subject` would carry ten extra live slots (and, at the pool's chunk granularity,
   // likely extra reserved bytes too).
-  CHECK(subject.pool().arena().total_slots_live() ==
-        reference.pool().arena().total_slots_live());
+  CHECK(subject.pool().arena().total_slots_live() == reference.pool().arena().total_slots_live());
   CHECK(subject.pool().arena().total_bytes_reserved() ==
         reference.pool().arena().total_bytes_reserved());
 
   // ...and it really did allocate them a second time (10 abandoned + a full pyramid), which
   // is the witness that the slots came back rather than never having been taken.
-  CHECK(subject.blobs_allocated() ==
-        10U + reference.blobs_allocated());
+  CHECK(subject.blobs_allocated() == 10U + reference.blobs_allocated());
 
   // The store survives the failure and the version it finally built is the right one.
   const TileTablePtr subject_table = subject.resolve(*after);

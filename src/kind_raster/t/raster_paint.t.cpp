@@ -331,6 +331,75 @@ TEST_CASE("raster paint through a transaction assigns state and damages the touc
   REQUIRE(dsink.last[0].rect == Rect{0.0, 0.0, 2.0, 2.0});
 }
 
+// A dab is a coverage-masked source-over composite, not a replace: it composites
+// `color` over the destination at the caller-supplied per-pixel coverage in
+// premultiplied linear working floats, exactly once per covered pixel; a full-coverage
+// opaque dab reduces to the prior REPLACE byte-for-byte (kinds.raster_brush_dab).
+// enforces: 14-data-model-and-editing#raster-dab-is-coverage-masked-source-over
+TEST_CASE("a raster dab composites color over the destination at per-pixel coverage") {
+  // A partial-coverage dab source-over blends against the destination exactly once,
+  // driven through the content-level API against a real Model.
+  {
+    RasterContent content(white_4x4(), /*tile_edge=*/2);
+    FacetRefSink refsink(*content.editable());
+    RecordingDamageSink dsink;
+    Model model;
+    model.set_state_ref_sink(&refsink);
+    model.set_damage_sink(&dsink);
+
+    ObjectId cid{};
+    {
+      auto txn = model.transact("add");
+      cid = txn.add_content(1);
+      REQUIRE(txn.commit().has_value());
+    }
+    model.drain();
+
+    {
+      auto txn = model.transact("dab");
+      content.paint(txn, cid, Rect{0.0, 0.0, 2.0, 2.0}, k_red, [](int, int) { return 0.5F; });
+      REQUIRE(txn.commit().has_value());
+    }
+
+    const TileTablePtr t = content.store().base_table();
+    // dst = opaque white (1,1,1,1); a = 0.5; color = k_red (1,0,0,1):
+    //   out = color*a + dst*(1 - color[3]*a)
+    //       = (0.5,0,0,0.5) + (0.5,0.5,0.5,0.5) = (1.0, 0.5, 0.5, 1.0)  -- composited ONCE.
+    const WorkingPixel once{1.0F, 0.5F, 0.5F, 1.0F};
+    // A SECOND blend over `once` would give (1.0, 0.25, 0.25, 1.0); asserting NOT this
+    // witnesses that each covered pixel is composited exactly once, never double-darkened.
+    const WorkingPixel twice{1.0F, 0.25F, 0.25F, 1.0F};
+    for (int y = 0; y < 2; ++y) {
+      for (int x = 0; x < 2; ++x) {
+        const WorkingPixel p = t->pixel(0, x, y);
+        REQUIRE(p == once);
+        REQUIRE_FALSE(p == twice);
+      }
+    }
+    // A pixel outside the region is untouched (still opaque white).
+    REQUIRE(t->pixel(0, 3, 3) == (WorkingPixel{1.0F, 1.0F, 1.0F, 1.0F}));
+
+    // Exactly one damage record spanning the dab's touched tile.
+    REQUIRE(dsink.last.size() == 1);
+    REQUIRE(dsink.last[0].object == cid);
+  }
+
+  // A full-coverage opaque dab reduces to the prior REPLACE, byte-for-byte: out == color.
+  {
+    RasterContent content(white_4x4(), /*tile_edge=*/2);
+    RasterStore& store = content.store();
+    Rect touched{};
+    const StateHandle after =
+        store.paint(content.base_handle(), Rect{0.0, 0.0, 2.0, 2.0}, k_red, touched);
+    const TileTablePtr t = store.resolve(after);
+    for (int y = 0; y < 2; ++y) {
+      for (int x = 0; x < 2; ++x) {
+        REQUIRE(t->pixel(0, x, y) == k_red); // exactly the old put(px, ..., color)
+      }
+    }
+  }
+}
+
 // Raster's sink wiring drives the already-landed L2 lifecycle end-to-end against
 // a real Model: a pin holds the captured state, and superseding + draining
 // releases the superseded version by refcount (dropping its no-longer-shared

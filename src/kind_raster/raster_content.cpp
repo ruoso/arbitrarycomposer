@@ -94,6 +94,31 @@ void put(float* px, int edge, int ix, int iy, const WorkingPixel& c) {
   px[o + 3] = c[3];
 }
 
+WorkingPixel get(const float* px, int edge, int ix, int iy) {
+  const std::size_t o = (static_cast<std::size_t>(iy) * static_cast<std::size_t>(edge) +
+                         static_cast<std::size_t>(ix)) *
+                        k_tile_channels;
+  return {px[o], px[o + 1], px[o + 2], px[o + 3]};
+}
+
+// Premultiplied linear source-over of `color` OVER `dst` at coverage `a`
+// (kinds.raster_brush_dab, doc 07 rules 2-3). The tile format is already
+// premultiplied, so scaling the premultiplied `color` by the scalar `a` scales its
+// RGB and alpha together -- exactly a coverage-attenuated source -- and no
+// unpremultiply/premultiply round-trip is needed. Fixed operation order, no `libm`,
+// so the result is a byte-exact deterministic function of `dst`, `color`, and `a`.
+// Each output channel is clamped to non-negative (matching the resampling kernels,
+// doc 07:41-47); RGB is deliberately NOT clamped to <= alpha (HDR headroom above
+// alpha is legitimate). For `a == 1` and an opaque `color` (`color[3] == 1`) the
+// factor `1 - color[3]*a` is `0`, so `out == color` -- byte-identical to the prior
+// `put(px, ..., color)` REPLACE (Constraint 3, the load-bearing preservation).
+WorkingPixel blend_over(const WorkingPixel& dst, const WorkingPixel& color, float a) {
+  a = std::clamp(a, 0.0F, 1.0F);
+  const float ia = 1.0F - color[3] * a;
+  return {std::max(0.0F, color[0] * a + dst[0] * ia), std::max(0.0F, color[1] * a + dst[1] * ia),
+          std::max(0.0F, color[2] * a + dst[2] * ia), std::max(0.0F, color[3] * a + dst[3] * ia)};
+}
+
 // The ONE decimation kernel of the pyramid: parent pixel (cpx, cpy) of the rung
 // above `child`, through media's frozen 6-tap Lanczos-3 half-band bank. Both the
 // full pyramid build and the paint-time incremental recompute go through this --
@@ -376,6 +401,14 @@ void RasterStore::set_base(TileTablePtr table) {
 
 StateHandle RasterStore::paint(StateHandle base, const Rect& region, const WorkingPixel& color,
                                Rect& touched_out) {
+  // The flat fill is the full-coverage special case: a constant `1.0f` sampler routes
+  // through the same source-over blend, so an opaque `color` reduces to the prior
+  // REPLACE byte-for-byte (Decision: keep the flat overload as a forwarding case).
+  return paint(base, region, color, [](int, int) { return 1.0F; }, touched_out);
+}
+
+StateHandle RasterStore::paint(StateHandle base, const Rect& region, const WorkingPixel& color,
+                               const CoverageSampler& coverage, Rect& touched_out) {
   TileTablePtr baseTable = resolve(base);
   if (!baseTable) {
     baseTable = base_table();
@@ -417,7 +450,11 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
             const int gx = tx * edge + ix;
             const int gy = ty * edge + iy;
             if (gx < w && gy < h && center_inside(region, gx, gy)) {
-              put(px, edge, ix, iy, color);
+              // Composite `color` OVER the destination once, at this pixel's coverage
+              // (Constraint 4: each covered pixel is visited exactly once per dab).
+              const float a = coverage(gx, gy);
+              const WorkingPixel dst = get(px, edge, ix, iy);
+              put(px, edge, ix, iy, blend_over(dst, color, a));
             }
           }
         }
@@ -485,6 +522,30 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
 
   auto table = std::make_shared<const TileTable>(w, h, edge, std::move(levels), &d_pool);
   return intern(std::move(table));
+}
+
+CoverageSampler round_dab(double cx, double cy, double inner_radius, double outer_radius,
+                          float opacity) {
+  const double inner2 = inner_radius * inner_radius;
+  const double outer2 = outer_radius * outer_radius;
+  const double span = outer2 - inner2;
+  return [cx, cy, inner2, outer2, span, opacity](int gx, int gy) -> float {
+    // Pixel center at (gx+0.5, gy+0.5) -- the convention `center_inside` uses.
+    const double dx = (static_cast<double>(gx) + 0.5) - cx;
+    const double dy = (static_cast<double>(gy) + 0.5) - cy;
+    const double d2 = dx * dx + dy * dy;
+    if (d2 <= inner2) {
+      return opacity; // hard interior (also the whole of a hard dab: inner == outer)
+    }
+    if (d2 >= outer2 || span <= 0.0) {
+      return 0.0F; // outside the outer radius (span <= 0 is a hard dab, no falloff band)
+    }
+    // Normalized squared radial distance remapped by a fixed-order cubic (a libm-free
+    // smoothstep) that is 1 at the inner edge and 0 at the outer edge, scaled by opacity.
+    const double t = (d2 - inner2) / span;
+    const double falloff = 1.0 - (t * t * (3.0 - 2.0 * t));
+    return static_cast<float>(opacity * falloff);
+  };
 }
 
 void RasterStore::retain_version(StateHandle handle) {
@@ -659,8 +720,13 @@ void RasterContent::release(StateHandle state) { d_store.release_version(state);
 
 void RasterContent::paint(Model::Transaction& txn, ObjectId self, const Rect& region,
                           const WorkingPixel& color) {
+  paint(txn, self, region, color, [](int, int) { return 1.0F; });
+}
+
+void RasterContent::paint(Model::Transaction& txn, ObjectId self, const Rect& region,
+                          const WorkingPixel& color, const CoverageSampler& coverage) {
   Rect touched{};
-  const StateHandle after = d_store.paint(d_base, region, color, touched);
+  const StateHandle after = d_store.paint(d_base, region, color, coverage, touched);
   txn.set_content_state(self, after);
   Damage dmg;
   dmg.object = self;

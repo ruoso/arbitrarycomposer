@@ -74,6 +74,32 @@ struct DecodedImage {
 // side of the line and hand the kind nothing but pixels.
 using TileFill = std::function<bool(std::size_t index, std::span<float> dst)>;
 
+// A per-pixel coverage source over level-0 pixel coordinates (kinds.raster_brush_dab).
+// `RasterStore::paint` samples it at every level-0 pixel whose center falls inside the
+// paint region and folds the returned value -- final coverage in [0,1], clamped by the
+// blend -- into the source-over composite (`a` in `out = color*a + dst*(1 - color[3]*a)`).
+// `gx,gy` are GLOBAL level-0 pixel coordinates; the sampler is evaluated at the same
+// pixel-center convention `center_inside` uses (the center of pixel (gx,gy) is at
+// `gx+0.5, gy+0.5`). It mirrors `TileFill`'s L4-boundary rationale (doc 17): the seam
+// hands the kind nothing but plain scalars, so a coverage generator -- the reference
+// round dab, or an explicit alpha mask -- stays on the caller's side of the line. A
+// constant `1.0f` sampler is the full-coverage special case the flat-fill overload
+// forwards with (Decision: keep the flat overload as a forwarding special case).
+using CoverageSampler = std::function<float(int gx, int gy)>;
+
+// The reference round-dab coverage generator (kinds.raster_brush_dab, doc 17:61 -- an
+// editing tool, so it lives in `kind_raster`, not `media`). Produces final per-pixel
+// coverage for a circular brush centered at (`cx`,`cy`) in level-0 pixel coordinates:
+// full `opacity` inside `inner_radius`, zero outside `outer_radius`, and a `libm`-free
+// fixed-order polynomial falloff over normalized SQUARED radial distance in between,
+// clamped to [0,1]. A HARD dab is `inner_radius == outer_radius` (binary coverage:
+// pixel-center inside the circle, scaled by opacity); a SOFT dab has
+// `inner_radius < outer_radius`. No `sqrtf`/`exp` -- the coverage is a byte-exact
+// deterministic function so its goldens are byte-exact (doc 16, Decision: libm-free
+// polynomial falloff). The exact profile is pinned by golden, not a designed invariant.
+CoverageSampler round_dab(double cx, double cy, double inner_radius, double outer_radius,
+                          float opacity);
+
 // One mip level: a grid of `tiles_x * tiles_y` tile blobs (row-major) covering a
 // `width x height` logical pixel field. Level 0 is the decoded buffer; each
 // higher level is a 2:1 Lanczos-3 half-band decimation of the level below
@@ -206,6 +232,15 @@ public:
   // the region touches (plus the mip tiles geometrically above them) and shares
   // every untouched blob with `base` by the pool refcount (doc 14:164-171).
   // Records the touched-tile bounding rect for the caller's damage.
+  //
+  // The `coverage` overload composites `color` OVER the destination at each covered
+  // pixel in premultiplied linear working floats (kinds.raster_brush_dab, doc 14 paint
+  // block / doc 07 rules 2-3): with `a = clamp(coverage(gx,gy), 0, 1)`,
+  // `out = color*a + dst*(1 - color[3]*a)`, per-channel non-negative-clamped, no libm.
+  // The flat overload forwards a constant `1.0f` sampler, so a full-coverage opaque
+  // color reduces byte-for-byte to the prior REPLACE (Decision: forwarding special case).
+  StateHandle paint(StateHandle base, const Rect& region, const WorkingPixel& color,
+                    const CoverageSampler& coverage, Rect& touched_out);
   StateHandle paint(StateHandle base, const Rect& region, const WorkingPixel& color,
                     Rect& touched_out);
 
@@ -292,6 +327,13 @@ public:
   // `set_content_state`, and adds the touched-tile damage to the transaction.
   // `self` is this content's object id. The gesture's coalescing is the caller's
   // (via `Transaction::coalesce`).
+  //
+  // The `coverage` overload is the brush dab (kinds.raster_brush_dab): it composites
+  // `color` OVER the destination at the caller-supplied per-pixel coverage (a round-dab
+  // falloff, or an explicit alpha mask) instead of replacing. The flat overload forwards
+  // a constant `1.0f` sampler, so a full-coverage opaque color is the prior REPLACE.
+  void paint(Model::Transaction& txn, ObjectId self, const Rect& region, const WorkingPixel& color,
+             const CoverageSampler& coverage);
   void paint(Model::Transaction& txn, ObjectId self, const Rect& region, const WorkingPixel& color);
 
   // The live base version handle (what an unpinned render reads).

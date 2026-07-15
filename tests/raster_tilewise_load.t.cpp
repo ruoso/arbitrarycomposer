@@ -82,9 +82,8 @@ struct AllocHeader {
   std::size_t size;
   std::size_t tracked;
 };
-constexpr std::size_t k_hdr =
-    (sizeof(AllocHeader) + __STDCPP_DEFAULT_NEW_ALIGNMENT__ - 1) /
-    __STDCPP_DEFAULT_NEW_ALIGNMENT__ * __STDCPP_DEFAULT_NEW_ALIGNMENT__;
+constexpr std::size_t k_hdr = (sizeof(AllocHeader) + __STDCPP_DEFAULT_NEW_ALIGNMENT__ - 1) /
+                              __STDCPP_DEFAULT_NEW_ALIGNMENT__ * __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 
 std::atomic<bool> g_arm{false};
 std::atomic<std::size_t> g_live{0};
@@ -106,8 +105,7 @@ void* count_alloc(std::size_t n) noexcept {
     while (live > peak && !g_peak.compare_exchange_weak(peak, live, std::memory_order_relaxed)) {
     }
     std::size_t largest = g_largest.load(std::memory_order_relaxed);
-    while (n > largest &&
-           !g_largest.compare_exchange_weak(largest, n, std::memory_order_relaxed)) {
+    while (n > largest && !g_largest.compare_exchange_weak(largest, n, std::memory_order_relaxed)) {
     }
   }
   return raw + k_hdr;
@@ -175,9 +173,9 @@ namespace {
 // class -- so ONE TILE BLOB is 65 536 bytes at both grid sizes, and the bound below is the
 // same constant whether the image is 256x256 or 1024x1024.
 constexpr int k_edge = 64;
-constexpr std::size_t k_blob_bytes =
-    static_cast<std::size_t>(k_edge) * static_cast<std::size_t>(k_edge) * k_tile_channels *
-    sizeof(float);
+constexpr std::size_t k_blob_bytes = static_cast<std::size_t>(k_edge) *
+                                     static_cast<std::size_t>(k_edge) * k_tile_channels *
+                                     sizeof(float);
 
 // One tile blob, plus a fixed slack that does NOT scale with the image: the per-tile decode
 // temporaries (the fetched frame, the decompressed storage bytes, the unshuffled working
@@ -233,8 +231,7 @@ DecodedImage textured(int w, int h) {
   img.width = w;
   img.height = h;
   img.format = k_working_rgba32f;
-  std::vector<float> f(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) *
-                       k_tile_channels);
+  std::vector<float> f(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * k_tile_channels);
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
       for (std::size_t c = 0; c < k_tile_channels; ++c) {
@@ -465,15 +462,15 @@ TEST_CASE("a tile blob's padding bytes survive the load, and re-save reproduces 
   Document zero_doc;
   KindBridge zero_bridge;
   RasterTileStore zero_memo;
-  REQUIRE(load_document(*saved, zero_doc, zero_bridge, scene.registry, project.base_uri(),
-                        &source, &zero_memo)
+  REQUIRE(load_document(*saved, zero_doc, zero_bridge, scene.registry, project.base_uri(), &source,
+                        &zero_memo)
               .has_value());
 
   Document pad_doc;
   KindBridge pad_bridge;
   RasterTileStore pad_memo;
-  REQUIRE(load_document(padded_doc.dump(), pad_doc, pad_bridge, scene.registry,
-                        project.base_uri(), &source, &pad_memo)
+  REQUIRE(load_document(padded_doc.dump(), pad_doc, pad_bridge, scene.registry, project.base_uri(),
+                        &source, &pad_memo)
               .has_value());
 
   RasterContent* const zero_raster = only_raster(zero_doc);
@@ -506,6 +503,6 @@ TEST_CASE("a tile blob's padding bytes survive the load, and re-save reproduces 
 
   const json resaved_params = params_of(*resaved);
   CHECK(resaved_params.at("blobs") == padded_blobs);
-  CHECK(resave_memo.tiles_hashed() == 4U); // the fresh memo really did hash all four
+  CHECK(resave_memo.tiles_hashed() == 4U);  // the fresh memo really did hash all four
   CHECK(resave_sink.blobs_written() == 0U); // ...and every name was already on disk
 }
