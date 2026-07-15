@@ -69,10 +69,15 @@ TEST_CASE(
   arbc::Document document;
   const arbc::ObjectId content = document.add_content(std::make_shared<arbc::SolidContent>(
       arbc::Rgba{0.25F, 0.5F, 0.75F, 1.0F}, arbc::Rect{0.0, 0.0, 512.0, 512.0}));
-  document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
 
   arbc::CpuBackend backend;
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  // The single composition is the root the offline driver sources; anchoring the
+  // viewport here also drives the direct interactive walk (doc 05:28-36). Both
+  // must produce the same golden bytes.
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
 
   // The offline whole-region reference.
   const auto whole_result = render_offline(document, viewport, backend);
@@ -99,10 +104,13 @@ TEST_CASE(
                                                     arbc::Rect{0.0, 0.0, 512.0, 512.0});
   arbc::Document document;
   const arbc::ObjectId content = document.add_content(counting);
-  document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
 
   arbc::CpuBackend backend;
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  // Anchor the direct interactive walk at the scene's composition (doc 05:28-36).
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   const arbc::DocStatePtr state = document.pin();
   const auto resolver = [&document](arbc::ObjectId id) { return document.resolve(id); };
   arbc::SurfacePool pool(backend);

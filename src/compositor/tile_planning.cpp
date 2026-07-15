@@ -367,8 +367,16 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
 
   // The per-layer cull/compose/region walk is `render_frame`'s front half
   // (compositor.cpp:16-46), reused verbatim; the interactive path forks after
-  // it into quantize -> tile-split -> lookup -> tiled-composite.
-  state.for_each_layer([&](const LayerRecord& layer) {
+  // it into quantize -> tile-split -> lookup -> tiled-composite. Scoped to the
+  // anchored composition's direct members (doc 05:28-36, Decision 1): a frame
+  // draws exactly one composition's layers, and an invalid `anchor` no-ops (an
+  // empty frame) rather than reviving the document-global walk (Decision 3).
+  state.for_each_layer_in(viewport.anchor, [&](ObjectId layer_id) {
+    const LayerRecord* layer_ptr = state.find_layer(layer_id);
+    if (layer_ptr == nullptr) {
+      return;
+    }
+    const LayerRecord& layer = *layer_ptr;
     if (!layer.visible() || layer.opacity <= 0.0) {
       return;
     }

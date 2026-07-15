@@ -146,7 +146,10 @@ std::vector<std::byte> render_flat(Scene& scene, Backend& backend, int dim, doub
   SurfacePool pool(backend);
   auto target = backend.make_surface(dim, dim, k_working_rgba32f);
   REQUIRE(target.has_value());
-  const Viewport viewport{dim, dim, Affine::scaling(scale, scale)};
+  // Anchor the flat compositor at the child composition -- the same members
+  // nested walks -- now that the frame walk is composition-scoped
+  // (compositor.root_composition_frame_walk, doc 05:28-36).
+  const Viewport viewport{dim, dim, Affine::scaling(scale, scale), scene.comp};
   render_frame(*doc, scene.resolver(), viewport, backend, pool, **target);
   return bytes_of(**target);
 }
@@ -165,7 +168,7 @@ std::vector<std::byte> render_flat_then_convert(Scene& scene, Backend& backend, 
   SurfacePool pool(backend);
   auto child_composed = backend.make_surface(dim, dim, child_space);
   REQUIRE(child_composed.has_value());
-  const Viewport viewport{dim, dim, Affine::scaling(scale, scale)};
+  const Viewport viewport{dim, dim, Affine::scaling(scale, scale), scene.comp};
   render_frame(*doc, scene.resolver(), viewport, backend, pool, **child_composed);
 
   auto parent_target = backend.make_surface(dim, dim, parent_space);

@@ -44,18 +44,44 @@ build_pull_identity_map(const DocRoot& state, const std::function<Content*(Objec
   std::uint64_t next = 1;
   std::vector<const Content*> frontier = roots;
   std::unordered_set<const Content*> walked(roots.begin(), roots.end());
+  // Reach a newly-discovered child: guard against cycles/shared re-encounters, mint the
+  // next synthesized id unless the child already carries a layer-root identity (a shared
+  // root+input keeps its real model id), and push it onto the frontier.
+  const auto reach = [&](const Content* child) {
+    if (child == nullptr || !walked.insert(child).second) {
+      return; // null slot, or a shared child already reached (keyed once)
+    }
+    frontier.push_back(child);
+    if (ids->find(child) == ids->end()) {
+      ids->emplace(child, synthetic_id(next++));
+    }
+  };
   while (!frontier.empty()) {
     const Content* const c = frontier.back();
     frontier.pop_back();
     for (const ContentRef child : c->inputs()) {
-      if (child == nullptr || !walked.insert(child).second) {
-        continue; // null slot, or a shared child already reached (keyed once)
-      }
-      frontier.push_back(child);
-      // A child already carrying a layer-root identity (shared root+input) keeps it:
-      // that content IS a model object and should key under its real identity.
-      if (ids->find(child) == ids->end()) {
-        ids->emplace(child, synthetic_id(next++));
+      reach(child);
+    }
+    // Descend the nesting boundary STRUCTURALLY, the same seam the serializer walks
+    // (`writer.cpp:290`): a content naming a child composition (`composition_ref()`)
+    // reaches that composition's member contents even while it is UNATTACHED and its
+    // `inputs()` memo is still the empty pre-attach placeholder (`nested_content.cpp:119-127`).
+    // The identity map is an INPUT to `bind_operators`, so a nesting content is necessarily
+    // described once before it attaches; walking `inputs()` alone would then leave every
+    // nested-child leaf keyed under `ObjectId{}` -- colliding in the cache and, worse,
+    // leaving an async leaf arrival unroutable back to the enclosing nested layer, so a
+    // nested scene under a worker pool never schedules its follow-up and quiesces blank.
+    // An EXTERNAL child (`external_composition_ref()`) is another document's data and is
+    // not walked, exactly as the serializer refuses to inline it.
+    if (c->external_composition_ref().empty()) {
+      if (const ObjectId child_comp = c->composition_ref(); child_comp.valid()) {
+        state.for_each_layer_in(child_comp, [&](ObjectId layer_id) {
+          const LayerRecord* const layer = state.find_layer(layer_id);
+          if (layer == nullptr) {
+            return;
+          }
+          reach(resolve(layer->content));
+        });
       }
     }
   }

@@ -202,8 +202,9 @@ private:
   HostViewport d_view;
 };
 
-// A nested scene: a child composition of TWO fade-over-solid layers, embedded at the
-// parent's global root (the layer walk both drivers run). Both child layers are
+// A nested scene: a child composition of TWO fade-over-solid layers, embedded as the sole
+// member of a ROOT composition (created FIRST so the drivers source it, then walked
+// composition-scoped, compositor.root_composition_frame_walk). Both child layers are
 // operators, so the binder's attach-before-`inputs()` order is exercised THROUGH the
 // nesting boundary -- the child's fades are reachable only once nested itself is attached
 // and its `inputs()` memo projects them. Both are `Timed`, which is what A5 needs (two
@@ -221,12 +222,15 @@ struct NestedScene {
   ObjectId nest_layer{};
 
   NestedScene() {
+    const ObjectId root =
+        doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     const ObjectId child =
         doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     doc.attach_layer(child, doc.add_layer(doc.add_content(fade_a), Affine::identity()));
     doc.attach_layer(child, doc.add_layer(doc.add_content(fade_b), Affine::identity()));
     nested = std::make_shared<NestedContent>(child);
     nest_layer = doc.add_layer(doc.add_content(nested), Affine::identity());
+    doc.attach_layer(root, nest_layer);
   }
 };
 
@@ -243,10 +247,14 @@ TEST_CASE("interactive: a fade at an interior envelope and a crossfade at an int
   // `Document` is non-movable and the operators borrow the solids non-owningly, so all
   // four objects outlive every render below.
   Document doc;
+  const ObjectId comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
   const ObjectId fade_layer = doc.add_layer(
       doc.add_content(std::make_shared<FadeContent>(&under, half_fade())), Affine::identity());
-  doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, half_crossfade())),
-                Affine::identity());
+  const ObjectId xfade_layer = doc.add_layer(
+      doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, half_crossfade())),
+      Affine::identity());
+  doc.attach_layer(comp, fade_layer);
+  doc.attach_layer(comp, xfade_layer);
 
   // At t == 500 the fade's envelope is 0.5 and the crossfade's w is 0.5: NEITHER is an
   // identity endpoint, so the compositor drives both operators' own `render`, each of
@@ -359,10 +367,15 @@ TEST_CASE("interactive: the operator and nested goldens are byte-identical at th
     SolidContent to{Rgba{0.125F, 0.375F, 0.75F, 1.0F}, canvas()};
 
     Document doc;
+    const ObjectId comp =
+        doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     const ObjectId fade_layer = doc.add_layer(
         doc.add_content(std::make_shared<FadeContent>(&under, half_fade())), Affine::identity());
-    doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, half_crossfade())),
-                  Affine::identity());
+    const ObjectId xfade_layer = doc.add_layer(
+        doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, half_crossfade())),
+        Affine::identity());
+    doc.attach_layer(comp, fade_layer);
+    doc.attach_layer(comp, xfade_layer);
 
     BoundViewport view(doc, backend, fade_layer, pool_config, InteractiveRenderer::Clock{}, k_park);
     view.step_to_quiescence(k_interior);

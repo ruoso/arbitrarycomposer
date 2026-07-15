@@ -104,13 +104,15 @@ public:
 
 // A single identity-transform layer bound to a fresh content id, with the given
 // temporal placement (`span` / `time_map`) set through the transactional setters.
-arbc::ObjectId add_placed_layer(arbc::Model& model, const TimeRange& span,
-                                const TimeMap& time_map) {
+arbc::ObjectId add_placed_layer(arbc::Model& model, const TimeRange& span, const TimeMap& time_map,
+                                arbc::ObjectId& comp) {
   auto txn = model.transact();
   const arbc::ObjectId content_id = txn.add_content(0);
   const arbc::ObjectId layer = txn.add_layer(content_id, arbc::Affine::identity());
   txn.set_span(layer, span);
   txn.set_time_map(layer, time_map);
+  comp = txn.add_composition(256, 256);
+  txn.attach_layer(comp, layer);
   REQUIRE(txn.commit().has_value());
   return content_id;
 }
@@ -119,10 +121,10 @@ arbc::ObjectId add_placed_layer(arbc::Model& model, const TimeRange& span,
 // the caller's `counters`, read as absolute values (cold cache -> a present layer
 // renders exactly once).
 void drive_frame(const arbc::DocRoot& state, const arbc::ContentResolver& resolver,
-                 Time composition_time, CompositorCounters& counters) {
+                 Time composition_time, CompositorCounters& counters, arbc::ObjectId anchor) {
   MarkBackend backend;
   // A 256x256 viewport over the 512x512 content -> exactly one rung-0 tile.
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), anchor};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
@@ -142,7 +144,8 @@ TEST_CASE("compositor culls a layer half-open on its span, issuing zero renders 
   const Time out{200};
   RecordingTimedContent content;
   arbc::Model model;
-  const arbc::ObjectId content_id = add_placed_layer(model, TimeRange{in, out}, TimeMap{});
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_placed_layer(model, TimeRange{in, out}, TimeMap{}, comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
@@ -153,7 +156,7 @@ TEST_CASE("compositor culls a layer half-open on its span, issuing zero renders 
   // skip", doc 11:21,72).
   {
     CompositorCounters c;
-    drive_frame(*state, resolver, Time{in.flicks - 1}, c);
+    drive_frame(*state, resolver, Time{in.flicks - 1}, c, comp);
     CHECK(c.requests_issued() == 0);
     CHECK(c.composites() == 0);
     CHECK(c.operator_renders() == 0);
@@ -161,21 +164,21 @@ TEST_CASE("compositor culls a layer half-open on its span, issuing zero renders 
   // in: the lower bound is INCLUDED -> present, renders and composites.
   {
     CompositorCounters c;
-    drive_frame(*state, resolver, in, c);
+    drive_frame(*state, resolver, in, c, comp);
     CHECK(c.requests_issued() == 1);
     CHECK(c.composites() == 1);
   }
   // out-1: the last present instant -> present.
   {
     CompositorCounters c;
-    drive_frame(*state, resolver, Time{out.flicks - 1}, c);
+    drive_frame(*state, resolver, Time{out.flicks - 1}, c, comp);
     CHECK(c.requests_issued() == 1);
     CHECK(c.composites() == 1);
   }
   // out: the upper bound is EXCLUDED (half-open) -> absent, zero renders.
   {
     CompositorCounters c;
-    drive_frame(*state, resolver, out, c);
+    drive_frame(*state, resolver, out, c, comp);
     CHECK(c.requests_issued() == 0);
     CHECK(c.composites() == 0);
     CHECK(c.operator_renders() == 0);
@@ -187,7 +190,8 @@ TEST_CASE("compositor: default all() span is always present (a still is never cu
   RecordingTimedContent content;
   arbc::Model model;
   // Default temporal placement: all()-span, identity time_map -- a still.
-  const arbc::ObjectId content_id = add_placed_layer(model, TimeRange::all(), TimeMap{});
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_placed_layer(model, TimeRange::all(), TimeMap{}, comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
@@ -195,7 +199,7 @@ TEST_CASE("compositor: default all() span is always present (a still is never cu
   // Present at a wildly negative and a large positive instant alike.
   for (const Time t : {Time{-1'000'000}, Time{0}, Time{999'000'000}}) {
     CompositorCounters c;
-    drive_frame(*state, resolver, t, c);
+    drive_frame(*state, resolver, t, c, comp);
     CHECK(c.requests_issued() == 1);
     CHECK(c.composites() == 1);
   }
@@ -209,13 +213,14 @@ TEST_CASE("compositor requests content at the time_map-evaluated content-local t
     arbc::Model model;
     // in=10, rate=2/1, offset=3, driven at t=20 -> local = (20-10)*2+3 = 23.
     const TimeMap map{Time{10}, Rational(2, 1), Time{3}};
-    const arbc::ObjectId content_id = add_placed_layer(model, TimeRange::all(), map);
+    arbc::ObjectId comp{};
+    const arbc::ObjectId content_id = add_placed_layer(model, TimeRange::all(), map, comp);
     const arbc::DocStatePtr state = model.current();
     const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
       return id == content_id ? &content : nullptr;
     };
     CompositorCounters c;
-    drive_frame(*state, resolver, Time{20}, c);
+    drive_frame(*state, resolver, Time{20}, c, comp);
     REQUIRE(content.render_count == 1);
     CHECK(content.last_time == Time{23});
   }
@@ -226,19 +231,20 @@ TEST_CASE("compositor requests content at the time_map-evaluated content-local t
     RecordingTimedContent content;
     arbc::Model model;
     const TimeMap map{Time{0}, Rational(-1, 1), Time{100}};
-    const arbc::ObjectId content_id = add_placed_layer(model, TimeRange::all(), map);
+    arbc::ObjectId comp{};
+    const arbc::ObjectId content_id = add_placed_layer(model, TimeRange::all(), map, comp);
     const arbc::DocStatePtr state = model.current();
     const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
       return id == content_id ? &content : nullptr;
     };
     // t=30 -> local = (30-0)*-1+100 = 70; t=40 -> local = 60 (earlier: reversed).
     CompositorCounters c30;
-    drive_frame(*state, resolver, Time{30}, c30);
+    drive_frame(*state, resolver, Time{30}, c30, comp);
     REQUIRE(content.render_count == 1);
     CHECK(content.last_time == Time{70});
 
     CompositorCounters c40;
-    drive_frame(*state, resolver, Time{40}, c40);
+    drive_frame(*state, resolver, Time{40}, c40, comp);
     CHECK(content.last_time == Time{60}); // advanced parent -> earlier local time
   }
 }
@@ -253,13 +259,14 @@ TEST_CASE("compositor culls a layer whose time_map overflows at the driven insta
   // gate passes and the cull is the time_map-evaluation error path.
   const TimeMap overflowing{Time{0}, Rational(std::numeric_limits<std::int64_t>::max(), 1),
                             Time{0}};
-  const arbc::ObjectId content_id = add_placed_layer(model, TimeRange::all(), overflowing);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_placed_layer(model, TimeRange::all(), overflowing, comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
   CompositorCounters c;
-  drive_frame(*state, resolver, Time{100}, c);
+  drive_frame(*state, resolver, Time{100}, c, comp);
   CHECK(content.render_count == 0); // culled: never rendered
   CHECK(c.requests_issued() == 0);
   CHECK(c.composites() == 0);

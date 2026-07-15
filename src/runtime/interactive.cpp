@@ -122,9 +122,21 @@ void InteractiveRenderer::refresh_identity_memo(const DocRoot& state,
   }
   // Every operator layer, not the culled set: `map_damage_to_device` culls after
   // routing, and over-approximating the routed damage is sound (doc 13:124-128).
+  //
+  // A content naming a child composition (`composition_ref()`) is an operator here even
+  // when `is_operator` is momentarily false: this memo is built BEFORE `bind_operators`,
+  // and an unattached `NestedContent` reports an empty `inputs()` (`nested_content.cpp:119-127`),
+  // so the leaf/operator test would drop the very nesting layers a nested-child leaf's
+  // async arrival must route up to. `route_operator_damage` queries `inputs()` later
+  // (Step 6, post-attach), when the memo IS populated, so admitting the layer here on its
+  // structural child edge -- the same edge `build_pull_identity_map` descends -- is what
+  // lets the arrival reach the enclosing nesting layer and schedule the follow-up frame.
   d_operator_layers.clear();
   state.for_each_layer([&](const LayerRecord& layer) {
-    if (const Content* const content = resolve(layer.content); is_operator(content)) {
+    const Content* const content = resolve(layer.content);
+    const bool nesting = content != nullptr && content->composition_ref().valid() &&
+                         content->external_composition_ref().empty();
+    if (is_operator(content) || nesting) {
       d_operator_layers.push_back(OperatorLayer{layer.content, content});
     }
   });

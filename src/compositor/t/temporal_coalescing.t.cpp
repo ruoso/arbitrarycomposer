@@ -177,10 +177,12 @@ void put_tile(TileCache& cache, const TileKey& key) {
 }
 
 // A single identity-transform Timed layer bound to a fresh content id.
-arbc::ObjectId add_layer(arbc::Model& model) {
+arbc::ObjectId add_layer(arbc::Model& model, arbc::ObjectId& comp) {
   auto txn = model.transact();
   const arbc::ObjectId content_id = txn.add_content(0);
-  txn.add_layer(content_id, arbc::Affine::identity());
+  const arbc::ObjectId layer = txn.add_layer(content_id, arbc::Affine::identity());
+  comp = txn.add_composition(256, 256);
+  txn.attach_layer(comp, layer);
   REQUIRE(txn.commit().has_value());
   return content_id;
 }
@@ -257,13 +259,14 @@ TEST_CASE("driver: an advance within one native frame issues zero renders (count
   MarkBackend backend;
   TimedContent content;
   arbc::Model model;
-  const arbc::ObjectId content_id = add_layer(model);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_layer(model, comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
   // A 256x256 viewport -> exactly one rung-0 tile, so "renders exactly once".
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   CompositorCounters counters;
@@ -300,12 +303,13 @@ TEST_CASE("driver: a coalesced sub-frame advance is a quiescent temporal frame (
   MarkBackend backend;
   TimedContent content;
   arbc::Model model;
-  const arbc::ObjectId content_id = add_layer(model);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_layer(model, comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
 

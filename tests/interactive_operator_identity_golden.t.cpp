@@ -48,6 +48,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "support/root_anchor.hpp"
+
 #include <chrono>
 #include <cstring>
 #include <memory>
@@ -115,8 +117,10 @@ InteractiveFrame interactive_frame(Document& doc, Backend& backend, Time time) {
   REQUIRE(target.has_value());
 
   InteractiveRenderer renderer({}, epoch_clock());
-  renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {}, time,
-                        k_budget);
+  // `InteractiveRenderer::render_frame` renders the composition the Viewport anchors and
+  // does not source the root itself, so anchor at the document's root composition.
+  const Viewport vp{k_dim, k_dim, Affine::identity(), arbc::test::root_composition_of(*pin)};
+  renderer.render_frame(*pin, resolve, vp, cache, backend, pool, **target, {}, time, k_budget);
   return InteractiveFrame{snapshot(**target), renderer.counters().operator_renders(),
                           renderer.counters().degraded_composites(),
                           renderer.counters().composites()};
@@ -135,8 +139,10 @@ TEST_CASE("interactive: a crossfade identity endpoint delivers its input's pixel
   // `Document` is non-movable and the crossfade borrows both solids non-owningly, so
   // all three outlive every render below.
   Document doc;
-  doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, window_params())),
-                Affine::identity());
+  const ObjectId comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  doc.attach_layer(comp, doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(
+                                           &from, &to, window_params())),
+                                       Affine::identity()));
 
   SECTION("w == 0 serves input 0") {
     const InteractiveFrame frame = interactive_frame(doc, backend, Time{500});
@@ -163,8 +169,10 @@ TEST_CASE("interactive: a fade at envelope == 1 delivers its input's pixels (byt
   // No fade window at all: the envelope is 1 everywhere, so `identity()` returns
   // input 0 at every instant.
   Document doc;
-  doc.add_layer(doc.add_content(std::make_shared<FadeContent>(&solid, FadeParams{})),
-                Affine::identity());
+  const ObjectId comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  doc.attach_layer(
+      comp, doc.add_layer(doc.add_content(std::make_shared<FadeContent>(&solid, FadeParams{})),
+                          Affine::identity()));
 
   const InteractiveFrame frame = interactive_frame(doc, backend, Time{500});
   CHECK(byte_identical(frame.pixels, exported_frame(doc, backend, Time{500})));
@@ -178,8 +186,10 @@ TEST_CASE("interactive: an identity endpoint issues zero operator renders and de
   SolidContent to{Rgba{0.125F, 0.375F, 0.75F, 1.0F}, canvas()};
 
   Document doc;
-  doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, window_params())),
-                Affine::identity());
+  const ObjectId comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  doc.attach_layer(comp, doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(
+                                           &from, &to, window_params())),
+                                       Affine::identity()));
 
   // The interactive twin of `tests/crossfade_identity_counter.t.cpp`: the identity
   // plan short-circuits, so the operator is never rendered, and the delivered tile is
@@ -201,8 +211,10 @@ TEST_CASE("interactive: a crossfade's two inputs do not alias one cache key") {
   SolidContent to{Rgba{0.125F, 0.375F, 0.75F, 1.0F}, canvas()};
 
   Document doc;
-  doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, window_params())),
-                Affine::identity());
+  const ObjectId comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  doc.attach_layer(comp, doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(
+                                           &from, &to, window_params())),
+                                       Affine::identity()));
 
   // ONE renderer, ONE cache, ONE revision. The inputs are Static, so their tile keys
   // omit `achieved_time` and are clock-invariant: frame 1's cached input-0 tile is
@@ -218,12 +230,13 @@ TEST_CASE("interactive: a crossfade's two inputs do not alias one cache key") {
       backend.make_surface(k_dim, k_dim, pin->working_space());
   REQUIRE(target.has_value());
   InteractiveRenderer renderer({}, epoch_clock());
+  // The direct interactive driver renders the anchored composition; anchor at `comp`.
+  const Viewport vp{k_dim, k_dim, Affine::identity(), comp};
 
-  renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {}, Time{500},
-                        k_budget);
+  renderer.render_frame(*pin, resolve, vp, cache, backend, pool, **target, {}, Time{500}, k_budget);
   const std::vector<float> at_w0 = snapshot(**target);
 
-  renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {}, Time{2500},
+  renderer.render_frame(*pin, resolve, vp, cache, backend, pool, **target, {}, Time{2500},
                         k_budget);
   const std::vector<float> at_w1 = snapshot(**target);
 

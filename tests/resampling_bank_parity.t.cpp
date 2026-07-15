@@ -98,8 +98,8 @@ TEST_CASE("a compositor rung is byte-identical to a kind_raster mip through the 
   bool compared_interior = false;
   for (int y = 0; y < kRH; ++y) {
     for (int x = 0; x < kRW; ++x) {
-      const bool interior = (2 * x - 2 >= 0) && (2 * x + 3 <= kW - 1) && (2 * y - 2 >= 0) &&
-                            (2 * y + 3 <= kH - 1);
+      const bool interior =
+          (2 * x - 2 >= 0) && (2 * x + 3 <= kW - 1) && (2 * y - 2 >= 0) && (2 * y + 3 <= kH - 1);
       if (!interior) {
         continue;
       }

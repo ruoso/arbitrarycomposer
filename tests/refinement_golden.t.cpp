@@ -81,15 +81,20 @@ std::unique_ptr<arbc::Surface> render_inline_reference(arbc::CpuBackend& backend
   arbc::Document document;
   const arbc::ObjectId content =
       document.add_content(std::make_shared<arbc::SolidContent>(color, bounds));
-  document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(viewport.width, viewport.height);
+  document.attach_layer(comp, layer);
   const arbc::DocStatePtr state = document.pin();
   arbc::SurfacePool pool(backend);
   arbc::TileCache cache(64u * 1024 * 1024);
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
       backend.make_surface(viewport.width, viewport.height, arbc::k_working_rgba32f);
   REQUIRE(target.has_value());
+  // Anchor the direct frame walk at this reference scene's composition; the walk
+  // is composition-scoped (compositor.root_composition_frame_walk, doc 05:28-36).
+  const arbc::Viewport anchored{viewport.width, viewport.height, viewport.camera, comp};
   arbc::render_frame_interactive(
-      *state, [&document](arbc::ObjectId id) { return document.resolve(id); }, viewport, cache,
+      *state, [&document](arbc::ObjectId id) { return document.resolve(id); }, anchored, cache,
       backend, pool, **target, arbc::Deadline::none(), std::nullopt);
   return std::move(*target);
 }
@@ -105,16 +110,21 @@ TEST_CASE("refinement golden: async arrivals refine to a byte-identical inline r
   const arbc::Rect bounds{0.0, 0.0, 512.0, 512.0};
 
   arbc::CpuBackend backend;
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
-
-  const std::unique_ptr<arbc::Surface> reference =
-      render_inline_reference(backend, viewport, color, bounds);
 
   // The async scene.
   auto async = std::make_shared<AsyncSolidContent>(color, bounds);
   arbc::Document document;
   const arbc::ObjectId content = document.add_content(async);
-  document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
+  // Anchor the direct frame walk at the async scene's composition; the walk is
+  // composition-scoped (compositor.root_composition_frame_walk, doc 05:28-36).
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
+
+  const std::unique_ptr<arbc::Surface> reference =
+      render_inline_reference(backend, viewport, color, bounds);
+
   const arbc::DocStatePtr state = document.pin();
   const auto resolver = [&document](arbc::ObjectId id) { return document.resolve(id); };
   arbc::SurfacePool pool(backend);

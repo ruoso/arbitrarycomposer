@@ -141,11 +141,11 @@ RebaseResult rebase(const DocRoot& state, const Viewport& viewport) {
 void cull_walk(const DocRoot& state, const Viewport& viewport,
                const std::function<void(const LayerRecord& layer, const Affine& composed)>& visit) {
   if (viewport.anchor == k_root_anchor) {
-    // Flat walking-skeleton scene: global layer order, byte-identical layer
-    // set/order to `render_frame` (doc 04:56-61 backward-compat). No structural
-    // pruning -- the visitor's per-leaf predicates own the cull.
-    state.for_each_layer(
-        [&](const LayerRecord& layer) { visit(layer, compose(viewport.camera, layer.transform)); });
+    // No composition bound (Decision 3): the sentinel resolves no composition, so
+    // `for_each_layer_in(k_root_anchor)` would yield nothing. The frame is empty --
+    // never the document-global walk that double-drew nested children (doc
+    // 05:28-36). A real render sets a real anchor at the driver, taking the
+    // composition-scoped descent below.
     return;
   }
   const Rect device_rect =

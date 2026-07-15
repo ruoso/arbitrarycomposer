@@ -37,6 +37,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "support/root_anchor.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -185,7 +187,10 @@ std::vector<std::byte> render_root(Document& doc, int dim) {
       backend.make_surface(dim, dim, pin->working_space());
   REQUIRE(target.has_value());
   SurfacePool pool(backend);
-  const Viewport viewport{dim, dim, Affine::identity()};
+  // `render_frame` renders the composition the Viewport anchors and never re-derives the
+  // root, so anchor explicitly at the document's root composition
+  // (compositor.root_composition_frame_walk).
+  const Viewport viewport{dim, dim, Affine::identity(), arbc::test::root_composition_of(*pin)};
   arbc::render_frame(*pin, resolve, viewport, backend, pool, **target);
 
   std::vector<std::byte> out = bytes_of(**target);

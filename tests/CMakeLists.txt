@@ -745,6 +745,11 @@ target_link_libraries(arbc_anchored_viewports_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_anchored_viewports_golden_t)
 
+add_executable(arbc_root_composition_frame_walk_golden_t root_composition_frame_walk_golden.t.cpp)
+target_link_libraries(arbc_root_composition_frame_walk_golden_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_root_composition_frame_walk_golden_t)
+
 add_executable(arbc_host_viewport_reanchor_golden_t host_viewport_reanchor_golden.t.cpp)
 target_link_libraries(arbc_host_viewport_reanchor_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)

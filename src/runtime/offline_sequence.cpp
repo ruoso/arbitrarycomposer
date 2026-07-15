@@ -61,6 +61,19 @@ SequenceRenderer::SequenceRenderer(const Document& document, Viewport viewport, 
   // to this driver's live services before the compositor renders it
   // (operators.fade_runtime_binding, doc 13:69-71).
   register_builtin_operator_binders();
+  // Anchor the frame walk to the document's root composition (lowest-id wins,
+  // the serializer/working-space rule), sourced once from the export's single
+  // pinned snapshot, so every frame draws exactly the root composition's members
+  // and not the document-global leaf set
+  // (compositor.root_composition_frame_walk, doc 05:28-36, Decision 2). A caller
+  // that pinned a specific composition in its viewport keeps it.
+  if (!d_viewport.anchor.valid()) {
+    ObjectId root_id{};
+    const CompositionRecord* root_rec = nullptr;
+    if ((*d_pinned).find_first_composition(root_id, root_rec)) {
+      d_viewport.anchor = root_id;
+    }
+  }
 }
 
 expected<std::unique_ptr<Surface>, SurfaceError>

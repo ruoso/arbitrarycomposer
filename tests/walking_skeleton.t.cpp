@@ -59,13 +59,17 @@ std::array<float, 4> green_src_row(int y) {
 // enforces: 07-color-and-pixel-formats#premultiplied-source-over
 TEST_CASE("walking skeleton: solid layers compose to exact pixels") {
   arbc::Document document;
+  // The frame walk is composition-scoped, so the offline driver sources the root
+  // composition and the layers must be its members, bottom-to-top in creation order
+  // (compositor.root_composition_frame_walk, doc 05:28-36).
+  const arbc::ObjectId comp = document.add_composition(8.0, 8.0);
   const arbc::ObjectId red = document.add_content(std::make_shared<arbc::SolidContent>(
       arbc::Rgba{1.0F, 0.0F, 0.0F, 1.0F}, arbc::Rect{0.0, 0.0, 1.0, 1.0}));
-  document.add_layer(red,
-                     compose(arbc::Affine::translation(2.0, 2.0), arbc::Affine::scaling(4.0, 4.0)));
+  document.attach_layer(comp, document.add_layer(red, compose(arbc::Affine::translation(2.0, 2.0),
+                                                              arbc::Affine::scaling(4.0, 4.0))));
   const arbc::ObjectId green = document.add_content(std::make_shared<arbc::SolidContent>(
       arbc::Rgba{0.0F, 0.5F, 0.0F, 0.5F}, arbc::Rect{0.0, 0.0, 1.0, 1.0}));
-  document.add_layer(green, arbc::Affine::scaling(8.0, 4.0));
+  document.attach_layer(comp, document.add_layer(green, arbc::Affine::scaling(8.0, 4.0)));
 
   arbc::CpuBackend backend;
   const arbc::Viewport viewport{8, 8, arbc::Affine::identity()};
@@ -99,10 +103,13 @@ TEST_CASE("walking skeleton: solid layers compose to exact pixels") {
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 TEST_CASE("walking skeleton: rendering is byte-exact deterministic") {
   arbc::Document document;
+  const arbc::ObjectId comp = document.add_composition(16.0, 16.0);
   const arbc::ObjectId content = document.add_content(std::make_shared<arbc::SolidContent>(
       arbc::Rgba{0.25F, 0.5F, 0.75F, 1.0F}, arbc::Rect{0.0, 0.0, 3.0, 3.0}));
-  document.add_layer(
-      content, compose(arbc::Affine::translation(1.0, 0.5), arbc::Affine::scaling(1.5, 2.0)), 0.75);
+  document.attach_layer(comp, document.add_layer(content,
+                                                 compose(arbc::Affine::translation(1.0, 0.5),
+                                                         arbc::Affine::scaling(1.5, 2.0)),
+                                                 0.75));
 
   arbc::CpuBackend backend;
   const arbc::Viewport viewport{16, 16, arbc::Affine::scaling(2.0, 2.0)};

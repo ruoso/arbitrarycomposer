@@ -450,10 +450,13 @@ TEST_CASE("plan_layer: every planned tile carries PriorityClass::Visible") {
 TEST_CASE("render_frame_interactive: the surfaced plan equals the composited plan; null is inert") {
   arbc::Model model;
   arbc::ObjectId content_id{};
+  arbc::ObjectId comp{};
   {
     auto txn = model.transact();
     content_id = txn.add_content(0);
-    txn.add_layer(content_id, arbc::Affine::identity());
+    const arbc::ObjectId layer = txn.add_layer(content_id, arbc::Affine::identity());
+    comp = txn.add_composition(256, 256);
+    txn.attach_layer(comp, layer);
     REQUIRE(txn.commit().has_value());
   }
   const arbc::DocStatePtr state = model.current();
@@ -461,7 +464,7 @@ TEST_CASE("render_frame_interactive: the surfaced plan equals the composited pla
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // one rung-0 tile
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp}; // one rung-0 tile
   const TileKey visible_key{content_id, state->revision(), ScaleRung{0}, TileCoord{0, 0},
                             std::nullopt};
 

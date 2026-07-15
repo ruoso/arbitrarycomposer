@@ -119,14 +119,17 @@ std::vector<std::byte> render_visual_reference() {
   return render_crossfade_reference(visual_params(), Time{500});
 }
 
-// Populate `doc` with a single crossfade-over-two-solids layer at the global root (the
-// offline driver's render walk). The caller owns `doc` and both solids (the crossfade
-// borrows them non-owning, so all must outlive the render).
+// Populate `doc` with a single crossfade-over-two-solids layer, a member of the root
+// composition the offline driver sources and renders (composition-scoped frame walk,
+// compositor.root_composition_frame_walk). The caller owns `doc` and both solids (the
+// crossfade borrows them non-owning, so all must outlive the render).
 void visual_scene(Document& doc, SolidContent& from, SolidContent& to,
                   const CrossfadeParams& params) {
   auto xf = std::make_shared<CrossfadeContent>(&from, &to, params);
   const ObjectId cid = doc.add_content(xf);
-  doc.add_layer(cid, Affine::identity());
+  const ObjectId comp = doc.add_composition(2.0, 2.0);
+  const ObjectId layer = doc.add_layer(cid, Affine::identity());
+  doc.attach_layer(comp, layer);
 }
 
 // The MANUALLY-attached audio reference: render the crossfade's audio DIRECTLY through

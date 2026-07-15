@@ -44,6 +44,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "support/root_anchor.hpp"
+
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -158,8 +160,12 @@ struct Fixture {
   ObjectId deleg_id;
   ObjectId stranger_id;
   ObjectId xfade_layer;
+  ObjectId comp; // the root composition both operator layers belong to
 
   Fixture() {
+    // The root composition, created FIRST: the drivers source it and the direct
+    // interactive frame anchors at it (compositor.root_composition_frame_walk).
+    comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     from_id = doc.add_content(std::make_shared<MutableSolid>(k_from_color, canvas()));
     const ObjectId to_id = doc.add_content(std::make_shared<SolidContent>(k_to_color, canvas()));
     // Constraint 7: the operator's `inputs()` edge must be the SAME `Content*` the
@@ -171,7 +177,9 @@ struct Fixture {
         doc.add_content(std::make_shared<CrossfadeContent>(from_ref, to_ref, window_params()));
     deleg_id = doc.add_content(std::make_shared<DelegatingOperator>(from_ref));
     xfade_layer = doc.add_layer(xfade_id, Affine::identity());
-    doc.add_layer(deleg_id, Affine::identity());
+    const ObjectId deleg_layer = doc.add_layer(deleg_id, Affine::identity());
+    doc.attach_layer(comp, xfade_layer);
+    doc.attach_layer(comp, deleg_layer);
     stranger_id = doc.add_content(std::make_shared<SolidContent>(k_stranger_color, canvas()));
     from = static_cast<MutableSolid*>(from_ref);
   }
@@ -241,6 +249,9 @@ TEST_CASE("interactive: an edit to an operator's $ref input repaints every opera
   CpuBackend backend;
   Fixture f;
   const ContentResolver resolve = [&f](ObjectId id) { return f.doc.resolve(id); };
+  // The direct interactive frame renders the anchored composition; anchor at the fixture's
+  // root composition (the export oracle's SequenceRenderer sources the same root itself).
+  const Viewport vp{k_dim, k_dim, Affine::identity(), f.comp};
   TileCache cache(64U * 1024 * 1024);
   SurfacePool pool(backend);
   InteractiveRenderer renderer({}, epoch_clock());
@@ -251,8 +262,7 @@ TEST_CASE("interactive: an edit to an operator's $ref input repaints every opera
   REQUIRE(target.has_value());
 
   // --- Frame 1: the whole viewport, cold. -------------------------------------
-  renderer.render_frame(*before, resolve, viewport(), cache, backend, pool, **target, {}, k_when,
-                        k_budget);
+  renderer.render_frame(*before, resolve, vp, cache, backend, pool, **target, {}, k_when, k_budget);
   const std::vector<float> stale = snapshot(**target);
   const std::uint64_t requests_1 = renderer.counters().requests_issued();
   const std::uint64_t composites_1 = renderer.counters().composites();
@@ -274,7 +284,7 @@ TEST_CASE("interactive: an edit to an operator's $ref input repaints every opera
   // Unrouted, `Damage{from_id, ...}` maps to zero device rects, the early-out fires, and
   // this frame does not happen at all -- `composites` delta 0 and a `target` still
   // showing the pre-edit pixels. THIS is the regression the file exists for.
-  renderer.render_frame(*after, resolve, viewport(), cache, backend, pool, **target, edit, k_when,
+  renderer.render_frame(*after, resolve, vp, cache, backend, pool, **target, edit, k_when,
                         k_budget);
   const std::vector<float> repainted = snapshot(**target);
 
@@ -307,6 +317,9 @@ TEST_CASE("interactive: a finite input-damage rect maps through map_input_damage
   CpuBackend backend;
   Fixture f;
   const ContentResolver resolve = [&f](ObjectId id) { return f.doc.resolve(id); };
+  // The direct interactive frame renders the anchored composition; anchor at the fixture's
+  // root composition (the export oracle's SequenceRenderer sources the same root itself).
+  const Viewport vp{k_dim, k_dim, Affine::identity(), f.comp};
   TileCache cache(64U * 1024 * 1024);
   SurfacePool pool(backend);
   InteractiveRenderer renderer({}, epoch_clock());
@@ -316,8 +329,7 @@ TEST_CASE("interactive: a finite input-damage rect maps through map_input_damage
       backend.make_surface(k_dim, k_dim, before->working_space());
   REQUIRE(target.has_value());
 
-  renderer.render_frame(*before, resolve, viewport(), cache, backend, pool, **target, {}, k_when,
-                        k_budget);
+  renderer.render_frame(*before, resolve, vp, cache, backend, pool, **target, {}, k_when, k_budget);
   const std::vector<float> stale = snapshot(**target);
   const std::uint64_t composites_1 = renderer.counters().composites();
 
@@ -327,7 +339,7 @@ TEST_CASE("interactive: a finite input-damage rect maps through map_input_damage
   commit_edit(f, k_edited_color);
   const DocStatePtr after = f.doc.pin();
   const std::vector<Damage> edit{Damage{f.from_id, k_stroke, TimeRange::all()}};
-  renderer.render_frame(*after, resolve, viewport(), cache, backend, pool, **target, edit, k_when,
+  renderer.render_frame(*after, resolve, vp, cache, backend, pool, **target, edit, k_when,
                         k_budget);
   const std::vector<float> repainted = snapshot(**target);
 
@@ -349,6 +361,9 @@ TEST_CASE("interactive: an edit no operator reaches routes to nothing") {
   CpuBackend backend;
   Fixture f;
   const ContentResolver resolve = [&f](ObjectId id) { return f.doc.resolve(id); };
+  // The direct interactive frame renders the anchored composition; anchor at the fixture's
+  // root composition (the export oracle's SequenceRenderer sources the same root itself).
+  const Viewport vp{k_dim, k_dim, Affine::identity(), f.comp};
   TileCache cache(64U * 1024 * 1024);
   SurfacePool pool(backend);
   InteractiveRenderer renderer({}, epoch_clock());
@@ -358,8 +373,7 @@ TEST_CASE("interactive: an edit no operator reaches routes to nothing") {
       backend.make_surface(k_dim, k_dim, before->working_space());
   REQUIRE(target.has_value());
 
-  renderer.render_frame(*before, resolve, viewport(), cache, backend, pool, **target, {}, k_when,
-                        k_budget);
+  renderer.render_frame(*before, resolve, vp, cache, backend, pool, **target, {}, k_when, k_budget);
   const std::vector<float> painted = snapshot(**target);
   const std::uint64_t requests = renderer.counters().requests_issued();
   const std::uint64_t composites = renderer.counters().composites();
@@ -373,7 +387,7 @@ TEST_CASE("interactive: an edit no operator reaches routes to nothing") {
   const DocStatePtr after = f.doc.pin();
   const std::vector<Damage> edit{Damage{f.stranger_id, Rect::infinite(), TimeRange::all()}};
   const InteractiveRenderer::FrameOutcome out = renderer.render_frame(
-      *after, resolve, viewport(), cache, backend, pool, **target, edit, k_when, k_budget);
+      *after, resolve, vp, cache, backend, pool, **target, edit, k_when, k_budget);
 
   CHECK_FALSE(out.schedule_follow_up);
   CHECK(renderer.counters().requests_issued() == requests);    // delta 0

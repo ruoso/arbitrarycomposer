@@ -73,7 +73,6 @@ constexpr Rgba k_x_color{0.125F, 0.375F, 0.75F, 1.0F};
 constexpr Rgba k_dummy_color{0.25F, 0.25F, 0.25F, 1.0F};
 
 Rect canvas() { return Rect{0.0, 0.0, static_cast<double>(k_dim), static_cast<double>(k_dim)}; }
-Viewport viewport() { return Viewport{k_dim, k_dim, Affine::identity()}; }
 
 // A crossfade whose window starts after `k_when`, so `w == 0` and the operator is an
 // identity pass-through to input 0: the compositor PULLS input 0 and caches its tiles
@@ -137,7 +136,9 @@ struct Fixture {
   ObjectId op_c_id;
   ObjectId op_x_id;
   ObjectId c_id; // C's MODEL id
+  ObjectId op_x_layer;
   ObjectId op_c_layer;
+  ObjectId comp; // the root composition the frame walk anchors at
 
   Fixture() {
     auto op_c = std::make_shared<CrossfadeContent>(c.get(), &dummy_c, window_params());
@@ -149,12 +150,21 @@ struct Fixture {
     model_ids.push_back(op_x_id);
     // `op_x`'s layer is added FIRST so the identity walk reaches op_c's children before
     // op_x's: that ordering is what made the old seed land X's id exactly on C's model id.
-    model_ids.push_back(doc.add_layer(op_x_id, Affine::identity()));
+    op_x_layer = doc.add_layer(op_x_id, Affine::identity());
+    model_ids.push_back(op_x_layer);
     op_c_layer = doc.add_layer(op_c_id, Affine::identity());
     model_ids.push_back(op_c_layer);
     // C enters the `contents` table LAST -- it is a shared component, not a layer.
     c_id = doc.add_content(c);
     model_ids.push_back(c_id);
+    // The composition-scoped frame walk needs the operator layers to be members of the
+    // anchored composition (compositor.root_composition_frame_walk, doc 05:28-36). The
+    // composition is added AFTER every id above, so it perturbs none of the model ids the
+    // collision precondition below is pinned on; its members are attached in creation
+    // order (op_x first, op_c second), the same order the walk enumerated them before.
+    comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+    doc.attach_layer(comp, op_x_layer);
+    doc.attach_layer(comp, op_c_layer);
   }
 
   ContentResolver resolver() {
@@ -231,8 +241,8 @@ TEST_CASE("interactive: damaging a $ref content cannot evict an inline child's t
   // --- Frame 1: cold. Tiles land under C's and X's pull identities. ------------
   const auto target = backend.make_surface(k_dim, k_dim, before->working_space());
   REQUIRE(target.has_value());
-  renderer.render_frame(*before, resolve, viewport(), cache, backend, pool, **target, {}, k_when,
-                        k_budget);
+  renderer.render_frame(*before, resolve, Viewport{k_dim, k_dim, Affine::identity(), f.comp}, cache,
+                        backend, pool, **target, {}, k_when, k_budget);
   CHECK(renderer.counters().composites() > 0U);
 
   // Both operators are identity endpoints onto their input 0, so the compositor pulled
@@ -249,8 +259,8 @@ TEST_CASE("interactive: damaging a $ref content cannot evict an inline child's t
 
   // --- Frame 2: the driver routes the damage and invalidates. ------------------
   const std::uint64_t requests_before = renderer.counters().requests_issued();
-  renderer.render_frame(*after, resolve, viewport(), cache, backend, pool, **target, edit, k_when,
-                        k_budget);
+  renderer.render_frame(*after, resolve, Viewport{k_dim, k_dim, Affine::identity(), f.comp}, cache,
+                        backend, pool, **target, edit, k_when, k_budget);
 
   // C's tiles WERE dropped: the router emits C's pull identity beside its model id
   // (`operator_model_damage_routing`), and that is the key its tiles actually live under.

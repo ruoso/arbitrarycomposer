@@ -74,18 +74,22 @@ TEST_CASE("imageseq's provided frame is honored and released through the composi
   // Drive the same frame through the compositor's cache path.
   Model model;
   ObjectId content_id{};
+  ObjectId comp_id{};
   auto content = fix::make_content();
   {
     Model::Transaction txn = model.transact();
     content_id = txn.add_content(0);
-    txn.add_layer(content_id, Affine::identity());
+    const ObjectId layer = txn.add_layer(content_id, Affine::identity());
+    // Attach to a composition so the composition-scoped walk draws it (doc 05:28-36).
+    comp_id = txn.add_composition(16.0, 16.0);
+    txn.attach_layer(comp_id, layer);
     REQUIRE(txn.commit().has_value());
   }
   const ContentResolver resolve = [&](ObjectId id) -> Content* {
     return id == content_id ? content.get() : nullptr;
   };
   const DocStatePtr state = model.current();
-  const Viewport viewport{16, 16, Affine::identity()};
+  const Viewport viewport{16, 16, Affine::identity(), comp_id};
   SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
 

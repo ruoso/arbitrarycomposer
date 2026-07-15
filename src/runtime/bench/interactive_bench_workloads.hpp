@@ -247,6 +247,12 @@ public:
   SceneKind kind() const noexcept { return d_kind; }
   int dim() const noexcept { return d_dim; }
 
+  // The root composition whose direct members the frame walk draws. The frame walk
+  // is composition-scoped (compositor.root_composition_frame_walk, doc 05:28-36), so a
+  // caller driving `InteractiveRenderer::render_frame` directly anchors its `Viewport`
+  // here; a nested chain's inner compositions are reached through content recursion.
+  ObjectId root() const noexcept { return d_root; }
+
   // Infinite damage on every LEAF content -- the source of the scene's pixels, and the
   // only damage that reaches a worker. Damaging the operator LAYERS instead would drop
   // the operators' output tiles while leaving their inputs warm, so nothing would be
@@ -287,12 +293,13 @@ private:
   // placed at identity: `size` independent leaf layers whose tiles are disjoint, so the
   // pool sees `size`-ish concurrent, non-serialized renders with nothing to share.
   void build_leaf_heavy(int size, int work) {
+    d_root = d_doc.add_composition(static_cast<double>(d_dim), static_cast<double>(d_dim));
     const double strip = static_cast<double>(d_dim) / static_cast<double>(size);
     for (int i = 0; i < size; ++i) {
       const Rect bounds{static_cast<double>(i) * strip, 0.0, strip, static_cast<double>(d_dim)};
       const auto [id, leaf] = add_leaf(bounds, work, i);
       (void)leaf;
-      d_doc.add_layer(id, Affine::identity());
+      d_doc.attach_layer(d_root, d_doc.add_layer(id, Affine::identity()));
     }
   }
 
@@ -300,17 +307,18 @@ private:
   // all full-canvas and all at an interior weight. Every operator render is inline; only
   // its leaf inputs can reach a worker (the leaf-only rule's ceiling).
   void build_operator_heavy(int size, int work) {
+    d_root = d_doc.add_composition(static_cast<double>(d_dim), static_cast<double>(d_dim));
     for (int i = 0; i < size; ++i) {
       if (i % 2 == 0) {
         auto fade = std::make_shared<FadeContent>(add_leaf(canvas(), work, i).second, half_fade());
         d_operators.push_back(fade);
-        d_doc.add_layer(d_doc.add_content(fade), Affine::identity());
+        d_doc.attach_layer(d_root, d_doc.add_layer(d_doc.add_content(fade), Affine::identity()));
       } else {
         PaintedLeaf* const from = add_leaf(canvas(), work, i).second;
         PaintedLeaf* const to = add_leaf(canvas(), work, i + 3).second;
         auto xf = std::make_shared<CrossfadeContent>(from, to, half_crossfade());
         d_operators.push_back(xf);
-        d_doc.add_layer(d_doc.add_content(xf), Affine::identity());
+        d_doc.attach_layer(d_root, d_doc.add_layer(d_doc.add_content(xf), Affine::identity()));
       }
     }
   }
@@ -320,6 +328,9 @@ private:
   // inline descent the loop can be asked for -- every level's `render` re-enters the
   // pull service on the frame thread, and only the leaves at the bottom fan out.
   void build_nested_deep(int size, int work) {
+    // The root composition the frame draws: it holds the single outermost nested layer,
+    // and the whole chain below is reached through that layer's content recursion.
+    d_root = d_doc.add_composition(static_cast<double>(d_dim), static_cast<double>(d_dim));
     std::shared_ptr<NestedContent> inner;
     for (int level = 0; level < size; ++level) {
       const ObjectId comp =
@@ -334,12 +345,13 @@ private:
       inner = std::make_shared<NestedContent>(comp);
       d_operators.push_back(inner);
     }
-    d_doc.add_layer(d_doc.add_content(inner), Affine::identity());
+    d_doc.attach_layer(d_root, d_doc.add_layer(d_doc.add_content(inner), Affine::identity()));
   }
 
   SceneKind d_kind;
   int d_dim;
   Document d_doc;
+  ObjectId d_root{};
   std::vector<std::shared_ptr<PaintedLeaf>> d_leaves;
   std::vector<std::shared_ptr<Content>> d_operators;
   std::vector<ObjectId> d_leaf_ids;
@@ -393,7 +405,7 @@ public:
     const std::vector<Damage> damage = d_scene.whole_scene_damage();
     const DocStatePtr pin = d_scene.document().pin();
     const ContentResolver resolve = [this](ObjectId id) { return d_scene.document().resolve(id); };
-    const Viewport view{d_scene.dim(), d_scene.dim(), Affine::identity()};
+    const Viewport view{d_scene.dim(), d_scene.dim(), Affine::identity(), d_scene.root()};
     const FrameBinding binding{&d_scene.document(), pin};
 
     for (int i = 0; i < max_frames; ++i) {

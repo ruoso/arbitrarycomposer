@@ -146,13 +146,17 @@ std::vector<std::byte> render_audio_reference() {
   return bytes;
 }
 
-// Populate `doc` with a single fade-over-solid layer at the global root (the offline
-// driver's render walk). The caller owns both `doc` and `solid` (`Document` is non-
-// movable, and the fade borrows `solid` non-owning, so both must outlive the render).
+// Populate `doc` with a single fade-over-solid layer, a member of the root composition
+// the offline driver sources and renders (composition-scoped frame walk,
+// compositor.root_composition_frame_walk). The caller owns both `doc` and `solid`
+// (`Document` is non-movable, and the fade borrows `solid` non-owning, so both must
+// outlive the render).
 void visual_scene(Document& doc, SolidContent& solid, const FadeParams& params) {
   auto fade = std::make_shared<FadeContent>(&solid, params);
   const ObjectId cid = doc.add_content(fade);
-  doc.add_layer(cid, Affine::identity());
+  const ObjectId comp = doc.add_composition(2.0, 2.0);
+  const ObjectId layer = doc.add_layer(cid, Affine::identity());
+  doc.attach_layer(comp, layer);
 }
 
 void require_equal(const std::vector<std::byte>& got, const std::vector<std::byte>& want) {

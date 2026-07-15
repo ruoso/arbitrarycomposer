@@ -22,8 +22,23 @@ render_offline(const Document& document, const Viewport& viewport, Backend& back
   // long-lived pool and reuse across frames (doc 09 / doc 02 still-scene). Temps
   // are acquired at the target's format, so they carry the working-space tags too.
   SurfacePool pool(backend);
+  // Source the document's root composition (lowest-id wins, the same rule the
+  // serializer and working_space()/working_audio_format() use) and anchor the
+  // frame walk to it, so the compositor draws exactly the root composition's
+  // members and not the document-global leaf set
+  // (compositor.root_composition_frame_walk, doc 05:28-36). The compositor never
+  // re-derives the root -- the driver hands it the id (Decision 2). A caller that
+  // already pinned a specific composition keeps it.
+  Viewport anchored = viewport;
+  if (!anchored.anchor.valid()) {
+    ObjectId root_id{};
+    const CompositionRecord* root_rec = nullptr;
+    if (state->find_first_composition(root_id, root_rec)) {
+      anchored.anchor = root_id;
+    }
+  }
   render_frame(
-      *state, [&document](ObjectId id) { return document.resolve(id); }, viewport, backend, pool,
+      *state, [&document](ObjectId id) { return document.resolve(id); }, anchored, backend, pool,
       **target);
   return std::move(*target);
 }

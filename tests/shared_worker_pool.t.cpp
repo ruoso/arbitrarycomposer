@@ -55,6 +55,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "support/root_anchor.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -245,7 +247,10 @@ public:
     const DocStatePtr pin = d_doc.pin();
     const ContentResolver resolve = [this](ObjectId id) { return d_doc.resolve(id); };
     const FrameBinding binding{&d_doc, pin};
-    const Viewport view{d_dim, d_dim, Affine::identity()};
+    // The anchor is computed once on the constructing (main) thread in `make_target`:
+    // `frame` runs on a worker-driving thread too (the A3 thief), and deriving the root
+    // via a Catch `REQUIRE` there would be an off-main-thread assertion.
+    const Viewport view{d_dim, d_dim, Affine::identity(), d_anchor};
     return d_renderer.render_frame(*pin, resolve, view, d_cache, d_backend, d_surfaces, *d_target,
                                    damage, k_interior, budget, binding);
   }
@@ -268,6 +273,7 @@ public:
 private:
   void make_target() {
     const DocStatePtr pin = d_doc.pin();
+    d_anchor = arbc::test::root_composition_of(*pin);
     expected<std::unique_ptr<Surface>, SurfaceError> target =
         d_backend.make_surface(d_dim, d_dim, pin->working_space());
     REQUIRE(target.has_value());
@@ -279,6 +285,7 @@ private:
   SurfacePool d_surfaces;
   Backend& d_backend;
   int d_dim;
+  ObjectId d_anchor{};
   std::unique_ptr<Surface> d_target;
   InteractiveRenderer d_renderer;
 };
@@ -293,8 +300,13 @@ struct Scene {
 
   Scene(Rgba color, int blocks, bool wide = false)
       : leaf(std::make_shared<LatchLeaf>(gate, color, blocks, wide ? wide_canvas() : canvas())) {
+    // The frame walk is composition-scoped, so the leaf's layer must be a member of the
+    // composition the viewport anchors at (compositor.root_composition_frame_walk, doc
+    // 05:28-36).
+    const double edge = static_cast<double>(wide ? k_wide : k_dim);
+    const ObjectId comp = doc.add_composition(edge, edge);
     content = doc.add_content(leaf);
-    doc.add_layer(content, Affine::identity());
+    doc.attach_layer(comp, doc.add_layer(content, Affine::identity()));
   }
 };
 

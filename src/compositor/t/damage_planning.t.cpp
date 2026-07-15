@@ -119,10 +119,12 @@ private:
 };
 
 // A single identity-transform layer bound to a fresh content id.
-arbc::ObjectId add_layer(arbc::Model& model, const arbc::Affine& transform) {
+arbc::ObjectId add_layer(arbc::Model& model, const arbc::Affine& transform, arbc::ObjectId& comp) {
   auto txn = model.transact();
   const arbc::ObjectId content_id = txn.add_content(0);
-  txn.add_layer(content_id, transform);
+  const arbc::ObjectId layer = txn.add_layer(content_id, transform);
+  comp = txn.add_composition(512, 512);
+  txn.attach_layer(comp, layer);
   REQUIRE(txn.commit().has_value());
   return content_id;
 }
@@ -236,12 +238,13 @@ constexpr std::uint64_t k_tiles_covered = 4;
 // enforces: 02-architecture#damage-maps-to-device-dirty-regions
 TEST_CASE("map_damage_to_device projects content damage through the camera to device rects") {
   arbc::Model model;
-  const arbc::ObjectId content = add_layer(model, arbc::Affine::identity());
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content = add_layer(model, arbc::Affine::identity(), comp);
   const arbc::DocStatePtr state = model.current();
   const arbc::Time now = arbc::Time::zero();
 
   SECTION("identity camera maps the content rect one-to-one") {
-    const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+    const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
     const Damage d{content, Rect{10.0, 20.0, 110.0, 120.0}, arbc::TimeRange::all()};
     const std::vector<Rect> rects =
         arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now);
@@ -250,7 +253,7 @@ TEST_CASE("map_damage_to_device projects content damage through the camera to de
   }
 
   SECTION("a scaled camera maps the rect correspondingly") {
-    const arbc::Viewport viewport{512, 512, arbc::Affine::scaling(2.0, 2.0)};
+    const arbc::Viewport viewport{512, 512, arbc::Affine::scaling(2.0, 2.0), comp};
     const Damage d{content, Rect{10.0, 20.0, 110.0, 120.0}, arbc::TimeRange::all()};
     const std::vector<Rect> rects =
         arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now);
@@ -259,13 +262,13 @@ TEST_CASE("map_damage_to_device projects content damage through the camera to de
   }
 
   SECTION("damage wholly outside the viewport clips to empty and is dropped") {
-    const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+    const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
     const Damage d{content, Rect{600.0, 600.0, 700.0, 700.0}, arbc::TimeRange::all()};
     CHECK(arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now).empty());
   }
 
   SECTION("structural infinite damage maps to the full viewport rect") {
-    const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+    const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
     const Damage d{content, Rect::infinite(), arbc::TimeRange::all()};
     const std::vector<Rect> rects =
         arbc::map_damage_to_device(*state, viewport, std::span(&d, 1), now);
@@ -274,7 +277,7 @@ TEST_CASE("map_damage_to_device projects content damage through the camera to de
   }
 
   SECTION("empty input yields an empty dirty region -- no damage, no work") {
-    const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+    const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
     CHECK(arbc::map_damage_to_device(*state, viewport, std::span<const Damage>(), now).empty());
   }
 }
@@ -282,9 +285,10 @@ TEST_CASE("map_damage_to_device projects content damage through the camera to de
 // enforces: 02-architecture#damage-maps-to-device-dirty-regions
 TEST_CASE("map_damage_to_device gates on the displayed instant") {
   arbc::Model model;
-  const arbc::ObjectId content = add_layer(model, arbc::Affine::identity());
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content = add_layer(model, arbc::Affine::identity(), comp);
   const arbc::DocStatePtr state = model.current();
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   const Rect rect{10.0, 20.0, 110.0, 120.0};
 
   SECTION("a range excluding now drops the damage") {
@@ -313,12 +317,16 @@ TEST_CASE("clock_advance_damage damages only the moving layers") {
   arbc::Model model;
   arbc::ObjectId static_content;
   arbc::ObjectId timed_content;
+  arbc::ObjectId comp{};
   {
     auto txn = model.transact();
     static_content = txn.add_content(0);
     timed_content = txn.add_content(0);
-    txn.add_layer(static_content, arbc::Affine::identity());
-    txn.add_layer(timed_content, arbc::Affine::identity());
+    const arbc::ObjectId static_layer = txn.add_layer(static_content, arbc::Affine::identity());
+    const arbc::ObjectId timed_layer = txn.add_layer(timed_content, arbc::Affine::identity());
+    comp = txn.add_composition(512, 512);
+    txn.attach_layer(comp, static_layer);
+    txn.attach_layer(comp, timed_layer);
     REQUIRE(txn.commit().has_value());
   }
   const arbc::DocStatePtr state = model.current();
@@ -333,7 +341,7 @@ TEST_CASE("clock_advance_damage damages only the moving layers") {
     }
     return nullptr;
   };
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   const arbc::TimeRange advanced{arbc::Time{0}, arbc::Time{100}};
 
   SECTION("a Static+Timed scene emits exactly one damage for the Timed layer") {
@@ -397,12 +405,13 @@ TEST_CASE("render_frame_interactive gates work to the dirty region (counter-back
   MarkBackend backend;
   StubContent content(Stability::Static);
   arbc::Model model;
-  const arbc::ObjectId content_id = add_layer(model, arbc::Affine::identity());
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_layer(model, arbc::Affine::identity(), comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
 
   auto drive = [&](const DirtyRegion* dirty, CompositorCounters& counters) {
@@ -586,12 +595,13 @@ TEST_CASE("a disjoint repaint set skips the undamaged gap (counter-backed)") {
   arbc::testing::CountingBackend backend(mark); // tallies the clip-scoped ops
   StubContent content(Stability::Static);
   arbc::Model model;
-  const arbc::ObjectId content_id = add_layer(model, arbc::Affine::identity());
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_layer(model, arbc::Affine::identity(), comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
 
   // The cache is the CALLER's: a `LayerTilePlan` surfaced through `visible_plans`
@@ -687,13 +697,25 @@ TEST_CASE("a layer lying in the undamaged gap is not planned and not exposed") {
   MarkBackend backend;
   StubContent content(Stability::Static);
   arbc::Model model;
-  const arbc::ObjectId near_id = add_layer(model, arbc::Affine::identity());
-  const arbc::ObjectId far_id = add_layer(model, arbc::Affine::translation(300.0, 300.0));
+  arbc::ObjectId near_id{};
+  arbc::ObjectId far_id{};
+  arbc::ObjectId comp{};
+  {
+    auto txn = model.transact();
+    near_id = txn.add_content(0);
+    const arbc::ObjectId near_layer = txn.add_layer(near_id, arbc::Affine::identity());
+    far_id = txn.add_content(0);
+    const arbc::ObjectId far_layer = txn.add_layer(far_id, arbc::Affine::translation(300.0, 300.0));
+    comp = txn.add_composition(512, 512);
+    txn.attach_layer(comp, near_layer);
+    txn.attach_layer(comp, far_layer);
+    REQUIRE(txn.commit().has_value());
+  }
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return (id == near_id || id == far_id) ? &content : nullptr;
   };
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
 
   TileCache cache(64u * 1024 * 1024);

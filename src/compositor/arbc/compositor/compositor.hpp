@@ -19,11 +19,13 @@ struct Viewport {
   // The node the camera is pinned to (doc 04:81-84): `camera` maps this
   // anchor's LOCAL space -> device pixels, not root space, so the transforms the
   // pipeline computes with stay well-conditioned at any zoom depth (doc
-  // 04:49-69). The default (invalid) id is the root sentinel -- `render_frame`'s
-  // flat global walk, byte-identical to pre-anchor behavior; a composition id
-  // switches on the viewport-outward walk (`anchored_viewports.hpp`). Rebasing
-  // re-picks this as the user zooms; the persistent value lives in runtime (doc
-  // 17), the compositor stays a pure per-frame library.
+  // 04:49-69). The frame walk is composition-scoped (doc 05:28-36): it draws
+  // exactly this composition's direct members, reaching a nested child only
+  // through the enclosing layer's content. The default (invalid) id means "no
+  // composition bound" -- `for_each_layer_in` resolves nothing and the frame is
+  // empty; the driver sources the root composition and sets it (Decision 2/3).
+  // Rebasing re-picks this as the user zooms; the persistent value lives in
+  // runtime (doc 17), the compositor stays a pure per-frame library.
   ObjectId anchor{};
 };
 

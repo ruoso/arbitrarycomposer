@@ -31,18 +31,23 @@ bool byte_identical(const arbc::Surface& lhs, const arbc::Surface& rhs) {
 } // namespace
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
-TEST_CASE("anchored walk with anchor==root is byte-identical to render_frame") {
+TEST_CASE("anchored walk over the root composition is byte-identical to render_frame") {
   arbc::Document document;
-  const arbc::ObjectId back = document.add_content(std::make_shared<arbc::SolidContent>(
+  const arbc::ObjectId root = document.add_composition(512.0, 512.0);
+  const arbc::ObjectId back_c = document.add_content(std::make_shared<arbc::SolidContent>(
       arbc::Rgba{0.25F, 0.5F, 0.75F, 1.0F}, arbc::Rect{0.0, 0.0, 512.0, 512.0}));
-  document.add_layer(back, arbc::Affine::identity());
-  const arbc::ObjectId front = document.add_content(std::make_shared<arbc::SolidContent>(
+  const arbc::ObjectId back = document.add_layer(back_c, arbc::Affine::identity());
+  const arbc::ObjectId front_c = document.add_content(std::make_shared<arbc::SolidContent>(
       arbc::Rgba{0.9F, 0.1F, 0.2F, 1.0F}, arbc::Rect{0.0, 0.0, 128.0, 128.0}));
-  document.add_layer(front, arbc::Affine::translation(64.0, 96.0));
+  const arbc::ObjectId front = document.add_layer(front_c, arbc::Affine::translation(64.0, 96.0));
+  document.attach_layer(root, back);
+  document.attach_layer(root, front);
 
   arbc::CpuBackend backend;
-  // Anchor defaults to k_root_anchor: the flat global walk.
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  // Anchor at the root composition: the flat single-composition scene the offline
+  // driver sources for itself, and the anchored walk descends the same members
+  // (compositor.root_composition_frame_walk, doc 05:28-36).
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), root};
 
   // Reference: render_frame via the offline driver.
   const auto reference_result = arbc::render_offline(document, viewport, backend);

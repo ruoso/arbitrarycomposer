@@ -342,10 +342,12 @@ RenderRequest one_tile_request(arbc::Surface& target, StateHandle snapshot, Dead
 }
 
 // A single-layer document; the resolver binds it to a caller-owned `Content`.
-arbc::ObjectId add_single_layer(arbc::Model& model) {
+arbc::ObjectId add_single_layer(arbc::Model& model, arbc::ObjectId& comp) {
   auto txn = model.transact();
   const arbc::ObjectId content_id = txn.add_content(0);
-  txn.add_layer(content_id, arbc::Affine::identity());
+  const arbc::ObjectId layer = txn.add_layer(content_id, arbc::Affine::identity());
+  comp = txn.add_composition(256, 256);
+  txn.attach_layer(comp, layer);
   REQUIRE(txn.commit().has_value());
   return content_id;
 }
@@ -1292,13 +1294,14 @@ TEST_CASE(
     "pull_service: render_frame_interactive with pulls == nullptr reproduces the inline fill") {
   MarkBackend backend;
   arbc::Model model;
-  const arbc::ObjectId content_id = add_single_layer(model);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_single_layer(model, comp);
   const arbc::DocStatePtr state = model.current();
   GraphContent leaf; // a plain leaf layer
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &leaf : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // one rung-0 tile
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp}; // one rung-0 tile
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   CompositorCounters counters;

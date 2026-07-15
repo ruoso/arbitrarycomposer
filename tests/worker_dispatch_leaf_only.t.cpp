@@ -61,6 +61,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "support/root_anchor.hpp"
 #include "support/schedule_perturb.hpp"
 
 #include <algorithm>
@@ -384,6 +385,10 @@ struct OperatorScene {
   ObjectId bootstrap_layer{};
 
   OperatorScene() {
+    // The ROOT composition, created FIRST so both drivers source it (lowest-id wins),
+    // then the child composition the nesting embeds (compositor.root_composition_frame_walk).
+    const ObjectId root =
+        doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     const ObjectId child =
         doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     doc.attach_layer(child, doc.add_layer(doc.add_content(deep_fade_a), Affine::identity()));
@@ -391,8 +396,11 @@ struct OperatorScene {
     nested = std::make_shared<NestedContent>(child);
 
     bootstrap_layer = doc.add_layer(doc.add_content(fade), Affine::identity());
-    doc.add_layer(doc.add_content(crossfade), Affine::identity());
-    doc.add_layer(doc.add_content(nested), Affine::identity());
+    const ObjectId xfade_layer = doc.add_layer(doc.add_content(crossfade), Affine::identity());
+    const ObjectId nest_layer = doc.add_layer(doc.add_content(nested), Affine::identity());
+    doc.attach_layer(root, bootstrap_layer);
+    doc.attach_layer(root, xfade_layer);
+    doc.attach_layer(root, nest_layer);
   }
 
   // Every leaf render this scene performed, across all five leaves.
@@ -444,8 +452,11 @@ public:
     const DocStatePtr pin = d_doc.pin();
     const ContentResolver resolve = [this](ObjectId id) { return d_doc.resolve(id); };
     const FrameBinding binding{&d_doc, pin};
-    return d_renderer->render_frame(*pin, resolve, viewport(), d_cache, d_backend, d_surfaces,
-                                    *d_target, {}, k_interior, budget, binding);
+    // `InteractiveRenderer::render_frame` renders the composition the Viewport anchors and
+    // does not source the root itself, so anchor at the document's root composition.
+    const Viewport vp{k_dim, k_dim, Affine::identity(), arbc::test::root_composition_of(*pin)};
+    return d_renderer->render_frame(*pin, resolve, vp, d_cache, d_backend, d_surfaces, *d_target,
+                                    {}, k_interior, budget, binding);
   }
 
   // Frames until the loop is genuinely settled: nothing in flight AND no follow-up
@@ -626,7 +637,8 @@ TEST_CASE("an in-flight worker render survives the frame's deadline expiry and r
   auto gated = std::make_shared<GatedLeaf>(gate, Rgba{0.75F, 0.5F, 0.25F, 1.0F});
 
   Document doc;
-  doc.add_layer(doc.add_content(gated), Affine::identity());
+  const ObjectId comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  doc.attach_layer(comp, doc.add_layer(doc.add_content(gated), Affine::identity()));
 
   DispatchSpy spy;
   const ExpiringClock clock;
@@ -678,7 +690,8 @@ TEST_CASE("destroying an InteractiveRenderer with a render in flight joins befor
   auto gated = std::make_shared<GatedLeaf>(gate, Rgba{0.25F, 0.75F, 0.5F, 1.0F});
 
   Document doc;
-  doc.add_layer(doc.add_content(gated), Affine::identity());
+  const ObjectId comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  doc.attach_layer(comp, doc.add_layer(doc.add_content(gated), Affine::identity()));
 
   DispatchSpy spy;
   const ExpiringClock clock; // stays expired: this case never reaps, it tears down

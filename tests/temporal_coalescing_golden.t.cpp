@@ -87,10 +87,13 @@ TEST_CASE("temporal golden: a coalesced frame is byte-identical to the rendered 
   auto timed = std::make_shared<TimedFill>();
   arbc::Document document;
   const arbc::ObjectId content = document.add_content(timed);
-  document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
 
   arbc::CpuBackend backend;
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  // Anchor the direct frame walk at the scene's composition (doc 05:28-36).
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   const arbc::DocStatePtr state = document.pin();
   const auto resolver = [&document](arbc::ObjectId id) { return document.resolve(id); };
   arbc::SurfacePool pool(backend);

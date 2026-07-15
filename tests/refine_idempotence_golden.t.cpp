@@ -93,22 +93,25 @@ constexpr auto k_frame_budget = std::chrono::milliseconds(100);
 //
 // The veils live inside a child composition shown through a `NestedContent`, so the
 // frame's top layer is an operator whose composed output is itself translucent: exactly
-// the shape a refine frame re-composites. (`DocRoot::for_each_layer` is a global walk,
-// so the child's layers are also visited at top level -- the scene every runtime nesting
-// test has; it is translucent either way, which is all this file asks of it.)
+// the shape a refine frame re-composites. The frame walk is composition-scoped (doc
+// 05:28-36), so the top-level members are the background and the nested layer, held in a
+// root composition the frame anchors at; the child's veil layers are reached only through
+// `NestedContent::render`.
 //
 // Every color is premultiplied working-space (doc 07 rule 2): each channel <= its
 // alpha.
 struct TranslucentScene {
   Document doc;
+  ObjectId root{}; // the composition the frame walk anchors at
   ObjectId background{};
   ObjectId veil_content{};
   ObjectId nested_content{};
 
   TranslucentScene() {
+    root = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     background =
         doc.add_content(std::make_shared<SolidContent>(Rgba{0.40F, 0.08F, 0.08F, 0.80F}, canvas()));
-    doc.add_layer(background, Affine::identity());
+    doc.attach_layer(root, doc.add_layer(background, Affine::identity()));
 
     const ObjectId child =
         doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
@@ -120,7 +123,7 @@ struct TranslucentScene {
     doc.attach_layer(child, doc.add_layer(veil_b, Affine::identity()));
 
     nested_content = doc.add_content(std::make_shared<NestedContent>(child));
-    doc.add_layer(nested_content, Affine::identity());
+    doc.attach_layer(root, doc.add_layer(nested_content, Affine::identity()));
   }
 };
 
@@ -186,7 +189,8 @@ public:
     config.contribution = [revision](const Content*) { return revision; };
     PullServiceImpl pulls(d_cache, d_backend, direct_dispatch(), std::move(config));
     const OperatorBindingScope binding = bind_operators(d_scene.doc, pulls, d_backend, pin);
-    render_frame_interactive(*pin, resolve, viewport(), d_cache, d_backend, d_pool, *d_target,
+    const Viewport view{k_dim, k_dim, Affine::identity(), d_scene.root};
+    render_frame_interactive(*pin, resolve, view, d_cache, d_backend, d_pool, *d_target,
                              Deadline::none(), std::nullopt, /*pending=*/nullptr, counters, dirty,
                              Time::zero(), /*visible_plans=*/nullptr, /*diagnostics=*/nullptr,
                              &pulls);
@@ -230,9 +234,9 @@ std::vector<float> quiesced_pixels(Backend& backend, TranslucentScene& scene,
     const DocStatePtr pin = scene.doc.pin();
     const ContentResolver resolve = [&scene](ObjectId id) { return scene.doc.resolve(id); };
     const FrameBinding binding{&scene.doc, pin};
-    const InteractiveRenderer::FrameOutcome outcome =
-        renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {},
-                              Time::zero(), k_frame_budget, binding);
+    const InteractiveRenderer::FrameOutcome outcome = renderer.render_frame(
+        *pin, resolve, Viewport{k_dim, k_dim, Affine::identity(), scene.root}, cache, backend, pool,
+        **target, {}, Time::zero(), k_frame_budget, binding);
     if (!outcome.schedule_follow_up && renderer.pending().tiles.empty()) {
       return snapshot(**target);
     }

@@ -169,6 +169,11 @@ Scene add_single_layer(arbc::Model& model) {
   auto txn = model.transact();
   const ObjectId content = txn.add_content(0);
   const ObjectId layer = txn.add_layer(content, Affine::identity());
+  // A member of a root composition: the frame walk is composition-scoped and the
+  // HostViewport driver sources this (lowest-id) composition as the anchor
+  // (compositor.root_composition_frame_walk, doc 05:28-36).
+  const ObjectId comp = txn.add_composition(512.0, 512.0);
+  txn.attach_layer(comp, layer);
   REQUIRE(txn.commit().has_value());
   return {content, layer};
 }
@@ -771,6 +776,10 @@ namespace {
 Scene add_single_layer(arbc::Document& doc) {
   const ObjectId content = doc.add_content(std::make_shared<SyncSolid>());
   const ObjectId layer = doc.add_layer(content, Affine::identity());
+  // A member of a root composition, so the composition-scoped frame walk draws it
+  // (the HostViewport driver sources this lowest-id composition as the anchor).
+  const ObjectId comp = doc.add_composition(512.0, 512.0);
+  doc.attach_layer(comp, layer);
   return {content, layer};
 }
 

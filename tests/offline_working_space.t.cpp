@@ -53,7 +53,10 @@ TEST_CASE("render_offline allocates target and temps in the composition's workin
 
   const auto content = std::make_shared<TagCapturingContent>();
   const arbc::ObjectId cid = document.add_content(content);
-  document.add_layer(cid, arbc::Affine::identity());
+  // The frame walk is composition-scoped: attach the layer to the composition the
+  // offline driver sources, or the frame renders nothing
+  // (compositor.root_composition_frame_walk, doc 05:28-36).
+  document.attach_layer(comp, document.add_layer(cid, arbc::Affine::identity()));
 
   arbc::CpuBackend backend;
   const arbc::Viewport viewport{8, 8, arbc::Affine::identity()};

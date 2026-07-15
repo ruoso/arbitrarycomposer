@@ -344,15 +344,21 @@ private:
 struct Scene {
   arbc::ObjectId content;
   arbc::ObjectId layer;
+  arbc::ObjectId comp;
 };
 
-// A single identity-placed layer bound to `content`; returns the ids.
+// A single identity-placed layer bound to `content`, a member of a fresh root
+// composition; returns the ids. The frame walk is composition-scoped
+// (compositor.root_composition_frame_walk, doc 05:28-36), so a directly-driven
+// `InteractiveRenderer::render_frame` must be anchored at `comp` to draw the layer.
 Scene add_single_layer(arbc::Model& model) {
   auto txn = model.transact();
   const arbc::ObjectId content = txn.add_content(0);
   const arbc::ObjectId layer = txn.add_layer(content, arbc::Affine::identity());
+  const arbc::ObjectId comp = txn.add_composition(512.0, 512.0);
+  txn.attach_layer(comp, layer);
   REQUIRE(txn.commit().has_value());
-  return {content, layer};
+  return {content, layer, comp};
 }
 
 // A trivial commit (re-set the same transform) that publishes a fresh revision
@@ -502,7 +508,7 @@ TEST_CASE("interactive: a still scene advancing only the clock does no work") {
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // one rung-0 tile
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp}; // one rung-0 tile
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -545,7 +551,7 @@ TEST_CASE("interactive: the pull-identity map is built once per revision") {
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -582,7 +588,7 @@ TEST_CASE("interactive: a still frame builds no identity map and constructs no p
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -646,12 +652,15 @@ TEST_CASE("interactive: a still scene binds no operators") {
   arbc::Document doc;
   const arbc::FadeParams params{arbc::FadeShape::Linear, std::nullopt,
                                 arbc::FadeWindow{arbc::Time{0}, arbc::Time{1000}}};
-  doc.add_layer(doc.add_content(std::make_shared<arbc::FadeContent>(&input, params)),
-                arbc::Affine::identity());
+  const arbc::ObjectId fade_layer =
+      doc.add_layer(doc.add_content(std::make_shared<arbc::FadeContent>(&input, params)),
+                    arbc::Affine::identity());
+  const arbc::ObjectId comp = doc.add_composition(256.0, 256.0);
+  doc.attach_layer(comp, fade_layer);
 
   const arbc::DocStatePtr state = doc.pin();
   const arbc::ContentResolver resolve = [&doc](arbc::ObjectId id) { return doc.resolve(id); };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -687,7 +696,7 @@ TEST_CASE("interactive: an unbound frame binds nothing and renders as it always 
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -720,11 +729,14 @@ TEST_CASE("interactive: model damage inside an operator CYCLE routes once and te
   arbc::Model model;
   arbc::ObjectId head_id;
   arbc::ObjectId tail_id;
+  arbc::ObjectId comp;
   {
     auto txn = model.transact();
     head_id = txn.add_content(0);
     tail_id = txn.add_content(0); // in the `contents` table, placed as no layer
-    txn.add_layer(head_id, arbc::Affine::identity());
+    const arbc::ObjectId layer = txn.add_layer(head_id, arbc::Affine::identity());
+    comp = txn.add_composition(512.0, 512.0);
+    txn.attach_layer(comp, layer);
     REQUIRE(txn.commit().has_value());
   }
   const arbc::DocStatePtr state = model.current();
@@ -734,7 +746,7 @@ TEST_CASE("interactive: model damage inside an operator CYCLE routes once and te
     }
     return id == tail_id ? &tail : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // one rung-0 tile
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp}; // one rung-0 tile
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -774,7 +786,7 @@ TEST_CASE("interactive: a transport-produced clock advance over a still scene do
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -811,7 +823,7 @@ TEST_CASE("interactive: the frame never blocks past its deadline") {
   arbc::Model model;
   const Scene scene = add_single_layer(model);
   const arbc::DocStatePtr state = model.current();
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
   arbc::SurfacePool pool(backend);
 
   SECTION("an async miss that never settles degrades at the deadline, and no frame is "
@@ -924,7 +936,7 @@ TEST_CASE("interactive: the deadline sweep cancels a pending tile the camera lef
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -942,7 +954,7 @@ TEST_CASE("interactive: the deadline sweep cancels a pending tile the camera lef
     // The layer is bounded to [0, 512]^2, so a camera 1000 device px to the left maps the
     // viewport onto local x in [1000, 1256]: the layer is culled outright and contributes
     // nothing to the footprint.
-    const arbc::Viewport panned{256, 256, arbc::Affine::translation(-1000.0, 0.0)};
+    const arbc::Viewport panned{256, 256, arbc::Affine::translation(-1000.0, 0.0), scene.comp};
     renderer.render_frame(*state, resolver, panned, cache, backend, pool, **target, {},
                           arbc::Time{0}, k_budget);
     CHECK(renderer.tiles_cancelled() == 1);
@@ -953,7 +965,7 @@ TEST_CASE("interactive: the deadline sweep cancels a pending tile the camera lef
   SECTION("a zoom to a different rung") {
     // A 4x camera picks a finer rung, so the frame wants that rung's keys -- and the tile
     // in flight is a rung-0 tile, which is a DIFFERENT tile by full `TileKey` equality.
-    const arbc::Viewport zoomed{256, 256, arbc::Affine::scaling(4.0, 4.0)};
+    const arbc::Viewport zoomed{256, 256, arbc::Affine::scaling(4.0, 4.0), scene.comp};
     renderer.render_frame(*state, resolver, zoomed, cache, backend, pool, **target, {},
                           arbc::Time{0}, k_budget);
     CHECK(renderer.tiles_cancelled() == 1);
@@ -991,7 +1003,8 @@ TEST_CASE("interactive: a retained tile survives a partial repaint that does not
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()}; // a 2x2 grid of rung-0 tiles
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(),
+                                scene.comp}; // a 2x2 grid of rung-0 tiles
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(512, 512, arbc::k_working_rgba32f);
@@ -1071,9 +1084,11 @@ TEST_CASE("interactive: the deadline sweep retains an operator's waited-on input
                                 arbc::FadeWindow{arbc::Time{0}, arbc::Time{1000}}};
   const arbc::ObjectId fade = doc.add_content(std::make_shared<arbc::FadeContent>(&leaf, params));
   const arbc::ObjectId fade_layer = doc.add_layer(fade, arbc::Affine::identity());
+  const arbc::ObjectId comp = doc.add_composition(256.0, 256.0);
+  doc.attach_layer(comp, fade_layer);
 
   const arbc::ContentResolver resolve = [&doc](arbc::ObjectId id) { return doc.resolve(id); };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -1130,7 +1145,7 @@ TEST_CASE("interactive: a coarse fallback frame refines to a sharp frame (byte-e
   arbc::Model model;
   const Scene scene = add_single_layer(model);
   const arbc::DocStatePtr state = model.current();
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
 
   // The golden run: frame 1 answers the miss async (composites the transparent
   // placeholder fallback), the arrival settles within budget, and frame 2
@@ -1186,7 +1201,8 @@ TEST_CASE("interactive: a damage-gated frame re-plans only the changed tiles") {
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()}; // a 2x2 grid of rung-0 tiles
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(),
+                                scene.comp}; // a 2x2 grid of rung-0 tiles
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(512, 512, arbc::k_working_rgba32f);
@@ -1216,7 +1232,7 @@ TEST_CASE("interactive: frame-to-frame state advances across frames") {
   arbc::Model model;
   const Scene scene = add_single_layer(model);
   const arbc::DocStatePtr state = model.current();
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
   arbc::SurfacePool pool(backend);
 
   SECTION("prior revision and previous time track the last frame") {
@@ -1329,7 +1345,7 @@ TEST_CASE("interactive: an off-thread arrival is reaped and scheduled without bl
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
@@ -1402,7 +1418,7 @@ TEST_CASE("interactive: speculation drives from the exposed plan (render-free)")
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // one rung-0 tile
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp}; // one rung-0 tile
   arbc::SurfacePool pool(backend);
 
   // Control: the bare compositor driver (no Step 7) over an identical cold cache.
@@ -1444,7 +1460,8 @@ TEST_CASE("interactive: the prime pass reclassifies a resident pan-ring tile to 
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == scene.content ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // visible tile (0,0) rung 0
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(),
+                                scene.comp}; // visible tile (0,0) rung 0
   arbc::SurfacePool pool(backend);
   const std::uint64_t rev = content_key_revision(*state, resolver, &content);
 
@@ -1498,7 +1515,7 @@ TEST_CASE("interactive: a scale-increase frame speculates the next zoom rung und
   // Frame 1 at scale 1.0 warms the rung-0 tile (0,0) and records the prior camera
   // scale; its pre-settled arrival leaves carried damage so frame 2 renders WITHOUT
   // invalidating that tile (carried damage re-plans but does not invalidate).
-  const arbc::Viewport viewport1{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport1{256, 256, arbc::Affine::identity(), scene.comp};
   const auto out1 = renderer.render_frame(*state, resolver, viewport1, cache, backend, pool,
                                           **target, {}, arbc::Time{0}, k_budget);
   REQUIRE(out1.schedule_follow_up);
@@ -1512,7 +1529,7 @@ TEST_CASE("interactive: a scale-increase frame speculates the next zoom rung und
   // Frame 2 zooms in (camera scale 1.0 -> 2.0): zoom_direction > 0, so the next
   // (coarser) rung-0 tile covering the visible region -- the resident `coarse_key`
   // -- is reclassified onto Speculative by the loop's prime pass.
-  const arbc::Viewport viewport2{256, 256, arbc::Affine::scaling(2.0, 2.0)};
+  const arbc::Viewport viewport2{256, 256, arbc::Affine::scaling(2.0, 2.0), scene.comp};
   renderer.render_frame(*state, resolver, viewport2, cache, backend, pool, **target, {},
                         arbc::Time{0}, k_budget);
   REQUIRE(cache.evictions() == 0);

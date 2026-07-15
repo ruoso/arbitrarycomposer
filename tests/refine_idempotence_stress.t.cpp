@@ -85,7 +85,9 @@ constexpr auto k_frame_budget = std::chrono::milliseconds(100);
 constexpr Time k_interior{500}; // the fades' envelope is 0.5 here: interior, so they render
 
 Rect canvas() { return Rect{0.0, 0.0, static_cast<double>(k_dim), static_cast<double>(k_dim)}; }
-Viewport viewport() { return Viewport{k_dim, k_dim, Affine::identity()}; }
+// The frame walk is composition-scoped, so a viewport anchors at the composition it draws
+// (compositor.root_composition_frame_walk, doc 05:28-36).
+Viewport viewport(ObjectId anchor) { return Viewport{k_dim, k_dim, Affine::identity(), anchor}; }
 
 // A fade whose out-ramp spans [0, 1000): at `k_interior` the envelope is 0.5, an
 // INTERIOR weight -- so `identity()` declines, the operator's own `render` runs, and
@@ -121,13 +123,15 @@ struct NestedTranslucentScene {
   std::shared_ptr<NestedContent> nested;
 
   Document doc;
+  ObjectId root{}; // the composition the frame walk anchors at
   // The background's content id, so a test can damage two far-apart sub-regions of it
   // in ONE frame -- the multi-rect repaint set (`compositor.disjoint_dirty_repaint`).
   ObjectId back_id{};
 
   NestedTranslucentScene() {
+    root = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     back_id = doc.add_content(back);
-    doc.add_layer(back_id, Affine::identity());
+    doc.attach_layer(root, doc.add_layer(back_id, Affine::identity()));
 
     const ObjectId child =
         doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
@@ -135,7 +139,7 @@ struct NestedTranslucentScene {
     doc.attach_layer(child, doc.add_layer(doc.add_content(fade_b), Affine::identity()));
     nested = std::make_shared<NestedContent>(child);
 
-    doc.add_layer(doc.add_content(nested), Affine::identity());
+    doc.attach_layer(root, doc.add_layer(doc.add_content(nested), Affine::identity()));
   }
 };
 
@@ -183,7 +187,7 @@ std::vector<float> single_pass_oracle(Backend& backend) {
   PullServiceImpl pulls(cache, backend, direct_dispatch(), std::move(config));
   const OperatorBindingScope binding = bind_operators(scene.doc, pulls, backend, pin);
 
-  render_frame_interactive(*pin, resolve, viewport(), cache, backend, pool, **target,
+  render_frame_interactive(*pin, resolve, viewport(scene.root), cache, backend, pool, **target,
                            Deadline::none(), std::nullopt, /*pending=*/nullptr,
                            /*counters=*/nullptr, /*dirty=*/nullptr, k_interior,
                            /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, &pulls);
@@ -266,15 +270,17 @@ struct GatedScene {
   std::shared_ptr<NestedContent> nested;
 
   Document doc;
+  ObjectId root{}; // the composition the frame walk anchors at
 
   GatedScene() {
-    doc.add_layer(doc.add_content(back), Affine::identity());
+    root = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+    doc.attach_layer(root, doc.add_layer(doc.add_content(back), Affine::identity()));
     const ObjectId child =
         doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     doc.attach_layer(child, doc.add_layer(doc.add_content(fade_a), Affine::identity()));
     doc.attach_layer(child, doc.add_layer(doc.add_content(fade_b), Affine::identity()));
     nested = std::make_shared<NestedContent>(child);
-    doc.add_layer(doc.add_content(nested), Affine::identity());
+    doc.attach_layer(root, doc.add_layer(doc.add_content(nested), Affine::identity()));
   }
 };
 
@@ -306,8 +312,8 @@ std::vector<float> quiesced_pixels(Backend& backend, std::size_t worker_count,
     const ContentResolver resolve = [&scene](ObjectId id) { return scene.doc.resolve(id); };
     const FrameBinding binding{&scene.doc, pin};
     const InteractiveRenderer::FrameOutcome outcome =
-        renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {},
-                              k_interior, k_frame_budget, binding);
+        renderer.render_frame(*pin, resolve, viewport(scene.root), cache, backend, pool, **target,
+                              {}, k_interior, k_frame_budget, binding);
     if (!outcome.schedule_follow_up && renderer.pending().tiles.empty()) {
       if (out != nullptr) {
         *out = renderer.counters();
@@ -352,8 +358,8 @@ std::vector<float> quiesced_after_split_damage(Backend& backend, std::size_t wor
     const DocStatePtr pin = scene.doc.pin();
     const ContentResolver resolve = [&scene](ObjectId id) { return scene.doc.resolve(id); };
     const FrameBinding binding{&scene.doc, pin};
-    return renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, damage,
-                                 k_interior, k_frame_budget, binding);
+    return renderer.render_frame(*pin, resolve, viewport(scene.root), cache, backend, pool,
+                                 **target, damage, k_interior, k_frame_budget, binding);
   };
 
   constexpr int k_max_frames = 64; // a convergence bound, never a timing assumption
@@ -439,8 +445,8 @@ TEST_CASE("a leaf that arrives on a later frame refines onto byte-exact pixels")
     const DocStatePtr pin = scene.doc.pin();
     const ContentResolver resolve = [&scene](ObjectId id) { return scene.doc.resolve(id); };
     const FrameBinding binding{&scene.doc, pin};
-    return renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {},
-                                 k_interior, k_frame_budget, binding);
+    return renderer.render_frame(*pin, resolve, viewport(scene.root), cache, backend, pool,
+                                 **target, {}, k_interior, k_frame_budget, binding);
   };
 
   frame();                      // dispatches; the gated leaf parks on a worker
@@ -486,25 +492,27 @@ TEST_CASE("a quiesced refine loop composites each tile once per frame, never twi
   CHECK(byte_identical(worker_pixels, inline_pixels));
   CHECK(worker_counters.composites() > 0);
 
-  // The coalescing identity, under a LIVE worker pool and real arrival races
-  // (`compositor.operator_refinement_wave_amplification`). This scene is a nested chain,
-  // so its operators pull each other's tiles: on a cold cache with workers, each operator
-  // renders exactly TWICE -- once to request its inputs and paint the transient
-  // placeholder (which is how the driver discovers the input tiles at all), once when the
-  // wave lands and it can compose the real pixels. The inline oracle renders each exactly
-  // once, because `submit` IS the render there and every leaf settles into the cache
-  // before the pull returns, so its first render is already exact.
-  //
-  // This is a COUNTER identity and not a race, at any worker count, because the gate's
-  // only input is which `TileKey`s are still IN the refinement queue -- a frame-thread
-  // fact. A leaf enters the queue when its render is dispatched and leaves it only in
-  // `poll_refinements`, at the end of the frame, so whether the worker has finished it in
-  // the meantime cannot move any number here. That is the whole reason the gate reads
-  // presence rather than `settled()`.
+  // The two-pass identity, under a LIVE worker pool and real arrival races. On a cold
+  // cache with workers, each operator renders exactly TWICE -- once to request its inputs
+  // and paint the transient placeholder (which is how the driver discovers the input tiles
+  // at all), once when the wave lands and it can compose the real pixels. The inline oracle
+  // renders each exactly once, because `submit` IS the render there and every leaf settles
+  // into the cache before the pull returns, so its first render is already exact.
   REQUIRE(inline_counters.operator_renders() > 0);
   CHECK(worker_counters.operator_renders() == 2 * inline_counters.operator_renders());
-  // ...and it is the gate that put it there, not an accident: the positive witness.
-  CHECK(worker_counters.renders_coalesced() > 0);
+
+  // No renders are COALESCED here, and after `compositor.root_composition_frame_walk` (doc
+  // 05:28-36) that is the correct observation. The in-flight wave gate deterministically
+  // fired on this scene ONLY while the old document-global walk double-drew the nested
+  // child: it rendered the child's fades flat at top level (dispatching their leaves) and
+  // then `nested` re-pulled those resident transient fade tiles the SAME frame, with the
+  // leaves still in the queue -- an intra-frame coalesce the double-draw made deterministic.
+  // Scoped, `nested` is the sole renderer of its child's operator tiles: each is rendered
+  // once and its leaf dispatched once, so the wave-land re-render hits a warm leaf and
+  // there is no pre-rendered transient to coalesce and no redundant re-pull to hold. The
+  // gate's deterministic witness lives at the compositor level (`counters.t.cpp`,
+  // `refinement.t.cpp`), where the partial arrival can be staggered by hand.
+  CHECK(worker_counters.renders_coalesced() == 0);
   CHECK(inline_counters.renders_coalesced() == 0);
 }
 
@@ -569,8 +577,9 @@ std::vector<float> quiesced_pixels_under_deadline_pressure(Backend& backend,
     const FrameBinding binding{&scene.doc, pin};
     const std::chrono::steady_clock::duration budget =
         (i < k_tight_frames) ? std::chrono::steady_clock::duration::zero() : k_frame_budget;
-    const InteractiveRenderer::FrameOutcome outcome = renderer.render_frame(
-        *pin, resolve, viewport(), cache, backend, pool, **target, {}, k_interior, budget, binding);
+    const InteractiveRenderer::FrameOutcome outcome =
+        renderer.render_frame(*pin, resolve, viewport(scene.root), cache, backend, pool, **target,
+                              {}, k_interior, budget, binding);
     if (!outcome.schedule_follow_up && renderer.pending().tiles.empty()) {
       return snapshot(**target);
     }

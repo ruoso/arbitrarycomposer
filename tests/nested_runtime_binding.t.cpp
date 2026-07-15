@@ -40,6 +40,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "support/root_anchor.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -82,9 +84,10 @@ void require_equal(const std::vector<std::byte>& got, const std::vector<std::byt
   REQUIRE(std::memcmp(got.data(), want.data(), want.size()) == 0);
 }
 
-// A nested content over a child composition of two org.arbc.solid layers, embedded at
-// the parent's global root (the offline driver's frame walk). Nothing here attaches:
-// that is the production wiring under test.
+// A nested content over a child composition of two org.arbc.solid layers, embedded as the
+// sole member of a ROOT composition (created FIRST so the offline driver sources it and
+// the direct reference anchors at it -- compositor.root_composition_frame_walk). Only the
+// nested boundary attaches: that is the production wiring under test.
 struct VisualScene {
   Document doc;
   std::shared_ptr<SolidContent> solid_a =
@@ -92,17 +95,20 @@ struct VisualScene {
   std::shared_ptr<SolidContent> solid_b =
       std::make_shared<SolidContent>(Rgba{0.10F, 0.40F, 0.30F, 0.50F}, Rect{0.0, 0.0, 8.0, 8.0});
   std::shared_ptr<NestedContent> nested;
+  ObjectId root{};
   ObjectId child{};
   ObjectId layer_a{};
 
   VisualScene() {
+    root = doc.add_composition(8.0, 8.0); // R: created first -> lowest id -> the root
     child = doc.add_composition(8.0, 8.0);
     layer_a = doc.add_layer(doc.add_content(solid_a), Affine::identity());
     const ObjectId layer_b = doc.add_layer(doc.add_content(solid_b), Affine::translation(1.0, 1.0));
     doc.attach_layer(child, layer_a);
     doc.attach_layer(child, layer_b);
     nested = std::make_shared<NestedContent>(child);
-    doc.add_layer(doc.add_content(nested), Affine::identity());
+    const ObjectId layer_nested = doc.add_layer(doc.add_content(nested), Affine::identity());
+    doc.attach_layer(root, layer_nested);
   }
 };
 
@@ -118,9 +124,11 @@ struct FadeChildScene {
       std::make_shared<SolidContent>(Rgba{0.10F, 0.40F, 0.30F, 0.50F}, Rect{0.0, 0.0, 8.0, 8.0});
   std::shared_ptr<FadeContent> fade;
   std::shared_ptr<NestedContent> nested;
+  ObjectId root{};
   ObjectId child{};
 
   FadeChildScene() {
+    root = doc.add_composition(8.0, 8.0); // R: created first -> lowest id -> the root
     child = doc.add_composition(8.0, 8.0);
     fade = std::make_shared<FadeContent>(solid_a.get(), half_fade_params());
     const ObjectId lf = doc.add_layer(doc.add_content(fade), Affine::identity());
@@ -128,7 +136,8 @@ struct FadeChildScene {
     doc.attach_layer(child, lf);
     doc.attach_layer(child, lb);
     nested = std::make_shared<NestedContent>(child);
-    doc.add_layer(doc.add_content(nested), Affine::identity());
+    const ObjectId layer_nested = doc.add_layer(doc.add_content(nested), Affine::identity());
+    doc.attach_layer(root, layer_nested);
   }
 };
 
@@ -205,13 +214,13 @@ PullConfig live_config(const DocRoot& pin, const ContentResolver& resolve) {
 // PRODUCTION-bound frame must reproduce these bytes exactly: binding changes WHO calls
 // attach, never WHAT nested computes.
 //
-// It renders the WHOLE FRAME rather than nested alone because the compositor's frame
-// walk is GLOBAL (`for_each_layer`, compositor.cpp:114): it draws every layer record in
-// the document, so a child composition's member layers are drawn at top level AND again
-// inside nested's composed output. The visual frame walk is not composition-scoped the
-// way ExportMonitor's audio mix is (`for_each_layer_in`) -- pre-existing and orthogonal
-// to binding (tech debt `compositor.root_composition_frame_walk`). Both sides of this
-// comparison carry it, so what the comparison isolates is exactly the binding.
+// It renders the ROOT composition, anchored explicitly (the compositor never re-derives
+// the root). The visual frame walk is now composition-scoped
+// (`for_each_layer_in`, compositor.root_composition_frame_walk), so it draws R's single
+// member -- the nested layer -- exactly once, and the child composition's member layers
+// are reached only through nested's composed output, drawn once. The SequenceRenderer
+// driver sources this same root, so both sides render R the same way, and what the
+// comparison isolates is exactly the binding.
 using AttachAll =
     std::function<void(PullService&, Backend&, const ContentResolver&, const DocRoot&)>;
 
@@ -227,7 +236,9 @@ std::vector<std::byte> render_reference(Document& doc, const AttachAll& attach,
   SurfacePool pool(backend);
   const auto target = backend.make_surface(k_dim, k_dim, pin->working_space());
   REQUIRE(target.has_value());
-  render_frame(*pin, resolve, Viewport{k_dim, k_dim, Affine::identity()}, backend, pool, **target);
+  render_frame(*pin, resolve,
+               Viewport{k_dim, k_dim, Affine::identity(), arbc::test::root_composition_of(*pin)},
+               backend, pool, **target);
   std::vector<std::byte> bytes = to_bytes((**target).cpu_bytes());
   detach(); // leave the reference scene's contents clean
   return bytes;
@@ -565,7 +576,8 @@ TEST_CASE("the widened binder is inert for a document holding no nested content"
   auto solid =
       std::make_shared<SolidContent>(Rgba{0.60F, 0.20F, 0.10F, 0.80F}, Rect{0.0, 0.0, 8.0, 8.0});
   Document doc;
-  doc.add_layer(doc.add_content(solid), Affine::identity());
+  const ObjectId comp = doc.add_composition(8.0, 8.0);
+  doc.attach_layer(comp, doc.add_layer(doc.add_content(solid), Affine::identity()));
 
   CpuBackend backend;
   TileCache cache(64U * 1024 * 1024);

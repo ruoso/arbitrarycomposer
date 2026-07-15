@@ -239,7 +239,9 @@ TEST_CASE("an offline sequence export is byte-exact and deterministic") {
   auto content = std::make_shared<SyncSolid>();
   arbc::Document document;
   const arbc::ObjectId cid = document.add_content(content);
-  document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
 
   const arbc::TimeRange range{Time::zero(), Time{Time::flicks_per_second / 8}};
   const std::vector<Time> times = arbc::frame_times_over(range, arbc::Rational(24, 1));
@@ -284,7 +286,9 @@ TEST_CASE("an offline frame renders exactly with no degradation") {
   auto content = std::make_shared<SyncSolid>();
   arbc::Document document;
   const arbc::ObjectId cid = document.add_content(content);
-  document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
 
   MarkBackend backend;
   arbc::SequenceRenderer renderer(document, one_tile_viewport(), backend);
@@ -316,7 +320,9 @@ TEST_CASE("an offline export coalesces sub-native-grid instants onto one cached 
   auto timed = std::make_shared<TimedFill>();
   arbc::Document document;
   const arbc::ObjectId cid = document.add_content(timed);
-  document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
 
   MarkBackend backend;
   arbc::SequenceRenderer renderer(document, one_tile_viewport(), backend);
@@ -352,7 +358,9 @@ TEST_CASE("an all-Static offline export reuses clock-invariant tiles across fram
   auto content = std::make_shared<SyncSolid>(Stability::Static);
   arbc::Document document;
   const arbc::ObjectId cid = document.add_content(content);
-  document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
 
   MarkBackend backend;
   arbc::SequenceRenderer renderer(document, one_tile_viewport(), backend);
@@ -377,6 +385,8 @@ TEST_CASE("an offline export culls a layer outside its half-open span") {
   arbc::Document document;
   const arbc::ObjectId cid = document.add_content(content);
   const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
   const std::int64_t frame = TimedFill::k_frame;
   // Present for parent time in [frame, 3*frame).
   document.set_layer_span(layer, arbc::TimeRange{Time{frame}, Time{frame * 3}});
@@ -404,6 +414,8 @@ TEST_CASE("an offline export requests content at its time-mapped instant") {
   arbc::Document document;
   const arbc::ObjectId cid = document.add_content(content);
   const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId root_comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(root_comp, layer);
   // local = (composition_time - 0) * 2 + 100.
   document.set_layer_time_map(layer, arbc::TimeMap{Time::zero(), arbc::Rational(2, 1), Time{100}});
 
@@ -424,9 +436,9 @@ TEST_CASE("render_frame_at surfaces an unstorable working space as an error") {
   auto content = std::make_shared<SyncSolid>();
   arbc::Document document;
   const arbc::ObjectId comp = document.add_composition(8.0, 8.0);
-  (void)comp;
   const arbc::ObjectId cid = document.add_content(content);
-  document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
+  document.attach_layer(comp, layer);
 
   RejectingBackend backend;
   arbc::SequenceRenderer renderer(document, arbc::Viewport{8, 8, arbc::Affine::identity()},
@@ -442,7 +454,9 @@ TEST_CASE("parallel-exact rendering is byte-identical to the inline path") {
   auto content = std::make_shared<SyncSolid>();
   arbc::Document document;
   const arbc::ObjectId cid = document.add_content(content);
-  document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
 
   MarkBackend inline_backend;
   arbc::SequenceRenderer inline_renderer(document, one_tile_viewport(), inline_backend);
@@ -470,6 +484,8 @@ TEST_CASE("an offline export pins one revision while a writer keeps editing") {
   arbc::Document document;
   const arbc::ObjectId cid = document.add_content(content);
   const arbc::ObjectId layer = document.add_layer(cid, arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(512.0, 512.0);
+  document.attach_layer(comp, layer);
 
   // A 512x512 viewport is a 2x2 rung-0 grid; an identity layer covers all four
   // tiles. A leaked mid-export edit that translated the layer would change the set

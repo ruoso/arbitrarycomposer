@@ -31,9 +31,11 @@
 
 namespace arbc {
 
-// The root-anchor sentinel: the default (invalid) `ObjectId`. A viewport anchored
-// here uses `render_frame`'s flat global walk (byte-identical to pre-anchor
-// behavior, doc 04:56-61).
+// The root-anchor sentinel: the default (invalid) `ObjectId`, meaning "no
+// composition bound" (Decision 3). A viewport anchored here resolves no
+// composition, so the frame walk (`for_each_layer_in`) yields nothing -- an
+// empty frame -- rather than the document-global walk that double-drew nested
+// children (doc 05:28-36). A real render sets a real anchor at the driver.
 inline constexpr ObjectId k_root_anchor{};
 
 // The composed anchor->device scale (`Affine::max_scale()`, the larger singular
@@ -122,9 +124,9 @@ RebaseResult rebase(const DocRoot& state, const Viewport& viewport);
 // and prunes any nested-composition subtree whose composed placement is
 // off-viewport or sub-pixel BEFORE descending (so it issues no request for it).
 //
-//  - `viewport.anchor == k_root_anchor`: the flat walking-skeleton scene -- every
-//    layer in global `for_each_layer` order composed with the camera
-//    (backward-compat: byte-identical layer set/order to `render_frame`).
+//  - `viewport.anchor == k_root_anchor`: no composition bound (Decision 3) --
+//    the flat fallback scopes to `for_each_layer_in(k_root_anchor)`, which
+//    resolves nothing and emits an empty frame (never the document-global walk).
 //  - a composition id: walk that composition's membership
 //    (`for_each_layer_in`), descending nested compositions (`find_composition`)
 //    until it reaches leaf layers, pruning sub-pixel/off-view subtrees.
@@ -136,8 +138,9 @@ void cull_walk(const DocRoot& state, const Viewport& viewport,
 
 // The anchored frame driver: `render_frame` generalized over `viewport.anchor`.
 // Drives the surviving leaves `cull_walk` emits through the SAME per-layer path
-// `render_frame` uses (`render_layer`), so `anchor == k_root_anchor` is
-// byte-identical to `render_frame` (refinement byte-exact golden).
+// `render_frame` uses (`render_layer`), so for a flat single-composition scene
+// anchored at its root it is byte-identical to `render_frame` over that same
+// root (refinement byte-exact golden); `anchor == k_root_anchor` emits nothing.
 void render_frame_anchored(const DocRoot& state, const ContentResolver& resolve,
                            const Viewport& viewport, Backend& backend, SurfacePool& pool,
                            Surface& target);

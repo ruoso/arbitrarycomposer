@@ -122,13 +122,18 @@ TEST_CASE("inline composite from a provided surface equals the same content fill
 
   arbc::CpuBackend fb_backend; // the content's own framebuffer allocator
   arbc::Document provided_doc;
-  provided_doc.add_layer(provided_doc.add_content(std::make_shared<ProvidingContent>(
-                             fb_backend, k_red, k_unit, /*transient=*/false)),
-                         placement);
+  const arbc::ObjectId provided_layer =
+      provided_doc.add_layer(provided_doc.add_content(std::make_shared<ProvidingContent>(
+                                 fb_backend, k_red, k_unit, /*transient=*/false)),
+                             placement);
+  // Attach to a composition so the composition-scoped walk draws it; the offline
+  // driver sources this (single) composition as the root (doc 05:28-36).
+  provided_doc.attach_layer(provided_doc.add_composition(8.0, 8.0), provided_layer);
 
   arbc::Document solid_doc;
-  solid_doc.add_layer(solid_doc.add_content(std::make_shared<arbc::SolidContent>(k_red, k_unit)),
-                      placement);
+  const arbc::ObjectId solid_layer = solid_doc.add_layer(
+      solid_doc.add_content(std::make_shared<arbc::SolidContent>(k_red, k_unit)), placement);
+  solid_doc.attach_layer(solid_doc.add_composition(8.0, 8.0), solid_layer);
 
   arbc::CpuBackend backend;
   const auto provided_out = render_offline(provided_doc, viewport, backend);
@@ -145,12 +150,16 @@ TEST_CASE("inline provided path allocates no copy and releases the surface withi
   auto providing =
       std::make_shared<ProvidingContent>(fb_backend, k_red, k_unit, /*transient=*/false);
   arbc::Document document;
-  document.add_layer(document.add_content(providing),
-                     compose(arbc::Affine::translation(2.0, 2.0), arbc::Affine::scaling(4.0, 4.0)));
+  const arbc::ObjectId layer = document.add_layer(
+      document.add_content(providing),
+      compose(arbc::Affine::translation(2.0, 2.0), arbc::Affine::scaling(4.0, 4.0)));
+  const arbc::ObjectId comp = document.add_composition(8.0, 8.0);
+  document.attach_layer(comp, layer);
 
   arbc::CpuBackend cpu;
   arbc::testing::CountingBackend backend(cpu);
-  const arbc::Viewport viewport{8, 8, arbc::Affine::identity()};
+  // Anchor the direct frame walk at the scene's composition (doc 05:28-36).
+  const arbc::Viewport viewport{8, 8, arbc::Affine::identity(), comp};
   const arbc::DocStatePtr state = document.pin();
   const auto resolve = [&document](arbc::ObjectId id) { return document.resolve(id); };
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
@@ -183,11 +192,15 @@ TEST_CASE("a transient provided surface is copied into the cache, independent of
   auto providing = std::make_shared<ProvidingContent>(
       fb_backend, k_red, arbc::Rect{0.0, 0.0, 256.0, 256.0}, /*transient=*/true);
   arbc::Document document;
-  document.add_layer(document.add_content(providing), arbc::Affine::identity());
+  const arbc::ObjectId layer =
+      document.add_layer(document.add_content(providing), arbc::Affine::identity());
+  const arbc::ObjectId comp = document.add_composition(256.0, 256.0);
+  document.attach_layer(comp, layer);
 
   arbc::CpuBackend cpu;
   arbc::testing::CountingBackend backend(cpu);
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  // Anchor the direct interactive walk at the scene's composition (doc 05:28-36).
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp};
   const arbc::DocStatePtr state = document.pin();
   const auto resolve = [&document](arbc::ObjectId id) { return document.resolve(id); };
   arbc::SurfacePool pool(backend);

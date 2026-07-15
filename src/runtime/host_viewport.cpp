@@ -60,6 +60,19 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Model& model, ContentR
   } else {
     d_model.set_damage_sink(&d_sink);
   }
+  // Seed the viewport anchor to the document's root composition when the host did
+  // not pin one explicitly (compositor.root_composition_frame_walk, doc 05:28-36,
+  // Decision 2): the frame walk is composition-scoped, so an unset (invalid)
+  // anchor would draw nothing. Lowest-id-wins root, sourced once from the current
+  // revision; the per-frame rebase re-picks the anchor as the user zooms.
+  if (!d_viewport.anchor.valid()) {
+    const DocStatePtr seed = d_model.current();
+    ObjectId root_id{};
+    const CompositionRecord* root_rec = nullptr;
+    if ((*seed).find_first_composition(root_id, root_rec)) {
+      d_viewport.anchor = root_id;
+    }
+  }
 }
 
 // The `Document&` binding (runtime.host_viewport_document_binding): derive the resolver, the

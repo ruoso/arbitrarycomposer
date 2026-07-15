@@ -40,14 +40,20 @@ struct Scene {
   arbc::Document document;
   arbc::ObjectId background; // bottom: opaque, full-viewport
   arbc::ObjectId foreground; // top: opaque, top-left tile only
+  arbc::ObjectId comp;       // the composition the frame walk is anchored at
 
   Scene() {
     background = document.add_content(std::make_shared<arbc::SolidContent>(
         arbc::Rgba{0.75F, 0.1F, 0.1F, 1.0F}, arbc::Rect{0.0, 0.0, 512.0, 512.0}));
-    document.add_layer(background, arbc::Affine::identity());
+    const arbc::ObjectId back_layer = document.add_layer(background, arbc::Affine::identity());
     foreground = document.add_content(std::make_shared<arbc::SolidContent>(
         arbc::Rgba{0.1F, 0.2F, 0.75F, 1.0F}, arbc::Rect{0.0, 0.0, 256.0, 256.0}));
-    document.add_layer(foreground, arbc::Affine::identity());
+    const arbc::ObjectId front_layer = document.add_layer(foreground, arbc::Affine::identity());
+    // Attach both layers (creation/bottom-to-top order) to a composition so the
+    // composition-scoped frame walk draws them (doc 05:28-36).
+    comp = document.add_composition(512.0, 512.0);
+    document.attach_layer(comp, back_layer);
+    document.attach_layer(comp, front_layer);
   }
 };
 
@@ -71,10 +77,12 @@ std::vector<float> snapshot(const arbc::Surface& surface) {
 // enforces: 02-architecture#damage-maps-to-device-dirty-regions
 TEST_CASE("damage golden: a gated damaged-region re-render is byte-identical to a full re-render") {
   arbc::CpuBackend backend;
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
 
   // The reference: a full render of the (post-damage) scene into its own target.
   Scene ref_scene;
+  // Anchor the direct frame walk at the scene's composition (identical for both
+  // scenes here, doc 05:28-36).
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), ref_scene.comp};
   const arbc::DocStatePtr ref_state = ref_scene.document.pin();
   const auto ref_resolver = [&](arbc::ObjectId id) { return ref_scene.document.resolve(id); };
   arbc::SurfacePool ref_pool(backend);
@@ -123,9 +131,9 @@ TEST_CASE("damage golden: a gated damaged-region re-render is byte-identical to 
 // enforces: 11-time-and-video#clock-advance-damages-only-moving-layers
 TEST_CASE("damage golden: a quiescent frame does nothing") {
   arbc::CpuBackend backend;
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
 
   Scene scene;
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), scene.comp};
   const arbc::DocStatePtr state = scene.document.pin();
   const auto resolver = [&](arbc::ObjectId id) { return scene.document.resolve(id); };
   arbc::SurfacePool pool(backend);

@@ -224,4 +224,10 @@ task runtime "Runtime" {
     depends contract.registry, !plugin_loading, !plugin_operator_registration
     note "Doc 17:61 assigns 'registry bootstrap; built-in kind registration' to the L6 umbrella `arbc` target, and nothing does it. The target exists (cmake/ArbcComponent.cmake:133, arbc_finalize_library) but carries only version.cpp; the built-in kinds (solid/tone/raster/fade/crossfade/nested) reach the runtime through the serialize CodecTable (builtin_codecs, document_serialize.cpp:149) and register_builtin_operator_binders (operator_binding.cpp:56), while contract::Registry is populated in production only by the plugin host (plugin_host.cpp). So a built-in kind and a plugin kind arrive by two unrelated mechanisms and a host cannot enumerate what it can instantiate. Populate a Registry with the built-in kinds at the umbrella, so built-ins and plugins present one surface. Settle whether the CodecTable/binder tables fold into Registry or stay beside it (doc 03 Registry vs doc 08 codecs) — that choice is the task's design content and may carry a doc 03/17 delta. Source: tasks/parking-lot.md 2026-07-09 (L6 umbrella built-in-kind -> Registry bootstrap). Docs 03/17."
   }
+  task pull_identity_pre_attach_ordering "Build pull-identity memo after bind_operators" {
+    effort 1d
+    allocate team
+    depends compositor.root_composition_frame_walk
+    note "build_pull_identity_map builds the frame's identity/operator memo before bind_operators is called, so an unattached NestedContent reports empty inputs(). compositor.root_composition_frame_walk worked around this with a composition_ref() structural descent and a pre-attach operator admission heuristic in pull_identity.cpp. A cleaner fix: restructure the interactive frame to build the memo after bind_operators (or bind doc/resolver context before memo building), eliminating the special-case workarounds. Source-of-debt: tasks/refinements/compositor/root_composition_frame_walk.md. Docs 02/13/17."
+  }
 }

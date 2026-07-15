@@ -271,29 +271,43 @@ TEST_CASE("a degenerate subtree placement culls without descending or NaNs") {
   CHECK_FALSE(contains(visited, scene.nested_leaf));
 }
 
-TEST_CASE("the root-sentinel walk visits every global layer, composing the camera") {
+TEST_CASE(
+    "the root sentinel binds no composition (empty walk); a real anchor composes the camera") {
+  // compositor.root_composition_frame_walk, Decision 3: the flat fallback is
+  // composition-scoped (`for_each_layer_in`), so the `k_root_anchor` sentinel --
+  // "no composition bound" -- resolves nothing and visits NOTHING rather than
+  // reviving the document-global walk that double-drew nested children (doc
+  // 05:28-36). A real anchor visits that composition's members, composing the
+  // camera with each layer's transform exactly as `render_frame`.
   arbc::Model model;
-  ObjectId a{};
-  ObjectId b{};
+  ObjectId comp{};
   {
     auto txn = model.transact();
     const ObjectId c1 = txn.add_content(0);
     const ObjectId c2 = txn.add_content(0);
-    a = txn.add_layer(c1, Affine::translation(10.0, 20.0));
-    b = txn.add_layer(c2, Affine::translation(30.0, 40.0));
+    const ObjectId a = txn.add_layer(c1, Affine::translation(10.0, 20.0));
+    const ObjectId b = txn.add_layer(c2, Affine::translation(30.0, 40.0));
+    comp = txn.add_composition(k_canvas, k_canvas);
+    txn.attach_layer(comp, a);
+    txn.attach_layer(comp, b);
     REQUIRE(txn.commit().has_value());
   }
   const arbc::DocStatePtr state = model.current();
   const Affine camera = Affine::scaling(2.0, 2.0);
-  const Viewport vp{100, 100, camera, arbc::k_root_anchor};
 
+  // The sentinel resolves no composition: an empty walk, no layers visited.
+  std::vector<Affine> sentinel_composed;
+  arbc::cull_walk(
+      *state, Viewport{100, 100, camera, arbc::k_root_anchor},
+      [&](const arbc::LayerRecord&, const Affine& m) { sentinel_composed.push_back(m); });
+  CHECK(sentinel_composed.empty());
+
+  // Anchored at the real composition: both members are visited, camera-composed.
   std::vector<Affine> composed;
-  arbc::cull_walk(*state, vp, [&](const arbc::LayerRecord& layer, const Affine& m) {
-    composed.push_back(m);
-    // The root walk composes camera . layer.transform, exactly render_frame.
-    CHECK(m == compose(camera, layer.transform));
-  });
+  arbc::cull_walk(*state, Viewport{100, 100, camera, comp},
+                  [&](const arbc::LayerRecord& layer, const Affine& m) {
+                    composed.push_back(m);
+                    CHECK(m == compose(camera, layer.transform));
+                  });
   CHECK(composed.size() == 2);
-  (void)a;
-  (void)b;
 }

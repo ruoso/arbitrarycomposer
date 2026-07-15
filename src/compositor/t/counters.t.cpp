@@ -207,10 +207,12 @@ private:
 
 // A single-layer document over `content_id`; the resolver binds the id to a
 // concrete `Content` the caller owns (the runtime binding, kept out of L4).
-arbc::ObjectId add_single_layer(arbc::Model& model) {
+arbc::ObjectId add_single_layer(arbc::Model& model, arbc::ObjectId& comp) {
   auto txn = model.transact();
   const arbc::ObjectId content_id = txn.add_content(0);
-  txn.add_layer(content_id, arbc::Affine::identity());
+  const arbc::ObjectId layer = txn.add_layer(content_id, arbc::Affine::identity());
+  comp = txn.add_composition(512, 512);
+  txn.attach_layer(comp, layer);
   REQUIRE(txn.commit().has_value());
   return content_id;
 }
@@ -233,12 +235,13 @@ TEST_CASE("counters: a still warm-cache scene issues zero renders through the co
   MarkBackend backend;
   SyncContent content;
   arbc::Model model;
-  const arbc::ObjectId content_id = add_single_layer(model);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_single_layer(model, comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
 
@@ -280,14 +283,15 @@ TEST_CASE("counters: a still warm-cache scene issues zero renders through the co
 // enforces: 02-architecture#async-arrival-emits-damage
 TEST_CASE("counters: an async arrival records one follow-up frame on the counter surface") {
   arbc::Model model;
-  const arbc::ObjectId content_id = add_single_layer(model);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_single_layer(model, comp);
   const arbc::DocStatePtr state = model.current();
   MarkBackend backend;
   AsyncContent content;
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // 1 rung-0 tile
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp}; // 1 rung-0 tile
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
@@ -328,9 +332,10 @@ TEST_CASE("counters: an async arrival records one follow-up frame on the counter
 TEST_CASE("counters: a null out-parameter is byte-identical to an instrumented run") {
   MarkBackend backend;
   arbc::Model model;
-  const arbc::ObjectId content_id = add_single_layer(model);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_single_layer(model, comp);
   const arbc::DocStatePtr state = model.current();
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
 
   // Two independent two-frame drives over identical scenes: one instrumented,
@@ -374,12 +379,13 @@ TEST_CASE("counters: counters_snapshot composes the compositor and cache counts"
   MarkBackend backend;
   SyncContent content;
   arbc::Model model;
-  const arbc::ObjectId content_id = add_single_layer(model);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_single_layer(model, comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(512, 512, arbc::k_working_rgba32f);
@@ -431,12 +437,16 @@ TEST_CASE("counters: two operator layers sharing an input dispatch its tiles onc
   arbc::Model model;
   arbc::ObjectId a_id{};
   arbc::ObjectId b_id{};
+  arbc::ObjectId comp{};
   {
     auto txn = model.transact();
     a_id = txn.add_content(0);
-    txn.add_layer(a_id, arbc::Affine::identity());
+    const arbc::ObjectId a_layer = txn.add_layer(a_id, arbc::Affine::identity());
     b_id = txn.add_content(0);
-    txn.add_layer(b_id, arbc::Affine::identity());
+    const arbc::ObjectId b_layer = txn.add_layer(b_id, arbc::Affine::identity());
+    comp = txn.add_composition(512, 512);
+    txn.attach_layer(comp, a_layer);
+    txn.attach_layer(comp, b_layer);
     REQUIRE(txn.commit().has_value());
   }
   const arbc::ObjectId leaf_id{99};
@@ -448,7 +458,7 @@ TEST_CASE("counters: two operator layers sharing an input dispatch its tiles onc
     return id == b_id ? &op_b : nullptr;
   };
 
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(512, 512, arbc::k_working_rgba32f);
@@ -535,13 +545,14 @@ TEST_CASE("counters: a nested chain over two async leaves re-renders once per wa
   ChainOperator top({&mid_a, &mid_b});
 
   arbc::Model model;
-  const arbc::ObjectId top_id = add_single_layer(model);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId top_id = add_single_layer(model, comp);
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == top_id ? &top : nullptr;
   };
 
-  const arbc::Viewport viewport{512, 512, arbc::Affine::identity()};
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   auto target = backend.make_surface(512, 512, arbc::k_working_rgba32f);

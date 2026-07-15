@@ -151,10 +151,12 @@ public:
 
 // A single-layer document over `content_id`; the resolver binds it to a
 // caller-owned `Content` (the runtime binding, kept out of L4).
-arbc::ObjectId add_single_layer(arbc::Model& model) {
+arbc::ObjectId add_single_layer(arbc::Model& model, arbc::ObjectId& comp) {
   auto txn = model.transact();
   const arbc::ObjectId content_id = txn.add_content(0);
-  txn.add_layer(content_id, arbc::Affine::identity());
+  const arbc::ObjectId layer = txn.add_layer(content_id, arbc::Affine::identity());
+  comp = txn.add_composition(256, 256);
+  txn.attach_layer(comp, layer);
   REQUIRE(txn.commit().has_value());
   return content_id;
 }
@@ -441,9 +443,10 @@ TEST_CASE("operator_graph: an aggregate-revision-keyed tile invalidates like a l
 TEST_CASE("operator_graph: an identity operator layer issues zero operator renders") {
   MarkBackend backend;
   arbc::Model model;
-  const arbc::ObjectId content_id = add_single_layer(model);
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = add_single_layer(model, comp);
   const arbc::DocStatePtr state = model.current();
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()}; // one rung-0 tile
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp}; // one rung-0 tile
   arbc::SurfacePool pool(backend);
 
   GraphContent leaf; // the operator's single input

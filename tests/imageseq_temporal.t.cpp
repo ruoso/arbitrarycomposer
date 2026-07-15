@@ -58,11 +58,15 @@ struct Scene {
   std::unique_ptr<arbc::imageseq::ImageSeqContent> content = fix::make_content();
   ObjectId content_id{};
   ObjectId layer_id{};
+  ObjectId comp_id{}; // the composition the frame walk is anchored at
 
   Scene() {
     Model::Transaction txn = model.transact();
     content_id = txn.add_content(0);
     layer_id = txn.add_layer(content_id, Affine::identity());
+    // Attach to a composition so the composition-scoped walk draws it (doc 05:28-36).
+    comp_id = txn.add_composition(256.0, 256.0);
+    txn.attach_layer(comp_id, layer_id);
     REQUIRE(txn.commit().has_value());
   }
 
@@ -87,7 +91,7 @@ TEST_CASE("imageseq: a sub-frame clock advance issues zero renders and serves id
   Scene scene;
   const ContentResolver resolve = scene.resolver();
   const DocStatePtr state = scene.model.current();
-  const Viewport viewport{256, 256, Affine::identity()};
+  const Viewport viewport{256, 256, Affine::identity(), scene.comp_id};
 
   CpuBackend backend;
   SurfacePool pool(backend);
@@ -174,7 +178,9 @@ TEST_CASE("imageseq: a negative-rate layer time_map plays the fixtures in revers
     const ContentResolver resolve = scene.resolver();
     auto target = backend.make_surface(viewport.width, viewport.height, k_working_rgba32f);
     REQUIRE(target.has_value());
-    render_frame_interactive(*state, resolve, viewport, cache, backend, pool, **target,
+    // Anchor the direct walk at this scene's composition (doc 05:28-36).
+    const Viewport anchored{viewport.width, viewport.height, viewport.camera, scene.comp_id};
+    render_frame_interactive(*state, resolve, anchored, cache, backend, pool, **target,
                              Deadline::none(), std::nullopt, nullptr, &counters, nullptr, time);
     return target_pixels(**target);
   };

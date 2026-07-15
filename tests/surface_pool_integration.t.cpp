@@ -22,23 +22,29 @@ TEST_CASE("a persistent pool reuses temps within and across frames") {
   const arbc::Rect unit{0.0, 0.0, 1.0, 1.0};
   const arbc::ObjectId a = document.add_content(
       std::make_shared<arbc::SolidContent>(arbc::Rgba{1.0F, 0.0F, 0.0F, 1.0F}, unit));
-  document.add_layer(a,
-                     compose(arbc::Affine::translation(0.0, 0.0), arbc::Affine::scaling(4.0, 4.0)));
+  const arbc::ObjectId la = document.add_layer(
+      a, compose(arbc::Affine::translation(0.0, 0.0), arbc::Affine::scaling(4.0, 4.0)));
   const arbc::ObjectId b = document.add_content(
       std::make_shared<arbc::SolidContent>(arbc::Rgba{0.0F, 1.0F, 0.0F, 1.0F}, unit));
-  document.add_layer(b,
-                     compose(arbc::Affine::translation(4.0, 0.0), arbc::Affine::scaling(4.0, 4.0)));
+  const arbc::ObjectId lb = document.add_layer(
+      b, compose(arbc::Affine::translation(4.0, 0.0), arbc::Affine::scaling(4.0, 4.0)));
   const arbc::ObjectId c = document.add_content(
       std::make_shared<arbc::SolidContent>(arbc::Rgba{0.0F, 0.0F, 1.0F, 1.0F}, unit));
-  document.add_layer(c,
-                     compose(arbc::Affine::translation(0.0, 5.0), arbc::Affine::scaling(2.0, 2.0)));
+  const arbc::ObjectId lc = document.add_layer(
+      c, compose(arbc::Affine::translation(0.0, 5.0), arbc::Affine::scaling(2.0, 2.0)));
+  // Attach all three layers (creation/bottom-to-top order) to a composition so
+  // the composition-scoped walk draws them (doc 05:28-36).
+  const arbc::ObjectId comp = document.add_composition(8.0, 8.0);
+  document.attach_layer(comp, la);
+  document.attach_layer(comp, lb);
+  document.attach_layer(comp, lc);
 
   arbc::CpuBackend cpu;
   // A counting decorator over the real backend: it forwards every call unchanged
   // but tallies make_surface, so this asserts allocation *behavior* (a behavioral
   // counter, doc 16 -- never a wall-clock timing).
   arbc::testing::CountingBackend backend(cpu);
-  const arbc::Viewport viewport{8, 8, arbc::Affine::identity()};
+  const arbc::Viewport viewport{8, 8, arbc::Affine::identity(), comp};
   const arbc::DocStatePtr state = document.pin();
   const auto resolve = [&document](arbc::ObjectId id) { return document.resolve(id); };
 

@@ -136,8 +136,11 @@ std::vector<float> synchronous_reference(Backend& backend, Time time) {
   SolidContent from{k_from_color, canvas()};
   SolidContent to{k_to_color, canvas()};
   Document doc;
-  doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, window_params())),
-                Affine::identity());
+  const ObjectId comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  const ObjectId layer = doc.add_layer(
+      doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, window_params())),
+      Affine::identity());
+  doc.attach_layer(comp, layer);
 
   SequenceRenderer renderer(doc, viewport(), backend);
   const expected<std::unique_ptr<Surface>, SurfaceError> frame = renderer.render_frame_at(time);
@@ -156,8 +159,11 @@ TEST_CASE("interactive: an async operator-input arrival schedules the follow-up 
   SolidContent to{k_to_color, canvas()};
 
   Document doc;
-  doc.add_layer(doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, window_params())),
-                Affine::identity());
+  const ObjectId comp = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  const ObjectId layer = doc.add_layer(
+      doc.add_content(std::make_shared<CrossfadeContent>(&from, &to, window_params())),
+      Affine::identity());
+  doc.attach_layer(comp, layer);
 
   const DocStatePtr pin = doc.pin();
   const ContentResolver resolve = [&doc](ObjectId id) { return doc.resolve(id); };
@@ -167,6 +173,9 @@ TEST_CASE("interactive: an async operator-input arrival schedules the follow-up 
       backend.make_surface(k_dim, k_dim, pin->working_space());
   REQUIRE(target.has_value());
   InteractiveRenderer renderer({}, epoch_clock());
+  // `InteractiveRenderer::render_frame` renders the composition the Viewport anchors and
+  // does not source the root itself, so anchor at the composition holding the layer.
+  const Viewport vp{k_dim, k_dim, Affine::identity(), comp};
 
   const Time when{500}; // w == 0: the crossfade is an identity pass-through to `from`
 
@@ -174,8 +183,8 @@ TEST_CASE("interactive: an async operator-input arrival schedules the follow-up 
   // The identity plan issues no operator render; the driver pulls the terminal input,
   // which defers, so the layer keeps its planned placeholder and composites nothing.
   // The deferred render is RECORDED (not dropped) -- `PullConfig::pending` is wired.
-  const InteractiveRenderer::FrameOutcome out1 = renderer.render_frame(
-      *pin, resolve, viewport(), cache, backend, pool, **target, {}, when, k_budget);
+  const InteractiveRenderer::FrameOutcome out1 =
+      renderer.render_frame(*pin, resolve, vp, cache, backend, pool, **target, {}, when, k_budget);
   const std::vector<float> placeholder = snapshot(**target);
 
   CHECK(renderer.counters().operator_renders() == 0U);
@@ -205,8 +214,8 @@ TEST_CASE("interactive: an async operator-input arrival schedules the follow-up 
   // root; ONLY `route_operator_damage` turns it into damage on the crossfade layer,
   // and only that makes `schedule_follow_up` true. Strip Decision 4's routing and this
   // is the assertion that fails.
-  const InteractiveRenderer::FrameOutcome out2 = renderer.render_frame(
-      *pin, resolve, viewport(), cache, backend, pool, **target, {}, when, k_budget);
+  const InteractiveRenderer::FrameOutcome out2 =
+      renderer.render_frame(*pin, resolve, vp, cache, backend, pool, **target, {}, when, k_budget);
 
   CHECK(out2.schedule_follow_up);
   CHECK(renderer.counters().follow_up_frames() == 1U); // reaped + inserted under the input's id
@@ -218,8 +227,7 @@ TEST_CASE("interactive: an async operator-input arrival schedules the follow-up 
   // The carried (routed) damage re-plans the crossfade layer's footprint; the identity
   // branch pulls `from` again and now HITS its resident tile, delivering the sharp
   // pixels. Still zero operator renders, still exactly one render ever dispatched.
-  renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {}, when,
-                        k_budget);
+  renderer.render_frame(*pin, resolve, vp, cache, backend, pool, **target, {}, when, k_budget);
   const std::vector<float> refined = snapshot(**target);
 
   CHECK(renderer.counters().operator_renders() == 0U);

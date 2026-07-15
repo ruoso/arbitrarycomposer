@@ -58,6 +58,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include "support/root_anchor.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -262,6 +264,10 @@ public:
       : d_doc(doc), d_cache(64U * 1024 * 1024), d_surfaces(backend), d_backend(backend), d_dim(dim),
         d_renderer(std::move(pool_config), std::move(clock)) {
     const DocStatePtr pin = doc.pin();
+    // The frame walk is composition-scoped: anchor at the document's root composition, the
+    // same id the shipped drivers source (compositor.root_composition_frame_walk, doc
+    // 05:28-36). Computed once here, on the main thread.
+    d_anchor = arbc::test::root_composition_of(*pin);
     expected<std::unique_ptr<Surface>, SurfaceError> target =
         backend.make_surface(d_dim, d_dim, pin->working_space());
     REQUIRE(target.has_value());
@@ -273,7 +279,7 @@ public:
     const DocStatePtr pin = d_doc.pin();
     const ContentResolver resolve = [this](ObjectId id) { return d_doc.resolve(id); };
     const FrameBinding binding{&d_doc, pin};
-    const Viewport view{d_dim, d_dim, Affine::identity()};
+    const Viewport view{d_dim, d_dim, Affine::identity(), d_anchor};
     return d_renderer.render_frame(*pin, resolve, view, d_cache, d_backend, d_surfaces, *d_target,
                                    damage, k_interior, budget, binding);
   }
@@ -299,6 +305,7 @@ private:
   SurfacePool d_surfaces;
   Backend& d_backend;
   int d_dim;
+  ObjectId d_anchor{};
   std::unique_ptr<Surface> d_target;
   InteractiveRenderer d_renderer;
 };
@@ -365,10 +372,13 @@ struct LatchScene {
   ObjectId trigger_layer{};
 
   LatchScene() {
+    const ObjectId comp =
+        doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     leaf_content = doc.add_content(leaf);
-    doc.add_layer(leaf_content, Affine::identity());
+    doc.attach_layer(comp, doc.add_layer(leaf_content, Affine::identity()));
     trigger_content = doc.add_content(trigger);
     trigger_layer = doc.add_layer(trigger_content, Affine::identity());
+    doc.attach_layer(comp, trigger_layer);
   }
 
   // Re-key the latched leaf (so its fresh key becomes a miss) and hand back the damage
@@ -585,8 +595,10 @@ struct WideLatchScene {
   ObjectId content{};
 
   WideLatchScene() {
+    const ObjectId comp =
+        doc.add_composition(static_cast<double>(k_wide), static_cast<double>(k_wide));
     content = doc.add_content(leaf);
-    doc.add_layer(content, Affine::identity());
+    doc.attach_layer(comp, doc.add_layer(content, Affine::identity()));
   }
 
   // Damage over the whole leaf, at the SAME revision -- so the next frame re-plans every
@@ -753,25 +765,29 @@ private:
   // built to share a tile); rewriting it would move this file's byte-identity baseline for
   // no coverage gained.
   void build_leaf_heavy() {
+    const ObjectId comp =
+        d_doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     constexpr int k_strips = 3;
     const double strip = static_cast<double>(k_dim) / static_cast<double>(k_strips);
     for (int i = 0; i < k_strips; ++i) {
       const Rect bounds{static_cast<double>(i) * strip, 0.0, strip, static_cast<double>(k_dim)};
       auto leaf = std::make_shared<SolidContent>(
           Rgba{0.2F * static_cast<float>(i + 1), 0.5F, 0.25F, 1.0F}, bounds);
-      d_doc.add_layer(d_doc.add_content(leaf), Affine::identity());
+      d_doc.attach_layer(comp, d_doc.add_layer(d_doc.add_content(leaf), Affine::identity()));
       d_held.push_back(leaf);
     }
   }
 
   void build_operator_heavy() {
+    const ObjectId comp =
+        d_doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     auto under = std::make_shared<SolidContent>(Rgba{0.25F, 0.50F, 0.75F, 1.0F}, canvas());
     auto from = std::make_shared<SolidContent>(Rgba{0.50F, 0.25F, 0.125F, 1.0F}, canvas());
     auto to = std::make_shared<SolidContent>(Rgba{0.125F, 0.375F, 0.75F, 1.0F}, canvas());
     auto fade = std::make_shared<FadeContent>(under.get(), half_fade());
     auto xf = std::make_shared<CrossfadeContent>(from.get(), to.get(), half_crossfade());
-    d_doc.add_layer(d_doc.add_content(fade), Affine::identity());
-    d_doc.add_layer(d_doc.add_content(xf), Affine::identity());
+    d_doc.attach_layer(comp, d_doc.add_layer(d_doc.add_content(fade), Affine::identity()));
+    d_doc.attach_layer(comp, d_doc.add_layer(d_doc.add_content(xf), Affine::identity()));
     d_held = {under, from, to, fade, xf};
   }
 
@@ -780,12 +796,17 @@ private:
     auto b = std::make_shared<SolidContent>(Rgba{0.10F, 0.40F, 0.30F, 0.50F}, canvas());
     auto fade_a = std::make_shared<FadeContent>(a.get(), half_fade());
     auto fade_b = std::make_shared<FadeContent>(b.get(), half_fade());
+    // The parent composition the frame anchors at is created FIRST so it is the lowest-id
+    // (root) composition; the child holds the two fades the nested content shows
+    // (compositor.root_composition_frame_walk, doc 05:28-36).
+    const ObjectId parent =
+        d_doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     const ObjectId child =
         d_doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     d_doc.attach_layer(child, d_doc.add_layer(d_doc.add_content(fade_a), Affine::identity()));
     d_doc.attach_layer(child, d_doc.add_layer(d_doc.add_content(fade_b), Affine::identity()));
     auto nested = std::make_shared<NestedContent>(child);
-    d_doc.add_layer(d_doc.add_content(nested), Affine::identity());
+    d_doc.attach_layer(parent, d_doc.add_layer(d_doc.add_content(nested), Affine::identity()));
     d_held = {a, b, fade_a, fade_b, nested};
   }
 
@@ -841,13 +862,20 @@ private:
 // placeholder and reports it INEXACT (doc 13:117-120 -- flagging it exact would freeze the
 // empty tile into the cache as a fresh hit). An inexact tile is not a hit, so the arrival
 // re-drives the operator and it re-renders -- correctly, once: that re-render is how the
-// real pixels finally get composed. The bug was that it happened once per INDEPENDENTLY
-// ARRIVING input tile rather than once per wave, and a 3-deep chain is not cheap. The gate
-// now defers the re-render while any input the operator's last render left unmet is still
-// pending, and `renders_coalesced() > 0` is the POSITIVE witness that it is on the live
-// path -- because "a number did not grow" is equally what you observe when a guard never
-// fires at all, which is exactly how `in_flight_tile_dedup` shipped a guard that provably
-// never fired on either of these scenes (`requests_suppressed() == 0`, below, still).
+// real pixels finally get composed. The two-pass identity above (`operator_renders() ==
+// 2x`, `requests_issued()` grown by exactly the operator count) is what this scene pins.
+//
+// This scene does NOT witness `renders_coalesced() > 0`, and after
+// `compositor.root_composition_frame_walk` (doc 05:28-36) that is the correct, positive
+// observation, not a gap. The in-flight wave gate only ever fired here because the old
+// document-global walk DOUBLE-DREW the nested child -- rendering its fades flat at top
+// level and letting `nested` re-pull the resident transient the same frame. With the walk
+// composition-scoped, `nested` is the sole renderer of its child's tiles: nothing is pre-
+// rendered for it to coalesce (see the `== 0` and its note in the body). The deterministic
+// wave-coalescing witness now lives entirely at the compositor level, where a partial
+// arrival can be staggered by hand: `src/compositor/t/counters.t.cpp` and
+// `src/compositor/t/refinement.t.cpp` pin `renders_coalesced() > 0` under a controlled
+// settle -- the `enforces:` for that claim moved there with the observation.
 //
 // Duplicate dispatch needs a tile that TWO askers want while it is in flight, and these two
 // scenes have none: every layer is full-canvas at a 256px viewport, so each covers exactly
@@ -859,7 +887,6 @@ private:
 //
 // enforces: 02-architecture#worker-dispatch-is-leaf-only
 // enforces: 02-architecture#worker-pool-degenerates-to-inline
-// enforces: 02-architecture#refinement-wave-coalesces-chain-rerender
 TEST_CASE("the interactive frame loop is byte-identical and duplicate-free at every "
           "worker count") {
   CpuBackend backend;
@@ -909,40 +936,33 @@ TEST_CASE("the interactive frame loop is byte-identical and duplicate-free at ev
       CHECK(counters.operator_renders() == oracle_operator_renders);
       CHECK(counters.renders_coalesced() == 0);
     } else {
-      // THE COALESCING IDENTITY. Every leaf renders exactly once; every operator
-      // exactly twice -- once to request its inputs and paint the placeholder, once
-      // when the wave lands. That is what "at most one chain re-render per wave" means
-      // when the wave is singular, which on a cold-cache scene it is.
+      // THE TWO-PASS IDENTITY. Every leaf renders exactly once; every operator exactly
+      // twice -- once to request its inputs and paint the placeholder, once when the wave
+      // lands. That is what "at most one chain re-render per wave" means when the wave is
+      // singular, which on a cold-cache scene it is.
       CHECK(counters.requests_issued() == oracle_requests + oracle_operator_renders);
       CHECK(counters.operator_renders() == 2 * oracle_operator_renders);
-      // And it is still NOT duplicate dispatch. These two scenes share no tile between
-      // their operators, so there is nothing for the in-flight guard to suppress and it
-      // provably never fires here -- which is what identified the residual gap as the
-      // wave in the first place, and what keeps the two mechanisms distinguishable.
+      // And it is still NOT duplicate dispatch: nothing is re-dispatched, so nothing is
+      // suppressed. The second operator render finds its leaf already warm in the cache,
+      // so it re-pulls a hit -- never a second dispatch of a render already in flight.
       CHECK(counters.requests_suppressed() == 0);
 
-      // The gate fires exactly where there is a CHAIN to coalesce, and nowhere else --
-      // asserted in both directions, because a gate provable only by a number that
-      // failed to grow is indistinguishable from a gate that never fires (which is how
-      // `in_flight_tile_dedup` shipped).
-      //
-      // `nested_deep` is a chain: `nested` consumes the two fades, so it pulls their
-      // tiles while the leaves beneath them are still in flight, finds them resident but
-      // TRANSIENT, and used to re-drive each fade -- which in turn re-dispatched a leaf
-      // whose render had already completed but had not yet been drained into the cache.
-      // The gate holds those pulls, and `renders_coalesced() > 0` is the positive
-      // witness that it is on the live path.
-      //
-      // `operator_heavy`'s two operators are SIBLINGS -- a fade and a crossfade, neither
-      // an input to the other -- so no operator ever pulls another's transient tile and
-      // there is no chain to re-drive. It was already at the coalesced floor before this
-      // task, and its `== 0` is the guard that the gate does not start firing somewhere
-      // it has no business firing.
-      if (kind == SceneKind::NestedDeep) {
-        CHECK(counters.renders_coalesced() > 0);
-      } else {
-        CHECK(counters.renders_coalesced() == 0);
-      }
+      // No intra-frame coalescing at ANY worker count now, and that is the composition-
+      // scoped walk working (compositor.root_composition_frame_walk, doc 05:28-36). The
+      // in-flight wave gate only ever COALESCED a `nested` scene because the old document-
+      // global walk DOUBLE-DREW the child: it rendered `nested`'s child fades FLAT at top
+      // level (dispatching their leaves) and THEN `nested` re-pulled those same fade tiles
+      // the same frame, found them resident-but-transient with leaves still queued, and the
+      // gate held the redundant re-pull -- the `renders_coalesced()` the double-draw made
+      // deterministic. With the walk scoped, `nested` is the SOLE renderer of its child's
+      // operator tiles: each is rendered once, its leaf dispatched once, and the second
+      // (wave-land) render hits a warm leaf -- there is no pre-rendered transient to
+      // coalesce and no redundant re-pull to hold. Strictly less work, and the `== 0` is
+      // the positive witness that the double-draw (and the gate cleanup it needed) are gone.
+      // The deterministic wave-coalescing witness lives where the arrivals can be staggered
+      // by hand -- the compositor-level `counters.t.cpp` / `refinement.t.cpp`, which pin
+      // `renders_coalesced() > 0` under a controlled partial arrival.
+      CHECK(counters.renders_coalesced() == 0);
     }
   }
 }

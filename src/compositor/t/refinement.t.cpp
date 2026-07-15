@@ -749,17 +749,20 @@ TEST_CASE("render_frame_interactive records async misses only when a queue is su
 
   arbc::Model model;
   arbc::ObjectId content_id{};
+  arbc::ObjectId comp{};
   {
     auto txn = model.transact();
     content_id = txn.add_content(0);
-    txn.add_layer(content_id, arbc::Affine::identity());
+    const arbc::ObjectId layer = txn.add_layer(content_id, arbc::Affine::identity());
+    comp = txn.add_composition(256, 256);
+    txn.attach_layer(comp, layer);
     REQUIRE(txn.commit().has_value());
   }
   const arbc::DocStatePtr state = model.current();
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
-  const arbc::Viewport viewport{256, 256, arbc::Affine::identity()};
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp};
   arbc::SurfacePool pool(backend);
   TileCache cache(64u * 1024 * 1024);
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =

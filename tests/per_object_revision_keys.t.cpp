@@ -60,7 +60,9 @@ constexpr auto k_budget = std::chrono::milliseconds(16);
 constexpr Rect k_dab{16.0, 16.0, 64.0, 64.0};
 
 Rect canvas() { return Rect{0.0, 0.0, static_cast<double>(k_dim), static_cast<double>(k_dim)}; }
-Viewport viewport() { return Viewport{k_dim, k_dim, Affine::identity()}; }
+// The frame walk is composition-scoped, so a viewport anchors at the composition it draws
+// (compositor.root_composition_frame_walk, doc 05:28-36).
+Viewport viewport(ObjectId anchor) { return Viewport{k_dim, k_dim, Affine::identity(), anchor}; }
 
 // The fake clock puts every deadline instant in the real past, so no frame blocks and
 // the loop is deterministic (doc 16:54-62 -- never a wall-clock assertion).
@@ -115,20 +117,22 @@ bool byte_identical(const std::vector<float>& a, const std::vector<float>& b) {
 // A three-layer scene: one painted layer plus two that the stroke never touches.
 struct StrokeScene {
   Document doc;
+  ObjectId root{}; // the composition the frame walk anchors at
   ObjectId painted{};
   ObjectId still_a{};
   ObjectId still_b{};
 
   StrokeScene() {
+    root = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     painted =
         doc.add_content(std::make_shared<SolidContent>(Rgba{0.5F, 0.2F, 0.1F, 1.0F}, canvas()));
     still_a =
         doc.add_content(std::make_shared<SolidContent>(Rgba{0.1F, 0.6F, 0.2F, 0.5F}, canvas()));
     still_b =
         doc.add_content(std::make_shared<SolidContent>(Rgba{0.2F, 0.1F, 0.7F, 0.5F}, canvas()));
-    doc.add_layer(painted, Affine::identity());
-    doc.add_layer(still_a, Affine::identity());
-    doc.add_layer(still_b, Affine::identity());
+    doc.attach_layer(root, doc.add_layer(painted, Affine::identity()));
+    doc.attach_layer(root, doc.add_layer(still_a, Affine::identity()));
+    doc.attach_layer(root, doc.add_layer(still_b, Affine::identity()));
   }
 };
 
@@ -147,8 +151,8 @@ TEST_CASE("a 60-dab stroke leaves every unedited layer's tiles keyed, cached, an
 
   // --- Frame 1: cold. All three layers render their whole 2x2 grid. -----------
   DocStatePtr pin = scene.doc.pin();
-  renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {}, Time{0},
-                        k_budget);
+  renderer.render_frame(*pin, resolve, viewport(scene.root), cache, backend, pool, **target, {},
+                        Time{0}, k_budget);
   REQUIRE(renderer.counters().requests_issued() == 12U); // 3 layers x 4 tiles
   REQUIRE(tiles_for(cache, scene.still_a) == 4U);
   REQUIRE(tiles_for(cache, scene.still_b) == 4U);
@@ -168,8 +172,8 @@ TEST_CASE("a 60-dab stroke leaves every unedited layer's tiles keyed, cached, an
     dab(scene.doc, scene.painted);
     pin = scene.doc.pin();
     const std::vector<Damage> damage{Damage{scene.painted, k_dab, TimeRange::all()}};
-    renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, damage,
-                          Time{0}, k_budget);
+    renderer.render_frame(*pin, resolve, viewport(scene.root), cache, backend, pool, **target,
+                          damage, Time{0}, k_budget);
   }
 
   // The document revision moved 60 times...
@@ -203,7 +207,7 @@ TEST_CASE("a 60-dab stroke leaves every unedited layer's tiles keyed, cached, an
   const std::uint64_t before_pan = renderer.counters().requests_issued();
   dab(scene.doc, scene.painted);
   pin = scene.doc.pin();
-  const Viewport panned{k_dim, k_dim, Affine::translation(-8.0, -4.0)};
+  const Viewport panned{k_dim, k_dim, Affine::translation(-8.0, -4.0), scene.root};
   const std::vector<Damage> damage{Damage{scene.painted, k_dab, TimeRange::all()}};
   renderer.render_frame(*pin, resolve, panned, cache, backend, pool, **target, damage, Time{0},
                         k_budget);
@@ -218,6 +222,7 @@ namespace {
 // compositor's `inputs()` fold, and none of it moves any child CONTENT's stamp.
 struct NestedScene {
   Document doc;
+  ObjectId root{}; // the PARENT composition the frame walk anchors at
   ObjectId child{};
   ObjectId nested_id{};
   ObjectId lower_layer{}; // child's layer 0
@@ -226,6 +231,10 @@ struct NestedScene {
   std::shared_ptr<NestedContent> nested;
 
   explicit NestedScene(bool reversed_order) {
+    // The parent composition the frame walk anchors at holds the nested layer and the
+    // unrelated sibling; the child composition holds the two solids the nested content
+    // shows (compositor.root_composition_frame_walk, doc 05:28-36).
+    root = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     child = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
     const ObjectId lower_c =
         doc.add_content(std::make_shared<SolidContent>(Rgba{0.60F, 0.10F, 0.10F, 1.00F}, canvas()));
@@ -245,11 +254,11 @@ struct NestedScene {
     }
     nested = std::make_shared<NestedContent>(child);
     nested_id = doc.add_content(nested);
-    doc.add_layer(nested_id, Affine::identity());
+    doc.attach_layer(root, doc.add_layer(nested_id, Affine::identity()));
 
     unrelated =
         doc.add_content(std::make_shared<SolidContent>(Rgba{0.02F, 0.02F, 0.02F, 0.10F}, canvas()));
-    doc.add_layer(unrelated, Affine::identity());
+    doc.attach_layer(root, doc.add_layer(unrelated, Affine::identity()));
   }
 };
 
@@ -263,8 +272,8 @@ std::vector<float> cold_pixels(Backend& backend, NestedScene& scene) {
   REQUIRE(target.has_value());
   const DocStatePtr pin = scene.doc.pin();
   const FrameBinding binding{&scene.doc, pin};
-  renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {}, Time{0},
-                        k_budget, binding);
+  renderer.render_frame(*pin, resolve, viewport(scene.root), cache, backend, pool, **target, {},
+                        Time{0}, k_budget, binding);
   return snapshot(**target);
 }
 
@@ -292,8 +301,8 @@ TEST_CASE("a nested child's arrangement edit re-renders the parent's composite, 
 
     // Frame 1 warms the parent's composed-result tiles under the pre-reorder key.
     DocStatePtr pin = warm.doc.pin();
-    renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {}, Time{0},
-                          k_budget, FrameBinding{&warm.doc, pin});
+    renderer.render_frame(*pin, resolve, viewport(warm.root), cache, backend, pool, **target, {},
+                          Time{0}, k_budget, FrameBinding{&warm.doc, pin});
     const std::uint64_t key_before = key_revision(warm.doc, *pin, warm.nested_id);
 
     // Reorder the child: swap its two members. This touches the CHILD COMPOSITION's record
@@ -313,8 +322,8 @@ TEST_CASE("a nested child's arrangement edit re-renders the parent's composite, 
     // tiles it looks up are keyed by the NEW arrangement, so the cache cannot hand back
     // the pre-reorder composite.
     const std::vector<Damage> damage{Damage{warm.nested_id, Rect::infinite(), TimeRange::all()}};
-    renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, damage,
-                          Time{0}, k_budget, FrameBinding{&warm.doc, pin});
+    renderer.render_frame(*pin, resolve, viewport(warm.root), cache, backend, pool, **target,
+                          damage, Time{0}, k_budget, FrameBinding{&warm.doc, pin});
 
     NestedScene fresh(/*reversed_order=*/true);
     CHECK(byte_identical(snapshot(**target), cold_pixels(backend, fresh)));
@@ -330,8 +339,8 @@ TEST_CASE("a nested child's arrangement edit re-renders the parent's composite, 
     REQUIRE(target.has_value());
 
     DocStatePtr pin = warm.doc.pin();
-    renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {}, Time{0},
-                          k_budget, FrameBinding{&warm.doc, pin});
+    renderer.render_frame(*pin, resolve, viewport(warm.root), cache, backend, pool, **target, {},
+                          Time{0}, k_budget, FrameBinding{&warm.doc, pin});
     const std::uint64_t key_before = key_revision(warm.doc, *pin, warm.nested_id);
 
     // Nudge one member LAYER's transform. `LayerRecord` is not a `Content` and carries no
@@ -343,8 +352,8 @@ TEST_CASE("a nested child's arrangement edit re-renders the parent's composite, 
     CHECK(key_revision(warm.doc, *pin, warm.nested_id) != key_before);
 
     const std::vector<Damage> damage{Damage{warm.nested_id, Rect::infinite(), TimeRange::all()}};
-    renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, damage,
-                          Time{0}, k_budget, FrameBinding{&warm.doc, pin});
+    renderer.render_frame(*pin, resolve, viewport(warm.root), cache, backend, pool, **target,
+                          damage, Time{0}, k_budget, FrameBinding{&warm.doc, pin});
 
     NestedScene fresh(/*reversed_order=*/false);
     fresh.doc.set_layer_transform(fresh.upper_layer, nudged);
@@ -371,8 +380,8 @@ TEST_CASE("a static nested subtree survives an unrelated edit through the SHIPPE
   REQUIRE(target.has_value());
 
   DocStatePtr pin = scene.doc.pin();
-  renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, {}, Time{0},
-                        k_budget, FrameBinding{&scene.doc, pin});
+  renderer.render_frame(*pin, resolve, viewport(scene.root), cache, backend, pool, **target, {},
+                        Time{0}, k_budget, FrameBinding{&scene.doc, pin});
   const std::uint64_t nested_key = key_revision(scene.doc, *pin, scene.nested_id);
   const std::size_t nested_tiles = tiles_for(cache, scene.nested_id);
   REQUIRE(nested_tiles > 0U);
@@ -386,8 +395,8 @@ TEST_CASE("a static nested subtree survives an unrelated edit through the SHIPPE
   REQUIRE(pin->revision() > 1U);
 
   const std::vector<Damage> damage{Damage{scene.unrelated, k_dab, TimeRange::all()}};
-  renderer.render_frame(*pin, resolve, viewport(), cache, backend, pool, **target, damage, Time{0},
-                        k_budget, FrameBinding{&scene.doc, pin});
+  renderer.render_frame(*pin, resolve, viewport(scene.root), cache, backend, pool, **target, damage,
+                        Time{0}, k_budget, FrameBinding{&scene.doc, pin});
 
   // The nested subtree's composed-result key did not move, its tiles were not orphaned, and
   // NOT ONE of them was re-rendered. The only render the frame owed was the edited layer's
