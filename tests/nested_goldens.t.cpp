@@ -7,10 +7,12 @@
 #include <arbc/contract/content.hpp>
 #include <arbc/kind_nested/nested_content.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
+#include <arbc/media/pixel_traits.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/surface/surface_pool.hpp>
 #include <arbc/surface/testing/counting_backend.hpp>
+#include <arbc/surface/typed_span.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -242,6 +244,189 @@ std::vector<std::byte> render_nested_live(Scene& scene, CpuBackend& backend, int
   REQUIRE(r.has_value());
   return bytes_of(**target);
 }
+
+// --- temporal boundary (kinds.nested_temporal_mapping) --------------------------
+//
+// A solid is time-invariant and cannot witness a retime, so the temporal goldens
+// below drive a time-encoding probe: a Timed content that fills its 8x8 canvas
+// uniformly and OPAQUELY with a color derived from `request.time`, honoring the
+// requested instant exactly. Because the fill is full-cover and opaque, a
+// source-over composite over a cleared target reproduces it byte-for-byte at any
+// nesting depth -- so "render the child at local time t" is byte-exact whether it is
+// reached through one nested edge or two. The oracle for every retime golden is the
+// SAME nested descent with an identity map at the expected local instant: identical
+// spatial pipeline, the edge's time map isolated as the single variable. (That the
+// identity descent equals the flat compositor is already pinned by the solid goldens
+// above, so this is transitively the flat-compositor oracle on the temporal axis.)
+class TimeProbe final : public Content {
+public:
+  std::optional<Rect> bounds() const override { return Rect{0.0, 0.0, 8.0, 8.0}; }
+  Stability stability() const override { return Stability::Timed; }
+  std::optional<TimeRange> time_extent() const override { return TimeRange::all(); }
+  std::optional<RenderResult> render(const RenderRequest& request,
+                                     std::shared_ptr<RenderCompletion>) override {
+    // A deterministic, per-instant-distinct encoding of the request time: the flick
+    // count scaled into the working floats. rgba32f keeps it exact and unclamped, so
+    // a reverse instant's negative sample is representable and distinguishable too.
+    const float v = static_cast<float>(request.time.flicks) * k_scale;
+    const WorkingPixel color{v, -v, 0.25F * v, 1.0F};
+    visit_surface(request.target, [&](auto typed) {
+      using Traits = PixelTraits<decltype(typed)::format>;
+      for (std::size_t i = 0; i + Traits::channels <= typed.data.size(); i += Traits::channels) {
+        Traits::encode(color, &typed.data[i]);
+      }
+    });
+    RenderResult r{request.scale, true};
+    r.achieved_time = request.time; // honored exactly (no native grid)
+    return r;
+  }
+
+private:
+  static constexpr float k_scale = 1.0F / 4096.0F;
+};
+
+NestedResolver map_resolver(std::unordered_map<ObjectId, Content*>& binding) {
+  return [&binding](ObjectId id) -> Content* {
+    const auto it = binding.find(id);
+    return it != binding.end() ? it->second : nullptr;
+  };
+}
+
+// Render a single-layer nested child -- content `probe`, edge `map`/`span` -- at
+// parent instant `t`, returning the composed bytes. The descent evaluates the edge
+// per request; `pull` is the caller's so a counting double can observe the pulls.
+std::vector<std::byte> render_single(TimeProbe& probe, PullService& pull, Backend& backend,
+                                     const TimeMap& map, const TimeRange& span, Time t) {
+  Model model;
+  ObjectId comp{};
+  ObjectId cid{};
+  ObjectId layer{};
+  {
+    auto tx = model.transact("temporal single");
+    comp = tx.add_composition(8.0, 8.0);
+    cid = tx.add_content(1);
+    layer = tx.add_layer(cid, Affine::identity());
+    tx.attach_layer(comp, layer);
+    tx.set_time_map(layer, map);
+    tx.set_span(layer, span);
+    tx.commit();
+  }
+  const DocStatePtr doc = model.current();
+  std::unordered_map<ObjectId, Content*> binding{{cid, &probe}};
+  NestedContent nested(comp);
+  nested.attach(pull, backend, map_resolver(binding), *doc);
+  auto target = backend.make_surface(8, 8, k_working_rgba32f);
+  REQUIRE(target.has_value());
+  const RenderRequest req{
+      Rect{0.0, 0.0, 8.0, 8.0}, 1.0, t, StateHandle{}, **target, Exactness::Exact,
+      Deadline::none()};
+  auto done = std::make_shared<RenderCompletion>();
+  const std::optional<RenderResult> r = nested.render(req, done);
+  REQUIRE(r.has_value());
+  return bytes_of(**target);
+}
+
+// Render the flat compositor over a single-layer probe composition at time zero --
+// the offline oracle (`render_frame` threads Time::zero, doc 02) that the default,
+// identity-map nested descent must reproduce byte-for-byte.
+std::vector<std::byte> render_flat_single(TimeProbe& probe, Backend& backend, const TimeMap& map,
+                                          const TimeRange& span) {
+  Model model;
+  ObjectId comp{};
+  ObjectId cid{};
+  ObjectId layer{};
+  {
+    auto tx = model.transact("temporal flat");
+    comp = tx.add_composition(8.0, 8.0);
+    cid = tx.add_content(1);
+    layer = tx.add_layer(cid, Affine::identity());
+    tx.attach_layer(comp, layer);
+    tx.set_time_map(layer, map);
+    tx.set_span(layer, span);
+    tx.commit();
+  }
+  const DocStatePtr doc = model.current();
+  std::unordered_map<ObjectId, Content*> binding{{cid, &probe}};
+  SurfacePool pool(backend);
+  auto target = backend.make_surface(8, 8, k_working_rgba32f);
+  REQUIRE(target.has_value());
+  const Viewport viewport{8, 8, Affine::scaling(1.0, 1.0), comp};
+  render_frame(*doc, map_resolver(binding), viewport, backend, pool, **target);
+  return bytes_of(**target);
+}
+
+// Render a TWO-level nested child at parent instant `t`: outer comp -> layer
+// [`outer_map`] -> inner nested -> inner comp -> layer [`inner_map`] -> probe. The
+// inner `NestedContent` is a Content bound in the same doc; recursion composes the
+// two edges with no accumulated map. Both nesting levels share identity transforms
+// and full cover, so two such scenes with the same LEAF instant are byte-identical.
+std::vector<std::byte> render_two_level(TimeProbe& probe, PullService& pull, Backend& backend,
+                                        const TimeMap& outer_map, const TimeMap& inner_map,
+                                        Time t) {
+  Model model;
+  ObjectId c_inner{};
+  ObjectId c_outer{};
+  ObjectId probe_cid{};
+  ObjectId inner_cid{};
+  ObjectId l_probe{};
+  ObjectId l_inner{};
+  {
+    auto tx = model.transact("temporal two level");
+    c_inner = tx.add_composition(8.0, 8.0);
+    probe_cid = tx.add_content(1);
+    l_probe = tx.add_layer(probe_cid, Affine::identity());
+    tx.attach_layer(c_inner, l_probe);
+    c_outer = tx.add_composition(8.0, 8.0);
+    inner_cid = tx.add_content(1);
+    l_inner = tx.add_layer(inner_cid, Affine::identity());
+    tx.attach_layer(c_outer, l_inner);
+    tx.set_time_map(l_probe, inner_map);
+    tx.set_time_map(l_inner, outer_map);
+    tx.commit();
+  }
+  const DocStatePtr doc = model.current();
+  std::unordered_map<ObjectId, Content*> binding;
+  binding[probe_cid] = &probe;
+  NestedContent inner(c_inner);
+  inner.attach(pull, backend, map_resolver(binding), *doc);
+  binding[inner_cid] = &inner; // the outer edge resolves to the inner nested
+  NestedContent outer(c_outer);
+  outer.attach(pull, backend, map_resolver(binding), *doc);
+  auto target = backend.make_surface(8, 8, k_working_rgba32f);
+  REQUIRE(target.has_value());
+  const RenderRequest req{
+      Rect{0.0, 0.0, 8.0, 8.0}, 1.0, t, StateHandle{}, **target, Exactness::Exact,
+      Deadline::none()};
+  auto done = std::make_shared<RenderCompletion>();
+  const std::optional<RenderResult> r = outer.render(req, done);
+  REQUIRE(r.has_value());
+  return bytes_of(**target);
+}
+
+bool all_zero(const std::vector<std::byte>& b) {
+  return std::all_of(b.begin(), b.end(), [](std::byte x) { return x == std::byte{0}; });
+}
+
+// A PullService double that counts descents: renders inline exactly as InlinePull,
+// but tallies every `pull` so a span-culled child's "not descended" discipline
+// (doc 12:200-206) is a behavioral counter, not wall-clock (doc 16:54-62).
+class CountingPull final : public PullService {
+public:
+  void pull(ContentRef input, const RenderRequest& request,
+            std::shared_ptr<RenderCompletion> done) override {
+    ++d_pulls;
+    const std::optional<RenderResult> r = input ? input->render(request, done) : std::nullopt;
+    if (r.has_value()) {
+      done->complete(*r);
+    } else if (!done->settled()) {
+      done->fail(RenderError::ContentFailed);
+    }
+  }
+  int pulls() const { return d_pulls; }
+
+private:
+  int d_pulls{0};
+};
 
 } // namespace
 
@@ -550,4 +735,143 @@ TEST_CASE("a Droste self-cycle terminates on the depth budget with a placeholder
   auto done2 = std::make_shared<RenderCompletion>();
   (void)nested.render(req2, done2);
   REQUIRE(bytes_equal(first, bytes_of(**target2)));
+}
+
+// --- temporal boundary goldens (kinds.nested_temporal_mapping) -------------------
+
+// The retime is the task's raison d'etre: across the nested visual boundary the
+// child sub-request's time is remapped through the edge's time map, not forwarded as
+// identity. A rate-2 edge at parent T selects child-local 2T.
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 11-time-and-video#nested-boundary-retimes-child-through-time-map
+TEST_CASE("nested retimes the child sub-request through the edge's time map") {
+  CpuBackend backend;
+  InlinePull pull;
+  TimeProbe probe;
+  const TimeMap identity{}; // rate 1/1, in/offset 0
+  const TimeMap rate2{Time::zero(), Rational{2, 1}, Time::zero()};
+
+  // A rate-2 edge at parent T=5 selects child-local 2T=10, byte-identical to the same
+  // descent forwarding 10 through an identity map.
+  REQUIRE(bytes_equal(render_single(probe, pull, backend, rate2, TimeRange::all(), Time{5}),
+                      render_single(probe, pull, backend, identity, TimeRange::all(), Time{10})));
+  // Teeth: it is NOT the parent instant forwarded as identity -- forwarding 5 would
+  // select a decisively different child frame.
+  REQUIRE_FALSE(
+      bytes_equal(render_single(probe, pull, backend, rate2, TimeRange::all(), Time{5}),
+                  render_single(probe, pull, backend, identity, TimeRange::all(), Time{5})));
+}
+
+// The full affine edge: local = (T - in) * rate + offset.
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+TEST_CASE("nested applies the edge in/offset when retiming the child") {
+  CpuBackend backend;
+  InlinePull pull;
+  TimeProbe probe;
+  const TimeMap identity{};
+  const TimeMap shifted{Time{3}, Rational{2, 1}, Time{7}}; // (T-3)*2 + 7
+  // (10 - 3) * 2 + 7 == 21.
+  REQUIRE(bytes_equal(render_single(probe, pull, backend, shifted, TimeRange::all(), Time{10}),
+                      render_single(probe, pull, backend, identity, TimeRange::all(), Time{21})));
+}
+
+// The identity path is byte-neutral: the retime/cull is a pure addition on the
+// non-identity branch, so a default map + all() span still equals the flat descent.
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+TEST_CASE("nested's default time map and span are byte-identical to the flat descent") {
+  CpuBackend backend;
+  InlinePull pull;
+  TimeProbe probe;
+  REQUIRE(
+      bytes_equal(render_single(probe, pull, backend, TimeMap{}, TimeRange::all(), Time::zero()),
+                  render_flat_single(probe, backend, TimeMap{}, TimeRange::all())));
+}
+
+// Per-edge, never-accumulate: two rate-1/2 edges compose through recursion to 1/4,
+// re-derived from their own rationals with one leaf rounding -- not a pre-folded map.
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 11-time-and-video#time-map-composes-in-exact-rational-with-one-rounding
+TEST_CASE("nested composes two time-map edges per-edge without accumulating") {
+  CpuBackend backend;
+  InlinePull pull;
+  TimeProbe probe;
+  const TimeMap identity{};
+  const TimeMap half{Time::zero(), Rational{1, 2}, Time::zero()};
+  // A rate-1/2 child inside a rate-1/2 parent plays at 1/4: parent T=100 -> 50 -> 25,
+  // byte-identical to an identity two-level descent whose leaf instant is 25.
+  REQUIRE(bytes_equal(render_two_level(probe, pull, backend, half, half, Time{100}),
+                      render_two_level(probe, pull, backend, identity, identity, Time{25})));
+}
+
+// Reverse is first-class on the visual side: a visual instant has no stream
+// direction, so a negative rate remaps cleanly and is NOT culled (unlike audio's
+// num<=0 cull, doc 12:118).
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+TEST_CASE("nested retimes a reverse-rate child without culling it") {
+  CpuBackend backend;
+  InlinePull pull;
+  TimeProbe probe;
+  const TimeMap identity{};
+  const TimeMap reverse{Time::zero(), Rational{-1, 1}, Time::zero()};
+  // A rate -1 edge at parent T=8 samples the reversed instant -8.
+  const std::vector<std::byte> reversed =
+      render_single(probe, pull, backend, reverse, TimeRange::all(), Time{8});
+  REQUIRE(bytes_equal(reversed,
+                      render_single(probe, pull, backend, identity, TimeRange::all(), Time{-8})));
+  // It renders the reversed frame -- not nothing (an audio-style cull would blank it),
+  // not the forward frame.
+  REQUIRE_FALSE(all_zero(reversed));
+  REQUIRE_FALSE(bytes_equal(
+      reversed, render_single(probe, pull, backend, identity, TimeRange::all(), Time{8})));
+}
+
+// Overflow of the fixed flick width faults as a value: the child draws nothing rather
+// than rendering at a wrapped/clamped instant.
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+TEST_CASE("nested culls a child whose time-map evaluation overflows") {
+  CpuBackend backend;
+  InlinePull pull;
+  TimeProbe probe;
+  const TimeMap identity{};
+  // rate 4e9 at T=4e9 -> 1.6e19 flicks, past the int64 flick width.
+  const TimeMap overflowing{Time::zero(), Rational{4'000'000'000, 1}, Time::zero()};
+  const Time big{4'000'000'000};
+  REQUIRE(all_zero(render_single(probe, pull, backend, overflowing, TimeRange::all(), big)));
+  // Teeth: the same instant through a representable map renders non-empty, so "empty"
+  // is the overflow cull talking, not an empty scene.
+  REQUIRE_FALSE(all_zero(render_single(probe, pull, backend, identity, TimeRange::all(), big)));
+}
+
+// Span cull is half-open [in, out): present at in and inside, culled before in and at
+// out.
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 11-time-and-video#span-cull-is-half-open
+TEST_CASE("nested culls a child outside its half-open span") {
+  CpuBackend backend;
+  InlinePull pull;
+  TimeProbe probe;
+  const TimeMap identity{};
+  const TimeRange span{Time{10}, Time{20}}; // [10, 20)
+  REQUIRE_FALSE(all_zero(render_single(probe, pull, backend, identity, span, Time{10}))); // == in
+  REQUIRE_FALSE(all_zero(render_single(probe, pull, backend, identity, span, Time{15}))); // inside
+  REQUIRE(all_zero(render_single(probe, pull, backend, identity, span, Time{20})));       // == out
+  REQUIRE(all_zero(render_single(probe, pull, backend, identity, span, Time{5})));        // < in
+}
+
+// A span-culled child is NOT descended -- zero pulls, mirroring the audio twin's
+// discipline (doc 12:200-206). Behavioral counter, not wall-clock (doc 16:54-62).
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+TEST_CASE("a span-culled nested child issues zero pulls") {
+  CpuBackend backend;
+  TimeProbe probe;
+  const TimeMap identity{};
+  const TimeRange span{Time{10}, Time{20}};
+
+  CountingPull culled_pull;
+  render_single(probe, culled_pull, backend, identity, span, Time{5}); // outside the span
+  REQUIRE(culled_pull.pulls() == 0);
+
+  CountingPull present_pull;
+  render_single(probe, present_pull, backend, identity, span, Time{15}); // inside the span
+  REQUIRE(present_pull.pulls() == 1);
 }

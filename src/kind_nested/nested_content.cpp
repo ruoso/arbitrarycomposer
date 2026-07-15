@@ -327,6 +327,15 @@ bool NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   if (!layer.visible() || layer.opacity <= 0.0) {
     return true;
   }
+  // Span cull before descending (doc 11:21,73-74; Decision D3): a child layer whose
+  // half-open span [in, out) does not contain the request instant contributes
+  // nothing and is NOT descended -- zero pulls, exactly the flat walk's discipline
+  // (`tile_planning.cpp:390`) and the audio twin's (`mix_child_layer`, doc
+  // 12:200-206). The default all() span is always present, so this gate is
+  // byte-neutral for a layer with no temporal placement.
+  if (!present_in_span(layer.span, request.time)) {
+    return true;
+  }
   Content* content = d_resolver ? d_resolver(layer.content) : nullptr;
   if (content == nullptr) {
     return true; // unresolved layer: placeholder (nothing) for this layer (doc 05:50)
@@ -377,11 +386,29 @@ bool NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   Surface& temp = **temp_result;
   backend.clear(temp, 0.0F, 0.0F, 0.0F, 0.0F);
 
+  // Retime the descent (doc 11:66-71, 217-218; Decision D2): remap the request's
+  // time instant through this edge's time map to child-local time --
+  // `(request.time - in) * rate + offset` -- exactly as the flat walk
+  // (`tile_planning.cpp:405`) and the audio twin (`mix_child_layer`) do. The map is
+  // re-derived from this ONE edge every descent and never accumulated down the tree
+  // (doc 11:45-48, 185-191; doc 04:113-114); nested recursion composes boundaries,
+  // in exact rational arithmetic rounded once at the leaf. The identity default map
+  // (rate 1/1, in/offset 0) returns `request.time` unchanged, so a still layer is
+  // byte-exact. A negative rate remaps a visual instant cleanly (reverse playback):
+  // unlike the audio twin's `num <= 0` cull -- an audio-stream-direction concern
+  // (doc 12:118) -- a visual instant has no direction, so reverse is first-class
+  // (Decision D4). Only `evaluate` overflow culls (Decision D5).
+  const expected<Time, TimeError> local_time = layer.time_map.evaluate(request.time);
+  if (!local_time.has_value()) {
+    return true; // unrepresentable local time: draw nothing (doc 11:52-56, D5)
+  }
+
   // The sub-request carries the outer request's snapshot, exactness, and deadline
   // VERBATIM (doc 05:93-101, constraint 2) -- never reset, recomputed, or
-  // sub-budgeted per level. Only region/scale/target are the layer's own.
+  // sub-budgeted per level. Only region/scale/target and now the retimed `time` are
+  // the layer's own.
   const RenderRequest sub{
-      region, scale, request.time, request.snapshot, temp, request.exactness, request.deadline};
+      region, scale, *local_time, request.snapshot, temp, request.exactness, request.deadline};
 
   // Reuse the injected PullService, never `content->render` (doc 13:69-71): cache
   // lookup, worker dispatch, snapshot/deadline inheritance, aggregate revision,
