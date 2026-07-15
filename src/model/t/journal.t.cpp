@@ -419,4 +419,93 @@ TEST_CASE("concurrent pin/traverse against a writer running undo/redo navigation
   REQUIRE(journal.cursor() == journal.depth());
 }
 
+// enforces: 14-data-model-and-editing#remove-is-undoable
+//
+// The coverage the model.content_removal .tji note called out as missing: journal.t
+// had no case that commits a `remove` and then undoes it. A content removal --
+// `remove(content)` coalesced with the layer's `detach_layer` in one commit, the
+// shape `Document::remove_content` composes -- is undoable by construction: undo
+// re-inserts the stored `before` edge, restoring the erased ContentRecord to its
+// EXACT pre-removal SlotRef identity (not just equal bytes) and re-linking untouched
+// siblings by identity; redo re-erases it; a version pinned before the removal keeps
+// resolving the content across the whole cycle; and a full undo->redo round-trips
+// live_slots() with no leak.
+TEST_CASE("undo of a committed content removal restores the record to its exact SlotRef edge") {
+  arbc::Model model;
+  arbc::Journal journal(model);
+  model.set_commit_sink(&journal);
+  CountingDamageSink dsink;
+  model.set_damage_sink(&dsink);
+
+  // Baseline: a composition, the content to remove, an untouched sibling content, and
+  // a layer that names the content by value and is a member of the composition.
+  arbc::ObjectId comp;
+  arbc::ObjectId content;
+  arbc::ObjectId sibling;
+  arbc::ObjectId layer;
+  {
+    auto txn = model.transact("seed");
+    comp = txn.add_composition(100.0, 100.0);
+    content = txn.add_content(1);
+    sibling = txn.add_content(1);
+    layer = txn.add_layer(content, arbc::Affine::identity());
+    txn.attach_layer(comp, layer);
+    REQUIRE(txn.commit().has_value());
+  }
+  model.drain();
+
+  // Pin the pre-removal version and capture the SlotRef identities the removal must
+  // restore: the content's own edge, and an untouched sibling's edge.
+  const arbc::DocStatePtr before = model.current();
+  arbc::SlotRef<arbc::ObjectRecord> content_edge_before;
+  arbc::SlotRef<arbc::ObjectRecord> sibling_edge_before;
+  REQUIRE(before->record_edge(content, content_edge_before));
+  REQUIRE(before->record_edge(sibling, sibling_edge_before));
+  REQUIRE(before->contains(content));
+  const int damage_base = dsink.calls;
+
+  // Remove: detach the layer from the composition and erase the content record in ONE
+  // commit -- one journal entry, one damage flush (union), one revision bump.
+  {
+    auto txn = model.transact("remove");
+    txn.detach_layer(comp, layer);
+    txn.remove(content);
+    REQUIRE(txn.commit().has_value());
+  }
+  REQUIRE(dsink.calls == damage_base + 1); // exactly one flush for the whole removal
+  REQUIRE(journal.depth() == 2);
+  REQUIRE(journal.cursor() == 2);
+  REQUIRE_FALSE(model.current()->contains(content)); // erased from the live version
+  REQUIRE(before->contains(content));                // the pin still resolves it
+  model.drain();
+  const std::size_t live_at_tip = model.live_slots();
+
+  // Undo: the content is re-inserted to the SAME SlotRef identity its edge had before
+  // the removal (the stored `before` edge reused, not path-copied), the sibling is
+  // relinked by identity, and the detached layer rejoins the composition's order.
+  REQUIRE(journal.undo());
+  model.drain();
+  REQUIRE(model.current()->contains(content));
+  arbc::SlotRef<arbc::ObjectRecord> content_edge_undone;
+  arbc::SlotRef<arbc::ObjectRecord> sibling_edge_undone;
+  REQUIRE(model.current()->record_edge(content, content_edge_undone));
+  REQUIRE(model.current()->record_edge(sibling, sibling_edge_undone));
+  REQUIRE(content_edge_undone == content_edge_before); // structural identity, not bytes
+  REQUIRE(sibling_edge_undone == sibling_edge_before); // untouched sibling shared
+  std::vector<arbc::ObjectId> restored_order;
+  model.current()->for_each_layer_in(comp,
+                                     [&](arbc::ObjectId id) { restored_order.push_back(id); });
+  REQUIRE(restored_order == std::vector<arbc::ObjectId>{layer});
+
+  // Redo: the content is erased again (the after edge -- empty -- re-applied).
+  REQUIRE(journal.redo());
+  model.drain();
+  REQUIRE_FALSE(model.current()->contains(content));
+
+  // The pre-removal pin resolved the content unchanged across the whole cycle, and a
+  // full undo->redo round-trip ends at the same live-slot count it started from.
+  REQUIRE(before->contains(content));
+  REQUIRE(model.live_slots() == live_at_tip);
+}
+
 } // namespace

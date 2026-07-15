@@ -115,6 +115,33 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
   return id;
 }
 
+void Document::remove_content(ObjectId content, ObjectId composition, ObjectId layer) {
+  // The inverse of `add_content`, composing three existing model teardowns into one
+  // atomic, undoable, per-content deletion (doc 14 § Transactions, the removal
+  // paragraph). One transaction => one publish, one journal entry, one damage flush:
+  // detach the referencing layer from its composition's ordered membership, erase the
+  // layer record, and erase the content record. Because the mutations share a
+  // transaction an observer sees the document with the content present or fully gone,
+  // never a layer naming an erased content.
+  auto txn = d_model->transact();
+  txn.detach_layer(composition, layer);
+  txn.remove(layer);
+  txn.remove(content);
+  txn.commit();
+
+  // Decision 1 (`model.content_removal`): do NOT `d_binding.unbind(content)` or
+  // `d_contents.erase(content)` here. The removal is journaled, so the erased
+  // ContentRecord is NOT reclaimed -- the journal's `before` edge holds it so undo
+  // can restore it (doc 14 § History). That record's `StateHandle::release` is
+  // deferred to its eventual reclaim and routed to the content's binding row; dropping
+  // the row now would strand that future release with nowhere to route, tripping the
+  // binding's asserted-zero `unrouted_state_calls()` invariant and leaking the
+  // handle's pool blocks -- the exact hazard `EditableBinding::unbind`'s own
+  // doc-comment warns against. So the live `Content*` and its row are RETAINED here;
+  // they are torn down by the document-close declaration-order drain, and, once the
+  // named `runtime.removed_content_reclaim` follow-up lands, at history-trim.
+}
+
 Model::Transaction Document::transact(std::string name) {
   return d_model->transact(std::move(name));
 }

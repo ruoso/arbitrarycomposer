@@ -1,8 +1,8 @@
 #pragma once
 
-#include <arbc/base/ids.hpp>       // ObjectId
-#include <arbc/model/model.hpp>    // DocRoot::find_first_composition, CompositionRecord
-#include <arbc/model/records.hpp>  // CompositionRecord
+#include <arbc/base/ids.hpp>         // ObjectId
+#include <arbc/model/model.hpp>      // DocRoot::find_first_composition, CompositionRecord
+#include <arbc/model/records.hpp>    // CompositionRecord
 #include <arbc/runtime/document.hpp> // Document::pin, DocStatePtr
 
 #include <catch2/catch_test_macros.hpp>

@@ -145,6 +145,40 @@ the existing journal `ObjectEdit` edges with no new entry type, restoring the
 prior order even across the inline↔spill boundary
 (`14-data-model-and-editing#membership-undo-round-trips`).
 
+Removing an object is a transaction in the same class. `txn.remove(id)`
+path-copies the object out of the `DocState` map, sharing every untouched
+sibling by `SlotRef` identity and collapsing emptied branches; erasing an
+absent id is a no-op. The commit assembles the removal as an ordinary
+`ObjectEdit` whose `after` edge is empty (the symmetric case of an add, whose
+`before` is empty), so **removal needs no new journal machinery and is undoable
+by construction**: `navigate` re-inserts the stored `before` edge on undo —
+restoring the object to its exact pre-removal record slot — and re-erases it on
+redo (`14-data-model-and-editing#remove-is-undoable`). A version pinned before
+the removal keeps resolving the removed object for its whole life, by structural
+sharing, exactly as it does for any other later edit
+(`14-data-model-and-editing#pinned-version-never-observes-later-edit`). Removal
+damages the removed object once over its whole extent, unioned and flushed with
+the commit's other damage.
+
+Deleting an *editable* content at the document level composes three existing
+teardowns in one transaction — `detach_layer` for each composition the content
+is a member of, `remove` for the content record, and the runtime `Editable`
+binding's per-content teardown. The binding teardown, however, does **not** run
+eagerly with the transaction. A content record embeds a `StateHandle` whose
+`release` is deferred to the record's reclamation and *routed to the content's
+binding row* (below); while the journal holds the removal's `before` edge — so
+that undo can restore it — the record is not reclaimed and its release has not
+fired. Dropping the binding row at removal time would therefore strand that
+future release with nowhere to route (the binding's asserted-zero
+unrouted-state-call invariant). So a document-level removal **retains the
+content's live object and its binding row until the removal leaves history**
+(the entry is trimmed, no pin holds it) or the document is torn down; until then
+an undo re-resolves the restored content with its state intact
+(`14-data-model-and-editing#remove-content-retains-binding-until-history-drops-it`).
+Reclaiming that retained content the moment its record leaves history — rather
+than at document close — is a bounded memory-hygiene follow-up, not a
+correctness requirement.
+
 ## Content state: the `Editable` facet
 
 Placement lives in core records, but content *internals* (the pixels, the

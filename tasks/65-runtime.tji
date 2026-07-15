@@ -230,4 +230,10 @@ task runtime "Runtime" {
     depends compositor.root_composition_frame_walk
     note "build_pull_identity_map builds the frame's identity/operator memo before bind_operators is called, so an unattached NestedContent reports empty inputs(). compositor.root_composition_frame_walk worked around this with a composition_ref() structural descent and a pre-attach operator admission heuristic in pull_identity.cpp. A cleaner fix: restructure the interactive frame to build the memo after bind_operators (or bind doc/resolver context before memo building), eliminating the special-case workarounds. Source-of-debt: tasks/refinements/compositor/root_composition_frame_walk.md. Docs 02/13/17."
   }
+  task removed_content_reclaim "Reclaim retained Content* + binding row when removal leaves history" {
+    effort 2d
+    allocate team
+    depends model.content_removal
+    note "Document::remove_content retains the live Content* and its EditableBinding row so undo can re-resolve a live editable content (Decision 1 of model.content_removal). This task reclaims that memory at history-trim time: hook the routed final StateRefSink::release of a content whose id is absent from Model::current() to complete the runtime teardown (drop the binding row, erase d_contents), on the writer thread, TSan-clean. Witnessed by bound_count() falling after a journal trim. Bounded memory-hygiene optimization, not a correctness gap. Source-of-debt: tasks/refinements/model/content_removal.md Acceptance criteria. Docs 14/17."
+  }
 }

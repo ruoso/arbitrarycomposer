@@ -128,18 +128,18 @@ struct OracleScene {
 
   OracleScene() {
     root = doc.add_composition(8.0, 8.0);
-    const ObjectId l_op = doc.add_layer(
-        doc.add_content(
-            std::make_shared<SolidContent>(Rgba{0.80F, 0.20F, 0.10F, 1.0F}, Rect{0.0, 0.0, 8.0, 8.0})),
-        Affine::identity());
-    const ObjectId l_a = doc.add_layer(
-        doc.add_content(
-            std::make_shared<SolidContent>(Rgba{0.10F, 0.40F, 0.30F, 0.50F}, Rect{0.0, 0.0, 4.0, 8.0})),
-        Affine::identity());
-    const ObjectId l_b = doc.add_layer(
-        doc.add_content(
-            std::make_shared<SolidContent>(Rgba{0.20F, 0.10F, 0.60F, 0.50F}, Rect{4.0, 0.0, 8.0, 8.0})),
-        Affine::identity());
+    const ObjectId l_op =
+        doc.add_layer(doc.add_content(std::make_shared<SolidContent>(
+                          Rgba{0.80F, 0.20F, 0.10F, 1.0F}, Rect{0.0, 0.0, 8.0, 8.0})),
+                      Affine::identity());
+    const ObjectId l_a =
+        doc.add_layer(doc.add_content(std::make_shared<SolidContent>(
+                          Rgba{0.10F, 0.40F, 0.30F, 0.50F}, Rect{0.0, 0.0, 4.0, 8.0})),
+                      Affine::identity());
+    const ObjectId l_b =
+        doc.add_layer(doc.add_content(std::make_shared<SolidContent>(
+                          Rgba{0.20F, 0.10F, 0.60F, 0.50F}, Rect{4.0, 0.0, 8.0, 8.0})),
+                      Affine::identity());
     doc.attach_layer(root, l_op);
     doc.attach_layer(root, l_a);
     doc.attach_layer(root, l_b);
@@ -215,14 +215,14 @@ TEST_CASE("the nested child adds no top-level composites: no double-draw work") 
   // the right half -- two direct members, one top-level composite each.
   Document control;
   const ObjectId control_root = control.add_composition(8.0, 8.0);
-  const ObjectId c_op = control.add_layer(
-      control.add_content(
-          std::make_shared<SolidContent>(Rgba{0.80F, 0.20F, 0.10F, 1.0F}, Rect{0.0, 0.0, 4.0, 8.0})),
-      Affine::identity());
-  const ObjectId c_solid = control.add_layer(
-      control.add_content(
-          std::make_shared<SolidContent>(Rgba{0.20F, 0.10F, 0.60F, 0.50F}, Rect{4.0, 0.0, 8.0, 8.0})),
-      Affine::identity());
+  const ObjectId c_op =
+      control.add_layer(control.add_content(std::make_shared<SolidContent>(
+                            Rgba{0.80F, 0.20F, 0.10F, 1.0F}, Rect{0.0, 0.0, 4.0, 8.0})),
+                        Affine::identity());
+  const ObjectId c_solid =
+      control.add_layer(control.add_content(std::make_shared<SolidContent>(
+                            Rgba{0.20F, 0.10F, 0.60F, 0.50F}, Rect{4.0, 0.0, 8.0, 8.0})),
+                        Affine::identity());
   control.attach_layer(control_root, c_op);
   control.attach_layer(control_root, c_solid);
   SequenceRenderer control_renderer(control, Viewport{k_dim, k_dim, Affine::identity()}, backend);
@@ -316,8 +316,9 @@ TEST_CASE("the visual drivers source the root composition and render only its me
     InteractiveRenderer renderer({}, [] { return std::chrono::steady_clock::time_point{}; });
     HostViewport::Config cfg;
     cfg.viewport = Viewport{k_dim, k_dim, Affine::identity()}; // default (invalid) anchor
-    HostViewport viewport(renderer, scene.doc, HostViewport::DocumentBinding{}, backend, pool, cache,
-                          **target, [] { return std::chrono::steady_clock::time_point{}; }, cfg);
+    HostViewport viewport(
+        renderer, scene.doc, HostViewport::DocumentBinding{}, backend, pool, cache, **target,
+        [] { return std::chrono::steady_clock::time_point{}; }, cfg);
     CHECK(viewport.anchor() == scene.root);
     CHECK(viewport.anchor() != scene.second);
   }

@@ -101,6 +101,31 @@ public:
   // now rides each state seam (`EditableBinding`). The v1 one-per-document limit,
   // which used to throw here, is gone (`runtime.editable_sink_multiplex`).
   ObjectId add_content(std::shared_ptr<Content> content, std::uint64_t kind = 0);
+
+  // Delete an editable content and its referencing layer at the document level: the
+  // inverse of `add_content` (doc 14 § Transactions, the removal paragraph).
+  // Composes three existing model teardowns -- `detach_layer(composition, layer)`,
+  // `remove` of the layer record, and `remove` of the content record -- into ONE
+  // transaction, so the deletion is atomic (an observer never sees a layer naming an
+  // erased content), publishes once (revision +1), appends one journal entry, and
+  // flushes damage once. The caller names the specific `(composition, layer)` it is
+  // deleting (`model.content_removal` Decision 2): a `LayerRecord` names its content
+  // by VALUE, not an owning edge, so content and layer are distinct objects the
+  // wrapper erases together, keeping the delete O(1).
+  //
+  // Undoable BY CONSTRUCTION, through the journal alone: undo re-inserts the stored
+  // `before` edges, restoring the content to its exact record slot with its captured
+  // state intact, and a version pinned before the removal keeps resolving it by
+  // structural sharing. Crucially the binding row is NOT dropped here -- it is
+  // RETAINED while the journal holds the removal, so the content record's deferred
+  // `StateHandle` release (fired only when the record is finally reclaimed) still
+  // routes to a live row; dropping it now would strand that release and trip the
+  // binding's asserted-zero `unrouted_state_calls()` invariant (Decision 1;
+  // doc 14:163-180). The retained content is torn down at document close (the
+  // declaration-order drain), and, once `runtime.removed_content_reclaim` lands, the
+  // moment the removal leaves history. WRITER-THREAD ONLY.
+  void remove_content(ObjectId content, ObjectId composition, ObjectId layer);
+
   ObjectId add_layer(ObjectId content, const Affine& transform, double opacity = 1.0);
   void set_layer_transform(ObjectId layer, const Affine& transform);
 
