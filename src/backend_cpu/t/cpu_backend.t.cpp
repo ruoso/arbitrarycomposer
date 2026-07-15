@@ -54,8 +54,8 @@ template <PixelFormat F> arbc::WorkingPixel read_px(const arbc::Surface& surface
 }
 
 // A red ramp in x (columns 0 and 1), opaque, laid out on a 2x2 source: the
-// canonical fixture for exercising the bilinear tap's x interpolation with a
-// per-channel value the four taps make analytic.
+// canonical fixture for exercising the composite tap's x interpolation with a
+// per-channel value the taps make analytic.
 template <PixelFormat F> void fill_red_ramp_2x2(arbc::Surface& src) {
   write_px<F>(src, 0, {0.0F, 0.0F, 0.0F, 1.0F}); // (0,0)
   write_px<F>(src, 1, {1.0F, 0.0F, 0.0F, 1.0F}); // (1,0)
@@ -63,9 +63,12 @@ template <PixelFormat F> void fill_red_ramp_2x2(arbc::Surface& src) {
   write_px<F>(src, 3, {1.0F, 0.0F, 0.0F, 1.0F}); // (1,1)
 }
 
-// Bilinear magnification: a 2x upscale of the red ramp resolves interior
+// Catmull-Rom magnification: a 2x upscale of the red ramp resolves interior
 // destination pixels to interpolated reds a nearest tap could never produce
-// (dst(1,1) samples texel-space x=0.25, dst(2,1) samples x=0.75).
+// (dst(1,1) samples texel-space (0.25,0.25), dst(1,2) samples (0.75,0.25)), and
+// the ramp direction survives (a pixel deeper into the red column samples more
+// red). The exact per-format bytes are pinned in kernel_goldens.t.cpp; here the
+// point is that the interpolating cubic is genuinely resampling, not snapping.
 template <PixelFormat F> void check_magnification(arbc::SurfaceFormat fmt, float tol) {
   arbc::CpuBackend backend;
   arbc::CpuSurface src(2, 2, fmt);
@@ -77,16 +80,19 @@ template <PixelFormat F> void check_magnification(arbc::SurfaceFormat fmt, float
   const arbc::WorkingPixel p11 = read_px<F>(dst, 1 * 4 + 1);
   const arbc::WorkingPixel p21 = read_px<F>(dst, 1 * 4 + 2);
   CAPTURE(p11[0], p21[0], tol);
-  REQUIRE(std::fabs(p11[0] - 0.25F) <= tol); // (1 - 0.25) * 0 + 0.25 * 1 in x
-  REQUIRE(std::fabs(p21[0] - 0.75F) <= tol);
-  REQUIRE(std::fabs(p11[3] - 1.0F) <= tol); // opaque throughout the interior
   // A genuine blend, not a snapped texel: nearest would land exactly on 0 or 1.
   REQUIRE(p11[0] > tol);
   REQUIRE(p11[0] < 1.0F - tol);
+  REQUIRE(p21[0] > tol);
+  REQUIRE(p21[0] < 1.0F - tol);
+  // The ramp direction is preserved: deeper into the red column reads more red.
+  REQUIRE(p21[0] > p11[0] + tol);
 }
 
-// Fractional offset: a half-texel shift makes an interior destination pixel the
-// exact two-tap average (frac == 0.5), not a snapped source texel.
+// Fractional offset: a half-texel shift makes an interior destination pixel a
+// genuine Catmull-Rom reconstruction (frac == 0.5), decisively not a snapped
+// source texel. Its value differs from the incumbent bilinear two-tap mean (0.5);
+// the exact bytes are pinned per-format in kernel_goldens.t.cpp.
 template <PixelFormat F> void check_fractional_offset(arbc::SurfaceFormat fmt, float tol) {
   arbc::CpuBackend backend;
   arbc::CpuSurface src(2, 2, fmt);
@@ -95,15 +101,17 @@ template <PixelFormat F> void check_fractional_offset(arbc::SurfaceFormat fmt, f
 
   backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0);
 
-  // dst(1,0) maps to texel-space x = 0.5: the exact mean of texels 0 and 1.
+  // dst(1,0) maps to texel-space x = 0.5: a reconstructed red between the taps,
+  // not a snapped 0 or 1.
   const arbc::WorkingPixel p10 = read_px<F>(dst, 1);
   CAPTURE(p10[0], tol);
-  REQUIRE(std::fabs(p10[0] - 0.5F) <= tol);
+  REQUIRE(p10[0] > tol);
+  REQUIRE(p10[0] < 1.0F - tol);
 }
 
 // Identity and pure-integer composites map every destination center to frac 0,
-// where the bilinear weights collapse to the single incumbent texel -- the
-// output reproduces the pre-filter nearest tap byte-for-byte (the mechanism
+// where the interpolating Catmull-Rom weights collapse to exactly (0,1,0,0) --
+// the output reproduces the pre-filter nearest tap byte-for-byte (the mechanism
 // that keeps the walking-skeleton golden intact).
 template <PixelFormat F> void check_integer_is_byte_exact(arbc::SurfaceFormat fmt) {
   arbc::CpuBackend backend;
@@ -485,16 +493,41 @@ TEST_CASE("convert routes format -> working -> format (rgba8 <-> rgba32f round-t
   REQUIRE(out[3] == 255);
 }
 
-TEST_CASE("bilinear magnification interpolates in premultiplied linear floats") {
+TEST_CASE("Catmull-Rom magnification interpolates in premultiplied linear floats") {
   check_magnification<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f, 1e-6F);
   check_magnification<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f, 0.005F);
   check_magnification<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb, 0.02F);
+
+  // Determinism anchor on the float format: the exact Catmull-Rom taps. dst(1,1)
+  // samples texel-space (0.25,0.25), dst(1,2) samples (0.75,0.25). The
+  // premultiplied alpha overshoots 1.0 -- the cubic reconstructing the opaque 2x2's
+  // coverage against the zero border -- which bilinear's convex 2x2 tap never could.
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
+  fill_red_ramp_2x2<PixelFormat::Rgba32fLinearPremul>(src);
+  arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
+  backend.composite(dst, src, arbc::Affine::scaling(2.0, 2.0), 1.0);
+  require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 1 * 4 + 1),
+                {0.247802734F, 0.0F, 0.0F, 1.196289F}, 1e-5F);
+  require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 1 * 4 + 2),
+                {0.948486328F, 0.0F, 0.0F, 1.196289F}, 1e-5F);
 }
 
-TEST_CASE("a fractional composite offset yields the two-tap average, not a snap") {
+TEST_CASE("a fractional composite offset reconstructs a genuine blend, not a snap") {
   check_fractional_offset<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f, 1e-6F);
   check_fractional_offset<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f, 0.005F);
   check_fractional_offset<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb, 0.02F);
+
+  // The exact Catmull-Rom reconstruction on the float format: dst(1,0) at the ramp
+  // edge is premultiplied red 0.5625 with alpha 1.125 -- decisively not the retired
+  // bilinear two-tap mean (0.5, alpha 1.0).
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
+  fill_red_ramp_2x2<PixelFormat::Rgba32fLinearPremul>(src);
+  arbc::CpuSurface dst(2, 2, arbc::k_working_rgba32f);
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0);
+  require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 1), {0.5625F, 0.0F, 0.0F, 1.125F},
+                1e-6F);
 }
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
@@ -517,27 +550,67 @@ TEST_CASE("edge taps blend toward the transparent border, no clamp smear") {
 
   backend.composite(dst, src, arbc::Affine::translation(0.5, 0.5), 1.0);
 
-  // dst(1,1) sits at texel-space (0.5,0.5): all four taps in range -> fully opaque.
+  // dst(1,1) sits at texel-space (0.5,0.5): the in-range taps are opaque white, but
+  // the cubic reconstructing the flat patch against the zero border overshoots
+  // above 1.0 in premultiplied space (the bank clamps only the negative lobe, so
+  // legitimate HDR headroom above 1 is preserved). The retired bilinear tap, being
+  // convex, read exactly 1.0 here.
   const arbc::WorkingPixel interior = read_px<PixelFormat::Rgba32fLinearPremul>(dst, 1 * 4 + 1);
-  require_close(interior, {1.0F, 1.0F, 1.0F, 1.0F}, 1e-6F);
+  require_close(interior, {1.265625F, 1.265625F, 1.265625F, 1.265625F}, 1e-5F);
+  REQUIRE(interior[3] > 1.0F); // the overshoot the interpolating cubic introduces
 
-  // dst(0,0) straddles the corner: only the (0,0) tap is in range with weight
-  // 0.25, so the premultiplied sample falls off toward transparent (0.25), never
-  // a clamped opaque edge (which would read 1.0).
+  // dst(0,0) straddles the corner: the cubic's in-range taps reconstruct a
+  // premultiplied sample that falls off toward transparent (0.25), never a clamped
+  // opaque edge (which would read 1.0).
   const arbc::WorkingPixel corner = read_px<PixelFormat::Rgba32fLinearPremul>(dst, 0);
-  require_close(corner, {0.25F, 0.25F, 0.25F, 0.25F}, 1e-6F);
+  require_close(corner, {0.25F, 0.25F, 0.25F, 0.25F}, 1e-5F);
   REQUIRE(corner[3] < 0.9F); // decisively not clamp-to-edge
 
-  // dst(3,3) is fully outside the shifted source: it contributes nothing and the
-  // cleared destination stays transparent (matching the old nearest cull).
+  // dst(3,3): the opaque patch sits 2.5 texels away -- beyond the tap that carried
+  // it in the retired bilinear 2x2 footprint, but within reach of the cubic's wider
+  // 4x4 support, which catches the patch edge on its OUTER negative lobe. A faint
+  // ring (~0.4% coverage) remains rather than the clamped-opaque smear clamp-to-edge
+  // would leave: still decisively falloff toward transparent, not a smear.
   const arbc::WorkingPixel outside = read_px<PixelFormat::Rgba32fLinearPremul>(dst, 3 * 4 + 3);
-  require_close(outside, {0.0F, 0.0F, 0.0F, 0.0F}, 0.0F);
+  require_close(outside, {0.00390625F, 0.00390625F, 0.00390625F, 0.00390625F}, 1e-6F);
+  REQUIRE(outside[3] < 0.01F); // essentially transparent -- not a clamp-to-edge smear
 }
 
-TEST_CASE("box downsample is the four-tap mean in premultiplied linear floats") {
+TEST_CASE("a composite whose whole Catmull-Rom footprint is out of range is culled, untouched") {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
+  for (int i = 0; i < 4; ++i) {
+    write_px<PixelFormat::Rgba32fLinearPremul>(src, i, {1.0F, 1.0F, 1.0F, 1.0F});
+  }
+  arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
+  backend.clear(dst, 1.0F, 0.0F, 0.0F, 1.0F); // opaque-red witness
+
+  // Shift the 2x2 source far past the destination: every destination pixel's 4x4
+  // cubic tap footprint is entirely out of the source range, so the cull leaves
+  // `dst` byte-for-byte untouched -- the widened cubic window did not change the
+  // "fully-transparent sample contributes nothing" rule, only its reach.
+  backend.composite(dst, src, arbc::Affine::translation(100.0, 100.0), 1.0);
+
+  for (int i = 0; i < 16; ++i) {
+    CAPTURE(i);
+    require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, i), {1.0F, 0.0F, 0.0F, 1.0F},
+                  0.0F);
+  }
+}
+
+TEST_CASE("the rung downsample is the Lanczos-3 half-band decimation, not a box mean") {
   arbc::CpuBackend backend;
 
-  SECTION("2x2 -> 1x1 equals the mean of the four source taps") {
+  // For a 2x2 source only the center tap-pair of the 6-tap half-band is in range
+  // (the rest fall on the zero border), so each channel reduces to the kernel's own
+  // pair-folded reduction of the four in-range taps -- computed here from the frozen
+  // table so the expectation cannot silently drift from the shipped coefficients.
+  const float w2 = arbc::lanczos3_half_band()[2];
+  const auto decimate = [&](float a, float b, float c, float d) {
+    return w2 * (w2 * (a + b) + w2 * (c + d));
+  };
+
+  SECTION("2x2 -> 1x1 decimates the four in-range taps, decisively not their mean") {
     arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
     write_px<PixelFormat::Rgba32fLinearPremul>(src, 0, {0.1F, 0.2F, 0.3F, 1.0F});
     write_px<PixelFormat::Rgba32fLinearPremul>(src, 1, {0.5F, 0.6F, 0.7F, 1.0F});
@@ -547,13 +620,16 @@ TEST_CASE("box downsample is the four-tap mean in premultiplied linear floats") 
 
     backend.downsample(dst, src);
 
-    const arbc::WorkingPixel mean{(0.1F + 0.5F + 0.9F + 0.3F) * 0.25F,
-                                  (0.2F + 0.6F + 0.1F + 0.4F) * 0.25F,
-                                  (0.3F + 0.7F + 0.2F + 0.5F) * 0.25F, 1.0F};
-    require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 0), mean, 1e-6F);
+    const arbc::WorkingPixel expected{
+        decimate(0.1F, 0.5F, 0.9F, 0.3F), decimate(0.2F, 0.6F, 0.1F, 0.4F),
+        decimate(0.3F, 0.7F, 0.2F, 0.5F), decimate(1.0F, 1.0F, 1.0F, 1.0F)};
+    const arbc::WorkingPixel got = read_px<PixelFormat::Rgba32fLinearPremul>(dst, 0);
+    require_close(got, expected, 1e-6F);
+    // The retired box mean would read 0.25 * Sum = 0.45 on the red channel.
+    REQUIRE(std::fabs(got[0] - 0.45F) > 0.01F);
   }
 
-  SECTION("a uniform surface downsamples to the same uniform value") {
+  SECTION("a uniform patch decimates below itself against the zero border") {
     arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
     const arbc::WorkingPixel uniform{0.4F, 0.2F, 0.1F, 0.8F};
     for (int i = 0; i < 4; ++i) {
@@ -563,16 +639,29 @@ TEST_CASE("box downsample is the four-tap mean in premultiplied linear floats") 
 
     backend.downsample(dst, src);
 
-    require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 0), uniform, 1e-6F);
+    // The DC-through-the-kernel unit gain (image_resampler unit test) holds over
+    // FULL support; a 2x2 tile whose Lanczos support mostly lands on the compositor's
+    // transparent surround strips the half-band's NEGATIVE side-lobes, so its positive
+    // centre lobe over-counts and the flat patch decimates ABOVE itself. The
+    // clamp-to-edge convention kind_raster uses would instead preserve DC -- the
+    // deliberate per-consumer edge divergence (doc 07; refinement Constraint 4).
+    const arbc::WorkingPixel got = read_px<PixelFormat::Rgba32fLinearPremul>(dst, 0);
+    const arbc::WorkingPixel expected{
+        decimate(0.4F, 0.4F, 0.4F, 0.4F), decimate(0.2F, 0.2F, 0.2F, 0.2F),
+        decimate(0.1F, 0.1F, 0.1F, 0.1F), decimate(0.8F, 0.8F, 0.8F, 0.8F)};
+    require_close(got, expected, 1e-6F);
+    REQUIRE(got[0] > uniform[0]); // zero border strips the negative lobes: DC not preserved
   }
 }
 
 // enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
-TEST_CASE("box downsample averages in linear light, not on the sRGB bytes") {
+TEST_CASE("the rung downsample decimates in linear light, not on the sRGB bytes") {
   arbc::CpuBackend backend;
-  // A 2x2 sRGB block, half black, half white, all opaque: the linear-light mean
-  // of two 0.0 and two 1.0 samples is 0.5, decisively brighter than the naive
-  // mean of the stored sRGB bytes (0/255).
+  // A 2x2 sRGB block, half black, half white, all opaque: the Lanczos-3 half-band
+  // reduces two 0.0 and two 1.0 linear samples symmetrically, and because both
+  // colours carry equal alpha the unpremultiplied straight value lands on 0.5 --
+  // decisively brighter than the naive mean of the stored sRGB bytes (0/255), which
+  // is the point: the decimation runs in linear light, not on the gamma bytes.
   arbc::CpuSurface src(2, 2, arbc::k_fast_rgba8srgb);
   {
     const std::span<std::uint8_t> px = src.span<PixelFormat::Rgba8Srgb>();
@@ -603,11 +692,12 @@ TEST_CASE("box downsample averages in linear light, not on the sRGB bytes") {
 }
 
 // enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
-TEST_CASE("the bilinear tap resamples in linear light, not on the sRGB bytes") {
+TEST_CASE("the composite tap resamples in linear light, not on the sRGB bytes") {
   arbc::CpuBackend backend;
   // A black|white sRGB column pair; a half-texel-shifted composite makes an
-  // interior destination pixel the 50/50 blend. In linear light that is 0.5
-  // (~188 sRGB), decisively not the gamma-space byte average (~128).
+  // interior destination pixel a symmetric Catmull-Rom reconstruction of the two
+  // columns. In linear light the unpremultiplied result is 0.5 (~188 sRGB),
+  // decisively not the gamma-space byte average (~128).
   arbc::CpuSurface src(2, 2, arbc::k_fast_rgba8srgb);
   {
     const std::span<std::uint8_t> px = src.span<PixelFormat::Rgba8Srgb>();

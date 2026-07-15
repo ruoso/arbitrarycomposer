@@ -7,7 +7,7 @@
 #include <limits>
 
 // Exhaustive edge-case unit tests for the scale-ladder rung algebra (doc 16:46
-// lists the scale ladder as a fast, exhaustive unit-test item). The box-reducer
+// lists the scale ladder as a fast, exhaustive unit-test item). The rung reducer
 // `reduce_rung` needs a backend and is exercised byte-exactly by the
 // cross-component golden `tests/scale_ladder_golden.t.cpp`; these tests cover
 // the pure quantization arithmetic.

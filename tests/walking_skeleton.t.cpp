@@ -1,11 +1,13 @@
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
+#include <arbc/media/image_resampler.hpp>
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/offline.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <memory>
@@ -19,6 +21,31 @@ std::array<float, 4> pixel(const arbc::Surface& surface, int x, int y) {
       4 * (static_cast<std::size_t>(y) * static_cast<std::size_t>(surface.width()) +
            static_cast<std::size_t>(x));
   return {data[at], data[at + 1], data[at + 2], data[at + 3]};
+}
+
+// The green layer (premultiplied {0,0.5,0,0.5}) is rendered into an 8x8 temp at
+// its max device scale (8), then composited with temp_to_dst = scaling(1, 0.5) --
+// a 2:1 MINIFICATION in y through the composite tap. So device row y samples temp
+// rows 2y-1 .. 2y+2 at Catmull-Rom phase 0.5 (x stays integer-phase, exact). At an
+// interior row all four taps are green and the weights sum to 1, so the value is
+// the flat 0.5; at the green region's top (y=0) and bottom (y=3) edges one outer
+// tap lands on the zero border, dropping a negative-weight lobe, so the
+// premultiplied value rings UP to 0.5 * (w1 + w2 + w3) = 0.53125 (color.resample_
+// filter_quality's Catmull-Rom tap; the incumbent bilinear read a flat 0.5 here).
+// The result is clamped non-negative (no effect at these positive rows). The red
+// layer maps to device [2,6)^2 by an integer translation, so its tap is
+// integer-phase (weights (0,1,0,0)) and stays byte-exact.
+std::array<float, 4> green_src_row(int y) {
+  const std::array<float, 4> w = arbc::catmull_rom_weights(0.5F);
+  float s = 0.0F;
+  const int j0 = 2 * y; // floor(2y + 0.5)
+  for (int t = 0; t < 4; ++t) {
+    const int row = j0 - 1 + t;                              // Catmull-Rom taps 2y-1..2y+2
+    const float cover = (row >= 0 && row < 8) ? 1.0F : 0.0F; // temp is 8 rows of green
+    s += w[static_cast<std::size_t>(t)] * cover;
+  }
+  const float g = std::max(0.0F, 0.5F * s); // premul green & alpha both scale by 0.5
+  return {0.0F, g, 0.0F, g};
 }
 
 // The walking skeleton (doc 16): a document with solid layers flows
@@ -55,10 +82,12 @@ TEST_CASE("walking skeleton: solid layers compose to exact pixels") {
         expected = {1.0F, 0.0F, 0.0F, 1.0F};
       }
       if (in_green) {
-        // Source-over on premultiplied alpha: out = s + (1 - a_s) * d.
+        // Source-over on premultiplied alpha: out = s + (1 - a_s) * d, with the
+        // resampled green source (flat 0.5 interior, ringing to 0.53125 at the
+        // green region's top/bottom edges -- see green_src_row).
+        const std::array<float, 4> src = green_src_row(y);
         for (std::size_t k = 0; k < 4; ++k) {
-          const std::array<float, 4> src{0.0F, 0.5F, 0.0F, 0.5F};
-          expected[k] = src[k] + 0.5F * expected[k];
+          expected[k] = src[k] + (1.0F - src[3]) * expected[k];
         }
       }
       CAPTURE(x, y);

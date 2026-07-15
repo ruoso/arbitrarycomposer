@@ -201,14 +201,14 @@ void CpuBackend::downsample(Surface& dst, const Surface& src) {
     return;
   }
   // One dispatch per operation (doc 07), never per pixel: resolve the shared
-  // runtime tag to a compile-time format once, then run the monomorphized box
-  // mean in decoded premultiplied linear working floats.
+  // runtime tag to a compile-time format once, then run the monomorphized
+  // Lanczos-3 half-band decimation in decoded premultiplied linear working
+  // floats (the shared arbc::media bank -- byte-identical to a kind's mip).
   visit_surface(dst, [&](auto dst_typed) {
     constexpr PixelFormat F = decltype(dst_typed)::format;
     const std::span<const typename PixelTraits<F>::Storage> src_span = src.span<F>();
     assert(!dst_typed.data.empty() && !src_span.empty());
-    downsample_box_kernel<F>(dst_typed, dst.width(), dst.height(), src_span, src.width(),
-                             src.height());
+    downsample_kernel<F>(dst_typed, dst.width(), dst.height(), src_span, src.width(), src.height());
   });
 }
 

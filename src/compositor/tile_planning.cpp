@@ -789,7 +789,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       }
 
       // Doc 02 steps 5-6: composite the display source through the per-tile
-      // affine, the <=1-octave remainder folded into the bilinear tap.
+      // affine, the <=1-octave remainder folded into the Catmull-Rom tap.
       switch (tile.display_source) {
       case TileSource::Fresh:
         if (tile.hold.valid()) {

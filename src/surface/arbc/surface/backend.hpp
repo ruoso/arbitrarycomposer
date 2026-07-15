@@ -65,12 +65,14 @@ public:
   virtual void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst,
                                  double opacity, const Rect& device_clip) = 0;
 
-  // Box-filtered exact 2:1 downsample of `src` into `dst` (doc 09:18's
+  // Exact 2:1 minifying downsample of `src` into `dst` (doc 09:18's
   // "backend-internal ... resample operation consumed by the compositor"):
-  // `dst` dims are `src` dims / 2 (even source dims), same format, the mean
-  // taken in the decoded premultiplied linear working space (doc 07 rule 3).
-  // The scale ladder (compositor) uses this to build coarser rungs; rung
-  // selection is not the backend's concern.
+  // `dst` dims are `src` dims / 2 (even source dims), same format, the reduction
+  // taken in the decoded premultiplied linear working space (doc 07 rule 3). The
+  // reference CPU backend uses the shared arbc::media Lanczos-3 half-band
+  // decimator (doc 07 § Resampling filters); the filter is the backend's choice,
+  // not part of this seam. The scale ladder (compositor) uses this to build
+  // coarser rungs; rung selection is not the backend's concern.
   virtual void downsample(Surface& dst, const Surface& src) = 0;
 
   // Format/space conversion (doc 07 rule 4; doc 09 "the conversion operation").

@@ -12,6 +12,7 @@
 
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
+#include <arbc/media/image_resampler.hpp>
 #include <arbc/media/pixel_traits.hpp>
 #include <arbc/surface/typed_span.hpp>
 
@@ -73,18 +74,25 @@ inline WorkingPixel fetch_texel(std::span<const typename PixelTraits<F>::Storage
 
 // Source-over composite of `src` onto `dst`, same format (doc 07 rule 2 --
 // premultiplied source-over `out = s + (1 - a_s) d`, evaluated in linear
-// working floats). Bilinear resampling at the destination pixel center: the
-// resample folds into the blend as one pass (doc 04:95 -- the sub-octave
-// remainder is "applied as resampling during compositing"). `dst_to_src` maps
-// destination pixel space into source pixel space.
+// working floats). The ≤1-octave remainder resample folds into the blend as one
+// pass (doc 04:95-98 -- the sub-octave remainder is "applied as resampling
+// during compositing") through the shared `arbc::media` Catmull-Rom bicubic tap
+// (`sample_bicubic`), so a tile the compositor rescales matches, byte-for-byte,
+// the same content the kinds' mip pyramid reconstructs off the one filter bank
+// (doc 07 § Resampling filters). `dst_to_src` maps destination pixel space into
+// source pixel space.
 //
 // Texel-center convention (doc 07 rule 3): the sample position in texel-index
-// space is `p = dst_to_src(center) - (0.5, 0.5)`, so at integer alignment
-// `frac == 0` and the two-tap weights collapse to the single incumbent texel
-// -- an identity or pure-integer composite reproduces the pre-filter nearest
+// space is `p = dst_to_src(center) - (0.5, 0.5)`, split into an integer base
+// `(i0, j0) = floor(p)` and a fractional phase `(fx, fy)`. Catmull-Rom is
+// INTERPOLATING: at integer alignment `frac == 0` its weights are exactly
+// `(0, 1, 0, 0)` in float32, so the tap collapses to the single incumbent texel
+// and an identity or pure-integer composite reproduces the pre-filter nearest
 // tap byte-for-byte (the walking-skeleton golden is a regression guard, not a
-// casualty). The four taps are interpolated in decoded premultiplied linear
-// working floats, never the encoded bytes and never straight alpha.
+// casualty). The 4x4 taps are reconstructed in decoded premultiplied linear
+// working floats, never the encoded bytes and never straight alpha; the bank
+// clamps the negative-lobe undershoot to non-negative once before the blend so a
+// ringing tap can never feed a negative alpha into unpremultiplication.
 //
 // The destination walk is scoped to `clip` (doc 09 "The clip-scoped operations"):
 // no pixel outside it is read or written, and the sample position of a pixel
@@ -106,27 +114,24 @@ void source_over_kernel(TypedSpan<F> dst, int dst_width,
       const double sy = q.y - 0.5;
       const int i0 = static_cast<int>(std::floor(sx));
       const int j0 = static_cast<int>(std::floor(sy));
-      // Cull only when the whole 2x2 footprint is out of range -- a sample with
-      // no in-range tap contributes nothing (transparent), matching the old
-      // nearest cull and leaving `dst` untouched. A straddling footprint blends
-      // toward the transparent border instead (antialiased falloff).
-      if (i0 + 1 < 0 || i0 >= src_width || j0 + 1 < 0 || j0 >= src_height) {
+      // Cull only when the whole 4x4 Catmull-Rom footprint (`i0-1 .. i0+2`,
+      // `j0-1 .. j0+2`) is out of range -- a sample with no in-range tap
+      // contributes nothing (transparent), matching the old nearest cull and
+      // leaving `dst` untouched. A straddling footprint blends toward the
+      // transparent border instead (antialiased falloff). The window widened
+      // with the tap (bilinear's 2x2 -> the cubic's 4x4), but the cull rule is
+      // the same: skip a fully-transparent sample, paint every straddling one.
+      if (i0 + 2 < 0 || i0 - 1 >= src_width || j0 + 2 < 0 || j0 - 1 >= src_height) {
         continue;
       }
       const float fx = static_cast<float>(sx - i0);
       const float fy = static_cast<float>(sy - j0);
-      const float wx0 = 1.0F - fx;
-      const float wy0 = 1.0F - fy;
-      const WorkingPixel s00 = fetch_texel<F>(src, src_width, src_height, i0, j0);
-      const WorkingPixel s10 = fetch_texel<F>(src, src_width, src_height, i0 + 1, j0);
-      const WorkingPixel s01 = fetch_texel<F>(src, src_width, src_height, i0, j0 + 1);
-      const WorkingPixel s11 = fetch_texel<F>(src, src_width, src_height, i0 + 1, j0 + 1);
-      WorkingPixel s{};
-      for (std::size_t k = 0; k < Traits::channels; ++k) {
-        const float top = s00[k] * wx0 + s10[k] * fx;
-        const float bot = s01[k] * wx0 + s11[k] * fx;
-        s[k] = top * wy0 + bot * fy;
-      }
+      // Catmull-Rom reconstruction over the zero-border fetch (the compositor's
+      // edge convention, doc 07 -- transparent premultiplied zero, NOT the kind's
+      // clamp-to-edge). `sample_bicubic` clamps its own negative-lobe undershoot.
+      const WorkingPixel s = arbc::sample_bicubic(i0, j0, fx, fy, [&](int i, int j) {
+        return fetch_texel<F>(src, src_width, src_height, i, j);
+      });
       const std::size_t dst_at =
           stride * (static_cast<std::size_t>(y) * static_cast<std::size_t>(dst_width) +
                     static_cast<std::size_t>(x));
@@ -141,32 +146,28 @@ void source_over_kernel(TypedSpan<F> dst, int dst_width,
   }
 }
 
-// Box-filtered exact 2:1 downsample (doc 09:18 backend-internal resample op):
-// each destination pixel is the mean of its 2x2 source block, averaged in
-// decoded premultiplied linear working floats and encoded once (doc 07 rule 3
-// -- averaging encoded sRGB bytes would be gamma-space-wrong). Exact 2:1, so
-// `dst` dims are `src` dims / 2 with even source dims (rung tiles are
-// power-of-two device pixels, doc 02:59). Same-format; the caller (the later
-// scale-ladder task) generates coarser rungs with it. Fixed tap order for
-// determinism (doc 16).
+// Lanczos-3 exact 2:1 downsample (doc 09:18 backend-internal resample op): each
+// destination pixel is the shared `arbc::media` half-band decimation of its 6x6
+// source support, reduced in decoded premultiplied linear working floats and
+// encoded once (doc 07 rule 3 -- averaging encoded sRGB bytes would be
+// gamma-space-wrong). This is the same `decimate_half_band` the kinds' mip
+// pyramid runs, so a scale-ladder rung the compositor builds is byte-identical
+// to the mip a kind builds from the same source (doc 07 § Resampling filters).
+// Exact 2:1, so `dst` dims are `src` dims / 2 with even source dims (rung tiles
+// are power-of-two device pixels, doc 02:59). Same-format; the caller (the
+// scale-ladder) generates coarser rungs with it. The zero-border `fetch` keeps
+// the compositor's edge convention; the bank clamps the negative lobe once at
+// the end. Fixed tap order for determinism (doc 16).
 template <PixelFormat F>
-void downsample_box_kernel(TypedSpan<F> dst, int dst_width, int dst_height,
-                           std::span<const typename PixelTraits<F>::Storage> src, int src_width,
-                           int src_height) {
+void downsample_kernel(TypedSpan<F> dst, int dst_width, int dst_height,
+                       std::span<const typename PixelTraits<F>::Storage> src, int src_width,
+                       int src_height) {
   using Traits = PixelTraits<F>;
   const std::size_t stride = Traits::channels;
   for (int y = 0; y < dst_height; ++y) {
     for (int x = 0; x < dst_width; ++x) {
-      const int i = 2 * x;
-      const int j = 2 * y;
-      const WorkingPixel a = fetch_texel<F>(src, src_width, src_height, i, j);
-      const WorkingPixel b = fetch_texel<F>(src, src_width, src_height, i + 1, j);
-      const WorkingPixel c = fetch_texel<F>(src, src_width, src_height, i, j + 1);
-      const WorkingPixel e = fetch_texel<F>(src, src_width, src_height, i + 1, j + 1);
-      WorkingPixel m{};
-      for (std::size_t k = 0; k < Traits::channels; ++k) {
-        m[k] = (a[k] + b[k] + c[k] + e[k]) * 0.25F;
-      }
+      const WorkingPixel m = arbc::decimate_half_band(
+          x, y, [&](int i, int j) { return fetch_texel<F>(src, src_width, src_height, i, j); });
       const std::size_t dst_at =
           stride * (static_cast<std::size_t>(y) * static_cast<std::size_t>(dst_width) +
                     static_cast<std::size_t>(x));

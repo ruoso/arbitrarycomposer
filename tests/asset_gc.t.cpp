@@ -265,9 +265,10 @@ TEST_CASE("the sweep deletes exactly the unreferenced set and the swept document
   REQUIRE(referenced.find(k_orphan) == referenced.end());
   project.write_blob(k_orphan, "orphan-bytes");
 
-  const expected<GcReport, GcError> report = gc_project_directory(project.root(), /*dry_run=*/false);
+  const expected<GcReport, GcError> report =
+      gc_project_directory(project.root(), /*dry_run=*/false);
   REQUIRE(report.has_value());
-  CHECK(report->deleted == 1);         // exactly D \ R = {orphan}
+  CHECK(report->deleted == 1); // exactly D \ R = {orphan}
   CHECK(report->referenced == referenced.size());
   CHECK_FALSE(project.blob_exists(k_orphan));
   for (const std::string& h : referenced) {
@@ -436,7 +437,8 @@ TEST_CASE("dry_run reports the reclamation without mutating the store") {
   project.write_text("project.arbc", arbc);
   project.write_blob(k_orphan, "orphan-bytes"); // 12 bytes
 
-  const expected<GcReport, GcError> preview = gc_project_directory(project.root(), /*dry_run=*/true);
+  const expected<GcReport, GcError> preview =
+      gc_project_directory(project.root(), /*dry_run=*/true);
   REQUIRE(preview.has_value());
   CHECK(preview->deleted == 1);
   CHECK(preview->bytes_reclaimed == 12);

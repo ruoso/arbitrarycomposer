@@ -10,9 +10,8 @@
 // or broken `.arbc` on a "clean up" must never take the process down (the loader's discipline,
 // serialize.reader).
 
-#include <arbc/runtime/asset_gc.hpp>
-
 #include <arbc/base/ids.hpp>
+#include <arbc/runtime/asset_gc.hpp>
 #include <arbc/serialize/load_context.hpp> // resolve_uri (resolve the tiles base like a save/load)
 #include <arbc/serialize/tile_blob.hpp>    // is_tile_hash, tile_blob_uri
 
@@ -134,8 +133,7 @@ collect_referenced_tiles(std::string_view document_json) {
 // ---- The filesystem reaper --------------------------------------------------------------
 
 FilesystemAssetReaper::FilesystemAssetReaper(std::string tiles_base_uri)
-    : d_base_uri(std::move(tiles_base_uri)),
-      d_root(std::string(strip_file_scheme(d_base_uri))) {}
+    : d_base_uri(std::move(tiles_base_uri)), d_root(std::string(strip_file_scheme(d_base_uri))) {}
 
 expected<std::vector<std::string>, AssetReaperError>
 FilesystemAssetReaper::list_tile_hashes() const {
@@ -259,11 +257,13 @@ expected<GcReport, GcError> gc_project_directory(const std::filesystem::path& pr
   std::error_code ec;
   const bool present = std::filesystem::exists(project_dir, ec);
   if (ec || !present) {
-    return unexpected(from_mark(mark_error(ReaderError::Kind::MalformedJson, project_dir.string())));
+    return unexpected(
+        from_mark(mark_error(ReaderError::Kind::MalformedJson, project_dir.string())));
   }
   std::filesystem::directory_iterator it(project_dir, ec);
   if (ec) {
-    return unexpected(from_mark(mark_error(ReaderError::Kind::MalformedJson, project_dir.string())));
+    return unexpected(
+        from_mark(mark_error(ReaderError::Kind::MalformedJson, project_dir.string())));
   }
   const std::filesystem::directory_iterator end;
   for (; it != end; it.increment(ec)) {
@@ -280,7 +280,8 @@ expected<GcReport, GcError> gc_project_directory(const std::filesystem::path& pr
     }
     const std::optional<std::string> text = read_file(it->path());
     if (!text) {
-      return unexpected(from_mark(mark_error(ReaderError::Kind::MalformedJson, it->path().string())));
+      return unexpected(
+          from_mark(mark_error(ReaderError::Kind::MalformedJson, it->path().string())));
     }
     const expected<std::unordered_set<std::string>, ReaderError> refs =
         collect_referenced_tiles(*text);

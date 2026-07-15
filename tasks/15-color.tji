@@ -43,7 +43,8 @@ task color "Color and pixel formats" {
   task resample_filter_quality "backend_cpu resampling filter quality" {
     effort 2d
     allocate team
+    complete 100
     depends !resampling, kinds.raster_resampling_quality
-    note "Swap backend_cpu's bilinear composite tap (kernels.hpp:65-111) and downsample_box_kernel (:121-145) onto the arbc::media filter bank landed by kinds.raster_resampling_quality, so the compositor's ≤1-octave remainder resample (doc 02:68, 04:95-99) matches the kinds' pyramid quality; per-format byte-exact goldens in src/backend_cpu/t/kernel_goldens.t.cpp; re-assert claim 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space (registry.tsv:39). Docs 02/04/07. Source-of-debt: tasks/refinements/kinds/raster_resampling_quality.md"
+    note "Swap backend_cpu's bilinear composite tap (kernels.hpp:65-111) and downsample_box_kernel (:121-145) onto the arbc::media filter bank landed by kinds.raster_resampling_quality, so the compositor's ≤1-octave remainder resample (doc 02:68, 04:95-99) matches the kinds' pyramid quality; per-format byte-exact goldens in src/backend_cpu/t/kernel_goldens.t.cpp; re-assert claim 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space (registry.tsv:39). Docs 02/04/07. Source-of-debt: tasks/refinements/kinds/raster_resampling_quality.md Refinement: tasks/refinements/color/resample_filter_quality.md"
   }
 }

@@ -46,6 +46,20 @@ HDR headroom above alpha intact. The filters live in `arbc::media` (doc 17)
 and are shared by the kinds' mip pyramids and the backend's compositing
 kernels.
 
+In the CPU backend this division of labour is explicit. Scale-ladder rung
+generation (`CpuBackend::downsample`) is the Lanczos-3 minification path — an
+exact 2:1 half-band step, one octave at a time. The composite tap
+(`source_over_kernel`) is the Catmull-Rom reconstruction of the ≤1-octave
+remainder (doc 04) from the *single* rung the compositor selected. That rung
+is already band-limited by the Lanczos decimation that built it, so the tap
+needs no second low-pass: it is single-rung reconstruction, deliberately not
+cross-level (trilinear) blending, which would defeat the one-rung-serves-an-
+octave cache reuse (doc 04). Because Catmull-Rom is interpolating — its
+integer-phase weights are exactly `(0, 1, 0, 0)` in float32 — an
+integer-aligned composite reproduces the source sample bit-for-bit, so the
+mild sub-octave aliasing the single-rung remainder can carry is the accepted
+cost of that cache reuse, not a filter defect.
+
 Out of scope for v1 but kept structurally possible: full OCIO-style
 management, HDR output transforms/tone mapping, CMYK. These all slot in as
 "more color spaces + better edge conversions" without touching the model.

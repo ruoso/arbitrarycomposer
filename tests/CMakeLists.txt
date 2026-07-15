@@ -719,6 +719,17 @@ target_link_libraries(arbc_scale_ladder_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_scale_ladder_golden_t)
 
+# color.resample_filter_quality shared-bank parity: a CpuBackend::downsample rung
+# (backend_cpu, L3) is byte-identical to a kind_raster mip (L4) at every interior
+# pixel, both through the one arbc::media (L1) Lanczos-3 half-band bank. Reaches
+# BOTH backend_cpu and kind_raster, so it is a cross-component integration test and
+# lives here (a component test could not include across that L3/L4 span), linking
+# the umbrella `arbc`.
+add_executable(arbc_resampling_bank_parity_t resampling_bank_parity.t.cpp)
+target_link_libraries(arbc_resampling_bank_parity_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_resampling_bank_parity_t)
+
 add_executable(arbc_tile_planning_golden_t tile_planning_golden.t.cpp)
 target_link_libraries(arbc_tile_planning_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)

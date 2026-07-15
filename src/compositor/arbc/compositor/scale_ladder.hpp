@@ -16,13 +16,14 @@
 // tiles are *downsampled* (rung >= needed scale) since minification beats
 // magnification. This header turns that convention into concrete, testable
 // arithmetic plus the one pixel-producing operation the ladder owns -- building
-// a coarser rung by exact 2:1 box reduction.
+// a coarser rung by exact 2:1 Lanczos-3 half-band reduction (the shared
+// arbc::media bank, doc 07 § Resampling filters).
 //
 // The rung index *is* the cache-key discriminator: this code produces the
 // `cache::ScaleRung` (`key_shapes.hpp:38-43`, "the compositor owns the ladder
 // and hands the rung down") that `compositor.tile_planning` keys tiles by. It
 // invents no parallel compositor-local rung type. The compositor is L4 and may
-// depend on `cache`; the box reducer is reached only through the abstract L2
+// depend on `cache`; the reducer is reached only through the abstract L2
 // `surface::Backend` seam, never a direct `backend-cpu` edge (doc 17:56,:75-77).
 //
 // The offline `render_frame` stays exact-scale by design (doc 02:74-85, "no
@@ -34,7 +35,7 @@ namespace arbc {
 
 // The result of quantizing a requested scale to the ladder: the rung to render
 // at, and the sub-octave residual `remainder = scale / rung_scale(rung) in
-// (0.5, 1.0]` the composite pass resamples (bilinear tap, `backend.hpp:39-40`),
+// (0.5, 1.0]` the composite pass resamples (Catmull-Rom tap, `backend.hpp:39-40`),
 // exactly `1.0` at power-of-two scales.
 struct RungSelection {
   ScaleRung rung;
@@ -84,16 +85,17 @@ inline RungSelection select_rung(double scale) {
 inline double rung_scale(ScaleRung rung) { return std::ldexp(1.0, rung.index); }
 
 // Build the next-coarser rung (`index - 1`) from a finer-rung surface by exact
-// 2:1 box reduction, returning the coarser rung. A thin wrapper over
-// `Backend::downsample` (`backend.hpp:42-48`): the box mean is taken in decoded
-// premultiplied linear working space by the delegated kernel (doc 07 rule 3) --
-// `reduce_rung` is pixel-loop-free and re-implements no working-space math.
+// 2:1 Lanczos-3 half-band reduction, returning the coarser rung. A thin wrapper
+// over `Backend::downsample` (`backend.hpp:42-48`): the half-band decimation is
+// taken in decoded premultiplied linear working space by the delegated kernel
+// (doc 07 rule 3) -- `reduce_rung` is pixel-loop-free and re-implements no
+// working-space math.
 //
 // Geometry contract (documented + debug-checked here, matching the backend's
 // own asserts): `dst` dims must equal `src` dims / 2 with *even* source dims and
 // identical format. That even-dims guarantee is a property of power-of-two tile
 // geometry owned by `tile_planning`; this wrapper states the dependency rather
-// than allocating or resizing. The box reducer was built *for* the scale ladder
+// than allocating or resizing. The reducer was built *for* the scale ladder
 // (`backend.hpp:46-47`); its production call site (populating coarser cache
 // rungs on a miss / for the degradation fallback, doc 02:64-65) is
 // `tile_planning`'s.

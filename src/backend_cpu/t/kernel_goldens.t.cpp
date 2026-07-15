@@ -77,6 +77,14 @@ void require_bytes(const std::vector<std::byte>& got, std::span<const unsigned c
   REQUIRE(std::memcmp(got.data(), want.data(), want.size()) == 0);
 }
 
+// The discriminator counterpart: same length, different bytes -- used to prove a
+// swapped filter's output actually MOVED off the filter it replaced, not merely
+// that its frozen golden was re-pasted (Acceptance criteria 2).
+void require_bytes_differ(const std::vector<std::byte>& a, const std::vector<std::byte>& b) {
+  REQUIRE(a.size() == b.size());
+  REQUIRE(std::memcmp(a.data(), b.data(), a.size()) != 0);
+}
+
 // Encode a fixed working-space sample into pixel `idx` -- deterministic input
 // setup through the format's own encode codec (idx is row-major, y*width + x).
 template <PixelFormat F> void wr(arbc::Surface& s, int idx, const arbc::WorkingPixel& w) {
@@ -161,6 +169,77 @@ template <PixelFormat F> std::vector<std::byte> downsample_bytes(arbc::SurfaceFo
   }
   arbc::CpuSurface dst(1, 1, fmt);
   backend.downsample(dst, src);
+  return bytes_of(dst);
+}
+
+// --- pre-swap discriminator baselines (the filters this task REPLACED) --------
+//
+// These reproduce the incumbent bilinear composite tap and box 2:1 mean over the
+// exact same fixed inputs the shipped goldens use, so a test can assert the
+// shipped Catmull-Rom / Lanczos-3 output diverges from them (Acceptance criteria
+// 2). They are deliberately NOT the shipped kernels -- they are the retired math,
+// kept alive only as the thing the swap must move away from.
+
+// The box 2:1 mean of kDown into a 1x1 rung -- the filter downsample_kernel used
+// before the Lanczos-3 half-band swap.
+template <PixelFormat F> std::vector<std::byte> box_downsample_bytes(arbc::SurfaceFormat fmt) {
+  arbc::CpuSurface dst(1, 1, fmt);
+  arbc::WorkingPixel m{};
+  for (std::size_t k = 0; k < 4; ++k) {
+    m[k] = (kDown[0][k] + kDown[1][k] + kDown[2][k] + kDown[3][k]) * 0.25F;
+  }
+  arbc::PixelTraits<F>::encode(m, dst.span<F>().data());
+  return bytes_of(dst);
+}
+
+// The 4-tap bilinear composite tap over kRamp at translation(0.5,0) onto a fresh
+// transparent destination -- the filter source_over_kernel used before the
+// Catmull-Rom swap, replicated exactly (same texel-center convention, same
+// zero-border 2x2 cull, same premultiplied-linear source-over onto d = 0).
+template <PixelFormat F> std::vector<std::byte> bilinear_fractional_bytes(arbc::SurfaceFormat fmt) {
+  arbc::CpuSurface src(2, 2, fmt);
+  for (int i = 0; i < 4; ++i) {
+    wr<F>(src, i, kRamp[static_cast<std::size_t>(i)]);
+  }
+  arbc::CpuSurface dst(2, 2, fmt);
+  const std::span<const typename arbc::PixelTraits<F>::Storage> src_span =
+      std::as_const(src).span<F>();
+  const std::span<typename arbc::PixelTraits<F>::Storage> dst_px = dst.span<F>();
+  const arbc::Affine dst_to_src = arbc::Affine::translation(0.5, 0.0).inverse().value();
+  for (int y = 0; y < 2; ++y) {
+    for (int x = 0; x < 2; ++x) {
+      const arbc::Vec2 q = dst_to_src.apply({x + 0.5, y + 0.5});
+      const double sx = q.x - 0.5;
+      const double sy = q.y - 0.5;
+      const int i0 = static_cast<int>(std::floor(sx));
+      const int j0 = static_cast<int>(std::floor(sy));
+      if (i0 + 1 < 0 || i0 >= 2 || j0 + 1 < 0 || j0 >= 2) {
+        continue;
+      }
+      const float fx = static_cast<float>(sx - i0);
+      const float fy = static_cast<float>(sy - j0);
+      const float wx0 = 1.0F - fx;
+      const float wy0 = 1.0F - fy;
+      const arbc::WorkingPixel s00 = arbc::fetch_texel<F>(src_span, 2, 2, i0, j0);
+      const arbc::WorkingPixel s10 = arbc::fetch_texel<F>(src_span, 2, 2, i0 + 1, j0);
+      const arbc::WorkingPixel s01 = arbc::fetch_texel<F>(src_span, 2, 2, i0, j0 + 1);
+      const arbc::WorkingPixel s11 = arbc::fetch_texel<F>(src_span, 2, 2, i0 + 1, j0 + 1);
+      arbc::WorkingPixel s{};
+      for (std::size_t k = 0; k < 4; ++k) {
+        const float top = s00[k] * wx0 + s10[k] * fx;
+        const float bot = s01[k] * wx0 + s11[k] * fx;
+        s[k] = top * wy0 + bot * fy;
+      }
+      const std::size_t at = static_cast<std::size_t>(y * 2 + x) * 4;
+      const arbc::WorkingPixel d = arbc::PixelTraits<F>::decode(&dst_px[at]);
+      const float alpha = s[3];
+      arbc::WorkingPixel out{};
+      for (std::size_t k = 0; k < 4; ++k) {
+        out[k] = s[k] + (1.0F - alpha) * d[k];
+      }
+      arbc::PixelTraits<F>::encode(out, &dst_px[at]);
+    }
+  }
   return bytes_of(dst);
 }
 
@@ -254,26 +333,26 @@ constexpr std::array<unsigned char, 16> kSoIntExp8{{0xAA, 0xA0, 0x6C, 0xFF, 0x89
                                                     0x59, 0x89, 0xC4, 0xFF, 0xB3, 0x95, 0x7C,
                                                     0xFF}};
 
-// source_over_kernel fractional (translation 0.5,0), 2x2, per format.
+// source_over_kernel fractional Catmull-Rom (translation 0.5,0), 2x2, per format.
 constexpr std::array<unsigned char, 64> kSoFracExp32{
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-     0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-     0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x3F,
-     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F}};
+     0x00, 0x00, 0x3F, 0x00, 0x00, 0x10, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+     0x00, 0x00, 0x00, 0x00, 0x90, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x10, 0x3F,
+     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0x3F}};
 constexpr std::array<unsigned char, 32> kSoFracExp16{
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x38, 0x00,
-     0x00, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-     0x00, 0x38, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C}};
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x80, 0x38, 0x00,
+     0x00, 0x00, 0x00, 0x80, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+     0x00, 0x38, 0x80, 0x38, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3C}};
 constexpr std::array<unsigned char, 16> kSoFracExp8{{0x00, 0x00, 0x00, 0x80, 0xBC, 0x00, 0x00, 0xFF,
                                                      0x00, 0x00, 0x00, 0x80, 0xBC, 0x00, 0x00,
                                                      0xFF}};
 
-// downsample_box_kernel 2x2 -> 1x1, per format.
-constexpr std::array<unsigned char, 16> kDownExp32{{0x66, 0x66, 0xE6, 0x3E, 0x67, 0x66, 0xA6, 0x3E,
-                                                    0x9A, 0x99, 0xD9, 0x3E, 0x00, 0x00, 0x80,
+// downsample_kernel (Lanczos-3 half-band) 2x2 -> 1x1, per format.
+constexpr std::array<unsigned char, 16> kDownExp32{{0x4D, 0x42, 0x2C, 0x3F, 0x8C, 0xD1, 0xF8, 0x3E,
+                                                    0x66, 0xB0, 0x22, 0x3F, 0x1D, 0x66, 0xBF,
                                                     0x3F}};
-constexpr std::array<unsigned char, 8> kDownExp16{{0x33, 0x37, 0x33, 0x35, 0xCD, 0x36, 0x00, 0x3C}};
+constexpr std::array<unsigned char, 8> kDownExp16{{0x62, 0x39, 0xC6, 0x37, 0x16, 0x39, 0xFB, 0x3D}};
 constexpr std::array<unsigned char, 4> kDownExp8{{0xB3, 0x9A, 0xAF, 0xFF}};
 
 // convert_kernel, 2 px, the six directed format pairs (output in DstF).
@@ -344,7 +423,7 @@ TEST_CASE("source_over_kernel integer-aligned blend is byte-exact per format") {
 }
 
 // enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
-TEST_CASE("source_over_kernel fractional bilinear tap is byte-exact per format") {
+TEST_CASE("source_over_kernel fractional Catmull-Rom tap is byte-exact per format") {
   require_bytes(
       src_over_fractional_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f),
       kSoFracExp32);
@@ -356,12 +435,68 @@ TEST_CASE("source_over_kernel fractional bilinear tap is byte-exact per format")
 }
 
 // enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
-TEST_CASE("downsample_box_kernel 2:1 mean is byte-exact per format") {
+TEST_CASE("downsample_kernel 2:1 Lanczos-3 half-band is byte-exact per format") {
   require_bytes(downsample_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f),
                 kDownExp32);
   require_bytes(downsample_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f),
                 kDownExp16);
   require_bytes(downsample_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb), kDownExp8);
+}
+
+// The goldens above moved because the FILTER changed, not because the frozen table
+// was re-pasted: the shipped Catmull-Rom tap and Lanczos-3 half-band downsample
+// produce different bytes than the bilinear tap and box mean they replaced, over
+// the identical fixed inputs. Asserted on rgba32f, the float format that holds the
+// divergence the 8-bit encode quantizes away.
+// enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
+TEST_CASE("the moved kernels diverge from the box/bilinear filters they replaced") {
+  require_bytes_differ(
+      downsample_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f),
+      box_downsample_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f));
+  require_bytes_differ(
+      src_over_fractional_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f),
+      bilinear_fractional_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f));
+}
+
+// The interpolating cubic's negative lobes ring below zero at a hard edge; the
+// shared bank clamps once before the blend, so no channel -- alpha especially --
+// can reach source-over negative and break unpremultiplication (doc 07:41-45).
+// enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
+TEST_CASE("the Catmull-Rom composite tap clamps negative-lobe ringing to non-negative") {
+  // The hazard is real: an isolated bright sample landing on the cubic's outer
+  // (negative-weight) tap drives the UNCLAMPED reduction below zero -- a negative
+  // alpha, exactly the value unpremultiply cannot take.
+  const std::array<float, 4> w = arbc::catmull_rom_weights(0.5F);
+  const std::array<arbc::WorkingPixel, 4> isolated{
+      {{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {1.0F, 0, 0, 1.0F}}};
+  const arbc::WorkingPixel raw = arbc::magnify_line(isolated, w);
+  REQUIRE(raw[3] < 0.0F);
+
+  // The shipped tap clamps that same configuration to non-negative.
+  const arbc::WorkingPixel tapped = arbc::sample_bicubic(0, 0, 0.5F, 0.0F, [](int i, int j) {
+    return (i == 2 && j == 0) ? arbc::WorkingPixel{1.0F, 0.0F, 0.0F, 1.0F}
+                              : arbc::WorkingPixel{0.0F, 0.0F, 0.0F, 0.0F};
+  });
+  for (std::size_t k = 0; k < 4; ++k) {
+    CAPTURE(k);
+    REQUIRE(tapped[k] >= 0.0F);
+  }
+
+  // End-to-end through the shipped composite: a hard alpha edge resampled at a
+  // fractional phase leaves every decoded output channel non-negative.
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(4, 1, arbc::k_working_rgba32f);
+  wr<PixelFormat::Rgba32fLinearPremul>(src, 0, {0.0F, 0.0F, 0.0F, 0.0F});
+  wr<PixelFormat::Rgba32fLinearPremul>(src, 1, {1.0F, 0.0F, 0.0F, 1.0F});
+  wr<PixelFormat::Rgba32fLinearPremul>(src, 2, {0.0F, 0.0F, 0.0F, 0.0F});
+  wr<PixelFormat::Rgba32fLinearPremul>(src, 3, {0.0F, 0.0F, 0.0F, 0.0F});
+  arbc::CpuSurface dst(4, 1, arbc::k_working_rgba32f);
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0);
+  const std::span<const float> out_px = std::as_const(dst).span<PixelFormat::Rgba32fLinearPremul>();
+  for (std::size_t p = 0; p < out_px.size(); ++p) {
+    CAPTURE(p);
+    REQUIRE(out_px[p] >= 0.0F);
+  }
 }
 
 // enforces: 07-color-and-pixel-formats#conversions-route-through-working-space

@@ -493,6 +493,19 @@ Initially-open questions, now decided in their own docs:
   Decided in `serialize.raster_tile_store`; recorded in doc 08 (Principle 8,
   § Dependency note) and doc 17 (§ component table).
 
+- **The compositor's remainder resample is single-rung Catmull-Rom over a
+  Lanczos-decimated ladder.** The ≤1-octave remainder (doc 04) is reconstructed
+  by the composite tap with the Catmull-Rom bicubic; the octave steps are the
+  scale ladder's Lanczos-3 exact-2:1 rung downsamples. Both filters are the one
+  shared `arbc::media` bank (doc 07), so a rung the compositor builds is
+  byte-identical to the mip a kind builds from the same source — the point of
+  swapping the skeleton's bilinear-and-box pair off the bank's Lanczos and
+  Catmull-Rom kernels. The tap is deliberately single-rung, not trilinear
+  cross-level blending, because one rung serves a whole octave of zoom from
+  cache (doc 04); the residual sub-octave aliasing is the accepted cost of that
+  reuse. Decided in `color.resample_filter_quality`; recorded in doc 07
+  (§ Resampling filters).
+
 ## Open questions
 
 - HDR output transforms / tone mapping and OCIO-grade color: structurally
