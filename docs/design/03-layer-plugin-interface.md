@@ -252,7 +252,8 @@ pinned version it cannot corrupt.
 
 The core keeps a `Registry` mapping kind identifiers (reverse-DNS strings,
 e.g. `org.arbc.raster`) to factories plus metadata (human name, version,
-capability flags). The registry is what a future serialization format
+capability flags), and optionally a kind's serialize codec and operator
+binder (below). The registry is what a future serialization format
 references, so kind identifiers are part of the persistent contract from day
 one even though serialization itself is deferred.
 
@@ -268,6 +269,25 @@ id losslessly (doc 08). A `Registry` is populated during single-threaded
 startup or plugin load and is read-only for the remainder of a session;
 concurrent host-side discovery and loading is `runtime`'s concern (doc 17),
 not the registry seam's.
+
+Beyond the factory, a registration may carry two optional, JSON-free hooks,
+supplied in the same `add` call as the factory (an entry is atomic — a
+plugin cannot decorate another plugin's kind): a **kind codec** — the kind's
+persistent `kind_version` plus a serialize hook returning the kind's
+`params` as JSON-object *text* and a
+`deserialize(params_text, span<const ContentRef> inputs, ObjectId
+composition)` hook that validates its own input arity — and an **operator
+binder** — `try_attach(Content&, {PullService&, Backend&})` / noexcept
+`detach` thunks through which a third-party operator kind receives its
+render services at attach. The codec traffics in text precisely so the JSON
+library never enters a plugin's link surface (doc 17 § The codec line):
+`arbc::serialize` wraps the text hooks into its JSON-typed codec table,
+owns the canonical form, and hands `deserialize` the canonical text of the
+`params` node. Kinds needing bind services beyond `{PullService, Backend}`
+(composition resolution) remain host-bound, the built-in `org.arbc.nested`
+path. Factory-only registrations stay valid: an entry with no codec
+round-trips as a placeholder (doc 08 Principle 2), and an entry with no
+binder is attach-free.
 
 ## Reference implementations (shipped with core)
 

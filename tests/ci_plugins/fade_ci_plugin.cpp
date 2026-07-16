@@ -1,13 +1,16 @@
 // CI-only dual-build module for org.arbc.fade (`kinds.dual_build`, doc 17:129-132).
 //
-// The operator case, and the one that makes the v1 seam's gap concrete: an input
-// edge is a raw `ContentRef` (contract/content.hpp:212) and a `ContentConfig` is a
-// string, so `FadeContent`'s input CANNOT cross the entry point. The module
-// therefore owns the input it hands its operator (Decision 3), in a module-local
-// holder destroyed at image unload -- strictly after the operator that borrows it,
-// because `PluginHost` dlcloses last (runtime/plugin_host.hpp:154-155). Widening
-// the seam so an out-of-lib operator can declare its inputs (and its codec, and its
-// binder) is the registered follow-up `runtime.plugin_operator_registration`.
+// The operator case: an input edge is a raw `ContentRef` (contract/content.hpp) and
+// a `ContentConfig` is a string, so a BARE factory-built operator's input cannot
+// cross the entry point -- the module owns the input it hands its operator
+// (Decision 3), in a module-local holder destroyed at image unload, strictly after
+// the operator that borrows it, because `PluginHost` dlcloses last
+// (runtime/plugin_host.hpp:154-156). That remains the bare-factory story by design
+// (doc 17:165-167): DOCUMENT input edges are core-owned and arrive through a
+// registered kind codec's `deserialize` span instead
+// (`runtime.plugin_operator_registration`; passthrough_ci_plugin.cpp is the worked
+// example). This module stays deliberately factory-only: codec and binder are
+// optional, and the factory-only shape must keep loading unmodified.
 
 #include <arbc/contract/plugin.hpp>
 #include <arbc/contract/registry.hpp>

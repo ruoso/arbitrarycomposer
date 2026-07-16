@@ -79,6 +79,26 @@ private:
   std::unordered_map<std::string, Codec> d_codecs;
 };
 
+// The registry text-codec adapter (`runtime.plugin_operator_registration`
+// Decision 2): turn a plugin's JSON-free `KindCodec` (contract/registry.hpp --
+// `params` as JSON-object TEXT) into the JSON-typed `Codec` above, so a
+// third-party kind persists through the one codec table without the JSON
+// library ever entering its link surface (doc 17 §The codec line). On save the
+// CORE parses the plugin's text into the `params` node (the core owns canonical
+// form, so goldens are byte-stable regardless of plugin formatting); an
+// unparseable or non-object result is `SerializeError::Kind::CodecFailed`, a
+// value, never a throw. On load the plugin's `deserialize` receives the
+// canonical dump of the `params` node with `inputs`/`composition` passed
+// through verbatim; its error string becomes a `ReaderError` value
+// (`MalformedField` at `/params` -- wrong input arity included, the
+// operator_codecs idiom, model unmutated). The adapted codec ignores
+// `SaveContext`/`LoadContext` entirely: v1 registry codecs carry no asset
+// seam (`runtime.plugin_codec_asset_context` is the registered follow-up), and
+// that is also what makes the reader's params-only residual re-serialize
+// (unknown-field preservation, doc 08 Principle 4) work over plugin kinds
+// unchanged.
+ARBC_API Codec adapt_kind_codec(const KindCodec& codec);
+
 // Read routing (serialize.kind_params, +inputs serialize.sharing): turn ONE node's
 // content body `{kind, kind_version, params, inputs?, ...}` into a live `Content`,
 // given its already-reconstructed input edges. The document-level read recursion

@@ -274,11 +274,16 @@ plugin. `org.arbc.image` is the worked example: `runtime` owns the codec that re
 `AssetSource` hook (doc 08 Principle 3); `arbc-plugin-image` owns the decoder that
 turns those bytes into pixels, and touches no file itself.
 
-This is not a hole in the rule but a consequence of it, and it is forced besides: the
-plugin ABI is `arbc_plugin_register(Registry&)`, and a `Registry` traffics in content
-factories, not codecs. Putting codec registration across that boundary would put the
-JSON library in every plugin's link surface — the exact dependency the `contract` layer
-was cleaned of. Registration is **gated on the plugin being loaded**: no factory for the
+This is not a hole in the rule but a consequence of it. What the boundary forbids is
+narrower than it first looks: putting a **JSON-typed** codec across
+`arbc_plugin_register(Registry&)` would put the JSON library in every plugin's link
+surface — the exact dependency the `contract` layer was cleaned of. So a `Registry`
+entry carries an optional **text-typed** codec instead (`params` as JSON-object text,
+doc 03 § Registry), which `serialize` wraps into its JSON-typed table: a third-party
+kind persists without `runtime` naming its concrete type and without JSON on its link
+line. The reference image codec stays in `runtime` regardless — a codec that resolves
+URIs and fetches bytes needs the `LoadContext`/`AssetSource` seam the text hook does
+not carry (v1). Registration is **gated on the plugin being loaded**: no factory for the
 kind, no codec registered, and the layer round-trips verbatim as a placeholder. A user
 without the image plugin opens the document, sees a placeholder, saves, and **loses
 nothing** — the same promise doc 08 Principle 4 makes for an unknown kind. The vendored

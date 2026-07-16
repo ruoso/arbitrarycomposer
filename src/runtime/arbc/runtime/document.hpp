@@ -29,6 +29,8 @@
 
 namespace arbc {
 
+class Registry; // contract/registry.hpp -- borrowed by pointer only (see `registry()`)
+
 // A `Document`'s housekeeping knobs (`runtime.housekeeping_document_wiring`
 // Decision 5). Deliberately NOT a bare `HousekeepingConfig`: that struct carries
 // `checkpoint_tick_interval`, the trigger that makes the BACKGROUND thread commit
@@ -292,6 +294,24 @@ public:
   PixelFormat storage_format() const noexcept { return d_storage_format; }
   void set_storage_format(PixelFormat format) noexcept { d_storage_format = format; }
 
+  // The kind `Registry` whose plugin-carried operator binders `bind_operators`
+  // consults AFTER the global built-ins (`runtime.plugin_operator_registration`
+  // Decision 4) -- the doc-17:71 "arenas + model + registry + loaders" edge, landed.
+  // Set by a successful `runtime::load_document` from the registry it already
+  // receives -- but only when that registry carries at least one binder, so the
+  // ubiquitous factory-only "temporary `Registry` scoped to the load" idiom
+  // stores nothing and stays lifetime-free; a host that assembles a document
+  // programmatically over plugin-built contents sets it explicitly. BORROWED,
+  // never owned: the registry
+  // (typically `PluginHost::registry()`) must outlive this document and any
+  // `OperatorBindingScope` bound from it -- the same rule that already governs
+  // plugin-constructed contents, and naturally satisfied because `PluginHost`
+  // destroys its registry (and everything stored in it, these binders included)
+  // strictly before any `dlclose` (plugin_host.hpp:154-156). Null (the default)
+  // means "no plugin binders": `bind_operators` consults the built-ins only.
+  const Registry* registry() const noexcept { return d_registry; }
+  void set_registry(const Registry* registry) noexcept { d_registry = registry; }
+
   // How many external references have been fetched but not yet installed -- a nested
   // content holding a VALID child id that names no `CompositionRecord` yet, which renders
   // as the doc-05 placeholder (runtime.async_external_load). Drops to zero as
@@ -401,6 +421,9 @@ private:
   // The document's storage format (doc 08 Principle 8). A plain scalar, writer-thread
   // like the stash above, owning nothing -- it perturbs the teardown contract not at all.
   PixelFormat d_storage_format{PixelFormat::Rgba16fLinearPremul};
+  // The borrowed kind registry (see `registry()`). A non-owning pointer the document
+  // never dereferences at teardown, so its position here is immaterial.
+  const Registry* d_registry{nullptr};
   // The load state that outlives one load (runtime.async_external_load Decision 2): the
   // resolved-identity dedup map, the not-yet-arrived entries, and the completion queue a
   // deferring `AssetSource` delivers into. Held by `shared_ptr` and never by value, because

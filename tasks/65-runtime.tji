@@ -221,8 +221,15 @@ task runtime "Runtime" {
   task plugin_operator_registration "Extend plugin entry-point seam for operator kinds" {
     effort 3d
     allocate team
+    complete 100
     depends kinds.dual_build, !plugin_loading, serialize.kind_params
-    note "Extend the plugin entry-point seam so an out-of-lib kind can register more than a ContentConfig factory: its serialize codec (params + input arity, deserialize(params, span<const ContentRef>, LoadContext&) shape) and its operator binder (attach/detach), so a third-party operator kind is loadable into a Document and not merely constructible. Source-of-debt: tasks/refinements/kinds/dual_build.md (Decision 3) — fade/crossfade modules make the gap concrete. Docs 03/17."
+    note "Extend the plugin entry-point seam so an out-of-lib kind can register more than a ContentConfig factory: its serialize codec (params + input arity, deserialize(params, span<const ContentRef>, LoadContext&) shape) and its operator binder (attach/detach), so a third-party operator kind is loadable into a Document and not merely constructible. Source-of-debt: tasks/refinements/kinds/dual_build.md (Decision 3) — fade/crossfade modules make the gap concrete. Docs 03/17. Refinement: tasks/refinements/runtime/plugin_operator_registration.md"
+  }
+  task plugin_codec_asset_context "Extend KindCodec seam with asset I/O context and migrate image codecs" {
+    effort 2d
+    allocate team
+    depends !plugin_operator_registration, kinds.image
+    note "Extend the registry KindCodec seam so a plugin codec can reach asset I/O (LoadContext resolve/load_asset, SaveContext asset sink) through a JSON-free contract-level context, then migrate the image-family codecs out of runtime (image_codec, builtin_codecs.hpp:154-155; registry gate document_serialize.cpp:197-208; codec_image.cpp:15) into arbc-plugin-image/arbc-plugin-imageseq, deleting the runtime hardcoding. Source-of-debt: tasks/refinements/runtime/plugin_operator_registration.md (Acceptance criteria, Decision 2). Docs 03/08/17."
   }
   task registry_bootstrap "L6 umbrella built-in-kind Registry bootstrap" {
     effort 2d

@@ -204,6 +204,18 @@ CodecTable builtin_codecs(const Registry& registry) {
   if (registry.factory(k_image_kind_id) != nullptr) {
     table.add(k_image_kind_id, image_codec(registry));
   }
+  // The registry-carried plugin codecs (`runtime.plugin_operator_registration`
+  // Decision 5): every `KindCodec` a plugin registered beside its factory, wrapped
+  // by the serialize-owned text adapter and appended AFTER the built-ins, so
+  // `CodecTable::add`'s last-wins semantic (codec.hpp:67-68) lets a plugin
+  // supersede a built-in -- exactly the reservation the table's header makes. The
+  // tiles/dispatch overloads above delegate here, so every widened overload
+  // carries the registry codecs too.
+  for (const std::string_view id : registry.ids()) {
+    if (const KindCodec* codec = registry.codec(id)) {
+      table.add(std::string(id), adapt_kind_codec(*codec));
+    }
+  }
   return table;
 }
 
@@ -509,6 +521,22 @@ public:
         RasterContent::kind_id,
         Codec{raster.serialize, recording_deserialize(raster.deserialize, RasterContent::kind_id,
                                                       k_raster_kind_version, d_session, bridge)});
+    // The registry-carried plugin codecs (`runtime.plugin_operator_registration`
+    // Decision 5), appended AFTER the built-ins exactly as on the save side
+    // (`builtin_codecs(const Registry&)`): each `KindCodec` is wrapped by the
+    // serialize-owned text adapter, then in `recording_deserialize` -- so a plugin
+    // kind interns into the `KindBridge` and stamps the load session identically
+    // to a built-in, and its `ContentRecord` carries a real kind token instead of
+    // `k_unknown_kind`.
+    for (const std::string_view id : registry.ids()) {
+      if (const KindCodec* kind_codec = registry.codec(id)) {
+        Codec adapted = adapt_kind_codec(*kind_codec);
+        d_codecs.add(std::string(id),
+                     Codec{std::move(adapted.serialize),
+                           recording_deserialize(std::move(adapted.deserialize), id,
+                                                 kind_codec->kind_version, d_session, bridge)});
+      }
+    }
   }
 
   LoadAssembly(const LoadAssembly&) = delete;
@@ -710,6 +738,24 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
     // author would rename every blob in the store and rewrite their whole painting at a
     // different precision.
     doc.set_storage_format(ctx.storage_format());
+    // The registry the load deserialized against rides the document
+    // (`runtime.plugin_operator_registration` Decision 4): `bind_operators`
+    // consults its plugin-carried binders after the global built-ins, so a
+    // third-party operator this very load constructed can receive its render
+    // services without any driver naming a `Registry`. Retained ONLY when the
+    // registry actually carries a binder -- that is the sole thing
+    // `bind_operators` reads through this pointer, and a binder-carrying
+    // registry (a `PluginHost`'s) already must outlive the document because
+    // its plugin images built the contents. A factory-only registry -- the
+    // ubiquitous "temporary `Registry` scoped to the load call" idiom -- is
+    // NOT retained, so that idiom stays as lifetime-free as it was before
+    // this task.
+    for (const std::string_view id : registry.ids()) {
+      if (registry.binder(id) != nullptr) {
+        doc.set_registry(&registry);
+        break;
+      }
+    }
   }
   return loaded;
 }

@@ -1,5 +1,6 @@
-#include <arbc/contract/content.hpp> // Content, ContentRef, PullService
-#include <arbc/runtime/document.hpp> // Document
+#include <arbc/contract/content.hpp>  // Content, ContentRef, PullService
+#include <arbc/contract/registry.hpp> // Registry, KindBinder, OperatorBindServices
+#include <arbc/runtime/document.hpp>  // Document
 #include <arbc/runtime/operator_binding.hpp>
 
 #include <cassert>
@@ -7,6 +8,7 @@
 #include <string_view>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace arbc {
 
@@ -111,6 +113,24 @@ OperatorBindingScope bind_operators(const Document& document, PullService& pull,
   std::unordered_set<Content*> visited;
   const auto& r = registry();
 
+  // The document-registry plugin binders (`runtime.plugin_operator_registration`
+  // Decision 4), collected once up front: the `KindBinder`s that ride the
+  // document's borrowed `Registry` are the only binders that can match a kind
+  // whose concrete type lives in a plugin image -- no global thunk can name it.
+  // They are consulted only AFTER the global built-ins fail to match, so today's
+  // built-in behavior is preserved byte-for-byte; a document with no registry
+  // (the default) pays nothing. The registry is read-only post-load
+  // (doc 03:267-270), so this read is lock-free exactly as the global table's.
+  std::vector<const KindBinder*> plugin_binders;
+  if (const Registry* doc_registry = document.registry(); doc_registry != nullptr) {
+    for (const std::string_view id : doc_registry->ids()) {
+      if (const KindBinder* binder = doc_registry->binder(id)) {
+        plugin_binders.push_back(binder);
+      }
+    }
+  }
+  const OperatorBindServices services{pull, backend};
+
   // Depth-first over the content graph: each top-level content and, transitively,
   // every `inputs()` child. Dedup so a content reachable by two paths binds once.
   // ATTACH BEFORE RECURSING (Constraint 5): a nested content's `inputs()` is empty
@@ -120,10 +140,22 @@ OperatorBindingScope bind_operators(const Document& document, PullService& pull,
     if (c == nullptr || !visited.insert(c).second) {
       return;
     }
+    bool bound = false;
     for (const auto& entry : r) {
       if (entry.second.try_attach(*c, ctx)) {
         scope.record(c, entry.second.detach);
+        bound = true;
         break; // a content matches at most one kind
+      }
+    }
+    if (!bound) {
+      // A plugin binder borrows only the contract-expressible services
+      // (Decision 3): the L5-only resolver/pin stay host-bound (nested's path).
+      for (const KindBinder* binder : plugin_binders) {
+        if (binder->try_attach(*c, services)) {
+          scope.record(c, binder->detach);
+          break;
+        }
       }
     }
     for (const ContentRef in : c->inputs()) {

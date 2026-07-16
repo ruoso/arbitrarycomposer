@@ -8,13 +8,15 @@
 // `runtime` beside the built-in codecs. The DECODER -- the thing that parses a third-party
 // format over untrusted input -- stays in the plugin.
 //
-// It is also FORCED. A plugin cannot register a codec today: the whole plugin ABI is
-// `arbc_plugin_register(Registry&)` (`plugin.hpp:20`), and a `Registry` traffics in content
-// factories, not codecs. Putting codec registration across that boundary would put
-// `nlohmann::json` in every plugin's link surface -- exactly the dependency
-// `serialize.kind_params` removed from `contract`. `runtime.plugin_operator_registration`
-// may one day supply a json-free codec ABI; when it does, this TU migrates, and nothing
-// here forecloses that.
+// It is also (still) FORCED, though more narrowly than it once was.
+// `runtime.plugin_operator_registration` landed the JSON-free codec seam -- a `Registry`
+// entry now carries an optional TEXT-typed `KindCodec` the serialize adapter wraps, so a
+// pure-`params` plugin kind persists without `nlohmann::json` on its link surface. But that
+// v1 seam deliberately carries no `LoadContext`/`SaveContext`, and THIS codec's whole job is
+// asset I/O: URI resolution and the byte fetch through the `AssetSource` hook. So it stays
+// in `runtime` until `runtime.plugin_codec_asset_context` extends the seam with a JSON-free
+// asset context; when that lands, this TU migrates into the plugin, and nothing here
+// forecloses that.
 //
 // Consequently this TU NAMES NO PLUGIN TYPE. It reaches the kind solely through
 // `Registry::factory("org.arbc.image")` -- which is also what makes the gating fall out for

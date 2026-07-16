@@ -1239,6 +1239,44 @@ add_dependencies(
   arbc-ci-plugin-fade arbc-ci-plugin-crossfade arbc-plugin-imageseq)
 catch_discover_tests(arbc_dual_build_t)
 
+# --- runtime.plugin_operator_registration: the widened-registration proof ------
+# A CI-only module registering a kind (org.arbc.ci.passthrough) whose concrete
+# operator type lives WHOLLY inside the module: no global binder thunk can match
+# it and no built-in codec can serialize it, so every assertion in the driver
+# discriminates the registry-carried codec/binder path (that task's Decision 7).
+# It gets its OWN output directory (NOT ci_plugins/) so dual_build.t.cpp's
+# ARBC_PLUGIN_PATH scan keeps sweeping exactly the six dual-build modules.
+add_library(arbc-ci-plugin-passthrough MODULE ci_plugins/passthrough_ci_plugin.cpp)
+target_link_libraries(arbc-ci-plugin-passthrough PRIVATE arbc arbc_build_flags)
+set_target_properties(
+  arbc-ci-plugin-passthrough
+  PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ci_plugins_registration"
+             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ci_plugins_registration")
+
+# The driver: document round-trip through the registry-carried text codec
+# (byte-exact goldens), bind_operators through the registry-carried binder,
+# placeholder degradation with the plugin absent, params-unknowns preservation,
+# both error paths as values, the conformance suite over the dlopen'd factory,
+# and the JSON-free link-surface containment scan (libarbc is the needle's
+# non-vacuity witness). Holds a CodecTable (builtin_codecs(registry)) so it names
+# nlohmann::json through the serialize-internal codec header -- links the umbrella
+# `arbc` plus nlohmann explicitly (PRIVATE to arbc_runtime); the PLUGIN under test
+# links no such thing, which is exactly what the containment scan pins.
+# arbc-testing precedes arbc (static-archive link order).
+add_executable(arbc_plugin_operator_registration_t plugin_operator_registration.t.cpp)
+target_link_libraries(
+  arbc_plugin_operator_registration_t
+  PRIVATE arbc-testing arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags
+          ${CMAKE_DL_LIBS})
+target_compile_definitions(
+  arbc_plugin_operator_registration_t
+  PRIVATE ARBC_CI_PLUGIN_PASSTHROUGH_FILE="$<TARGET_FILE:arbc-ci-plugin-passthrough>"
+          ARBC_LIBARBC_FILE="$<TARGET_FILE:arbc>")
+# $<TARGET_FILE:...> in COMPILE_DEFINITIONS names a path but does NOT make the named
+# target a dependency, so the module the driver dlopens must be ordered explicitly.
+add_dependencies(arbc_plugin_operator_registration_t arbc-ci-plugin-passthrough)
+catch_discover_tests(arbc_plugin_operator_registration_t)
+
 # packaging.shared_library_build: the single-instance symbol-resolution proof
 # (doc 17:173-182, Decision D3). Built ONLY under BUILD_SHARED_LIBS so it is never
 # vacuous in the static lanes -- under a static libarbc a plugin's core references

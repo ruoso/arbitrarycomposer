@@ -138,12 +138,16 @@ These are core-owned placement, not `params`.
    `params` JSON, and a `deserialize(json, LoadContext&) -> Content*` codec
    that turns a `params` object back into a `Content`. Concrete per-kind
    codecs are registered from a layer that can see both the kind's concrete
-   type and the JSON library — `runtime` (L5) for built-in kinds, the
-   plugin's own translation unit for out-of-tree kinds — so the codec table
-   is a serialize-owned seam the routing consults; a kind with no registered
-   codec round-trips as a placeholder (Principle 2). `LoadContext` supplies
-   base-URI resolution and async asset loading so kinds don't invent their
-   own.
+   type and the JSON library — `runtime` (L5) for built-in kinds; an
+   out-of-tree kind registers a *text-typed* codec (its `params` as
+   JSON-object text) through the `Registry` entry it already owns (doc 03
+   § Registry), and `serialize` wraps that into the JSON-typed table, so
+   the plugin's own translation unit supplies the codec without the JSON
+   library entering its link surface (doc 17 § The codec line). Either way
+   the codec table is a serialize-owned seam the routing consults; a kind
+   with no registered codec round-trips as a placeholder (Principle 2).
+   `LoadContext` supplies base-URI resolution and async asset loading so
+   kinds don't invent their own.
 2. **Unknown kinds round-trip losslessly.** A file using a plugin the host
    doesn't have loads as a *placeholder content* that preserves the original
    `kind`, `kind_version`, and `params` verbatim, renders as a diagnostic

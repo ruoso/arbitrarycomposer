@@ -377,14 +377,20 @@ Initially-open questions, now decided in their own docs:
   persist, and persisting means a serialize codec. That codec parses *our own*
   JSON and a URI string — never an encoded image byte — so by doc 17's own
   "what is being parsed, not whether bytes get smaller" test it does not cross
-  the line: it lives in `runtime` beside the built-in codecs, while only the
-  **decoder** ships in the plugin. The core resolves the URI and fetches the
-  bytes through the one `LoadContext` / `AssetSource` seam; the plugin turns
-  bytes into pixels and performs no file I/O of its own. Codec registration is
-  gated on the plugin being loaded, so an absent plugin degrades to a verbatim
-  placeholder round-trip rather than data loss. This is the general answer for
-  every plugin kind's persistence, not a carve-out for `org.arbc.image`.
-  Decided in doc 17 (§ The codec line) and doc 08 (Principle 3).
+  the line, while only the **decoder** ships in the plugin. The core resolves
+  the URI and fetches the bytes through the one `LoadContext` / `AssetSource`
+  seam; the plugin turns bytes into pixels and performs no file I/O of its
+  own. Where the codec itself lives splits two ways: the asset-referencing
+  reference kinds' codecs live in `runtime` beside the built-in codecs (they
+  need the `LoadContext`/`AssetSource` seam), while a third-party
+  pure-`params` kind — operators included — registers a JSON-free *text*
+  codec through its own `Registry` entry, wrapped by `serialize` into the
+  JSON-typed table, so the JSON library never enters a plugin's link surface.
+  Codec registration is gated on the plugin being loaded, so an absent plugin
+  degrades to a verbatim placeholder round-trip rather than data loss. This
+  split is the general answer for every plugin kind's persistence, not a
+  carve-out for `org.arbc.image`. Decided in doc 17 (§ The codec line),
+  doc 08 (Principle 3), and doc 03 (§ Registry).
 - **An external *asset* has the same three load states as an external
   composition — resolved, pending, unavailable — split by whether the source
   answered, never by the bytes being empty.** They go through one resolution

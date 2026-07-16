@@ -122,9 +122,12 @@ ARBC_API void register_nested_binder();
 // "the codec line is a DECODER line" (kinds.image Decision 2). It parses only our own JSON
 // and a URI string -- never an encoded image byte -- so it does not cross the line and it
 // lives here; the decoder that parses a third-party format over untrusted input stays in
-// `arbc-plugin-image`. It is also forced: the plugin ABI is `arbc_plugin_register(Registry&)`
-// and a `Registry` traffics in content factories, not codecs, so a plugin CANNOT register a
-// codec without putting `nlohmann::json` in every plugin's link surface.
+// `arbc-plugin-image`. It is also forced, though more narrowly since
+// `runtime.plugin_operator_registration` landed the JSON-free `KindCodec` seam: a
+// pure-`params` plugin kind now registers its own TEXT-typed codec through its `Registry`
+// entry, but that v1 seam carries no `LoadContext`/`SaveContext` -- and this codec's whole
+// job is asset I/O -- so the asset-referencing reference kinds stay runtime-side until
+// `runtime.plugin_codec_asset_context` extends the seam.
 //
 // Serialize emits `{"source": "<authored URI>"}` verbatim as the document authored it (read
 // back off `Content::external_asset_ref()`) -- never absolutised, so the project directory

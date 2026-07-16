@@ -145,9 +145,14 @@ private:
 // driver gains a parameter it does not already own.
 //
 // Dispatch is by the registered `OperatorBinder`s, so the driver names no concrete
-// kind (Decision 2); a content of no registered kind is skipped. Returns the RAII
-// scope that tears every binding down on destruction (Constraint 3). Call
-// `register_builtin_operator_binders()` first.
+// kind (Decision 2); a content of no registered kind is skipped. When the document
+// carries a borrowed `Registry` (`Document::registry()`,
+// `runtime.plugin_operator_registration` Decision 4), each content the global
+// built-ins do not match is then offered to the registry-carried plugin
+// `KindBinder`s -- the only binders that can match a kind whose concrete type
+// lives in a plugin image -- with the contract-expressible `{pull, backend}`
+// services only. Returns the RAII scope that tears every binding down on
+// destruction (Constraint 3). Call `register_builtin_operator_binders()` first.
 ARBC_API OperatorBindingScope bind_operators(const Document& document, PullService& pull,
                                              Backend& backend, DocStatePtr pin);
 

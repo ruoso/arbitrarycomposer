@@ -108,9 +108,11 @@ inline Time seconds(std::int64_t whole) { return Time{whole * Time::flicks_per_s
 // travel the entry point at all: whoever builds the operator must also own its
 // inputs. Inside a plugin module the owner is a module-local static destroyed at
 // image unload -- i.e. strictly AFTER the operator that borrows it, because
-// `PluginHost` dlcloses last (runtime/plugin_host.hpp:154-155). Closing this gap
-// in the shipped seam is the registered follow-up
-// `runtime.plugin_operator_registration`.
+// `PluginHost` dlcloses last (runtime/plugin_host.hpp:154-156). This remains the
+// BARE-FACTORY story by design (doc 17:165-167 -- the factory carries no input
+// edges): a plugin operator participating in a DOCUMENT adopts core-owned inputs
+// through its registered kind codec's `deserialize` span instead
+// (`runtime.plugin_operator_registration`; passthrough_ci_plugin.cpp).
 class InputOwner {
 public:
   InputOwner() = default;

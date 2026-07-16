@@ -40,7 +40,17 @@ int main() {
     return 1;
   }
 
+  // The widened registration surface reaches through the installed package too
+  // (runtime.plugin_operator_registration): the template registers a trivial
+  // JSON-free kind codec beside its factory, and it resolves here.
+  // enforces: 10-tooling-and-packaging#third-party-plugin-builds-are-one-line
+  if (host.registry().codec("org.example.template") == nullptr) {
+    std::printf("plugin_template_load: module loaded but org.example.template's kind "
+                "codec is not in the Registry\n");
+    return 1;
+  }
+
   std::printf("plugin_template_load: template module loaded through PluginHost, "
-              "org.example.template registered\n");
+              "org.example.template registered (factory + kind codec)\n");
   return 0;
 }

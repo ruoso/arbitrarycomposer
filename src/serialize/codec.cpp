@@ -30,6 +30,46 @@ unexpected<ReaderError> read_fail(ReaderError::Kind kind, std::string path) {
 
 } // namespace
 
+Codec adapt_kind_codec(const KindCodec& codec) {
+  Codec adapted;
+  // Save: the plugin emits its `params` as JSON-object TEXT; the core parses and
+  // canonicalizes it here (Decision 2 -- the writer's canonical dump downstream is
+  // what keeps goldens byte-stable regardless of plugin formatting). A failed hook
+  // or unparseable/non-object text is a `CodecFailed` VALUE: `json::parse` runs in
+  // its no-throw form, so no nlohmann exception crosses the boundary.
+  adapted.serialize =
+      [serialize = codec.serialize](const Content& content,
+                                    SaveContext& /*ctx*/) -> expected<json, SerializeError> {
+    const expected<std::string, std::string> text = serialize(content);
+    if (!text.has_value()) {
+      return unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});
+    }
+    json params = json::parse(*text, /*cb=*/nullptr, /*allow_exceptions=*/false);
+    if (params.is_discarded() || !params.is_object()) {
+      return unexpected(SerializeError{SerializeError::Kind::CodecFailed, ObjectId{}});
+    }
+    return params;
+  };
+  // Load: the plugin's `deserialize` receives the CANONICAL dump of the `params`
+  // node (nlohmann objects are key-sorted, so the text is deterministic) with the
+  // core-owned `inputs`/`composition` passed through verbatim (doc 08 Principles
+  // 6/7). Its error string -- the codec's own parse failure or a wrong input
+  // arity, both the codec's responsibility -- maps to a `MalformedField` at
+  // `/params`, the same value shape a built-in codec's parse failure takes.
+  adapted.deserialize =
+      [deserialize = codec.deserialize](
+          const json& params, std::span<const ContentRef> inputs, ObjectId composition,
+          LoadContext& /*ctx*/) -> expected<std::unique_ptr<Content>, ReaderError> {
+    expected<std::unique_ptr<Content>, std::string> made =
+        deserialize(params.dump(), inputs, composition);
+    if (!made.has_value()) {
+      return read_fail(ReaderError::Kind::MalformedField, "/params");
+    }
+    return std::move(*made);
+  };
+  return adapted;
+}
+
 expected<std::unique_ptr<Content>, ReaderError>
 content_body_from_json(const json& body, std::span<const ContentRef> inputs, ObjectId composition,
                        const CodecTable& codecs, const Registry& registry, LoadContext& ctx,

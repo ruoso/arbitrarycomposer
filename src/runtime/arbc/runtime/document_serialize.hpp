@@ -113,6 +113,12 @@ ARBC_API CodecTable builtin_codecs();
 // with no plugin there is no codec and the layer round-trips verbatim as a
 // `PlaceholderContent`, losing nothing (doc 08 Principles 2/4).
 //
+// It ALSO appends, after every built-in, the JSON-free text codec any plugin registered
+// beside its factory (`Registry::codec`, `runtime.plugin_operator_registration`), wrapped
+// into the JSON-typed table by the serialize-owned adapter -- appended last so
+// `CodecTable::add`'s last-wins semantic lets a plugin supersede a built-in. The widened
+// overloads below delegate here and inherit the registry codecs.
+//
 // A HOST WITH PLUGINS LOADED SHOULD SAVE THROUGH THIS TABLE, not the no-argument one: a live
 // `org.arbc.image` content has no codec in the plain built-in table, and serializing it would
 // be `SerializeError::Kind::NoCodec`. The load path (`load_document`) already assembles its
