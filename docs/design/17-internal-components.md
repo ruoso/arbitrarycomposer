@@ -322,6 +322,10 @@ src/<component>/
   *.hpp, *.cpp                private headers and sources
   t/                          component unit tests
 plugins/imageseq/             out-of-lib reference plugin (own deps)
+examples/                     host-embedding and plugin-author examples:
+                              standalone foreign projects (find_package only,
+                              never add_subdirectory'd), CI-built and CI-run
+                              against a staged install prefix
 testing/                      arbc-testing conformance suite sources
 tests/                        cross-component: integration, claims register,
                               golden, stress, crash-recovery, fuzz corpus

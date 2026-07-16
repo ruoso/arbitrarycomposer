@@ -188,3 +188,22 @@ target_compile_features(plugin_template_load PRIVATE cxx_std_20)
 target_compile_definitions(plugin_template_load
                            PRIVATE "ARBC_TEMPLATE_MODULE=\"${ARBC_TEMPLATE_MODULE}\"")
 add_test(NAME plugin_template_load COMMAND plugin_template_load)
+
+# packaging.examples: run_staged_install.cmake configured, built, and RAN the two
+# host-embedding examples (examples/host-offline, examples/host-interactive) against the
+# SAME staged prefix and hands their PNG artifacts here. The test validates both
+# byte-exactly -- signature, IHDR, per-chunk CRC-32, stored-deflate scanlines, and pixel
+# bytes derived in-test through the public PixelTraits encode (doc 16:88-90).
+foreach(png_var IN ITEMS ARBC_HOST_OFFLINE_PNG ARBC_HOST_INTERACTIVE_PNG)
+  if(NOT ${png_var})
+    message(FATAL_ERROR "-D${png_var}=<path> is required "
+                        "(run_staged_install.cmake passes the example artifacts)")
+  endif()
+endforeach()
+add_executable(host_example_artifacts host_example_artifacts.cpp)
+target_link_libraries(host_example_artifacts PRIVATE arbc::arbc)
+target_compile_features(host_example_artifacts PRIVATE cxx_std_20)
+target_compile_definitions(
+  host_example_artifacts PRIVATE "ARBC_HOST_OFFLINE_PNG=\"${ARBC_HOST_OFFLINE_PNG}\""
+                                 "ARBC_HOST_INTERACTIVE_PNG=\"${ARBC_HOST_INTERACTIVE_PNG}\"")
+add_test(NAME host_example_artifacts COMMAND host_example_artifacts)

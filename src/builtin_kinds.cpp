@@ -16,10 +16,9 @@
 // error value directing construction through document deserialize. Errors are
 // values on every path (doc 03:176-183); nothing here throws.
 
-#include <arbc/builtin_kinds.hpp>
-
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
+#include <arbc/builtin_kinds.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/kind_crossfade/crossfade_content.hpp>
@@ -141,10 +140,9 @@ Made make_raster(ContentConfig config) {
   if (width < 1 || height < 1 || width > k_max_extent || height > k_max_extent) {
     return made_error("org.arbc.raster: extent must be a positive <width>x<height>");
   }
-  std::unique_ptr<RasterContent> raster =
-      RasterContent::from_tiles(static_cast<int>(width), static_cast<int>(height),
-                                k_default_tile_edge,
-                                [](std::size_t, std::span<float>) { return true; });
+  std::unique_ptr<RasterContent> raster = RasterContent::from_tiles(
+      static_cast<int>(width), static_cast<int>(height), k_default_tile_edge,
+      [](std::size_t, std::span<float>) { return true; });
   if (raster == nullptr) {
     return made_error("org.arbc.raster: could not build the tile pyramid");
   }
@@ -185,8 +183,8 @@ void register_builtin_kinds(Registry& registry) {
   // constants, so `DuplicateId` is the only reachable error and the result is
   // deliberately dropped: a partial overlap must not strand the remaining
   // kinds unregistered (refinement Decision 3).
-  const auto add = [&registry](std::string_view id, ContentFactory factory,
-                               std::string human_name, std::string version) {
+  const auto add = [&registry](std::string_view id, ContentFactory factory, std::string human_name,
+                               std::string version) {
     (void)registry.add(id, std::move(factory),
                        KindMetadata{std::move(human_name), std::move(version)});
   };
@@ -197,10 +195,12 @@ void register_builtin_kinds(Registry& registry) {
   add(SolidContent::kind_id, make_solid, "Solid Color", k_solid_kind_version);
   add(ToneContent::kind_id, make_tone, "Tone", k_tone_kind_version);
   add(RasterContent::kind_id, make_raster, "Raster", k_raster_kind_version);
-  add(FadeContent::kind_id,
+  add(
+      FadeContent::kind_id,
       [](ContentConfig) { return refuse_config_construction(FadeContent::kind_id); }, "Fade",
       k_fade_kind_version);
-  add(CrossfadeContent::kind_id,
+  add(
+      CrossfadeContent::kind_id,
       [](ContentConfig) { return refuse_config_construction(CrossfadeContent::kind_id); },
       "Crossfade", k_crossfade_kind_version);
   add(NestedContent::kind_id, make_nested, "Nested Composition", k_nested_kind_version);

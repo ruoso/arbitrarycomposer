@@ -1,8 +1,10 @@
 # Driver for the `install.consumer` CTest test (quality.testing_artifact, D5).
 #
 # Stages an install, builds examples/plugin-template against it (the one-line
-# arbc_add_plugin() proof, packaging.plugin_helper), then configures/builds/runs
-# tests/consumer/ against the same prefix TWICE:
+# arbc_add_plugin() proof, packaging.plugin_helper), builds AND RUNS the two
+# host-embedding examples (examples/host-offline, examples/host-interactive --
+# packaging.examples, doc 16:88-90), then configures/builds/runs tests/consumer/
+# against the same prefix TWICE:
 #
 #   1. the plugin author's path -- find_package(arbc CONFIG REQUIRED COMPONENTS testing),
 #      link arbc::arbc + arbc::testing, run arbc::contract_tests over a foreign Content;
@@ -19,7 +21,8 @@ cmake_minimum_required(VERSION 3.24)
 foreach(required IN ITEMS ARBC_BUILD_DIR ARBC_CONSUMER_SRC ARBC_STAGE_DIR
                           ARBC_CONSUMER_BUILD_DIR ARBC_CORE_ONLY_BUILD_DIR
                           ARBC_CTEST_COMMAND ARBC_TEMPLATE_SRC ARBC_TEMPLATE_BUILD_DIR
-                          ARBC_MODULE_SUFFIX)
+                          ARBC_MODULE_SUFFIX ARBC_HOST_OFFLINE_SRC ARBC_HOST_OFFLINE_BUILD_DIR
+                          ARBC_HOST_INTERACTIVE_SRC ARBC_HOST_INTERACTIVE_BUILD_DIR)
   if(NOT ${required})
     message(FATAL_ERROR "run_staged_install: -D${required}=... is required")
   endif()
@@ -84,6 +87,36 @@ if(NOT EXISTS "${arbc_template_module}")
                       "${arbc_template_module}")
 endif()
 list(APPEND common_args "-DARBC_TEMPLATE_MODULE=${arbc_template_module}")
+
+# --- packaging.examples: the two host-embedding examples ---------------------------
+# Each is a standalone foreign project (find_package(arbc CONFIG REQUIRED), never
+# add_subdirectory'd) configured and built against the staged prefix, then RUN --
+# doc 16:88-90's tier is "compiles and runs in CI", and a non-zero exit fails this
+# test. The PNG each writes is handed into both consumer configures below, where
+# host_example_artifacts.cpp validates it byte-exactly. On the Windows shared lane
+# the executables import arbc.dll from the staged bin/, which the outer test's
+# ENVIRONMENT_MODIFICATION already prepended to PATH (msvc refinement D4); that env
+# propagates through this driver into these child processes.
+foreach(example IN ITEMS OFFLINE INTERACTIVE)
+  string(TOLOWER "${example}" example_lower)
+  set(example_src "${ARBC_HOST_${example}_SRC}")
+  set(example_build "${ARBC_HOST_${example}_BUILD_DIR}")
+  message(STATUS "install.consumer: host example (host-${example_lower})")
+  execute_process(COMMAND "${CMAKE_COMMAND}" -S "${example_src}" -B "${example_build}"
+                          ${common_args} COMMAND_ERROR_IS_FATAL ANY)
+  execute_process(COMMAND "${CMAKE_COMMAND}" --build "${example_build}"
+                          COMMAND_ERROR_IS_FATAL ANY)
+  # The executable suffix comes from the parent configure (script mode does not know
+  # it) and is legitimately empty everywhere but Windows.
+  set(example_exe "${example_build}/host_${example_lower}${ARBC_EXE_SUFFIX}")
+  if(NOT EXISTS "${example_exe}")
+    message(FATAL_ERROR "install.consumer: the host-${example_lower} build produced no "
+                        "executable at ${example_exe}")
+  endif()
+  execute_process(COMMAND "${example_exe}" "${example_build}/out.png"
+                          COMMAND_ERROR_IS_FATAL ANY)
+  list(APPEND common_args "-DARBC_HOST_${example}_PNG=${example_build}/out.png")
+endforeach()
 
 message(STATUS "install.consumer: plugin-author path (COMPONENTS testing)")
 execute_process(

@@ -250,4 +250,16 @@ task runtime "Runtime" {
     depends model.content_removal
     note "Document::remove_content retains the live Content* and its EditableBinding row so undo can re-resolve a live editable content (Decision 1 of model.content_removal). This task reclaims that memory at history-trim time: hook the routed final StateRefSink::release of a content whose id is absent from Model::current() to complete the runtime teardown (drop the binding row, erase d_contents), on the writer thread, TSan-clean. Witnessed by bound_count() falling after a journal trim. Bounded memory-hygiene optimization, not a correctness gap. Source-of-debt: tasks/refinements/model/content_removal.md Acceptance criteria. Docs 14/17."
   }
+  task camera_change_damage "Emit damage when HostViewport camera changes" {
+    effort 1d
+    allocate team
+    depends !host_viewport_document_binding
+    note "Doc 02:51 lists camera-transform edits as a damage source, but HostViewport::set_camera and reanchor/rebase do not flush a damage notification — a camera-only step() produces no repaint. The fix: after any camera mutation that changes the device mapping, emit full-viewport device damage through the registered DamageSink so the interactive driver repaints. Surfaced by the host-interactive example (host must call force_repaint() after camera edits; documented workaround in examples/host-interactive/). Source-of-debt: tasks/refinements/packaging/examples.md. Docs 01/02."
+  }
+  task placement_damage_maps_to_device "Map layer-keyed placement damage to device damage" {
+    effort 1d
+    allocate team
+    depends !damage_router
+    note "Placement edits (set_layer_transform, set_layer_anchor, etc.) flush layer-ObjectId-keyed damage, but map_damage_to_device (damage_planning.cpp:39) matches only content ids — so a placement edit never generates device damage and the viewport never repaints. The fix: extend map_damage_to_device to resolve layer ids to their content ids (or walk the layer list to map layer damage to tile regions) so placement changes drive repaint. Surfaced by the host-interactive example (must call force_repaint() after placement edits; documented workaround). Source-of-debt: tasks/refinements/packaging/examples.md. Docs 02/04."
+  }
 }

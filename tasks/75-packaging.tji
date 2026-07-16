@@ -25,8 +25,9 @@ task packaging "Packaging and release" {
   task examples "Host examples" {
     effort 2d
     allocate team
+    complete 100
     depends !install
-    note "A minimal embedding example (offline render to PNG via a tiny writer) and an interactive pan/zoom example; examples compile and run in CI. Doc 16."
+    note "A minimal embedding example (offline render to PNG via a tiny writer) and an interactive pan/zoom example; examples compile and run in CI. Doc 16. Refinement: tasks/refinements/packaging/examples.md"
   }
   task release_01 "0.1 release checklist" {
     effort 0.5d

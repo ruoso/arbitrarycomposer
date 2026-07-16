@@ -7,12 +7,11 @@
 // the empty-registry baseline). Links the umbrella `arbc`, so the assertions
 // exercise the real shipped surface.
 
-#include <arbc/builtin_kinds.hpp>
-
 #include <arbc/base/expected.hpp>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/transform.hpp>
+#include <arbc/builtin_kinds.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/kind_crossfade/crossfade_content.hpp>
@@ -42,8 +41,8 @@ using arbc::Content;
 using arbc::CrossfadeContent;
 using arbc::Document;
 using arbc::FadeContent;
-using arbc::KindMetadata;
 using arbc::KindBridge;
+using arbc::KindMetadata;
 using arbc::NestedContent;
 using arbc::ObjectId;
 using arbc::PluginHost;
@@ -195,18 +194,18 @@ TEST_CASE("factory config failures are error values naming the kind") {
     const char* id;
     const char* config;
   } bad_configs[] = {
-      {SolidContent::kind_id, "1,2,3"},            // wrong field count
-      {SolidContent::kind_id, "a,b,c,d"},          // channel not a number
-      {ToneContent::kind_id, "440"},               // wrong field count
-      {ToneContent::kind_id, "0,0.5"},             // frequency not positive
-      {ToneContent::kind_id, "4294967296,0.5"},    // frequency beyond uint32
-      {ToneContent::kind_id, "440,loud"},          // amplitude not a number
-      {RasterContent::kind_id, "8"},               // no 'x' separator
-      {RasterContent::kind_id, "axb"},             // extent not a number
-      {RasterContent::kind_id, "0x8"},             // extent not positive
-      {RasterContent::kind_id, "8589934592x8"},    // extent beyond int range
-      {NestedContent::kind_id, "seven"},           // not a decimal id
-      {NestedContent::kind_id, "0"},               // ObjectId zero is never valid
+      {SolidContent::kind_id, "1,2,3"},         // wrong field count
+      {SolidContent::kind_id, "a,b,c,d"},       // channel not a number
+      {ToneContent::kind_id, "440"},            // wrong field count
+      {ToneContent::kind_id, "0,0.5"},          // frequency not positive
+      {ToneContent::kind_id, "4294967296,0.5"}, // frequency beyond uint32
+      {ToneContent::kind_id, "440,loud"},       // amplitude not a number
+      {RasterContent::kind_id, "8"},            // no 'x' separator
+      {RasterContent::kind_id, "axb"},          // extent not a number
+      {RasterContent::kind_id, "0x8"},          // extent not positive
+      {RasterContent::kind_id, "8589934592x8"}, // extent beyond int range
+      {NestedContent::kind_id, "seven"},        // not a decimal id
+      {NestedContent::kind_id, "0"},            // ObjectId zero is never valid
   };
   for (const auto& bad : bad_configs) {
     INFO(std::string(bad.id) + " <- \"" + bad.config + "\"");

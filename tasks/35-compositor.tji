@@ -136,4 +136,10 @@ task compositor "Compositor" {
     depends !refinement
     note "The interactive driver plans at step 4 and polls arrivals at step 6, while refinement.hpp's own comment asserts the poll 'runs unconditionally every frame, before any re-plan'. A worker that settles between one frame's poll and the next frame's plan sits in a gap where the cache says miss and the gate says nobody is rendering it; the dispatch gate's settled_ok() split (quality.testing_artifact) closes the behavioral hole, but the structural fix is to hoist the poll before the plan so arrivals composite in the frame they drain. Blocked on counter-semantic analysis: current frame counter tests observe poll-after-plan ordering and must be re-baselined. Source: tasks/refinements/quality/testing_artifact.md (fixer tech-debt). Docs 02/04."
   }
+  task bounded_content_tile_clip "Clip sub-tile bounded content to its declared extent" {
+    effort 2d
+    allocate team
+    depends !tile_planning
+    note "The interactive tile path clips content bounds at planning only (tile-level cull): a SolidContent with a bounding rect smaller than one tile renders into the entire tile buffer and bleeds across its declared extent. The fix: after rendering into the tile, composite only the intersection of the tile region with the content's device-space bounding rect, so sub-tile bounded content does not bleed. Surfaced by the host-interactive example (uses transparent-content force_repaint() pattern and tile-aligned bounds as documented workaround). Source-of-debt: tasks/refinements/packaging/examples.md. Docs 02/04."
+  }
 }
