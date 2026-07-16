@@ -1277,6 +1277,28 @@ target_compile_definitions(
 add_dependencies(arbc_plugin_operator_registration_t arbc-ci-plugin-passthrough)
 catch_discover_tests(arbc_plugin_operator_registration_t)
 
+# --- runtime.registry_bootstrap: the L6 umbrella built-in-kind bootstrap ------
+# register_builtin_kinds(Registry&) (doc 03 § Registry, doc 17:33/72): the six
+# in-lib kinds present through one Registry surface -- factory and metadata only,
+# skip-on-duplicate, idempotent -- with a byte-equality proof that a bootstrapped
+# registry changes nothing about document save/load. Links the umbrella `arbc`
+# (the test exercises the real shipped surface), holds a CodecTable
+# (builtin_codecs(registry)) by value -- hence nlohmann explicitly, the
+# document_serialize_golden shape -- and dlopens the passthrough CI module for
+# the bootstrap-beside-plugin coexistence case, so it carries the same
+# plugin-path compile definition and explicit ordering dependency as the
+# registration driver above.
+add_executable(arbc_registry_bootstrap_t registry_bootstrap.t.cpp)
+target_link_libraries(
+  arbc_registry_bootstrap_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags
+          ${CMAKE_DL_LIBS})
+target_compile_definitions(
+  arbc_registry_bootstrap_t
+  PRIVATE ARBC_CI_PLUGIN_PASSTHROUGH_FILE="$<TARGET_FILE:arbc-ci-plugin-passthrough>")
+add_dependencies(arbc_registry_bootstrap_t arbc-ci-plugin-passthrough)
+catch_discover_tests(arbc_registry_bootstrap_t)
+
 # packaging.shared_library_build: the single-instance symbol-resolution proof
 # (doc 17:173-182, Decision D3). Built ONLY under BUILD_SHARED_LIBS so it is never
 # vacuous in the static lanes -- under a static libarbc a plugin's core references

@@ -184,11 +184,17 @@ function(arbc_finalize_library)
   get_property(component_dirs GLOBAL PROPERTY ARBC_COMPONENT_DIRS)
   get_property(component_headers GLOBAL PROPERTY ARBC_COMPONENT_HEADERS)
 
-  add_library(arbc "${CMAKE_CURRENT_SOURCE_DIR}/version.cpp")
+  # The umbrella's own sources: version.cpp (packaging.version_api) and
+  # builtin_kinds.cpp -- the built-in-kind Registry bootstrap doc 17:33/72
+  # assigns to L6 (runtime.registry_bootstrap). The bootstrap TU's includes
+  # (L4 kind headers, L5 builtin_kind_versions.hpp, the L3 Registry) are exactly
+  # the umbrella's "runtime + all" closure, which is why it can live nowhere lower.
+  add_library(arbc "${CMAKE_CURRENT_SOURCE_DIR}/version.cpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/builtin_kinds.cpp")
   add_library(arbc::arbc ALIAS arbc)
   target_compile_features(arbc PUBLIC cxx_std_20)
   target_link_libraries(arbc PRIVATE "$<BUILD_INTERFACE:arbc_build_flags>")
-  # The umbrella's own version.cpp is inside libarbc too, so it takes the export
+  # The umbrella's own TUs are inside libarbc too, so they take the export
   # branch of ARBC_API like every component object library (D2).
   target_compile_definitions(arbc PRIVATE ARBC_BUILDING)
 
@@ -252,15 +258,25 @@ function(arbc_finalize_library)
   # arbc/arbc_api.h -- the visibility macro header (packaging.shared_library_build).
   # Hand-written and checked in (NOT generated -- it derives from nothing, Decision
   # D1). Umbrella-owned and installed at the include ROOT (<prefix>/include/arbc/arbc_api.h),
-  # exactly like version.hpp. It lives in its OWN dedicated source root (src/api/) so
-  # that root's single FILE_SET base dir does not overlap any component's base dir --
-  # a header under two base dirs is a CMake FILE_SET error, which is why it cannot
-  # simply sit under src/ alongside the components. The same by-construction rule
-  # keeps "no component may reach up to include it" true (this base dir lives only on
-  # the umbrella), and its include spelling (arbc/arbc_api.h, at the root, no
-  # arbc/<component>/ segment) is not matched by scripts/check_levels.py's INCLUDE_RE.
+  # exactly like version.hpp. It lives in the umbrella's OWN dedicated source root
+  # (src/api/, shared with builtin_kinds.hpp below) so that root's single FILE_SET base
+  # dir does not overlap any component's base dir -- a header under two base dirs is a
+  # CMake FILE_SET error, which is why it cannot simply sit under src/ alongside the
+  # components. The same by-construction rule keeps "no component may reach up to
+  # include it" true (this base dir lives only on the umbrella), and its include
+  # spelling (arbc/arbc_api.h, at the root, no arbc/<component>/ segment) is not
+  # matched by scripts/check_levels.py's INCLUDE_RE.
   set(api_include_root "${CMAKE_CURRENT_SOURCE_DIR}/api")
   set(api_header "${api_include_root}/arbc/arbc_api.h")
+
+  # arbc/builtin_kinds.hpp -- the registry-bootstrap header (runtime.registry_bootstrap,
+  # doc 03 § Registry, doc 17:33/72), declaring register_builtin_kinds(Registry&).
+  # Hand-written and umbrella-owned exactly like arbc_api.h, sharing its src/api root:
+  # it installs at the include ROOT (<prefix>/include/arbc/builtin_kinds.hpp), its
+  # include spelling carries no arbc/<component>/ segment, and the same by-construction
+  # rule keeps components from reaching up to it -- the bootstrap is an L6 symbol, and
+  # an L5- component naming it would be the upward edge doc 17:52-55 forbids.
+  set(builtin_kinds_header "${api_include_root}/arbc/builtin_kinds.hpp")
 
   # One FILE_SET, one BASE_DIR per component (plus the generated root above): CMake
   # derives a $<BUILD_INTERFACE:> include dir from each base dir, so this replaces the
@@ -276,7 +292,8 @@ function(arbc_finalize_library)
            FILES
            ${component_headers}
            "${version_header}"
-           "${api_header}")
+           "${api_header}"
+           "${builtin_kinds_header}")
   foreach(name IN LISTS components)
     target_link_libraries(arbc PRIVATE "$<BUILD_INTERFACE:arbc_${name}>")
   endforeach()

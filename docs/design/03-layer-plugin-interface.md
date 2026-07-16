@@ -289,6 +289,27 @@ path. Factory-only registrations stay valid: an entry with no codec
 round-trips as a placeholder (doc 08 Principle 2), and an entry with no
 binder is attach-free.
 
+Built-in kinds present through this same surface. The L6 umbrella target's
+`register_builtin_kinds(Registry&)` (doc 17) adds each in-lib kind's factory
+and metadata to a host-supplied registry, so a host enumerates built-ins and
+loaded plugins through one `Registry` instead of two unrelated mechanisms.
+The bootstrap is **factory-and-metadata only**: built-in codec and binder
+transport stays on `runtime`'s explicit tables (doc 08 Principle 1, doc 13)
+rather than folding into registry entries — the registry's text-typed codec
+hook cannot reach the tile-store, asset-loader, and composition-loader
+services the built-in codecs consume, and the built-in binders need the
+richer host-bound bind context — so a bootstrap entry carries neither hook.
+Bootstrap registration is skip-on-duplicate: an id already present (a host's
+explicit registration, or a plugin loaded first) keeps its entry, matching
+the loader's explicit-registration-first precedence. Operator kinds whose
+input edges cannot travel `ContentConfig` (`org.arbc.fade`,
+`org.arbc.crossfade`) register factories that return an error value
+directing construction through document deserialize; `org.arbc.nested` is
+config-constructible (its config names the child composition's `ObjectId`,
+resolved host-side at attach). Built-in kinds still never travel the
+`extern "C"` plugin entry point at runtime (doc 17) — the bootstrap calls
+`Registry::add` directly.
+
 ## Reference implementations (shipped with core)
 
 | Kind id | Purpose |

@@ -32,12 +32,13 @@
 // `DuplicateId` are all values. `dlerror()` is captured into a diagnostic string,
 // never propagated as state. The loader never throws and never aborts.
 //
-// Levelization (doc 17:60): the loader is `arbc::runtime` (L5) and depends only on
+// Levelization (doc 17:71): the loader is `arbc::runtime` (L5) and depends only on
 // the L3 `contract::Registry` it already lists. `dlopen`/`libdl` is a platform
 // facility, invisible to `check_levels.py`; this public header names no
 // `nlohmann::json` type. The built-in-kind -> `Registry` bootstrap is the L6
-// umbrella `arbc` target's concern (doc 17:61), NOT the loader's: the loader
-// operates on whatever `Registry` the host hands it, agnostic to its contents.
+// umbrella `arbc` target's concern (`arbc::register_builtin_kinds`, doc 17:33/72),
+// NOT the loader's: the loader operates on whatever `Registry` the host hands it,
+// agnostic to its contents.
 
 namespace arbc {
 

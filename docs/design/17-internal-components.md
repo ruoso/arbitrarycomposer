@@ -149,6 +149,11 @@ Notes on placements that were genuinely contested:
    so the composition is exact and not link-order-dependent. The `Registry` +
    `extern "C" arbc_plugin_register` seam of doc 03 is the **out-of-lib** path:
    a built-in kind never travels it at runtime, only in the CI dual-build below.
+   The umbrella's registry bootstrap (`register_builtin_kinds(Registry&)`, doc
+   03 § Registry) presents built-ins *in* a host's `Registry` — factory and
+   metadata only, by direct `Registry::add`, not through the `extern "C"`
+   seam — while the two tables above remain the built-ins' codec and binder
+   transport.
 2. **Physical design without shipping fragmentation.** Users get one
    library, one `find_package(arbc)`; internally every component still has
    its own target, usage requirements, and unit-test binary, so

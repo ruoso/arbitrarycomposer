@@ -18,6 +18,7 @@
 // construction (runtime.operator_codecs Decision 2).
 
 #include <arbc/arbc_api.h>
+#include <arbc/runtime/builtin_kind_versions.hpp> // k_*_kind_version, k_image_kind_id
 #include <arbc/serialize/codec.hpp>
 
 namespace arbc {
@@ -27,23 +28,6 @@ class ExternalAssetLoader;       // runtime/external_asset_loader.hpp
 class RasterTileStore;           // runtime/raster_tile_store.hpp
 class TileEncodeDispatch;        // runtime/tile_encode_dispatch.hpp
 class TileDecodeDispatch;        // runtime/tile_decode_dispatch.hpp
-
-// Per-built-in producer `kind_version` (Constraint 3): a fixed constant chosen and
-// pinned by this task, golden-pinned as the literal emitted beside `kind`. Advisory
-// metadata -- the built-in kinds declare no version of their own today.
-inline constexpr const char* k_solid_kind_version = "1";
-inline constexpr const char* k_tone_kind_version = "1";
-inline constexpr const char* k_fade_kind_version = "1";
-inline constexpr const char* k_crossfade_kind_version = "1";
-inline constexpr const char* k_nested_kind_version = "1";
-inline constexpr const char* k_image_kind_version = "1";
-inline constexpr const char* k_raster_kind_version = "1";
-
-// `org.arbc.image` ships OUT-OF-LIB (`arbc-plugin-image`), so `runtime` cannot name its
-// content type -- doing so would link the decoder into `libarbc`, which is the one thing
-// doc 17's codec line forbids. Its reverse-DNS id is the persistent contract the codec
-// routes on, so the id (and only the id) is spelled here.
-inline constexpr const char* k_image_kind_id = "org.arbc.image";
 
 // org.arbc.solid: encodes/decodes `SolidContent`'s premultiplied `Rgba` as a
 // `{"color": [r, g, b, a]}` params object.

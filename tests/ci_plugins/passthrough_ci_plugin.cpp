@@ -89,16 +89,17 @@ public:
     return 0;
   }
 
-  std::optional<arbc::RenderResult> render(const arbc::RenderRequest& request,
-                                           std::shared_ptr<arbc::RenderCompletion> /*done*/) override {
+  std::optional<arbc::RenderResult>
+  render(const arbc::RenderRequest& request,
+         std::shared_ptr<arbc::RenderCompletion> /*done*/) override {
     assert(d_pull != nullptr && d_backend != nullptr &&
            "PassthroughContent rendered before attach");
     // Bit-identical pass-through into the caller's target: the sub-request
     // carries snapshot, exactness and deadline verbatim (doc 05:96-100); only
     // the completion is ours. Same discipline as fade's E == 1 branch: an
     // unsettled (worker-dispatched) pull is a TRANSIENT, not-exact placeholder.
-    const arbc::RenderRequest sub{request.region,    request.scale,     request.time,
-                                  request.snapshot,  request.target,    request.exactness,
+    const arbc::RenderRequest sub{request.region,   request.scale,  request.time,
+                                  request.snapshot, request.target, request.exactness,
                                   request.deadline};
     auto done = std::make_shared<arbc::RenderCompletion>();
     d_pull->pull(d_input, sub, done);
@@ -150,8 +151,7 @@ make_passthrough(arbc::ContentConfig config) {
 arbc::expected<std::string, std::string> serialize_passthrough(const arbc::Content& content) {
   const auto* passthrough = dynamic_cast<const PassthroughContent*>(&content);
   if (passthrough == nullptr) {
-    return arbc::unexpected<std::string>(
-        "org.arbc.ci.passthrough: content is not a passthrough");
+    return arbc::unexpected<std::string>("org.arbc.ci.passthrough: content is not a passthrough");
   }
   return std::string("{\"note\":\"") + passthrough->note() + "\"}";
 }

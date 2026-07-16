@@ -269,10 +269,10 @@ void require_render_equivalent(CpuBackend& backend, Content& a, Content& b, Time
   const Rect region = Rect::from_size(k_target_extent, k_target_extent);
   auto a_done = std::make_shared<RenderCompletion>();
   auto b_done = std::make_shared<RenderCompletion>();
-  const RenderRequest a_request{region,     1.0, time, StateHandle{}, **a_target,
-                                Exactness::Exact, Deadline::none()};
-  const RenderRequest b_request{region,     1.0, time, StateHandle{}, **b_target,
-                                Exactness::Exact, Deadline::none()};
+  const RenderRequest a_request{
+      region, 1.0, time, StateHandle{}, **a_target, Exactness::Exact, Deadline::none()};
+  const RenderRequest b_request{
+      region, 1.0, time, StateHandle{}, **b_target, Exactness::Exact, Deadline::none()};
 
   const std::optional<RenderResult> a_result = settle(a.render(a_request, a_done), a_done);
   const std::optional<RenderResult> b_result = settle(b.render(b_request, b_done), b_done);
@@ -474,11 +474,12 @@ TEST_CASE("plugin codec failures are error values, never throws") {
         return unexpected<std::string>("unused");
       };
       REQUIRE(registry
-                  .add("org.arbc.ci.badcodec",
-                       [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
-                         return unexpected<std::string>("unused");
-                       },
-                       KindMetadata{"Bad Codec", "1"}, std::move(codec))
+                  .add(
+                      "org.arbc.ci.badcodec",
+                      [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
+                        return unexpected<std::string>("unused");
+                      },
+                      KindMetadata{"Bad Codec", "1"}, std::move(codec))
                   .has_value());
 
       KindBridge bridge;
@@ -508,11 +509,12 @@ TEST_CASE("plugin codec failures are error values, never throws") {
       return unexpected<std::string>("unused");
     };
     REQUIRE(registry
-                .add("org.arbc.ci.okcodec",
-                     [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
-                       return unexpected<std::string>("unused");
-                     },
-                     KindMetadata{"Ok Codec", "1"}, std::move(codec))
+                .add(
+                    "org.arbc.ci.okcodec",
+                    [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
+                      return unexpected<std::string>("unused");
+                    },
+                    KindMetadata{"Ok Codec", "1"}, std::move(codec))
                 .has_value());
 
     KindBridge bridge;
@@ -608,8 +610,7 @@ TEST_CASE("the passthrough module's factory, hooks and render degrade as values"
       void pull(ContentRef, const RenderRequest&, std::shared_ptr<RenderCompletion>) override {}
     };
     class FailingPull final : public PullService {
-      void pull(ContentRef, const RenderRequest&,
-                std::shared_ptr<RenderCompletion> done) override {
+      void pull(ContentRef, const RenderRequest&, std::shared_ptr<RenderCompletion> done) override {
         done->fail(RenderError::ContentFailed);
       }
     };
