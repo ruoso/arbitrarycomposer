@@ -173,3 +173,18 @@ target_link_libraries(plugin_scan PRIVATE arbc::arbc)
 target_compile_features(plugin_scan PRIVATE cxx_std_20)
 add_test(NAME plugin_scan COMMAND plugin_scan)
 set_property(TEST plugin_scan PROPERTY ENVIRONMENT "ARBC_PLUGIN_PATH=${arbc_plugin_dir}")
+
+# packaging.plugin_helper: run_staged_install.cmake built examples/plugin-template --
+# find_package + one arbc_add_plugin() call -- against the SAME staged prefix and hands
+# the produced module's path here. The test loads it through the production
+# PluginHost::load_plugin() and asserts its kind registered (doc 10:47-49).
+if(NOT ARBC_TEMPLATE_MODULE)
+  message(FATAL_ERROR "-DARBC_TEMPLATE_MODULE=<path> is required "
+                      "(run_staged_install.cmake passes the built template module)")
+endif()
+add_executable(plugin_template_load plugin_template_load.cpp)
+target_link_libraries(plugin_template_load PRIVATE arbc::arbc)
+target_compile_features(plugin_template_load PRIVATE cxx_std_20)
+target_compile_definitions(plugin_template_load
+                           PRIVATE "ARBC_TEMPLATE_MODULE=\"${ARBC_TEMPLATE_MODULE}\"")
+add_test(NAME plugin_template_load COMMAND plugin_template_load)

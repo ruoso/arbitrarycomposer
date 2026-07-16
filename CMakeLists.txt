@@ -19,6 +19,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(ArbcComponent)
+# The shipped one-line plugin builder (doc 10:47-49): the same file the installed
+# arbcConfig.cmake include()s, dogfooded in-tree by the three plugins/* MODULEs.
+include(ArbcAddPlugin)
 
 add_library(arbc_build_flags INTERFACE)
 target_compile_options(

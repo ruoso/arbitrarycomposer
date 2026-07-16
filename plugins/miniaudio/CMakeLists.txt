@@ -4,10 +4,10 @@
 #
 # It carries its OWN private miniaudio-class backend dependency
 # (third_party/maudio.h), which must never enter `libarbc` / `arbc-testing`
-# (device_monitor.md D4). This is a hand-rolled MODULE target, NOT an
-# `arbc_add_component` (those fold into `libarbc`, dragging the OS-audio backend
-# into core); `packaging.plugin_helper` (M9) migrates it onto the shipped
-# `arbc_add_plugin()` helper later (mirrors imageseq, Decision 6).
+# (device_monitor.md D4). The MODULE is defined via the shipped
+# `arbc_add_plugin()` helper (packaging.plugin_helper), NOT `arbc_add_component`
+# (those fold into `libarbc`, dragging the OS-audio backend into core; mirrors
+# imageseq, Decision 6).
 
 # The sink implementation as a STATIC library so BOTH the loadable MODULE and the
 # in-repo test binaries construct the sink directly, while the backend dependency
@@ -26,7 +26,8 @@ target_compile_features(arbc-plugin-miniaudio-impl PUBLIC cxx_std_20)
 # to any `arbc_*` component, to `arbc`, or to `arbc-testing` (device_monitor.md D4).
 target_link_libraries(arbc-plugin-miniaudio-impl PUBLIC arbc PRIVATE arbc_build_flags)
 
-# The shipped loadable artifact: a MODULE carrying only the extern "C" factory
-# entry point, linking the impl (+ its private backend dep) and the umbrella `arbc`.
-add_library(arbc-plugin-miniaudio MODULE miniaudio_plugin.cpp)
-target_link_libraries(arbc-plugin-miniaudio PRIVATE arbc-plugin-miniaudio-impl arbc arbc_build_flags)
+# The shipped loadable artifact: the helper's MODULE carrying only the extern "C"
+# factory entry point. The helper links `arbc::arbc` PRIVATE; the impl (+ its
+# private backend dep) and the in-tree warning flags ride the LINK_LIBRARIES seam.
+arbc_add_plugin(arbc-plugin-miniaudio SOURCES miniaudio_plugin.cpp
+                LINK_LIBRARIES arbc-plugin-miniaudio-impl arbc_build_flags)

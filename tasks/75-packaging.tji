@@ -12,8 +12,9 @@ task packaging "Packaging and release" {
   task plugin_helper "arbc_add_plugin() helper" {
     effort 1d
     allocate team
+    complete 100
     depends !install
-    note "One-line third-party plugin builds shipped with the package; plugin template directory compiled in CI. Doc 10."
+    note "One-line third-party plugin builds shipped with the package; plugin template directory compiled in CI. Doc 10. Refinement: tasks/refinements/packaging/plugin_helper.md"
   }
   task version_api "Version API + changelog discipline" {
     effort 0.5d

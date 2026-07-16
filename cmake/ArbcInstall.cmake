@@ -110,6 +110,13 @@ function(arbc_install)
                 "${CMAKE_CURRENT_BINARY_DIR}/arbcConfigVersion.cmake"
           DESTINATION "${cmake_dest}")
 
+  # arbc_add_plugin() ships with the package (doc 10:47-49, packaging.plugin_helper
+  # D2): the SAME cmake/ArbcAddPlugin.cmake the in-tree shipped plugins dogfood
+  # installs beside arbcConfig.cmake, which include()s it unconditionally -- so
+  # find_package(arbc CONFIG) alone makes the helper callable.
+  install(FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/ArbcAddPlugin.cmake"
+          DESTINATION "${cmake_dest}")
+
   # --- pkg-config (doc 10:43-46, packaging.install) --------------------------
   # The flat convenience form for plain C / Makefile embedders of the CORE. The prefix
   # is relocatable off ${pcfiledir}, so it survives the staged `cmake --install --prefix`

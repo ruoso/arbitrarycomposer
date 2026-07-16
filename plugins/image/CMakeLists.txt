@@ -14,9 +14,9 @@
 # and fetches the bytes through the one `LoadContext` / `AssetSource` seam, and hands them
 # here through the opaque `ContentConfig` (Decision 5).
 #
-# Hand-rolled MODULE + impl-STATIC pair, mirroring `plugins/imageseq`, deliberately NOT
-# `arbc_add_component` (those fold objects into `libarbc`, dragging the decoder into core);
-# `packaging.plugin_helper` (M9) migrates both onto the shipped `arbc_add_plugin()` helper.
+# An `arbc_add_plugin()` MODULE + impl-STATIC pair, mirroring `plugins/imageseq`,
+# deliberately NOT `arbc_add_component` (those fold objects into `libarbc`, dragging the
+# decoder into core); the MODULE rides the shipped helper (packaging.plugin_helper).
 
 # The kind implementation as a STATIC library so BOTH the loadable MODULE and the in-repo
 # test binaries construct the content directly (no `dlopen` needed to drive the kind), while
@@ -33,10 +33,11 @@ target_compile_features(arbc-plugin-image-impl PUBLIC cxx_std_20)
 target_link_libraries(arbc-plugin-image-impl PUBLIC arbc PRIVATE arbc-plugin-imdec
                                                                  arbc_build_flags)
 
-# The shipped loadable artifact: a MODULE carrying only the extern "C" entry point, linking
-# the impl (+ its private decode dep) and the umbrella `arbc`.
-add_library(arbc-plugin-image MODULE image_plugin.cpp)
-target_link_libraries(arbc-plugin-image PRIVATE arbc-plugin-image-impl arbc arbc_build_flags)
+# The shipped loadable artifact: the helper's MODULE carrying only the extern "C" entry
+# point. The helper links `arbc::arbc` PRIVATE; the impl (+ its private decode dep) and
+# the in-tree warning flags ride the LINK_LIBRARIES seam.
+arbc_add_plugin(arbc-plugin-image SOURCES image_plugin.cpp
+                LINK_LIBRARIES arbc-plugin-image-impl arbc_build_flags)
 
 # The checked-in fixture the tests decode. It is deliberately MATERIALLY LARGER than the
 # compositor's 256-px tile (`tile_planning.hpp:145`), so the provided-surface claim -- that

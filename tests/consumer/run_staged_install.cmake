@@ -1,6 +1,8 @@
 # Driver for the `install.consumer` CTest test (quality.testing_artifact, D5).
 #
-# Stages an install, then configures/builds/runs tests/consumer/ against it TWICE:
+# Stages an install, builds examples/plugin-template against it (the one-line
+# arbc_add_plugin() proof, packaging.plugin_helper), then configures/builds/runs
+# tests/consumer/ against the same prefix TWICE:
 #
 #   1. the plugin author's path -- find_package(arbc CONFIG REQUIRED COMPONENTS testing),
 #      link arbc::arbc + arbc::testing, run arbc::contract_tests over a foreign Content;
@@ -16,7 +18,8 @@ cmake_minimum_required(VERSION 3.24)
 
 foreach(required IN ITEMS ARBC_BUILD_DIR ARBC_CONSUMER_SRC ARBC_STAGE_DIR
                           ARBC_CONSUMER_BUILD_DIR ARBC_CORE_ONLY_BUILD_DIR
-                          ARBC_CTEST_COMMAND)
+                          ARBC_CTEST_COMMAND ARBC_TEMPLATE_SRC ARBC_TEMPLATE_BUILD_DIR
+                          ARBC_MODULE_SUFFIX)
   if(NOT ${required})
     message(FATAL_ERROR "run_staged_install: -D${required}=... is required")
   endif()
@@ -53,6 +56,34 @@ endif()
 if(ARBC_CATCH2_SOURCE_DIR)
   list(APPEND common_args "-DFETCHCONTENT_SOURCE_DIR_CATCH2=${ARBC_CATCH2_SOURCE_DIR}")
 endif()
+
+# --- packaging.plugin_helper: the third-party plugin template ---------------------
+# examples/plugin-template is a standalone foreign project whose ONLY target-defining
+# lines are find_package(arbc CONFIG REQUIRED) + one arbc_add_plugin() call.
+# Configuring and building it against the staged prefix -- on every lane, including
+# the shared ones where a MODULE's link against a shared libarbc can actually go
+# wrong -- is what keeps the shipped helper honest against the INSTALLED package
+# (doc 10:47-49). The consumer's plugin_template_load then loads the produced module
+# through the production PluginHost.
+message(STATUS "install.consumer: third-party plugin template (arbc_add_plugin)")
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -S "${ARBC_TEMPLATE_SRC}" -B "${ARBC_TEMPLATE_BUILD_DIR}"
+          ${common_args} COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND "${CMAKE_COMMAND}" --build "${ARBC_TEMPLATE_BUILD_DIR}"
+                        COMMAND_ERROR_IS_FATAL ANY)
+
+# The built module's path, handed into both consumer configures the way plugin paths
+# reach in-tree tests (a -D compile-definition seam). The platform's module
+# prefix/suffix come from the parent configure -- script mode does not know them --
+# and the prefix may be legitimately empty (Windows), so only the suffix is in the
+# required list above.
+set(arbc_template_module
+    "${ARBC_TEMPLATE_BUILD_DIR}/${ARBC_MODULE_PREFIX}template-plugin${ARBC_MODULE_SUFFIX}")
+if(NOT EXISTS "${arbc_template_module}")
+  message(FATAL_ERROR "install.consumer: the template build produced no module at "
+                      "${arbc_template_module}")
+endif()
+list(APPEND common_args "-DARBC_TEMPLATE_MODULE=${arbc_template_module}")
 
 message(STATUS "install.consumer: plugin-author path (COMPONENTS testing)")
 execute_process(

@@ -21,6 +21,13 @@ include(CMakeFindDependencyMacro)
 
 include("${CMAKE_CURRENT_LIST_DIR}/arbcTargets.cmake")
 
+# arbc_add_plugin() -- "a `arbc_add_plugin()` CMake helper ships with the package so
+# third-party plugin builds are one line" (doc 10:47-49). Unconditional: it is a pure
+# ~20-line function that imposes nothing on consumers who ignore it (doc 10:32-35), so
+# gating it behind a component would be ceremony without containment value
+# (packaging.plugin_helper D2). It needs arbc::arbc, hence after the targets include.
+include("${CMAKE_CURRENT_LIST_DIR}/ArbcAddPlugin.cmake")
+
 @ARBC_ZSTD_LINK_INTERFACE@
 
 set(arbc_testing_FOUND FALSE)

@@ -1343,10 +1343,15 @@ add_test(
     "-DARBC_CXX_FLAGS=${arbc_consumer_flags}"
     "-DARBC_LINKER_FLAGS=${arbc_consumer_flags}"
     "-DARBC_CATCH2_SOURCE_DIR=${catch2_SOURCE_DIR}"
+    "-DARBC_TEMPLATE_SRC=${CMAKE_SOURCE_DIR}/examples/plugin-template"
+    "-DARBC_TEMPLATE_BUILD_DIR=${CMAKE_BINARY_DIR}/_plugin_template"
+    "-DARBC_MODULE_PREFIX=${CMAKE_SHARED_MODULE_PREFIX}"
+    "-DARBC_MODULE_SUFFIX=${CMAKE_SHARED_MODULE_SUFFIX}"
     "-DARBC_CTEST_COMMAND=${CMAKE_CTEST_COMMAND}" -P
     "${CMAKE_CURRENT_SOURCE_DIR}/consumer/run_staged_install.cmake")
-# It compiles two CMake projects of its own, so it gets the machine to itself and a
-# budget that survives a cold Catch2 build under a sanitizer.
+# It compiles three CMake projects of its own (the plugin template plus the consumer
+# twice), so it gets the machine to itself and a budget that survives a cold Catch2
+# build under a sanitizer.
 set_tests_properties(install.consumer PROPERTIES RUN_SERIAL TRUE TIMEOUT 3600)
 # On the MSVC shared lane the staged libarbc is arbc.dll installed to <prefix>/bin,
 # and the consumer executables (core_only, conformance_consumer) import it at start

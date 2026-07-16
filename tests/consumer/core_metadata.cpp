@@ -28,9 +28,8 @@ namespace {
 // zstd is the one allowed (conditional) dependency and is deliberately absent from this
 // list.
 constexpr std::array<std::string_view, 18> k_forbidden = {
-    "catch2",  "png",   "jpeg",    "jpg",  "webp",  "avif",
-    "imdec",   "stb",   "miniaudio", "maudio", "vulkan", "opengl",
-    "metal",   "cuda",  "directx", "qt",   "gtk",   "imgui"};
+    "catch2", "png",    "jpeg",   "jpg",   "webp", "avif",    "imdec", "stb", "miniaudio",
+    "maudio", "vulkan", "opengl", "metal", "cuda", "directx", "qt",    "gtk", "imgui"};
 
 std::string to_lower(std::string_view in) {
   std::string out(in);
@@ -54,8 +53,7 @@ bool scan_field(std::string_view what, const std::string& value) {
   const std::string_view hit = first_forbidden(lowered);
   if (!hit.empty()) {
     std::printf("core_metadata: %s exposes a forbidden dependency '%.*s': %s\n",
-                std::string(what).c_str(), static_cast<int>(hit.size()), hit.data(),
-                value.c_str());
+                std::string(what).c_str(), static_cast<int>(hit.size()), hit.data(), value.c_str());
     return false;
   }
   return true;

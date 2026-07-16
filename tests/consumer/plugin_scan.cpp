@@ -28,8 +28,8 @@ int main() {
   for (const arbc::PluginScanEntry& entry : report.entries) {
     if (entry.outcome == arbc::PluginScanEntry::Outcome::CannotOpen) {
       ++cannot_open;
-      std::printf("plugin_scan: a shipped plugin failed to open: %s (%s)\n",
-                  entry.path.c_str(), entry.diagnostic.c_str());
+      std::printf("plugin_scan: a shipped plugin failed to open: %s (%s)\n", entry.path.c_str(),
+                  entry.diagnostic.c_str());
     }
   }
   if (cannot_open != 0) {
