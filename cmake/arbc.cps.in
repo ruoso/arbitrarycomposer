@@ -1,0 +1,21 @@
+{
+  "cps_version": "0.12.0",
+  "name": "arbc",
+  "version": "@PROJECT_VERSION@",
+  "description": "@PROJECT_DESCRIPTION@",
+  "default_components": ["arbc"],
+  "components": {
+    "arbc": {
+      "type": "@ARBC_CPS_CORE_TYPE@",
+      "location": "@ARBC_CPS_PREFIX_TOKEN@/@CMAKE_INSTALL_LIBDIR@/@ARBC_CPS_CORE_FILENAME@",
+      "includes": ["@ARBC_CPS_PREFIX_TOKEN@/@CMAKE_INSTALL_INCLUDEDIR@"],
+      "requires": [@ARBC_CPS_CORE_REQUIRES@]
+    },
+    "testing": {
+      "type": "archive",
+      "location": "@ARBC_CPS_PREFIX_TOKEN@/@CMAKE_INSTALL_LIBDIR@/@ARBC_CPS_TESTING_FILENAME@",
+      "includes": ["@ARBC_CPS_PREFIX_TOKEN@/@CMAKE_INSTALL_INCLUDEDIR@"],
+      "requires": ["catch2:catch2"]
+    }
+  }
+}

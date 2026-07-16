@@ -53,12 +53,20 @@ function(arbc_install)
   get_target_property(zstd_link arbc_zstd INTERFACE_LINK_LIBRARIES)
   set(ARBC_ZSTD_FIND_DEPENDENCY "")
   set(ARBC_ZSTD_LINK_INTERFACE "")
+  # The pkg-config Requires.private and the CPS `requires` express the SAME conditional
+  # zstd dependency as the CMake config above -- one discriminator, three metadata forms
+  # that never disagree (packaging.install Decision D2). Empty on the fetched-folded and
+  # system-shared lanes; the zstd requirement only on system-zstd + STATIC libarbc.
+  set(ARBC_PC_REQUIRES_PRIVATE "")
+  set(ARBC_CPS_CORE_REQUIRES "")
   if(zstd_link STREQUAL "libzstd_static")
     target_sources(arbc PRIVATE "$<TARGET_OBJECTS:libzstd_static>")
   elseif(NOT BUILD_SHARED_LIBS)
     set(ARBC_ZSTD_FIND_DEPENDENCY "find_dependency(zstd 1.5)")
     set(ARBC_ZSTD_LINK_INTERFACE
         "set_property(TARGET arbc::arbc APPEND PROPERTY INTERFACE_LINK_LIBRARIES ${zstd_link})")
+    set(ARBC_PC_REQUIRES_PRIVATE "libzstd >= 1.5")
+    set(ARBC_CPS_CORE_REQUIRES "\"zstd:libzstd\"")
   endif()
 
   # --- the two artifacts -----------------------------------------------------
@@ -101,4 +109,75 @@ function(arbc_install)
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/arbcConfig.cmake"
                 "${CMAKE_CURRENT_BINARY_DIR}/arbcConfigVersion.cmake"
           DESTINATION "${cmake_dest}")
+
+  # --- pkg-config (doc 10:43-46, packaging.install) --------------------------
+  # The flat convenience form for plain C / Makefile embedders of the CORE. The prefix
+  # is relocatable off ${pcfiledir}, so it survives the staged `cmake --install --prefix`
+  # (the CMAKE_INSTALL_PREFIX at configure time is not the install-time prefix). The `..`
+  # hop count is computed here so a multiarch libdir resolves as well as a plain lib/lib64.
+  file(RELATIVE_PATH ARBC_PC_RELDIR_TO_PREFIX
+       "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_PREFIX}")
+  configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/arbc.pc.in"
+                 "${CMAKE_CURRENT_BINARY_DIR}/arbc.pc" @ONLY)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/arbc.pc"
+          DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+
+  # --- CPS metadata (doc 10:43-46, packaging.install Decision D4) -------------
+  # Mirrors the CMake package's OWN shape -- one package, a default `arbc` component and
+  # an optional `testing` component -- which pkg-config's flat model cannot. Gated as
+  # metadata "as it becomes consumable by tooling" (doc 10:45), so it is generated and
+  # validated as well-formed JSON only, never against a `cps-config`-class reader. The
+  # `arbc` component's `requires` carries the same conditional zstd and nothing else;
+  # Catch2 lives only on the `testing` component, exactly as the CMake COMPONENTS gate.
+  set(ARBC_CPS_PREFIX_TOKEN "@prefix@") # literal CPS prefix token, not a configure var
+  if(BUILD_SHARED_LIBS)
+    set(ARBC_CPS_CORE_TYPE "dylib")
+    set(ARBC_CPS_CORE_FILENAME
+        "${CMAKE_SHARED_LIBRARY_PREFIX}arbc${CMAKE_SHARED_LIBRARY_SUFFIX}")
+  else()
+    set(ARBC_CPS_CORE_TYPE "archive")
+    set(ARBC_CPS_CORE_FILENAME
+        "${CMAKE_STATIC_LIBRARY_PREFIX}arbc${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  endif()
+  set(ARBC_CPS_TESTING_FILENAME
+      "${CMAKE_STATIC_LIBRARY_PREFIX}arbc-testing${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/arbc.cps.in"
+                 "${CMAKE_CURRENT_BINARY_DIR}/arbc.cps" @ONLY)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/arbc.cps"
+          DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/cps")
+
+  # --- VERIFY_INTERFACE_HEADER_SETS (doc 17:223-226, Decision D5) -------------
+  # Every public header of both shipped artifacts must compile standalone. Setting the
+  # property only CREATES the per-target verify targets (and the aggregate
+  # `all_verify_interface_header_sets`); it costs nothing until built, so ordinary builds
+  # are untouched and a single CI lane pays for the standalone-compile gate.
+  set_target_properties(arbc arbc-testing PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
+
+  # --- plugin install layout (doc 17:28, Decision D6) ------------------------
+  # The three shipped MODULE plugins install to a conventional, ARBC_PLUGIN_PATH-
+  # discoverable subdir as loadable modules -- NO EXPORT, so they never enter arbcTargets
+  # or the config's imported-target set and never become link targets that would drag a
+  # codec/device dep onto an embedder. scan_plugin_path() loads this dir end-to-end.
+  set(plugin_dest "${CMAKE_INSTALL_LIBDIR}/arbc/plugins")
+  set(arbc_plugins "")
+  foreach(plugin arbc-plugin-image arbc-plugin-imageseq arbc-plugin-miniaudio)
+    if(TARGET ${plugin})
+      list(APPEND arbc_plugins ${plugin})
+    endif()
+  endforeach()
+  if(arbc_plugins)
+    # On the shared lane the plugins DT_NEEDED libarbc.so, which CMake links by build-tree
+    # path -- scheduling an install-time RELINK the standalone `cmake --install --prefix`
+    # the install.consumer test uses cannot run (the same trap arbc_finalize_library fixes
+    # for the umbrella). BUILD_WITH_INSTALL_RPATH builds them with their (empty) install
+    # RPATH already, so no relink is scheduled; a scanning host has libarbc.so already
+    # loaded, so the empty RPATH still resolves the plugin's DT_NEEDED. Inert for the
+    # static lanes, so their plugins are byte-unchanged.
+    if(BUILD_SHARED_LIBS)
+      set_target_properties(${arbc_plugins} PROPERTIES BUILD_WITH_INSTALL_RPATH ON)
+    endif()
+    install(TARGETS ${arbc_plugins}
+            LIBRARY DESTINATION "${plugin_dest}"
+            RUNTIME DESTINATION "${plugin_dest}")
+  endif()
 endfunction()

@@ -6,7 +6,8 @@ task packaging "Packaging and release" {
   task install "Install + package metadata" {
     effort 2d
     allocate team
-    note "FILE_SET aggregation onto the umbrella install, CMake package config, pkg-config, CPS metadata; VERIFY_INTERFACE_HEADER_SETS in CI. Docs 10/17."
+    complete 100
+    note "FILE_SET aggregation onto the umbrella install, CMake package config, pkg-config, CPS metadata; VERIFY_INTERFACE_HEADER_SETS in CI. Docs 10/17. Refinement: tasks/refinements/packaging/install.md"
   }
   task plugin_helper "arbc_add_plugin() helper" {
     effort 1d

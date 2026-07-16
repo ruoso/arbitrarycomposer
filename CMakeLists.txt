@@ -316,6 +316,20 @@ endif()
 include(ArbcInstall)
 arbc_install()
 
+# Minimal CPack metadata (packaging.install Decision D7): `cpack -G TGZ` rolls the
+# installed tree into a tarball as a local convenience. Deliberately NOT a CI gate --
+# no design promise rides on a packaging format, and the project's real distribution
+# vehicle is the staged `cmake --install` the install.consumer test already exercises.
+# include(CPack) at directory scope so the CPACK_* variables take effect; it only reads
+# them and generates config files, adding no build/test work.
+set(CPACK_PACKAGE_NAME "arbc")
+set(CPACK_PACKAGE_VENDOR "arbitrarycomposer")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_GENERATOR "TGZ")
+include(CPack)
+
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()

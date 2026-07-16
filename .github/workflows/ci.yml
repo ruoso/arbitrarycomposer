@@ -128,6 +128,14 @@ jobs:
           cmake --preset ${{ matrix.preset }}
       - name: build
         run: cmake --build --preset ${{ matrix.preset }} --parallel 4
+      # VERIFY_INTERFACE_HEADER_SETS (packaging.install Decision D5, doc 17:223-226):
+      # compile every public header of `arbc` and `arbc-testing` standalone. Setting the
+      # property only creates the verify target -- it is inert until built -- so a SINGLE
+      # gcc lane pays for the gate while every other lane's ordinary build is untouched.
+      - name: verify interface header sets
+        if: matrix.name == 'gcc-debug'
+        run: cmake --build --preset ${{ matrix.preset }} --parallel 4
+             --target all_verify_interface_header_sets
       - name: test
         run: ctest --preset ${{ matrix.preset }}
 

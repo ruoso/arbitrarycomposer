@@ -1,0 +1,33 @@
+# pkg-config metadata for the CORE library (arbc::arbc) -- packaging.install, doc
+# 10:43-46 ("Install exports: CMake package config files, pkg-config files, and CPS
+# metadata"). The convenience path for plain C / hand-written Makefile embedders of
+# the core; the CMake package (arbcConfig.cmake) remains the primary, richer form and
+# the CPS file (arbc.cps) the component-aware one. There is deliberately no
+# arbc-testing.pc: pkg-config is flat (no component notion) and the conformance suite
+# asserts from inside a CMake-idiomatic Catch2 TEST_CASE, an audience with no
+# pkg-config path (packaging.install Decision D3).
+#
+# The prefix is derived from this file's own location (${pcfiledir}), so the installed
+# tree is relocatable: the same value can never be baked in, because the staged
+# `cmake --install --prefix <p>` chooses a prefix the configure step did not know.
+# ARBC_PC_RELDIR_TO_PREFIX is the number of `..` hops from <prefix>/<libdir>/pkgconfig
+# back to <prefix>, computed against CMAKE_INSTALL_LIBDIR so a multiarch libdir
+# (lib/x86_64-linux-gnu) resolves as correctly as a plain lib/lib64.
+prefix=${pcfiledir}/@ARBC_PC_RELDIR_TO_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: arbc
+Description: @PROJECT_DESCRIPTION@ -- core library
+Version: @PROJECT_VERSION@
+# The core imposes nothing beyond a CONDITIONAL zstd (doc 10:32-35): empty on the
+# fetched-folded and system-shared lanes, `libzstd >= 1.5` only when a static libarbc
+# carries a system zstd to the consumer's final link. Fed from the SAME discriminator
+# arbc_install() computes for the CMake config and the CPS file, so the three metadata
+# forms never disagree (packaging.install Decision D2). Requires.private (not Requires)
+# so it reaches only a `--static` link line -- never a shared consumer's, and never a
+# Cflags -- keeping the core-imposes-only-zstd claim literally true.
+Requires.private: @ARBC_PC_REQUIRES_PRIVATE@
+Cflags: -I${includedir}
+Libs: -L${libdir} -larbc
