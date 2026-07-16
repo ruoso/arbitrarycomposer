@@ -448,7 +448,8 @@ DeserializeFn recording_deserialize(DeserializeFn base, std::string_view kind_id
 // through exactly the codecs, exactly the sink, and exactly the loader a load would have.
 class LoadAssembly {
 public:
-  LoadAssembly(Document& doc, KindBridge& bridge, const Registry& registry, RasterTileStore* tiles)
+  LoadAssembly(Document& doc, KindBridge& bridge, const Registry& registry, RasterTileStore* tiles,
+               TileDecodeDispatch* decode)
       : d_assets(DocumentSerializeAccess::model(doc), DocumentSerializeAccess::pending(doc)),
         d_sink(make_sink(doc)), d_loader(DocumentSerializeAccess::model(doc), registry, d_codecs,
                                          d_sink, DocumentSerializeAccess::pending(doc)) {
@@ -501,8 +502,9 @@ public:
     // The hash memo rides the LOAD path too (Decision 5): every tile the reader decodes has
     // a name it already knows, so seeding the memo here is what makes the first save after a
     // load -- and the reader's own params-only residual re-serialize -- a pure memo sweep
-    // rather than a full re-hash of the document.
-    Codec raster = raster_codec(tiles);
+    // rather than a full re-hash of the document. `decode` (serialize.tile_store_parallel_load)
+    // fans the per-tile decode across pool workers when a host supplies it; null loads inline.
+    Codec raster = raster_codec(tiles, decode);
     d_codecs.add(
         RasterContent::kind_id,
         Codec{raster.serialize, recording_deserialize(raster.deserialize, RasterContent::kind_id,
@@ -668,7 +670,8 @@ bool settle_asset_arrival(Document& doc, const PendingExternalLoads::Arrival& ar
 expected<std::monostate, ReaderError> load_document(std::string_view bytes, Document& doc,
                                                     KindBridge& bridge, const Registry& registry,
                                                     std::string base_uri, AssetSource* assets,
-                                                    RasterTileStore* tiles) {
+                                                    RasterTileStore* tiles,
+                                                    TileDecodeDispatch* decode) {
   const JournalSuspension no_journal(doc);
   Model& into = DocumentSerializeAccess::model(doc);
 
@@ -693,7 +696,7 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
   // still the lowest-id composition, as `find_first_composition` requires.
   const ObjectId root_composition = into.allocate_id();
 
-  LoadAssembly assembly(doc, bridge, registry, tiles);
+  LoadAssembly assembly(doc, bridge, registry, tiles, decode);
   assembly.loader().seed(ctx.base_uri(), root_composition);
 
   // The document's unknown-field stash is replaced wholesale by a successful load and
@@ -731,7 +734,9 @@ std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Regis
     if (ready.empty()) {
       break;
     }
-    LoadAssembly assembly(doc, bridge, registry, nullptr);
+    // A late-arriving child decodes INLINE: the settle path holds no worker pool, and a
+    // deferred child is a rare, off-the-open-critical-path event.
+    LoadAssembly assembly(doc, bridge, registry, nullptr, nullptr);
     for (const PendingExternalLoads::Arrival& arrival : ready) {
       // The ASSET arm first: one queue, two value shapes, and the asset map is the
       // discriminant (kinds.image_async_pending Decision 2). An asset arrival never reaches

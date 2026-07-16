@@ -319,7 +319,12 @@ current-revision entries qualify.
   tile-encode save (doc 08 Principle 8): the save thread fans each tile's
   pure encode — hash and shuffle-then-compress, both a pure function of one
   immutable pinned tile — across the pool's workers, then reaps by index on
-  the save thread where every mutation stays. The leaf-only rule governs the
+  the save thread where every mutation stays. Its second user is the
+  symmetric parallel tile-**decode** load (doc 08 Principle 8): the loading
+  thread fans each tile's pure decode — decompress, unshuffle, verify-hash,
+  a pure function of one fetched frame — across the same workers, while the
+  fetch and every pool write stay on the loading thread, reaping by index.
+  The leaf-only rule governs the
   *render* lane specifically; the work lane needs no such rule because its
   jobs are pure by construction — they touch only their own caller-owned
   output buffer and the immutable pinned document version, never the tile

@@ -30,6 +30,7 @@ class Content;
 class CodecTable;         // forward-declared (names nlohmann::json; off this public header)
 class RasterTileStore;    // runtime/raster_tile_store.hpp (the incremental-save hash memo)
 class TileEncodeDispatch; // runtime/tile_encode_dispatch.hpp (the parallel-save executor)
+class TileDecodeDispatch; // runtime/tile_decode_dispatch.hpp (the parallel-load executor)
 
 // The runtime-owned bijection realizing the `ContentRecord.kind` uint64 <->
 // reverse-DNS `kind_id` string bridge the model and writer deferred (Decision 1).
@@ -194,14 +195,19 @@ expected<std::string, SerializeError> save_document(const Document& doc, const K
 // every tile it decodes has a name it already knows, so re-hashing it on the next save
 // would be pure waste. A null store simply loads without memoization.
 //
+// `decode` (optional, serialize.tile_store_parallel_load) is the `TileDecodeDispatch` bound
+// into the raster codec that fans the per-tile decode (decompress -> unshuffle -> verify-hash)
+// across pool workers; the fetch and every pool write stay on the loading thread. A null
+// dispatch loads the decode INLINE -- byte-identical to the serial load and the offline
+// default. Must outlive the call.
+//
 // A successful load also installs the document's `arbc.storage_format` on `doc`, so a
 // subsequent `save_document` re-emits it rather than silently rewriting every tile at a
 // precision the user never authored (serialize.raster_tile_store Decision 4).
-expected<std::monostate, ReaderError> load_document(std::string_view bytes, Document& doc,
-                                                    KindBridge& bridge, const Registry& registry,
-                                                    std::string base_uri = {},
-                                                    AssetSource* assets = nullptr,
-                                                    RasterTileStore* tiles = nullptr);
+expected<std::monostate, ReaderError>
+load_document(std::string_view bytes, Document& doc, KindBridge& bridge, const Registry& registry,
+              std::string base_uri = {}, AssetSource* assets = nullptr,
+              RasterTileStore* tiles = nullptr, TileDecodeDispatch* decode = nullptr);
 
 // Install every external child whose bytes have ARRIVED since the last call, and return how
 // many compositions were installed (runtime.async_external_load). WRITER-THREAD ONLY.

@@ -42,6 +42,8 @@
 #include <arbc/runtime/filesystem_asset_sink.hpp>
 #include <arbc/runtime/filesystem_asset_source.hpp>
 #include <arbc/runtime/raster_tile_store.hpp>
+#include <arbc/runtime/tile_decode_dispatch.hpp>
+#include <arbc/runtime/worker_pool.hpp>
 #include <arbc/serialize/codec.hpp>
 #include <arbc/serialize/save_context.hpp>
 #include <arbc/serialize/tile_blob.hpp>
@@ -185,6 +187,15 @@ constexpr std::size_t k_blob_bytes = static_cast<std::size_t>(k_edge) *
 // large one -- both over this, and the larger one by 25x.
 constexpr std::size_t k_transient_bound = k_blob_bytes + (512U * 1024U);
 
+// The parallel load's window (workers) and its O(window * tile) transient bound. A
+// worker-backed load holds up to `window()` = 2 * worker_count decode jobs -- and their
+// per-tile buffers -- in flight at once, so its transient is a small MULTIPLE of one tile
+// (still invariant in tile count), not the one-tile bound the serial path holds. The bound is
+// deliberately generous (window tiles + a 1 MiB fixed slack); its point is O(window * tile),
+// NOT O(image): 16 MiB at the large grid is still an order of magnitude over it.
+constexpr std::size_t k_workers = 4;
+constexpr std::size_t k_parallel_bound = (2U * k_workers) * k_blob_bytes + (1U << 20U);
+
 class ProjectDir {
 public:
   explicit ProjectDir(const std::string& name)
@@ -293,7 +304,7 @@ struct LoadPeak {
   std::size_t largest;
 };
 
-LoadPeak measure_load(const std::string& name, int tiles_side) {
+LoadPeak measure_load(const std::string& name, int tiles_side, std::size_t worker_count = 0) {
   const int side = tiles_side * k_edge;
   ProjectDir project(name);
   Scene scene(textured(side, side), k_edge);
@@ -310,6 +321,17 @@ LoadPeak measure_load(const std::string& name, int tiles_side) {
       save_document(scene.doc, scene.bridge, codecs, ctx);
   REQUIRE(saved.has_value());
 
+  // The parallel-load executor, when asked for one. Built OUTSIDE the probe scope so worker
+  // thread creation is not counted; only the decode buffers the workers allocate DURING the
+  // load are -- which is exactly the O(window * tile) transient under assertion. A zero
+  // `worker_count` keeps `dispatch` null: the inline load, byte-identical to the serial path.
+  WorkerPoolConfig cfg;
+  cfg.worker_count = worker_count;
+  WorkerPool pool(cfg);
+  int owner = 0;
+  TileDecodeDispatch dispatch(pool, &owner);
+  TileDecodeDispatch* const decode = (worker_count > 0) ? &dispatch : nullptr;
+
   Document loaded;
   KindBridge lbridge;
   RasterTileStore ltiles;
@@ -321,7 +343,7 @@ LoadPeak measure_load(const std::string& name, int tiles_side) {
   {
     HeapProbe probe;
     const auto ok = load_document(*saved, loaded, lbridge, scene.registry, project.base_uri(),
-                                  &source, &ltiles);
+                                  &source, &ltiles, decode);
     probe.disarm();
     REQUIRE(ok.has_value());
     peak = probe.peak();
@@ -375,6 +397,31 @@ TEST_CASE("a raster load's transient heap peak is bounded by one tile, at any im
   // ...and it is invariant, not merely bounded: the 16x area buys no meaningful growth. (The
   // slack absorbs the genuinely O(tiles) scaffolding -- 256 hash strings in the `blobs` array
   // -- which is why this is a bound and not an equality.)
+  CHECK(large.transient <= small.transient + k_blob_bytes + (256U * 1024U));
+}
+
+// enforces: 15-memory-model#raster-load-is-tilewise
+TEST_CASE(
+    "a worker-backed raster load's transient stays O(window * tile), invariant in tile count") {
+  // The SAME geometry at two tile counts, now decoded across N workers. The parallel path holds
+  // up to `window` decode buffers in flight, so its transient is O(window * tile) -- a small
+  // MULTIPLE of one tile, NOT O(image): the 16x image-area increase must buy no meaningful
+  // growth, exactly as the serial path's one-tile bound did. This pins that bounding is
+  // PRESERVED under the fan-out, not merely un-broken (Decision 4).
+  const LoadPeak small = measure_load("wsmall", 4, k_workers);
+  const LoadPeak large = measure_load("wlarge", 16, k_workers);
+
+  INFO("worker small: transient=" << small.transient << " largest=" << small.largest);
+  INFO("worker large: transient=" << large.transient << " largest=" << large.largest);
+
+  // (a) NO SINGLE ALLOCATION EXCEEDS ONE TILE BLOB (+ slack): a worker decodes ONE tile at a
+  // time into its own buffer, so the largest single allocation is unchanged by the fan-out.
+  CHECK(small.largest <= k_transient_bound);
+  CHECK(large.largest <= k_transient_bound);
+
+  // (b) THE TRANSIENT HIGH-WATER IS O(window * tile), invariant in tile count -- never O(image).
+  CHECK(small.transient <= k_parallel_bound);
+  CHECK(large.transient <= k_parallel_bound);
   CHECK(large.transient <= small.transient + k_blob_bytes + (256U * 1024U));
 }
 

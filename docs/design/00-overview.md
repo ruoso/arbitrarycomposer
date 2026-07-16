@@ -511,6 +511,22 @@ Initially-open questions, now decided in their own docs:
   (§ Threading model) and doc 08 (Principle 8). Doc 17 is unchanged — the
   `WorkerPool` is a class inside `runtime`, not a component the table names.
 
+- **The parallel tile-decode load reuses that lane, on the read side.** The
+  load `kinds.raster_tilewise_load` shipped is the mirror of the save: each
+  tile's decode — decompress, unshuffle, verify-hash — is a pure function of one
+  fetched frame over a reentrant decompressor, so it now fans across the *same*
+  generic work lane, no new lane built. The one refinement of the task note: the
+  **fetch** (`LoadContext` resolve + the asset-source read) stays on the loading
+  thread with every pool write, because both are single-writer/non-atomic and
+  the writer thread is the only structural allocator (doc 15) — only the pure
+  decode fans out, exactly as the save kept its sink write serial. A
+  worker-backed load is **byte-identical** to the inline one (the offline
+  default): the reap is strictly by index and the decode is pure, so completion
+  order cannot reach the tile table. Bounded to O(worker_count) jobs in flight, a
+  windowed look-ahead, so a load's transient stays O(workers · tile). Decided in
+  `serialize.tile_store_parallel_load`; recorded in doc 02 (§ Threading model)
+  and doc 08 (Principle 8). Doc 17 unchanged for the same reason.
+
 - **The compositor's remainder resample is single-rung Catmull-Rom over a
   Lanczos-decimated ladder.** The ≤1-octave remainder (doc 04) is reconstructed
   by the composite tap with the Catmull-Rom bicubic; the octave steps are the

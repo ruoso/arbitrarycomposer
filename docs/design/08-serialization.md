@@ -456,6 +456,23 @@ These are core-owned placement, not `params`.
      incremental-save memo) stays on the one save thread; the workers only read
      the pinned tiles and return bytes. The property follows from the *format*
      — content-addressed, row-major — not from careful scheduling.
+   - **The per-tile decode fans across workers too, and just as byte-identically.**
+     The load is the mirror image: each tile's decode — decompress, unshuffle,
+     verify-hash — is a pure function of that one fetched frame's bytes over the
+     reentrant decompressor, so a load may run them concurrently on the same work
+     lane (doc 02 § Threading model). It is **independent of completion order** for
+     the same reason the encode is: the hash verify is over the tile's own
+     *uncompressed storage* bytes, and the `blobs` array is fixed **row-major**, so
+     the reap is strictly by index. A worker-backed load and an inline load produce
+     a **bit-for-bit identical** tile table and re-serialize to byte-identical
+     bytes — the decode executor is a pure throughput change. What stays on the one
+     loading thread is the mirror of what stays on the save thread: the **fetch**
+     (`LoadContext` resolve + the asset-source read, both single-writer/non-atomic),
+     the write into the tile pool (the writer thread is the only structural
+     allocator, doc 15), and the memo seed; the workers only decode their own
+     job-owned frame and return pixels. As on the save side, the fan-out is bounded
+     in flight — a windowed fetch/submit/reap look-ahead, so a load's transient
+     scratch is O(*workers* · tile), never O(image).
 
    *Why this shape, and not "just compress it".* Measured on a 30-layer, 24 MP
    composition (3 full-bleed photos, 4 cropped, 8 painted/retouch, 6 masks,

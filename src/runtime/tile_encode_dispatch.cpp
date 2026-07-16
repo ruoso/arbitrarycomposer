@@ -65,8 +65,8 @@ void TileEncodeDispatch::run(std::size_t count, const EncodeFn& encode, const Re
       // The job's ONLY write is its own slot's output buffer; `encode` is pure and
       // reentrant, and outlives the job (it is a `run` parameter). No shared mutable
       // state, so no lock on the hot path (Constraint 2).
-      d_pool->submit_work(WorkTask{[this, j, &encode] { d_slots[j].out = encode(j); },
-                                   d_slots[j].done, d_owner});
+      d_pool->submit_work(
+          WorkTask{[this, j, &encode] { d_slots[j].out = encode(j); }, d_slots[j].done, d_owner});
       ++dispatched;
       d_peak = std::max<std::uint64_t>(d_peak, dispatched - reaped);
     }

@@ -23,7 +23,10 @@
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/document_serialize.hpp>
+#include <arbc/runtime/filesystem_asset_sink.hpp>
+#include <arbc/runtime/filesystem_asset_source.hpp>
 #include <arbc/runtime/raster_tile_store.hpp>
+#include <arbc/runtime/tile_decode_dispatch.hpp>
 #include <arbc/runtime/tile_encode_dispatch.hpp>
 #include <arbc/runtime/worker_pool.hpp>
 #include <arbc/serialize/codec.hpp>
@@ -35,6 +38,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -109,6 +113,39 @@ TileEncodeOutput encode_tile(BigBlockPool& pool, BlockSlotRef ref, PixelFormat s
     out.frame = std::move(*frame);
   }
   return out;
+}
+
+// A temp project directory for the LOAD-side concurrency tests (they need a real asset source
+// to fetch blobs back from), auto-cleaned. Mirrors `raster_tilewise_load.t.cpp`'s ProjectDir.
+class ProjectDir {
+public:
+  explicit ProjectDir(const std::string& name)
+      : d_root(std::filesystem::temp_directory_path() / ("arbc_parallel_load_conc_" + name)) {
+    std::error_code ec;
+    std::filesystem::remove_all(d_root, ec);
+    REQUIRE(std::filesystem::create_directories(d_root, ec));
+  }
+  ~ProjectDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(d_root, ec);
+  }
+  ProjectDir(const ProjectDir&) = delete;
+  ProjectDir& operator=(const ProjectDir&) = delete;
+
+  std::string base_uri() const { return (d_root / "project.arbc").string(); }
+
+private:
+  std::filesystem::path d_root;
+};
+
+RasterContent* only_raster(Document& doc) {
+  RasterContent* found = nullptr;
+  doc.for_each_content([&found](ObjectId, Content* c) {
+    if (auto* r = dynamic_cast<RasterContent*>(c); r != nullptr) {
+      found = r;
+    }
+  });
+  return found;
 }
 
 } // namespace
@@ -331,6 +368,172 @@ TEST_CASE("the encode fan-out is executor-independent across many seeded schedul
       got[j] = std::move(o.hash);
       return true;
     });
+    CHECK(got == reference); // same output under every schedule
+  }
+}
+
+// enforces: 08-serialization#raster-load-is-executor-independent
+TEST_CASE("a worker-backed load decodes concurrently and matches the inline load") {
+  // The concurrency surface serialize.tile_store_parallel_load INTRODUCES: the loading thread
+  // fetches + allocates pool blobs + reaps while N workers decode concurrently. There is no
+  // concurrent WRITER to race (a load builds a fresh content whose only writer is the loading
+  // thread), so the surface is the decode workers + the completion machinery -- which the
+  // generic lane already covers. TSan-clean is the first assertion; the produced document
+  // byte-identical to an inline load of the same file is the second (Constraint 1).
+  ProjectDir project("tsan_load");
+  Document save_doc;
+  KindBridge save_bridge;
+  Registry registry;
+  {
+    const auto raster = std::make_shared<RasterContent>(textured(128, 128), /*edge=*/16);
+    const ObjectId comp = save_doc.add_composition(128.0, 128.0);
+    const ObjectId content =
+        save_doc.add_content(raster, save_bridge.intern(RasterContent::kind_id, "1"));
+    save_doc.attach_layer(comp, save_doc.add_layer(content, Affine::identity(), 1.0));
+  }
+  RasterTileStore save_tiles;
+  FilesystemAssetSink save_sink;
+  SaveContext save_ctx{project.base_uri()};
+  save_ctx.set_asset_sink(&save_sink);
+  save_ctx.set_storage_format(PixelFormat::Rgba32fLinearPremul);
+  const CodecTable save_codecs = builtin_codecs(registry, &save_tiles);
+  const expected<std::string, SerializeError> saved =
+      save_document(save_doc, save_bridge, save_codecs, save_ctx);
+  REQUIRE(saved.has_value());
+
+  // Inline load: the oracle.
+  Document inline_doc;
+  KindBridge inline_bridge;
+  RasterTileStore inline_memo;
+  FilesystemAssetSource inline_source;
+  REQUIRE(load_document(*saved, inline_doc, inline_bridge, registry, project.base_uri(),
+                        &inline_source, &inline_memo)
+              .has_value());
+
+  // Worker-backed load: the loading thread reaps while 4 workers decode concurrently.
+  WorkerPoolConfig cfg;
+  cfg.worker_count = 4;
+  WorkerPool pool(cfg);
+  int owner = 0;
+  TileDecodeDispatch dispatch(pool, &owner);
+  Document worker_doc;
+  KindBridge worker_bridge;
+  RasterTileStore worker_memo;
+  FilesystemAssetSource worker_source;
+  REQUIRE(load_document(*saved, worker_doc, worker_bridge, registry, project.base_uri(),
+                        &worker_source, &worker_memo, &dispatch)
+              .has_value());
+
+  RasterContent* const inline_raster = only_raster(inline_doc);
+  RasterContent* const worker_raster = only_raster(worker_doc);
+  REQUIRE(inline_raster != nullptr);
+  REQUIRE(worker_raster != nullptr);
+  const TileTablePtr it = inline_raster->store().base_table();
+  const TileTablePtr wt = worker_raster->store().base_table();
+  REQUIRE(it);
+  REQUIRE(wt);
+  REQUIRE(it->level_count() == wt->level_count());
+  for (std::size_t l = 0; l < it->level_count(); ++l) {
+    CHECK(it->level_pixels(l) == wt->level_pixels(l));
+  }
+  CHECK(dispatch.peak_in_flight() >= 1);
+}
+
+// enforces: 08-serialization#raster-load-is-executor-independent
+TEST_CASE("the decode fan-out is executor-independent across many seeded schedules") {
+  // Seeded schedule perturbation (doc 16 tier 6) over the DECODE fan-out: the same set of frames
+  // decoded under many worker-yield schedules must produce the SAME pixels every time and equal
+  // the inline reference. Completion order is perturbed on purpose; the output follows from the
+  // format (hash verify over uncompressed storage bytes, blobs fixed row-major, reap strictly by
+  // index), not from the schedule.
+  Document doc;
+  KindBridge bridge;
+  Registry registry;
+  const auto raster = std::make_shared<RasterContent>(textured(96, 96), /*edge=*/16);
+  const ObjectId comp = doc.add_composition(96.0, 96.0);
+  const ObjectId content = doc.add_content(raster, bridge.intern(RasterContent::kind_id, "1"));
+  doc.attach_layer(comp, doc.add_layer(content, Affine::identity(), 1.0));
+
+  const TileTablePtr pinned = raster->store().base_table();
+  REQUIRE(pinned);
+  BigBlockPool& p = const_cast<RasterStore&>(raster->store()).pool();
+  const std::vector<BlockSlotRef>& grid = pinned->level(0).tiles;
+  REQUIRE(grid.size() == 36); // 6x6
+  constexpr PixelFormat storage = PixelFormat::Rgba32fLinearPremul;
+  const std::size_t samples =
+      static_cast<std::size_t>(16) * static_cast<std::size_t>(16) * 4U; // edge*edge*4
+
+  // Encode every tile once to a frame + hash -- the on-disk blob the decode fan-out consumes.
+  std::vector<TileDecodeInput> frames(grid.size());
+  for (std::size_t j = 0; j < grid.size(); ++j) {
+    const TileEncodeOutput enc = encode_tile(p, grid[j], storage);
+    frames[j].hash = enc.hash;
+    frames[j].frame = std::vector<std::byte>(enc.frame.begin(), enc.frame.end());
+  }
+
+  const TileDecodeDispatch::FetchFn fetch = [&](std::size_t j, TileDecodeInput& in) -> TileFetch {
+    in = frames[j];
+    return TileFetch::Ready;
+  };
+  const auto decode_plain = [&](const TileDecodeInput& in) -> TileDecodeOutput {
+    TileDecodeOutput out;
+    const std::span<const std::byte> frame{in.frame.data(), in.frame.size()};
+    expected<std::vector<float>, TileBlobError> px =
+        decode_tile_blob(frame, in.hash, storage, samples);
+    if (px) {
+      out.pixels = std::move(*px);
+    } else {
+      out.error = px.error();
+    }
+    return out;
+  };
+
+  // The inline reference, computed once.
+  std::vector<std::vector<float>> reference(grid.size());
+  {
+    TileDecodeDispatch inline_disp;
+    inline_disp.begin(grid.size(), fetch, decode_plain);
+    for (std::size_t j = 0; j < grid.size(); ++j) {
+      TileDecodeReap r = inline_disp.reap(j);
+      REQUIRE(r.verdict == TileFetch::Ready);
+      REQUIRE_FALSE(r.output.error.has_value());
+      reference[j] = std::move(r.output.pixels);
+    }
+    inline_disp.finish();
+  }
+
+  WorkerPoolConfig cfg;
+  cfg.worker_count = 4;
+  WorkerPool pool(cfg);
+  int owner = 0;
+
+  for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+    const auto perturbed = [&, seed](const TileDecodeInput& in) -> TileDecodeOutput {
+      // A deterministic, seed-derived number of yields reshuffles the worker interleaving with
+      // no wall-clock dependence. Keyed on the frame hash so distinct tiles yield differently.
+      std::uint32_t s = seed * 2654435761U;
+      for (const char c : in.hash) {
+        s = s * 31U + static_cast<std::uint32_t>(c);
+      }
+      for (std::uint32_t y = 0; y < (s % 5U); ++y) {
+        std::this_thread::yield();
+      }
+      return decode_plain(in);
+    };
+    std::vector<std::vector<float>> got(grid.size());
+    TileDecodeDispatch disp(pool, &owner);
+    disp.begin(grid.size(), fetch, perturbed);
+    bool ok = true;
+    for (std::size_t j = 0; j < grid.size(); ++j) {
+      TileDecodeReap r = disp.reap(j);
+      if (r.verdict != TileFetch::Ready || r.output.error.has_value()) {
+        ok = false;
+        break;
+      }
+      got[j] = std::move(r.output.pixels);
+    }
+    disp.finish();
+    CHECK(ok);
     CHECK(got == reference); // same output under every schedule
   }
 }

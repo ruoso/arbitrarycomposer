@@ -25,6 +25,7 @@ class ExternalCompositionLoader; // runtime/external_composition_loader.hpp
 class ExternalAssetLoader;       // runtime/external_asset_loader.hpp
 class RasterTileStore;           // runtime/raster_tile_store.hpp
 class TileEncodeDispatch;        // runtime/tile_encode_dispatch.hpp
+class TileDecodeDispatch;        // runtime/tile_decode_dispatch.hpp
 
 // Per-built-in producer `kind_version` (Constraint 3): a fixed constant chosen and
 // pinned by this task, golden-pinned as the literal emitted beside `kind`. Advisory
@@ -177,5 +178,13 @@ Codec raster_codec(RasterTileStore* tiles);
 // wholly in `runtime` (L5) -- `arbc::serialize` gains no pool edge. `dispatch` must
 // outlive the codec.
 Codec raster_codec(RasterTileStore* tiles, TileEncodeDispatch* dispatch);
+
+// The PARALLEL-LOAD overload (serialize.tile_store_parallel_load): `dispatch` fans the
+// per-tile decode (decompress -> unshuffle -> verify-hash) across pool workers, while the
+// fetch and every pool write stay on the loading thread (or, null / default-constructed, runs
+// the decode inline). Byte-identical to the serial load under any executor (Constraint 1); the
+// fan-out lives wholly in `runtime` (L5) -- `arbc::serialize` gains no pool edge. `dispatch`
+// must outlive the codec. The mirror of the encode overload above, on the decode side.
+Codec raster_codec(RasterTileStore* tiles, TileDecodeDispatch* dispatch);
 
 } // namespace arbc

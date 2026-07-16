@@ -42,6 +42,7 @@
 #include <arbc/kind_raster/raster_content.hpp>
 #include <arbc/runtime/builtin_codecs.hpp>
 #include <arbc/runtime/raster_tile_store.hpp>
+#include <arbc/runtime/tile_decode_dispatch.hpp>
 #include <arbc/runtime/tile_encode_dispatch.hpp>
 #include <arbc/serialize/tile_blob.hpp>
 
@@ -251,8 +252,10 @@ expected<std::int64_t, ReaderError> read_int(const json& params, const char* key
   return it->get<std::int64_t>();
 }
 
-expected<std::unique_ptr<Content>, ReaderError>
-deserialize_raster(const json& params, LoadContext& ctx, RasterTileStore* tiles) {
+expected<std::unique_ptr<Content>, ReaderError> deserialize_raster(const json& params,
+                                                                   LoadContext& ctx,
+                                                                   RasterTileStore* tiles,
+                                                                   TileDecodeDispatch* dispatch) {
   // A present-but-mistyped `tiles` is treated LENIENTLY AS ABSENT and rides the
   // params_residual diff back out verbatim, the idiom every sibling codec uses.
   std::string base = k_default_tiles_base;
@@ -293,61 +296,100 @@ deserialize_raster(const json& params, LoadContext& ctx, RasterTileStore* tiles)
     return read_fail(ReaderError::Kind::MalformedField, "/params/blobs");
   }
 
+  // THE LOAD IS TILEWISE (doc 15 "Reconstructing a tiled payload is tilewise";
+  // kinds.raster_tilewise_load) AND, now, FANNED (serialize.tile_store_parallel_load). There
+  // is no dense `w * h * 16` working buffer here, and there must not be one; `build_from_tiles`
+  // hands this callback ONE pool blob's memory at a time, in ascending row-major order, so the
+  // O(tile) peak is a consequence of the CONTROL FLOW. This task keeps that peak posture and
+  // adds a bounded look-ahead: `fill` is now the driver of a `TileDecodeDispatch` pump -- it
+  // fetches a window of frames ahead ON THIS (loading) thread, submits each PURE decode job to
+  // the pool, and reaps job `t` here -- so the transient becomes O(window * tile) = O(workers
+  // * tile), still independent of image size, and the decode fans across cores.
+  //
+  // THE FETCH STAYS ON THE LOADING THREAD (Decision 2): `LoadContext::resolve` is a
+  // single-writer dedup cache and the `AssetSource` keeps non-atomic witness counters, so
+  // resolve + `load_asset` cannot run on a worker. Only the pure decode -- decompress ->
+  // unshuffle -> verify-hash -- fans out. The `std::copy_n` into the pool blob, the
+  // `build_from_tiles` allocation, and the memo seed all stay here too (Constraint 2).
   const PixelFormat storage = ctx.storage_format();
   const std::size_t samples = geom->tile_samples();
 
-  // THE LOAD IS TILEWISE (doc 15 "Reconstructing a tiled payload is tilewise";
-  // kinds.raster_tilewise_load). There is no dense `w * h * 16` working buffer here, and
-  // there must not be one: the tile store exists because flattening a sparse tile table
-  // into a dense image throws away exactly the sparsity that makes it small, and a reader
-  // that flattens it back out on the way in gives that away transiently -- 384 MB for a
-  // 24 MP layer, on top of the table it is legitimately building. `build_from_tiles` hands
-  // this callback ONE pool blob's memory at a time; the fetched frame and the decoded
-  // samples below are scoped to a single invocation, so the O(tile) peak is a consequence
-  // of the CONTROL FLOW rather than of anyone's discipline.
-  //
-  // The failure a fill declines on is carried out here: `TileFill` is a bool, because
-  // `kind_raster` (L4) may not name a `ReaderError` (contract's, but the seam stays
-  // byte-oriented -- Constraint 6), and there is exactly one call site to thread it back
-  // through.
-  std::optional<ReaderError> failure;
-  auto fill = [&](std::size_t t, std::span<float> dst) -> bool {
-    const json& entry = (*bit)[t];
-    if (!entry.is_string()) {
-      failure = ReaderError{ReaderError::Kind::MalformedField, "/params/blobs", ObjectId{}};
-      return false;
-    }
-    const std::string hash = entry.get<std::string>();
-    if (!is_tile_hash(hash)) {
-      failure = ReaderError{ReaderError::Kind::MalformedField, "/params/blobs", ObjectId{}};
-      return false;
-    }
+  // The executor. A null `dispatch` means the shipped inline path -- byte-identical to the
+  // single-threaded load (Constraint 5); the offline default and every non-parallel host land
+  // here. A host that wants the decode fanned across pool workers hands in a worker-backed
+  // dispatch, and the two produce bit-for-bit identical tiles (Constraint 1, Decision 3).
+  TileDecodeDispatch inline_dispatch; // the default executor when none is injected
+  TileDecodeDispatch& dec = (dispatch != nullptr) ? *dispatch : inline_dispatch;
 
+  // The FETCH, on the loading thread inside the look-ahead window: validate the `blobs[j]`
+  // entry, resolve + `load_asset` the frame, and stage it job-owned -- or decline with exactly
+  // the verdict the serial path returned, decided here and never on a worker (Constraint 6).
+  const TileDecodeDispatch::FetchFn fetch = [&](std::size_t j, TileDecodeInput& in) -> TileFetch {
+    const json& entry = (*bit)[j];
+    if (!entry.is_string()) {
+      return TileFetch::Malformed;
+    }
+    std::string hash = entry.get<std::string>();
+    if (!is_tile_hash(hash)) {
+      return TileFetch::Malformed;
+    }
     // THE CORE FETCHES ASSET BYTES; THE KIND ONLY DECODES THEM (doc 08 Principle 3). The
     // fetch goes through the same `LoadContext` seam an external nested project uses.
     const ResolvedRef ref = ctx.resolve(tile_blob_uri(base, hash));
-    auto frame = std::make_shared<std::string>();
-    ctx.load_asset(ref, [frame](std::string_view bytes) { frame->assign(bytes); });
-    if (frame->empty()) {
+    std::string frame;
+    ctx.load_asset(ref, [&frame](std::string_view bytes) { frame.assign(bytes); });
+    if (frame.empty()) {
       // Tile blobs load SYNCHRONOUSLY; there is no pending state (Decision 7, unamended by
-      // this task -- streaming here buys MEMORY, not progressiveness). An imported image
-      // has a source file that may be slow, missing, or remote, and a sensible "not yet"
-      // rendering. Painted pixels have none of that: they are document state, the asset
-      // directory is a sibling of the `.arbc` by construction, and a raster layer whose
-      // tiles have not arrived is not a layer in a pending state -- it is a BROKEN
-      // DOCUMENT.
+      // this task -- streaming here buys MEMORY/THROUGHPUT, not progressiveness). A raster
+      // layer whose tiles have not arrived is not a layer in a pending state -- it is a
+      // BROKEN DOCUMENT.
+      return TileFetch::Unresolvable;
+    }
+    in.hash = std::move(hash);
+    const auto* const bytes = reinterpret_cast<const std::byte*>(frame.data());
+    in.frame.assign(bytes, bytes + frame.size());
+    return TileFetch::Ready;
+  };
+
+  // The pure DECODE, run on a worker (or inline): decompress -> unshuffle -> verify-hash, a
+  // pure function of the fetched frame over the reentrant zstd decompressor. It reads only its
+  // job-owned `in` and the pass-constant `storage`/`samples`; errors are values, never a throw
+  // across the worker boundary (Constraint 6).
+  const TileDecodeDispatch::DecodeFn decode =
+      [storage, samples](const TileDecodeInput& in) -> TileDecodeOutput {
+    TileDecodeOutput out;
+    const std::span<const std::byte> frame_bytes{in.frame.data(), in.frame.size()};
+    expected<std::vector<float>, TileBlobError> pixels =
+        decode_tile_blob(frame_bytes, in.hash, storage, samples);
+    if (pixels) {
+      out.pixels = std::move(*pixels);
+    } else {
+      out.error = pixels.error();
+    }
+    return out;
+  };
+
+  dec.begin(geom->tile_count(), fetch, decode);
+
+  // The failure a fill declines on is carried out here: `TileFill` is a bool, because
+  // `kind_raster` (L4) may not name a `ReaderError`, and there is exactly one call site to
+  // thread it back through.
+  std::optional<ReaderError> failure;
+  auto fill = [&](std::size_t t, std::span<float> dst) -> bool {
+    const TileDecodeReap reaped = dec.reap(t);
+    if (reaped.verdict == TileFetch::Unresolvable) {
       failure = ReaderError{ReaderError::Kind::UnresolvableReference, "/params/blobs", ObjectId{}};
       return false;
     }
-
-    const std::span<const std::byte> frame_bytes{reinterpret_cast<const std::byte*>(frame->data()),
-                                                 frame->size()};
-    const expected<std::vector<float>, TileBlobError> pixels =
-        decode_tile_blob(frame_bytes, hash, storage, samples);
-    if (!pixels) {
+    if (reaped.verdict == TileFetch::Malformed) {
+      failure = ReaderError{ReaderError::Kind::MalformedField, "/params/blobs", ObjectId{}};
+      return false;
+    }
+    if (reaped.output.error) {
       // A blob that does not hash to the name it was fetched under -- a truncated file, a
       // bit-flipped frame, a substituted blob -- is a ReaderError. Never a crash, never
-      // silent wrong pixels (doc 08 Principle 8: the blob is self-verifying).
+      // silent wrong pixels (doc 08 Principle 8: the blob is self-verifying). The verify ran
+      // on the worker; its verdict rides back as a value, not a throw.
       failure = ReaderError{ReaderError::Kind::MalformedField, "/params/blobs", ObjectId{}};
       return false;
     }
@@ -359,12 +401,17 @@ deserialize_raster(const json& params, LoadContext& ctx, RasterTileStore* tiles)
     // longer hashes to, and the next save would publish that stale name over different
     // bytes. Padding stays unobservable in output either way: every read clamps to
     // `width`/`height`.
-    std::copy_n(pixels->begin(), dst.size(), dst.begin());
+    std::copy_n(reaped.output.pixels.begin(), dst.size(), dst.begin());
     return true;
   };
 
   std::unique_ptr<RasterContent> content =
       RasterContent::from_tiles(geom->width, geom->height, geom->edge, fill);
+  // Close the pass: a load that aborted mid-fan-out (a declined fill) leaves look-ahead decode
+  // jobs outstanding; `finish` drains them before their job-owned frames are freed, so no
+  // worker outlives a reference to a buffer we are about to drop (Constraint 7). On a clean
+  // load every job is already reaped and this is a no-op.
+  dec.finish();
   if (!content) {
     return unexpected(failure.value_or(
         ReaderError{ReaderError::Kind::MalformedField, "/params/blobs", ObjectId{}}));
@@ -395,22 +442,34 @@ deserialize_raster(const json& params, LoadContext& ctx, RasterTileStore* tiles)
 
 } // namespace
 
-Codec raster_codec() { return raster_codec(nullptr, nullptr); }
+// The one place both executors meet: `encode` fans the per-tile save, `decode` fans the
+// per-tile load. Every public overload forwards here. A save-only table passes a null
+// `decode` (its deserialize runs inline); a load-only assembly passes a null `encode`. Both
+// null is the fully-serial codec, byte-identical under any executor (Constraint 1).
+Codec raster_codec(RasterTileStore* tiles, TileEncodeDispatch* encode, TileDecodeDispatch* decode) {
+  return Codec{
+      [tiles, encode](const Content& content, SaveContext& ctx) -> expected<json, SerializeError> {
+        return serialize_raster(content, ctx, tiles, encode);
+      },
+      [tiles, decode](const json& params, std::span<const ContentRef> /*inputs*/,
+                      ObjectId /*composition*/,
+                      LoadContext& ctx) -> expected<std::unique_ptr<Content>, ReaderError> {
+        // Neither `inputs` nor `composition` is consumed: `org.arbc.raster` is a leaf
+        // kind with an empty `inputs()` and no child composition.
+        return deserialize_raster(params, ctx, tiles, decode);
+      }};
+}
 
-Codec raster_codec(RasterTileStore* tiles) { return raster_codec(tiles, nullptr); }
+Codec raster_codec() { return raster_codec(nullptr, nullptr, nullptr); }
+
+Codec raster_codec(RasterTileStore* tiles) { return raster_codec(tiles, nullptr, nullptr); }
 
 Codec raster_codec(RasterTileStore* tiles, TileEncodeDispatch* dispatch) {
-  return Codec{[tiles, dispatch](const Content& content,
-                                 SaveContext& ctx) -> expected<json, SerializeError> {
-                 return serialize_raster(content, ctx, tiles, dispatch);
-               },
-               [tiles](const json& params, std::span<const ContentRef> /*inputs*/,
-                       ObjectId /*composition*/,
-                       LoadContext& ctx) -> expected<std::unique_ptr<Content>, ReaderError> {
-                 // Neither `inputs` nor `composition` is consumed: `org.arbc.raster` is a leaf
-                 // kind with an empty `inputs()` and no child composition.
-                 return deserialize_raster(params, ctx, tiles);
-               }};
+  return raster_codec(tiles, dispatch, nullptr);
+}
+
+Codec raster_codec(RasterTileStore* tiles, TileDecodeDispatch* dispatch) {
+  return raster_codec(tiles, nullptr, dispatch);
 }
 
 } // namespace arbc

@@ -18,7 +18,10 @@
 #include <arbc/model/model.hpp>
 #include <arbc/runtime/document.hpp>
 #include <arbc/runtime/document_serialize.hpp>
+#include <arbc/runtime/filesystem_asset_sink.hpp>
+#include <arbc/runtime/filesystem_asset_source.hpp>
 #include <arbc/runtime/raster_tile_store.hpp>
+#include <arbc/runtime/tile_decode_dispatch.hpp>
 #include <arbc/runtime/tile_encode_dispatch.hpp>
 #include <arbc/runtime/worker_pool.hpp>
 #include <arbc/serialize/codec.hpp> // CodecTable (names nlohmann::json)
@@ -28,9 +31,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -49,7 +55,8 @@ namespace {
 // told to FAIL its next write, to drive the fan-out's mid-save abort/drain path.
 class MemorySink final : public AssetSink {
 public:
-  expected<bool, AssetSinkError> put(std::string_view uri, std::span<const std::byte> bytes) override {
+  expected<bool, AssetSinkError> put(std::string_view uri,
+                                     std::span<const std::byte> bytes) override {
     const std::lock_guard<std::mutex> lock(d_mutex);
     if (d_fail_writes) {
       return unexpected(AssetSinkError{AssetSinkError::Kind::WriteFailed});
@@ -140,6 +147,71 @@ struct Scene {
 constexpr const char* k_base = "/proj/project.arbc";
 constexpr std::size_t k_workers = 4;
 
+// --- LOAD-side helpers (serialize.tile_store_parallel_load) --------------------------
+// The load's oracle is EQUALITY TO THE INLINE LOAD (Decision 3): one saved file loaded inline
+// and across N workers must yield bit-identical tile tables and byte-identical re-serializations.
+// The load round-trip needs a real asset directory (a source to fetch blobs back from), so the
+// load cases use a temp project dir + `FilesystemAssetSink`/`FilesystemAssetSource`, exactly as
+// `raster_tilewise_load.t.cpp` does.
+
+class ProjectDir {
+public:
+  explicit ProjectDir(const std::string& name)
+      : d_root(std::filesystem::temp_directory_path() / ("arbc_parallel_load_" + name)) {
+    std::error_code ec;
+    std::filesystem::remove_all(d_root, ec);
+    REQUIRE(std::filesystem::create_directories(d_root, ec));
+  }
+  ~ProjectDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(d_root, ec);
+  }
+  ProjectDir(const ProjectDir&) = delete;
+  ProjectDir& operator=(const ProjectDir&) = delete;
+
+  std::string base_uri() const { return (d_root / "project.arbc").string(); }
+
+  // Clobber a present blob's frame with garbage of a few bytes: the file stays on disk (so the
+  // fetch succeeds), but its bytes no longer decode/hash to the name -- a decode error the load
+  // must surface as a value, never a crash.
+  void corrupt_blob(const std::string& hash) const {
+    const std::filesystem::path path = d_root / "assets" / "tiles" / hash.substr(0, 2) / hash;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const std::array<char, 8> garbage{'\x01', '\x02', '\x03', '\x04',
+                                      '\x05', '\x06', '\x07', '\x08'};
+    out.write(garbage.data(), static_cast<std::streamsize>(garbage.size()));
+    REQUIRE(out.good());
+  }
+
+private:
+  std::filesystem::path d_root;
+};
+
+RasterContent* only_raster(Document& doc) {
+  RasterContent* found = nullptr;
+  doc.for_each_content([&found](ObjectId, Content* c) {
+    if (auto* r = dynamic_cast<RasterContent*>(c); r != nullptr) {
+      found = r;
+    }
+  });
+  return found;
+}
+
+// Save `scene` into `project`'s asset directory at rgba32f, returning the canonical `.arbc`
+// bytes. rgba32f so the round-trip is byte-EXACT (not merely idempotent).
+std::string save_into(ProjectDir& project, Scene& scene) {
+  RasterTileStore tiles;
+  FilesystemAssetSink sink;
+  SaveContext ctx{project.base_uri()};
+  ctx.set_asset_sink(&sink);
+  ctx.set_storage_format(PixelFormat::Rgba32fLinearPremul);
+  const CodecTable codecs = builtin_codecs(scene.registry, &tiles);
+  const expected<std::string, SerializeError> saved =
+      save_document(scene.doc, scene.bridge, codecs, ctx);
+  REQUIRE(saved.has_value());
+  return *saved;
+}
+
 } // namespace
 
 // enforces: 08-serialization#raster-save-is-executor-independent
@@ -172,8 +244,7 @@ TEST_CASE("a worker-backed save is byte-identical to the inline save") {
   SaveContext worker_ctx{k_base};
   worker_ctx.set_asset_sink(&worker_sink);
   worker_ctx.set_storage_format(PixelFormat::Rgba32fLinearPremul);
-  const CodecTable worker_codecs =
-      builtin_codecs(worker_scene.registry, &worker_tiles, &dispatch);
+  const CodecTable worker_codecs = builtin_codecs(worker_scene.registry, &worker_tiles, &dispatch);
   const expected<std::string, SerializeError> worker_saved =
       save_document(worker_scene.doc, worker_scene.bridge, worker_codecs, worker_ctx);
   REQUIRE(worker_saved.has_value());
@@ -239,7 +310,8 @@ TEST_CASE("incremental-save counters are executor-independent") {
 }
 
 // enforces: 08-serialization#raster-tiles-persist-as-a-content-addressed-store
-TEST_CASE("an all-identical layer writes one blob under a parallel save; a re-save fans zero encodes") {
+TEST_CASE(
+    "an all-identical layer writes one blob under a parallel save; a re-save fans zero encodes") {
   // 64x64 at edge 16 => sixteen identical tiles. `RasterStore::build` mints a fresh slot per
   // tile, so the FIRST save legitimately hashes all sixteen (a slot-keyed memo cannot know
   // two slots hold the same bytes without hashing them) -- and the content dedup on the REAP
@@ -285,8 +357,8 @@ TEST_CASE("an all-identical layer writes one blob under a parallel save; a re-sa
     const CodecTable recodecs = builtin_codecs(scene.registry, &tiles, &redispatch);
     REQUIRE(save_document(scene.doc, scene.bridge, recodecs, ctx).has_value());
     CHECK(redispatch.peak_in_flight() == 0); // ref-shared/untouched tiles cost zero encodes
-    CHECK(sink.blobs_written() == 1);         // unchanged
-    CHECK(tiles.tiles_hashed() == 16);        // unchanged: no re-hashing
+    CHECK(sink.blobs_written() == 1);        // unchanged
+    CHECK(tiles.tiles_hashed() == 16);       // unchanged: no re-hashing
   }
 }
 
@@ -375,4 +447,196 @@ TEST_CASE("a mid-fan-out sink failure aborts the save and drains its workers") {
   const CodecTable ok_codecs = builtin_codecs(ok_scene.registry, &ok_tiles, &dispatch);
   REQUIRE(save_document(ok_scene.doc, ok_scene.bridge, ok_codecs, ok_ctx).has_value());
   CHECK(ok_sink.blobs_written() == 16);
+}
+
+// enforces: 08-serialization#raster-load-is-executor-independent
+TEST_CASE("a worker-backed load is bit-identical to the inline load") {
+  // One saved file (4x4 = 16 distinct tiles), loaded twice: inline (the oracle -- the serial
+  // load kinds.raster_tilewise_load shipped) and across N pool workers. The two must produce
+  // bit-identical tile tables and byte-identical re-serializations. This is Constraint 1.
+  ProjectDir project("golden");
+  Scene save_scene(textured(64, 64), /*edge=*/16);
+  const std::string saved = save_into(project, save_scene);
+
+  // Inline load (null dispatch): the executor-independence oracle.
+  Document inline_doc;
+  KindBridge inline_bridge;
+  RasterTileStore inline_memo;
+  FilesystemAssetSource inline_source;
+  REQUIRE(load_document(saved, inline_doc, inline_bridge, save_scene.registry, project.base_uri(),
+                        &inline_source, &inline_memo)
+              .has_value());
+
+  // Worker-backed load: fan the decode across a real pool.
+  WorkerPoolConfig cfg;
+  cfg.worker_count = k_workers;
+  WorkerPool pool(cfg);
+  int owner = 0;
+  TileDecodeDispatch dispatch(pool, &owner);
+  Document worker_doc;
+  KindBridge worker_bridge;
+  RasterTileStore worker_memo;
+  FilesystemAssetSource worker_source;
+  REQUIRE(load_document(saved, worker_doc, worker_bridge, save_scene.registry, project.base_uri(),
+                        &worker_source, &worker_memo, &dispatch)
+              .has_value());
+
+  // Every level-0..N tile bit-identical between the two loads -- the reap is strictly by index
+  // and the decode is pure over the frame, so completion order cannot reach the tile table.
+  RasterContent* const inline_raster = only_raster(inline_doc);
+  RasterContent* const worker_raster = only_raster(worker_doc);
+  REQUIRE(inline_raster != nullptr);
+  REQUIRE(worker_raster != nullptr);
+  const TileTablePtr it = inline_raster->store().base_table();
+  const TileTablePtr wt = worker_raster->store().base_table();
+  REQUIRE(it);
+  REQUIRE(wt);
+  REQUIRE(it->level_count() == wt->level_count());
+  for (std::size_t l = 0; l < it->level_count(); ++l) {
+    CHECK(it->level_pixels(l) == wt->level_pixels(l));
+  }
+  CHECK(dispatch.peak_in_flight() >= 1); // the fan-out actually ran on the pool
+
+  // Re-serializing each loaded document (through its load-seeded memo) yields byte-identical
+  // canonical JSON and an identical blobs array -- and both equal the original save, because a
+  // seeded, rgba32f round-trip is byte-exact.
+  const auto reserialize = [&](Document& doc, KindBridge& bridge, RasterTileStore& memo) {
+    FilesystemAssetSink sink;
+    SaveContext ctx{project.base_uri()};
+    ctx.set_asset_sink(&sink);
+    ctx.set_storage_format(PixelFormat::Rgba32fLinearPremul);
+    const CodecTable codecs = builtin_codecs(save_scene.registry, &memo);
+    const expected<std::string, SerializeError> re = save_document(doc, bridge, codecs, ctx);
+    REQUIRE(re.has_value());
+    return *re;
+  };
+  const std::string inline_resaved = reserialize(inline_doc, inline_bridge, inline_memo);
+  const std::string worker_resaved = reserialize(worker_doc, worker_bridge, worker_memo);
+  CHECK(worker_resaved == inline_resaved);
+  CHECK(worker_resaved == saved);
+  const json ip = json::parse(inline_resaved).at("composition").at("layers").at(0).at("params");
+  const json wp = json::parse(worker_resaved).at("composition").at("layers").at(0).at("params");
+  CHECK(wp.at("blobs") == ip.at("blobs"));
+}
+
+// enforces: 08-serialization#raster-tile-store-round-trips-byte-exactly
+TEST_CASE("a round-trip is byte-exact whether the load ran inline or across workers") {
+  // load(save(D)) yields a bit-identical tile table and a zero-blob, zero-hash re-save (the
+  // memo seed is executor-independent) under worker_count in {0, N}. Pins that the decode
+  // executor changes throughput, never the loaded pixels or the memo state.
+  const auto run = [](std::size_t worker_count) {
+    ProjectDir project("roundtrip");
+    Scene save_scene(textured(64, 64), /*edge=*/16);
+    const std::string saved = save_into(project, save_scene);
+
+    WorkerPoolConfig cfg;
+    cfg.worker_count = worker_count;
+    WorkerPool pool(cfg);
+    int owner = 0;
+    TileDecodeDispatch dispatch(pool, &owner);
+
+    Document doc;
+    KindBridge bridge;
+    RasterTileStore memo; // the load seeds this with the names it already knows
+    FilesystemAssetSource source;
+    REQUIRE(load_document(saved, doc, bridge, save_scene.registry, project.base_uri(), &source,
+                          &memo, &dispatch)
+                .has_value());
+    RasterContent* const back = only_raster(doc);
+    REQUIRE(back != nullptr);
+    REQUIRE(back->store().base_table());
+
+    // The FIRST save after the load is a pure memo sweep: the seed made every tile a hit, so
+    // zero blobs are written and zero tiles hashed, and the JSON comes back byte-identical.
+    FilesystemAssetSink resave_sink;
+    SaveContext resave_ctx{project.base_uri()};
+    resave_ctx.set_asset_sink(&resave_sink);
+    resave_ctx.set_storage_format(PixelFormat::Rgba32fLinearPremul);
+    const CodecTable resave_codecs = builtin_codecs(save_scene.registry, &memo);
+    const expected<std::string, SerializeError> resaved =
+        save_document(doc, bridge, resave_codecs, resave_ctx);
+    REQUIRE(resaved.has_value());
+    CHECK(resave_sink.blobs_written() == 0U); // every blob already on disk, seeded name
+    CHECK(memo.tiles_hashed() == 0U);         // the seed made re-hashing unnecessary
+    CHECK(*resaved == saved);                 // byte-identical canonical JSON
+  };
+
+  SECTION("inline load (worker_count == 0)") { run(0); }
+  SECTION("worker-backed load (worker_count == N)") { run(k_workers); }
+}
+
+// enforces: 08-serialization#raster-parallel-load-decode-is-bounded
+TEST_CASE("the parallel decode fan-out is bounded in flight") {
+  // 128x128 at edge 16 => an 8x8 grid of 64 tiles, far more than the worker count, so the
+  // window genuinely throttles: peak outstanding decode jobs must stay O(worker_count), NOT
+  // grow to the tile count. Asserted as a counter, never against wall-clock or RSS.
+  ProjectDir project("bounded");
+  Scene save_scene(textured(128, 128), /*edge=*/16);
+  const std::string saved = save_into(project, save_scene);
+
+  WorkerPoolConfig cfg;
+  cfg.worker_count = k_workers;
+  WorkerPool pool(cfg);
+  int owner = 0;
+  TileDecodeDispatch dispatch(pool, &owner);
+  Document doc;
+  KindBridge bridge;
+  RasterTileStore memo;
+  FilesystemAssetSource source;
+  REQUIRE(load_document(saved, doc, bridge, save_scene.registry, project.base_uri(), &source, &memo,
+                        &dispatch)
+              .has_value());
+
+  // The bound: peak in-flight never exceeds the window, and the window is O(worker_count) (a
+  // small multiple), NOT the image's tile count.
+  CHECK(dispatch.window() == 2 * k_workers);
+  CHECK(dispatch.peak_in_flight() <= dispatch.window());
+  CHECK(dispatch.peak_in_flight() < 64); // genuinely windowed, not fetch-all-then-decode-all
+  CHECK(dispatch.peak_in_flight() >= 1);
+
+  // The INLINE executor's window is exactly 1 and its peak exactly 1 (the same algorithm, one
+  // tile at a time), which a default-constructed dispatch exercises directly.
+  TileDecodeDispatch inline_dispatch;
+  CHECK(inline_dispatch.window() == 1);
+  Document inline_doc;
+  KindBridge inline_bridge;
+  RasterTileStore inline_memo;
+  FilesystemAssetSource inline_source;
+  REQUIRE(load_document(saved, inline_doc, inline_bridge, save_scene.registry, project.base_uri(),
+                        &inline_source, &inline_memo, &inline_dispatch)
+              .has_value());
+  CHECK(inline_dispatch.peak_in_flight() == 1);
+}
+
+TEST_CASE("a corrupt blob fails the load and drains the fan-out, under any executor") {
+  // A present-but-corrupt frame (Constraint 6): the decode runs, its hash/frame verify fails, and
+  // the verdict rides back as a VALUE the loading thread turns into a MalformedField -- never a
+  // crash, never silent wrong pixels. Under a worker-backed load the abort DRAINS the look-ahead
+  // decode jobs still in flight before returning (Constraint 7); ASan/TSan catch a botched drain.
+  ProjectDir project("corrupt");
+  Scene save_scene(textured(128, 128), /*edge=*/16); // 8x8 = 64 tiles, so look-ahead is in flight
+  const std::string saved = save_into(project, save_scene);
+  const json blobs =
+      json::parse(saved).at("composition").at("layers").at(0).at("params").at("blobs");
+  project.corrupt_blob(blobs.at(0).get<std::string>()); // clobber tile 0's frame -> early abort
+
+  const auto run = [&](std::size_t worker_count) {
+    WorkerPoolConfig cfg;
+    cfg.worker_count = worker_count;
+    WorkerPool pool(cfg);
+    int owner = 0;
+    TileDecodeDispatch dispatch(pool, &owner);
+    Document doc;
+    KindBridge bridge;
+    RasterTileStore memo;
+    FilesystemAssetSource source;
+    const expected<std::monostate, ReaderError> loaded =
+        load_document(saved, doc, bridge, save_scene.registry, project.base_uri(), &source, &memo,
+                      (worker_count > 0) ? &dispatch : nullptr);
+    REQUIRE_FALSE(loaded.has_value());
+    CHECK(loaded.error().kind == ReaderError::Kind::MalformedField);
+  };
+
+  SECTION("inline load (worker_count == 0)") { run(0); }
+  SECTION("worker-backed load (worker_count == N)") { run(k_workers); }
 }

@@ -88,7 +88,8 @@ task serialize "Serialization" {
   task tile_store_parallel_load "Fan per-tile decode pipeline across pool workers" {
     effort 2d
     allocate team
+    complete 100
     depends !raster_tile_store, kinds.raster_tilewise_load
-    note "Dispatch the per-tile decode pipeline (fetch -> decompress -> unshuffle -> verify hash) across pool workers with a bounded in-flight queue, mirroring tile_store_parallel_save. The pool's allocate is writer-only, so the parallel form is decode-on-workers / write-into-pool-on-the-loading-thread; the bounded queue preserves the O(tile)-per-in-flight-tile bound kinds.raster_tilewise_load establishes (peak becomes O(workers * tile), still independent of image size). Behavioral-counter and TSan coverage; no wall-clock assertion. Source-of-debt: tasks/refinements/kinds/raster_tilewise_load.md (Deferred follow-ups), commit kinds.raster_tilewise_load. Doc 08."
+    note "Dispatch the per-tile decode pipeline (fetch -> decompress -> unshuffle -> verify hash) across pool workers with a bounded in-flight queue, mirroring tile_store_parallel_save. The pool's allocate is writer-only, so the parallel form is decode-on-workers / write-into-pool-on-the-loading-thread; the bounded queue preserves the O(tile)-per-in-flight-tile bound kinds.raster_tilewise_load establishes (peak becomes O(workers * tile), still independent of image size). Behavioral-counter and TSan coverage; no wall-clock assertion. Source-of-debt: tasks/refinements/kinds/raster_tilewise_load.md (Deferred follow-ups), commit kinds.raster_tilewise_load. Doc 08. Refinement: tasks/refinements/serialize/tile_store_parallel_load.md"
   }
 }
