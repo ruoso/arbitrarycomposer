@@ -164,6 +164,12 @@ task runtime "Runtime" {
     depends !interactive_worker_count_default
     note "InteractiveRenderer owns its WorkerPool by value and is non-movable (interactive.hpp:154,:270), so K viewports spawn K×N threads. Add a non-owning constructor overload taking WorkerPool& (and a std::variant/pointer member for owned-vs-borrowed), so a host builds one pool and hands it to every viewport. Requires its own teardown/TSan story. Source-of-debt: tasks/refinements/runtime/interactive_worker_count_default.md A9. Docs 02/17. Refinement: tasks/refinements/runtime/shared_worker_pool.md"
   }
+  task surface_pool_churn_bench "Measure SurfacePool/KeyedStore churn under a brush-stroke commit loop" {
+    effort 1d
+    allocate team
+    depends !interactive_worker_count_default, model.per_object_revision
+    note "Extend the interactive worker bench (src/runtime/bench/interactive_worker_bench.cpp, interactive_bench_workloads.hpp) with a brush-stroke commit-loop workload — the v0.1 image-editor's high-frequency commit pattern — and measure SurfacePool accumulation (distinct temp-size entries retained across frames) and KeyedStore eviction rate now that model.per_object_revision keys each layer's tiles on its own revision. Deliverable is behavioral counters plus a recorded finding at SurfacePool/KeyedStore: whether a SurfacePool byte-budget/one-frame-trim eviction policy and/or recycling of evicted KeyedStore surfaces back into the pool remains motivated post-fix, or whether per-object revisions removed the churn both ideas were reacting to. Counters, never wall-clock assertions (doc 16:54-62). Source: tasks/parking-lot.md 2026-07-05 (SurfacePool byte-budget / one-frame-trim eviction policy) and 2026-07-05 (Recycling evicted backend surfaces back into SurfacePool), resolved at triage 2026-07-16. Docs 02/16."
+  }
   task deadline_cancel_retains_wanted "Narrow deadline sweep's blanket cancel to unwanted tiles" {
     effort 3d
     allocate team

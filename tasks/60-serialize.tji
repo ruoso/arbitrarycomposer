@@ -92,4 +92,10 @@ task serialize "Serialization" {
     depends !raster_tile_store, kinds.raster_tilewise_load
     note "Dispatch the per-tile decode pipeline (fetch -> decompress -> unshuffle -> verify hash) across pool workers with a bounded in-flight queue, mirroring tile_store_parallel_save. The pool's allocate is writer-only, so the parallel form is decode-on-workers / write-into-pool-on-the-loading-thread; the bounded queue preserves the O(tile)-per-in-flight-tile bound kinds.raster_tilewise_load establishes (peak becomes O(workers * tile), still independent of image size). Behavioral-counter and TSan coverage; no wall-clock assertion. Source-of-debt: tasks/refinements/kinds/raster_tilewise_load.md (Deferred follow-ups), commit kinds.raster_tilewise_load. Doc 08. Refinement: tasks/refinements/serialize/tile_store_parallel_load.md"
   }
+  task shuffle_stride_measurement "Measure byte-shuffle stride: per-sample vs per-pixel" {
+    effort 0.5d
+    allocate team
+    depends !raster_tile_store
+    note "Measure zstd compression ratio of the raster tile-blob byte-shuffle at the shipped per-sample stride (bytes_per_sample: 2 for rgba16f, 4 for rgba32f) against per-pixel stride (bytes_per_pixel: 8/16, additionally deinterleaving the R/G/B/A planes) over real photographic tile content, and adopt the winner. The shuffle is inside the blob and the hash is over the unshuffled bytes (raster_tile_store Constraint 2), so a stride change breaks NO existing blob and needs no format migration. Deliverable is the measurement plus either adoption or a recorded rejection at the shuffle site, updating the recorded 2.1x figure honestly either way (Decision 9 of tasks/refinements/serialize/raster_tile_store.md says the shipped number was calibrated against per-sample stride only). Source: tasks/parking-lot.md 2026-07-14 (Byte-shuffle stride: sample-stride (current) vs. pixel-stride), resolved at triage 2026-07-16. Doc 08."
+  }
 }

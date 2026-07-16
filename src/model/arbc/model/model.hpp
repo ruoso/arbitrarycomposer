@@ -61,6 +61,14 @@ public:
   // returns true; returns false and leaves them untouched when the document has no
   // composition. The serializer's composition-discovery seam (serialize.writer):
   // a refcount-free peek traversal.
+  //
+  // Lowest-id-wins IS the v0.1 root rule (parking-lot triage 2026-07-16): an explicit
+  // root marker on the fixed-layout `CompositionRecord` (a doc 14 + doc 15 delta) was
+  // considered and REJECTED. The reader guarantees the invariant for every loaded
+  // document (root id allocated before any child's), the render path takes an explicit
+  // root id and never calls this, and the residual hazard is authoring-only: a
+  // programmatic host that creates a child composition before its root would serialize
+  // the child as the root. Revisit the marker only if such a host is ever scoped.
   bool find_first_composition(ObjectId& out_id, const CompositionRecord*& out_rec) const;
 
   // The working space the compositor blends this document in (doc 07 rule 2):

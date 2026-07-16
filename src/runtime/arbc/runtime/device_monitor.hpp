@@ -77,6 +77,13 @@ struct DeviceMonitorConfig {
   // keeps `DeviceMonitor` free of any dependency on the L4 compositor `Viewport`; the
   // host closure (itself L5) closes over the live viewport. Empty => the static seed
   // stands (no follow), so every existing device-path drain is byte-unchanged.
+  //
+  // Deliberately NOT followed: the pan-normalization extent (`Spatialization`'s
+  // `viewport_w/h`), which stays the ring's static seed across re-seeds. Live
+  // window-resize follow was REJECTED for v0.1 (parking-lot triage 2026-07-16): resize
+  // is rare, the fixed-window behavior is correct and goldened, and no scoped host
+  // surfaces audio pan under resize. When one does, the extension is this same idiom —
+  // inject an extent closure alongside the camera and fold it into the re-seed compare.
   std::function<Affine()> camera_source{};
 };
 

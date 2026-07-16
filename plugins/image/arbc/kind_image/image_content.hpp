@@ -121,6 +121,11 @@ class PyramidPin;
 // A 24 MP master at rgba32f is ~384 MB and its mips add ~1/3, so 1 GiB is roughly two
 // photographs resident -- a judgment call, and a safe one only because the budget is a SOFT
 // target (doc 02:278-284): guessing low costs re-decodes, never correctness.
+//
+// ACCEPTED as the shipped v0.1 default (parking-lot triage 2026-07-16): the soft-budget rule
+// keeps any guess correctness-safe and the env override makes it tunable without a rebuild,
+// so 1 GiB ships as-is. Revisit only with measured re-decode latency on concrete target
+// hardware, not by re-litigating the guess.
 inline constexpr std::size_t k_default_pyramid_budget = std::size_t{1024} * 1024 * 1024;
 
 // The plugin-side pyramid cache, keyed by RESOLVED URI (doc 08:116-122: cross-file sharing
