@@ -83,6 +83,15 @@ jobs:
           # deferred packaging.shared_library_build_msvc.
           - { name: gcc-shared, os: ubuntu-latest, cxx: g++, preset: shared }
           - { name: msvc-debug, os: windows-latest, cxx: "", preset: win-dev }
+          # MSVC BUILD_SHARED_LIBS=ON lane (packaging.shared_library_build_msvc, doc
+          # 17:188-192): builds arbc.dll + its import lib and runs the full suite
+          # against it, so ARBC_API's __declspec(dllexport)/(dllimport) asymmetry --
+          # unlike ELF's symmetric visibility("default") -- is proven correct across
+          # the LoadLibrary boundary, including the PE branch of the
+          # shared_symbol_resolution proof. Reuses the msvc-dev-cmd + ninja setup
+          # steps below (gated runner.os == 'Windows'); the static msvc-debug sibling
+          # above is unchanged.
+          - { name: msvc-shared, os: windows-latest, cxx: "", preset: win-shared }
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     steps:

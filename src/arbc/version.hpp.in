@@ -7,12 +7,17 @@
 // CMakeLists.txt, from which this header, the symbols in libarbc, and
 // arbcConfigVersion.cmake are all derived. A version bump is that one line.
 //
-// This header includes NOTHING, on purpose. It is owned by the L6 umbrella rather
-// than by any component (doc 17:33), so it installs at <prefix>/include/arbc/version.hpp
-// -- at the include root, not under an arbc/<component>/ subdirectory -- and it must
-// compile standalone and warning-clean under a CONSUMER's flags, which are not ours:
-// the exported interface is deliberately scrubbed of arbc_build_flags, so
-// -Wall -Wextra -Wpedantic -Werror is our discipline and cannot be assumed downstream.
+// This header includes ONLY arbc/arbc_api.h -- the ARBC_API export macro on the two
+// out-of-line version symbols below, so they are exported from a shared libarbc
+// (visibility("default") on ELF, __declspec(dllexport)/(dllimport) on MSVC) and a
+// consumer linking the shared library resolves them rather than failing to find them.
+// arbc_api.h is itself include-free and consumer-safe, so the standalone-compile
+// property is preserved. It is owned by the L6 umbrella rather than by any component
+// (doc 17:33), so it installs at <prefix>/include/arbc/version.hpp -- at the include
+// root, not under an arbc/<component>/ subdirectory -- and it must compile standalone
+// and warning-clean under a CONSUMER's flags, which are not ours: the exported
+// interface is deliberately scrubbed of arbc_build_flags, so -Wall -Wextra -Wpedantic
+// -Werror is our discipline and cannot be assumed downstream.
 //
 // NOT to be confused with a *kind* version: serialize.kind_params puts a `kind_version`
 // STRING in each serialized content body, per-kind and independently evolving (doc 08
@@ -21,6 +26,8 @@
 
 #ifndef ARBC_VERSION_HPP
 #define ARBC_VERSION_HPP
+
+#include <arbc/arbc_api.h>
 
 #define ARBC_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
 #define ARBC_VERSION_MINOR @PROJECT_VERSION_MINOR@
@@ -64,10 +71,10 @@ constexpr Version compiled_version() {
 /// Skew is reported, never enforced (doc 10 § Versioning): the library exposes both
 /// numbers and lets the host decide. It does not abort, assert, or refuse to load --
 /// killing a host's process over a version comparison is a worse failure than the skew.
-Version linked_version();
+ARBC_API Version linked_version();
 
 /// `ARBC_VERSION_STRING` as the LINKED library spells it. Same reasoning as above.
-const char* linked_version_string();
+ARBC_API const char* linked_version_string();
 
 } // namespace arbc
 

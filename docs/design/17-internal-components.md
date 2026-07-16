@@ -185,11 +185,12 @@ Notes on placements that were genuinely contested:
    render/facet/service assertions cannot see (they pass with two copies as
    happily as with one). On the other lanes the dual-build still runs against the
    **static** `libarbc`, where the same modules carry a private copy — so the
-   boundary is proven regardless of build shape. The remaining piece is the
-   Windows/MSVC shared build, where `ARBC_API`'s
-   `__declspec(dllexport)`/`(dllimport)` asymmetry (unlike ELF's symmetric
-   `visibility("default")`) and DLL search / `LoadLibrary` module resolution
-   differ: that is `packaging.shared_library_build_msvc`.
+   boundary is proven regardless of build shape. The Windows/MSVC shared
+   build is now also complete (`packaging.shared_library_build_msvc`): the
+   `msvc-shared` CI lane builds `arbc.dll` on `windows-latest` with
+   `BUILD_SHARED_LIBS=ON`, and `tests/shared_symbol_resolution.t.cpp`'s
+   PE branch asserts that each plugin `.dll` imports core `arbc::` symbols
+   *from* `arbc.dll` — proven on both toolchains.
 
 CMake mechanics (recorded so bootstrap doesn't rediscover them):
 

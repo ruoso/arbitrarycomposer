@@ -99,6 +99,15 @@
       "cacheVariables": {
         "BUILD_SHARED_LIBS": "ON"
       }
+    },
+    {
+      "name": "win-shared",
+      "displayName": "Debug + tests, BUILD_SHARED_LIBS=ON (Ninja/MSVC, arbc.dll)",
+      "inherits": "win-dev",
+      "binaryDir": "${sourceDir}/build/win-shared",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -112,7 +121,8 @@
     { "name": "install-fetched", "configurePreset": "install-fetched" },
     { "name": "win-dev", "configurePreset": "win-dev" },
     { "name": "bench", "configurePreset": "bench" },
-    { "name": "shared", "configurePreset": "shared" }
+    { "name": "shared", "configurePreset": "shared" },
+    { "name": "win-shared", "configurePreset": "win-shared" }
   ],
   "testPresets": [
     { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
@@ -125,6 +135,7 @@
     { "name": "install-fetched", "configurePreset": "install-fetched", "output": { "outputOnFailure": true } },
     { "name": "win-dev", "configurePreset": "win-dev", "output": { "outputOnFailure": true } },
     { "name": "bench", "configurePreset": "bench", "output": { "outputOnFailure": true } },
-    { "name": "shared", "configurePreset": "shared", "output": { "outputOnFailure": true } }
+    { "name": "shared", "configurePreset": "shared", "output": { "outputOnFailure": true } },
+    { "name": "win-shared", "configurePreset": "win-shared", "output": { "outputOnFailure": true } }
   ]
 }

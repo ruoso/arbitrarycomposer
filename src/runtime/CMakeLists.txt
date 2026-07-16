@@ -12,7 +12,8 @@ arbc_add_component(
           worker_pool.cpp worker_dispatch.cpp
           interactive.cpp transport.cpp host_viewport.cpp damage_router.cpp
           playback_hints.cpp
-          audio_worker_pool.cpp lookahead_pump.cpp device_monitor.cpp export_monitor.cpp
+          audio_worker_pool.cpp lookahead_pump.cpp device_sink.cpp device_monitor.cpp
+          export_monitor.cpp
           plugin_host.cpp
   PUBLIC_HEADERS arbc/runtime/document.hpp arbc/runtime/editable_binding.hpp
                  arbc/runtime/document_serialize.hpp

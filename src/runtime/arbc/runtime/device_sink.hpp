@@ -40,7 +40,16 @@ class ARBC_API DeviceSink {
 public:
   DeviceSink(const DeviceSink&) = delete;
   DeviceSink& operator=(const DeviceSink&) = delete;
-  virtual ~DeviceSink() = default;
+  // Declared out-of-line (defined in device_sink.cpp) so it is the class's KEY
+  // FUNCTION: its vtable and typeinfo are then emitted in exactly one translation
+  // unit -- libarbc -- rather than as a weak COMDAT copy in every plugin that
+  // derives from DeviceSink. That single-definition-site is what lets a device
+  // backend plugin resolve DeviceSink's vtable/RTTI FROM the shared libarbc across
+  // the dlopen/LoadLibrary boundary (packaging.shared_library_build_msvc; the same
+  // key-function discipline arbc::Content already uses, contract/content.cpp). An
+  // inline `= default` here would keep the vtable keyless and force the private
+  // per-plugin copy the single-instance proof exists to forbid.
+  virtual ~DeviceSink();
 
   // The device format the sink runs its stream at (queried before `start`).
   virtual DeviceFormat format() const = 0;

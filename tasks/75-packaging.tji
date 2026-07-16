@@ -42,7 +42,14 @@ task packaging "Packaging and release" {
   task shared_library_build_msvc "MSVC shared-build lane for libarbc" {
     effort 1d
     allocate team
+    complete 100
     depends !shared_library_build
-    note "Add a Windows/MSVC BUILD_SHARED_LIBS=ON lane and verify ARBC_API's __declspec(dllexport)/__declspec(dllimport) branches are correct across the plugin LoadLibrary boundary — the one platform where the export/import asymmetry bites and where MODULE resolution and DLL search paths differ. Source-of-debt: tasks/refinements/packaging/shared_library_build.md (Decision D4). Docs 03/17."
+    note "Add a Windows/MSVC BUILD_SHARED_LIBS=ON lane and verify ARBC_API's __declspec(dllexport)/__declspec(dllimport) branches are correct across the plugin LoadLibrary boundary — the one platform where the export/import asymmetry bites and where MODULE resolution and DLL search paths differ. Source-of-debt: tasks/refinements/packaging/shared_library_build.md (Decision D4). Docs 03/17. Refinement: tasks/refinements/packaging/shared_library_build_msvc.md"
+  }
+  task shared_library_zstd_shared_link "Fix ELF shared zstd link and shared install.consumer relink" {
+    effort 1d
+    allocate team
+    depends !shared_library_build_msvc
+    note "Under BUILD_SHARED_LIBS=ON, link system libzstd as a .so dependency rather than folding a possibly-non-PIC static archive into libarbc.so (which causes SIGSEGV in ZSTD_decompress on systems with non-PIC libzstd.a), and repair the shared install.consumer relink. Source-of-debt: tasks/refinements/packaging/shared_library_build_msvc.md (surfaced 2026-07-16); predecessor D4 stated shared+fetched-static-zstd was an ELF PIC-fold concern. Docs 03/17."
   }
 }

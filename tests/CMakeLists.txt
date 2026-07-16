@@ -1,6 +1,24 @@
 # Cross-component tests: integration, claims-register golden tests, and the
 # harness smoke test. Component unit tests live in src/<component>/t/.
 
+# DLL search wiring for the MSVC shared lane (packaging.shared_library_build_msvc,
+# Decision D4). Under BUILD_SHARED_LIBS on Windows, libarbc is arbc.dll and there is
+# no ELF rpath: every test executable that links arbc -- and every plugin the loaders
+# LoadLibrary, whose own arbc.dll import is resolved by the DLL search order -- must
+# find arbc.dll at BOTH catch_discover_tests' POST_BUILD discovery run AND ctest run
+# time. Wrapping catch_discover_tests to add DL_PATHS emits exactly the per-test
+# PATH=path_list_prepend:<arbc dir> ENVIRONMENT_MODIFICATION D4 specifies (and sets
+# PATH for discovery too), keeping all 100+ call sites unchanged; the original stays
+# reachable as _catch_discover_tests. Gated WIN32 AND BUILD_SHARED_LIBS, so every
+# other lane -- static msvc-debug, the ELF shared lanes, all Linux lanes -- is
+# untouched (there, arbc is a static archive or found via rpath, and nothing is
+# overridden).
+if(WIN32 AND BUILD_SHARED_LIBS)
+  function(catch_discover_tests _arbc_target)
+    _catch_discover_tests("${_arbc_target}" ${ARGN} DL_PATHS "$<TARGET_FILE_DIR:arbc>")
+  endfunction()
+endif()
+
 add_executable(arbc_smoke_t smoke.t.cpp)
 target_link_libraries(arbc_smoke_t PRIVATE Catch2::Catch2WithMain
                                            arbc_build_flags)
@@ -1235,6 +1253,12 @@ if(BUILD_SHARED_LIBS)
   add_executable(arbc_shared_symbol_resolution_t shared_symbol_resolution.t.cpp)
   target_link_libraries(arbc_shared_symbol_resolution_t
                         PRIVATE Catch2::Catch2WithMain arbc_build_flags)
+  # The PE branch (packaging.shared_library_build_msvc, Decision D2) undecorates
+  # MSVC-mangled export/import names with UnDecorateSymbolName from dbghelp; the ELF
+  # branch needs nothing extra. Platform facility, not an arbc_* edge (levelization).
+  if(WIN32)
+    target_link_libraries(arbc_shared_symbol_resolution_t PRIVATE dbghelp)
+  endif()
   target_compile_definitions(
     arbc_shared_symbol_resolution_t
     PRIVATE ARBC_LIBARBC_FILE="$<TARGET_FILE:arbc>"
@@ -1324,6 +1348,18 @@ add_test(
 # It compiles two CMake projects of its own, so it gets the machine to itself and a
 # budget that survives a cold Catch2 build under a sanitizer.
 set_tests_properties(install.consumer PROPERTIES RUN_SERIAL TRUE TIMEOUT 3600)
+# On the MSVC shared lane the staged libarbc is arbc.dll installed to <prefix>/bin,
+# and the consumer executables (core_only, conformance_consumer) import it at start
+# (packaging.shared_library_build_msvc, Decision D4). Prepend the staged bin/ to PATH
+# on the outer test; the env propagates through the run_staged_install.cmake `cmake
+# -P` driver into its nested `ctest` and the consumer exes it runs. Additive and
+# gated WIN32 AND BUILD_SHARED_LIBS -- the static lanes install an .a/.lib and need
+# nothing on PATH.
+if(WIN32 AND BUILD_SHARED_LIBS)
+  set_property(
+    TEST install.consumer APPEND PROPERTY ENVIRONMENT_MODIFICATION
+    "PATH=path_list_prepend:${CMAKE_BINARY_DIR}/_stage/bin")
+endif()
 
 # --- quality.contributing_doc: CONTRIBUTING.md cannot go stale -------------------
 # The doc's whole value is that its commands work, so the scripts, presets, and links
