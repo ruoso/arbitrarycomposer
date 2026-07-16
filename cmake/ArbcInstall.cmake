@@ -29,25 +29,33 @@ function(arbc_install)
   set(cmake_dest "${CMAKE_INSTALL_LIBDIR}/cmake/arbc")
 
   # --- zstd, exactly as CMakeLists.txt's zstd block dictates -----------------
-  # A STATIC libarbc carries its dependencies to its consumer's final link, and
-  # arbc_serialize's objects (which ARE in libarbc.a) call ZSTD_compress. So the
-  # requirement has to be expressed one way or the other:
+  # How zstd reaches the consumer depends on BOTH how it was resolved (fetched vs
+  # system) AND libarbc's linkage (static vs shared). arbc_serialize's objects (which
+  # ARE in libarbc) call ZSTD_compress, so the dependency has to be expressed one of
+  # three ways (shared_library_zstd_shared_link Decision D2):
   #
-  #   - System zstd: it is installed on the machine and findable, so the generated
-  #     config re-finds it and re-attaches it to the imported arbc::arbc.
-  #   - Pinned FetchContent zstd: it is installed NOWHERE (we do not ship other
-  #     people's libraries), so its objects are folded into libarbc.a and the
-  #     consumer is asked for nothing at all.
+  #   - Fetched zstd (any linkage): built PIC and installed NOWHERE (we do not ship
+  #     other people's libraries), so its objects fold into libarbc and the consumer
+  #     is asked for nothing at all.
+  #   - System zstd + STATIC libarbc: the archive carries its dependencies to the
+  #     consumer's final link, so the generated config re-finds zstd and re-attaches
+  #     it to the imported arbc::arbc.
+  #   - System zstd + SHARED libarbc: libzstd is a private DT_NEEDED of libarbc.so
+  #     (the component link is PRIVATE through the umbrella, cmake/ArbcComponent.cmake),
+  #     so zstd never enters arbc::arbc's INTERFACE_LINK_LIBRARIES. The exported config
+  #     asks for nothing: a find_dependency(zstd) would needlessly impose zstd on every
+  #     embedder's link line (doc 10:32-35) and would dangle on a machine that has
+  #     libzstd.so (runtime) but no zstdConfig.cmake (dev package).
   #
-  # The discriminator is the same one the arbc_zstd shim resolves once at the top
-  # level: a fetched zstd presents the plain `libzstd_static`, a system one an
-  # imported `zstd::*`.
+  # The fetched-vs-system discriminator is the same one the arbc_zstd shim resolves
+  # once at the top level: a fetched zstd presents the plain `libzstd_static`, a
+  # system one an imported `zstd::*`.
   get_target_property(zstd_link arbc_zstd INTERFACE_LINK_LIBRARIES)
   set(ARBC_ZSTD_FIND_DEPENDENCY "")
   set(ARBC_ZSTD_LINK_INTERFACE "")
   if(zstd_link STREQUAL "libzstd_static")
     target_sources(arbc PRIVATE "$<TARGET_OBJECTS:libzstd_static>")
-  else()
+  elseif(NOT BUILD_SHARED_LIBS)
     set(ARBC_ZSTD_FIND_DEPENDENCY "find_dependency(zstd 1.5)")
     set(ARBC_ZSTD_LINK_INTERFACE
         "set_property(TARGET arbc::arbc APPEND PROPERTY INTERFACE_LINK_LIBRARIES ${zstd_link})")

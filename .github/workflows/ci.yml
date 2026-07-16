@@ -113,6 +113,14 @@ jobs:
             sudo ./llvm.sh 20
             sudo apt-get install -y libclang-rt-20-dev
           fi
+      # gcc-shared must resolve a SYSTEM zstd so the crashing combination -- system
+      # zstd x shared libarbc -- is the one under test (shared_library_zstd_shared_link
+      # Decision D3). Without libzstd-dev present, find_package(zstd) misses and the
+      # lane silently folds the fetched PIC static, never reproducing the non-PIC
+      # SIGSEGV in ZSTD_decompress that this fix guards against.
+      - name: install libzstd-dev (gcc-shared)
+        if: matrix.name == 'gcc-shared'
+        run: sudo apt-get install -y libzstd-dev
       - name: configure
         shell: bash
         run: |

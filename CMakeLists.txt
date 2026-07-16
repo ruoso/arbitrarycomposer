@@ -208,21 +208,48 @@ FetchContent_MakeAvailable(zstd)
 
 # One name for the two consumption paths (zstd_dep Decision 3). Resolved ONCE here
 # rather than as an if(TARGET ...) cascade scattered across every consumer's
-# CMakeLists. Static is preferred over shared where both exist: it keeps a shared
-# libarbc from imposing a runtime libzstd.so on its embedder, which is the transitive
-# burden doc 10:34-35 is actually about.
+# CMakeLists. The preference order is BUILD_SHARED_LIBS-aware because the two linkage
+# shapes have OPPOSITE correct answers (shared_library_zstd_shared_link Decision D1):
+#
+#   - A STATIC libarbc prefers a system STATIC zstd: folding/relinking a static zstd
+#     keeps a shared libarbc from imposing a runtime libzstd.so on its embedder, the
+#     transitive burden doc 10:34-35 is actually about.
+#   - A SHARED libarbc prefers a system SHARED zstd: folding a system libzstd.a of
+#     unknown PIC-ness into libarbc.so links with bad relocations and SIGSEGVs inside
+#     ZSTD_decompress. A DT_NEEDED libzstd.so imposes nothing on the embedder's LINK
+#     line (the loader resolves it, and libzstd is not a codec/GPU/GUI burden), so it
+#     is the correct dependency shape for the .so.
+#
+# The fetched (non-imported) `libzstd_static` is built PIC (below), so it is a safe
+# fold on EITHER shape and stays a fallback ahead of the last-resort system static.
 add_library(arbc_zstd INTERFACE)
-if(TARGET zstd::libzstd_static)
-  target_link_libraries(arbc_zstd INTERFACE zstd::libzstd_static)
-elseif(TARGET zstd::libzstd_shared)
-  target_link_libraries(arbc_zstd INTERFACE zstd::libzstd_shared)
-elseif(TARGET zstd::libzstd)
-  target_link_libraries(arbc_zstd INTERFACE zstd::libzstd)
-elseif(TARGET libzstd_static)
-  target_link_libraries(arbc_zstd INTERFACE libzstd_static)
+if(BUILD_SHARED_LIBS)
+  if(TARGET zstd::libzstd_shared)
+    target_link_libraries(arbc_zstd INTERFACE zstd::libzstd_shared)
+  elseif(TARGET zstd::libzstd)
+    target_link_libraries(arbc_zstd INTERFACE zstd::libzstd)
+  elseif(TARGET libzstd_static)
+    target_link_libraries(arbc_zstd INTERFACE libzstd_static)
+  elseif(TARGET zstd::libzstd_static)
+    target_link_libraries(arbc_zstd INTERFACE zstd::libzstd_static)
+  else()
+    message(
+      FATAL_ERROR "zstd resolved but exposes no known target "
+                  "(zstd::libzstd_shared, zstd::libzstd, libzstd_static, zstd::libzstd_static)")
+  endif()
 else()
-  message(FATAL_ERROR "zstd resolved but exposes no known target "
-                      "(zstd::libzstd_static/_shared, zstd::libzstd, libzstd_static)")
+  if(TARGET zstd::libzstd_static)
+    target_link_libraries(arbc_zstd INTERFACE zstd::libzstd_static)
+  elseif(TARGET zstd::libzstd_shared)
+    target_link_libraries(arbc_zstd INTERFACE zstd::libzstd_shared)
+  elseif(TARGET zstd::libzstd)
+    target_link_libraries(arbc_zstd INTERFACE zstd::libzstd)
+  elseif(TARGET libzstd_static)
+    target_link_libraries(arbc_zstd INTERFACE libzstd_static)
+  else()
+    message(FATAL_ERROR "zstd resolved but exposes no known target "
+                        "(zstd::libzstd_static/_shared, zstd::libzstd, libzstd_static)")
+  endif()
 endif()
 
 # The fetched (non-imported) static target needs both fixups; an imported target from

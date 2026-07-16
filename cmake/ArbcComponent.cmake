@@ -204,6 +204,30 @@ function(arbc_finalize_library)
     PROPERTIES VERSION "${PROJECT_VERSION}"
                SOVERSION "${PROJECT_VERSION_MAJOR}")
 
+  # Shared-libarbc install-relink fix (packaging.shared_library_zstd_shared_link,
+  # budget item 4). When libarbc.so links a SYSTEM zstd it links libzstd.so by its
+  # absolute path, which makes CMake schedule an install-time RELINK of libarbc.so.
+  # That relink is a build-system rule (CMakeFiles/CMakeRelink.dir/...), NOT run by
+  # the standalone `cmake --install <dir> --prefix <p>` the install.consumer test
+  # (tests/consumer/run_staged_install.cmake) uses to stage -- so staging fails with
+  # "cannot find .../CMakeRelink.dir/libarbc.so.*". BUILD_WITH_INSTALL_RPATH builds
+  # libarbc.so already carrying its install RPATH, so no relink is scheduled and the
+  # standalone install copies the built artifact directly; INSTALL_RPATH_USE_LINK_PATH
+  # keeps a *non-system* zstd's directory on that RPATH (both build- and install-tree),
+  # so a developer whose zstd lives outside the loader's default search still resolves
+  # it at test time and after install. For a system zstd the directory is an implicit
+  # link dir and drops out, leaving an empty RPATH that relies on the system loader --
+  # the portable release shape. Set ONLY on the umbrella (never on test executables,
+  # which need their build-tree RPATH to find libarbc.so.0); inert for the STATIC
+  # archive, so the static lanes are byte-unchanged. Guarded on BUILD_SHARED_LIBS to
+  # keep the static configuration identical.
+  if(BUILD_SHARED_LIBS)
+    set_target_properties(
+      arbc
+      PROPERTIES BUILD_WITH_INSTALL_RPATH ON
+                 INSTALL_RPATH_USE_LINK_PATH ON)
+  endif()
+
   # arbc/version.hpp (packaging.version_api, doc 10 § Versioning and the version API).
   # Generated into the BUILD tree from one template, so `project(... VERSION ...)` in the
   # top-level CMakeLists is the single source of truth and a bump is a one-line edit;
