@@ -48,9 +48,8 @@ namespace {
 arbc::Affine pan(double dx, double dy) { return arbc::Affine::translation(dx, dy); }
 
 arbc::Affine zoom_about(double factor, double cx, double cy) {
-  return compose(arbc::Affine::translation(cx, cy),
-                 compose(arbc::Affine::scaling(factor, factor),
-                         arbc::Affine::translation(-cx, -cy)));
+  return compose(arbc::Affine::translation(cx, cy), compose(arbc::Affine::scaling(factor, factor),
+                                                            arbc::Affine::translation(-cx, -cy)));
 }
 
 // Step until the loop is genuinely settled: no follow-up frame owed and no
@@ -92,8 +91,7 @@ int main(int argc, char** argv) {
   }
   arbc::expected<std::unique_ptr<arbc::Content>, std::string> backdrop = (*solid)("0,0,0.25,1");
   if (!backdrop.has_value()) {
-    std::printf("host-interactive: backdrop construction failed: %s\n",
-                backdrop.error().c_str());
+    std::printf("host-interactive: backdrop construction failed: %s\n", backdrop.error().c_str());
     return 1;
   }
   const arbc::ObjectId backdrop_layer =
@@ -129,8 +127,8 @@ int main(int argc, char** argv) {
   // DocumentBinding{} is the right shape for a programmatically-built document
   // with no external references. The constructor installs the document's
   // damage sink; edits from here on reach this viewport's frame loop.
-  arbc::HostViewport view(renderer, document, arbc::HostViewport::DocumentBinding{}, backend,
-                          pool, cache, **target, {}, config);
+  arbc::HostViewport view(renderer, document, arbc::HostViewport::DocumentBinding{}, backend, pool,
+                          cache, **target, {}, config);
   // A static scene: pin the playhead so pixels are a pure function of the
   // camera. A media host would instead let the owned transport free-run.
   view.set_playhead_source([] { return arbc::Time::zero(); });
@@ -196,8 +194,8 @@ int main(int argc, char** argv) {
   using Srgb8 = arbc::PixelTraits<arbc::PixelFormat::Rgba8Srgb>;
   const int width = surface.width();
   const int height = surface.height();
-  std::vector<std::uint8_t> rgba(static_cast<std::size_t>(width) * static_cast<std::size_t>(height)
-                                 * 4);
+  std::vector<std::uint8_t> rgba(static_cast<std::size_t>(width) *
+                                 static_cast<std::size_t>(height) * 4);
   for (std::size_t i = 0; i < rgba.size() / 4; ++i) {
     const arbc::WorkingPixel working{pixels[4 * i], pixels[4 * i + 1], pixels[4 * i + 2],
                                      pixels[4 * i + 3]};

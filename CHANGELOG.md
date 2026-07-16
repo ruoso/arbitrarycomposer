@@ -43,6 +43,15 @@ there is nothing for these to have changed *from*: this section describes what
 - **The plugin seam** — a single `extern "C" arbc_plugin_register(Registry&)` entry
   point. It carries no ABI number and negotiates nothing: v1 accepts same-toolchain
   coupling (doc 03, Stage 1), and a versioned C ABI arrives at 1.0.
+- **Registry-carried codecs and binders** — a `Registry` entry optionally supplies,
+  atomically with its factory, a JSON-free `KindCodec` (text params ↔ content
+  state) and a `KindBinder` (operator-graph input binding), so a loaded plugin's
+  kind round-trips through document save/load and participates in the operator
+  graph entirely from its own module — no JSON type crosses the plugin surface.
+- **`arbc::register_builtin_kinds()`** — one call at the umbrella presents the six
+  in-lib kinds (factory + metadata, skip-on-duplicate, idempotent) through the same
+  `Registry` surface loaded plugins register into, so a host can enumerate what the
+  library can instantiate — an "insert layer" menu straight off `Registry::ids()`.
 - **Rendering** — a CPU reference backend with byte-exact deterministic output,
   compositing source-over on premultiplied alpha in a per-composition working color
   space, with a power-of-two scale-rung tile cache and higher-order (Lanczos-3 /
@@ -63,6 +72,15 @@ there is nothing for these to have changed *from*: this section describes what
   § Versioning and the version API).
 - **A CMake package** — `find_package(arbc CONFIG)`, with `SameMajorVersion`
   compatibility and an optional `testing` component.
+- **`arbc_add_plugin()`** — a CMake helper shipped inside the package config:
+  against an installed arbc, a complete third-party plugin build is
+  `find_package(arbc CONFIG REQUIRED)` plus one `arbc_add_plugin()` call, producing
+  a loadable module. `examples/plugin-template/` is the copyable starting point.
+- **Shipped embedding examples** — `examples/host-offline/` (one exact frame to
+  PNG, the minimal embedding) and `examples/host-interactive/` (a `HostViewport` +
+  `InteractiveRenderer` pan/zoom frame loop, headless via a scripted gesture tape),
+  standalone foreign projects that CI configures, builds, and runs against a staged
+  install on every lane, validating their PNG output byte-exactly.
 - **Dependencies: nlohmann/json** (header-only) and **zstd** — the core's only two,
   both consumed find-first with a pinned `FetchContent` fallback. Neither appears in
   an installed header, so no embedder compiles against either.

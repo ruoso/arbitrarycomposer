@@ -58,4 +58,10 @@ task quality "Quality infrastructure" {
     depends quality.contributing_doc
     note "Add opt-in ARBC_GATE_COVERAGE=1 path to scripts/gate: configure + build the coverage preset, run gcovr + diff-cover against the merge-base with --fail-under=90, mirroring ci.yml:109-143; flip CONTRIBUTING.md's not-yet-mechanized coverage row to a documented knob. Doc 16:115-118. Source-of-debt: tasks/refinements/quality/contributing_doc.md (D6)."
   }
+  task format_check_untracked_files "Extend format/lint checks to untracked files" {
+    effort 0.5d
+    allocate team
+    depends quality.contributing_doc
+    note "Replace git ls-files with git ls-files --cached --others --exclude-standard in scripts/gate and ci.yml lint step so clang-format, levelization, and claims checks cover new files before they are committed — closing the one-iteration gap that allowed latent violations in untracked sources. Source-of-debt: tasks/refinements/packaging/release_01.md (latent clang-format violations on untracked example files, surfaced 2026-07-16). Doc 16."
+  }
 }

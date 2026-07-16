@@ -105,6 +105,30 @@ checking and a deprecation policy arriving at 1.0. This section records the
   consumers, so it begins at the surface the first tag names — the git log
   remains the per-commit record, and the changelog is not a transcription of it.
 
+### Cutting a release
+
+The release ritual (`packaging.release_01`; for v0.1.0 executed by
+`packaging.tag_01`). It is deliberately manual: one release is cut at a
+time, pre-1.0, every step but the last is a one-liner, and automation would
+have exactly one consumer and nothing gated to publish.
+
+1. **Readiness**: every leaf of the release milestone is complete —
+   `scripts/unblocked.py` reports it. A tag never lands while a milestone
+   leaf is open; the tag-cutting task depends on every other leaf, so the
+   sequencing is a scheduler fact, not a hope.
+2. **Roll the changelog**: retitle `[Unreleased]` to `## [X.Y.Z] - <date>`
+   and open a fresh, empty `[Unreleased]` section above it.
+3. **Flip the README**: the one release-status sentence stops reading "the
+   first tag will be…" and names the released version.
+4. **Tag**: `git tag -a vX.Y.Z` on the commit that rolled the changelog;
+   the tag message is the rolled changelog section, verbatim — that section
+   *is* the release notes, and writing them twice would be the real waste
+   (`packaging.version_api` D6).
+5. **Publish**: pushing the tag, and any announcement, is a human step —
+   never automated from CI.
+6. **Next cycle**: the version bump is the one line in `project(VERSION …)`
+   — nothing else in the tree carries the number.
+
 ## Repository layout
 
 Superseded by doc 17 (internal components): the library ships as a single

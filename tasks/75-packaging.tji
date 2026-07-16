@@ -32,8 +32,15 @@ task packaging "Packaging and release" {
   task release_01 "0.1 release checklist" {
     effort 0.5d
     allocate team
+    complete 100
     depends !install, !version_api, !examples
-    note "Tag, release notes, README quickstart reflecting the shipped surface."
+    note "Tag, release notes, README quickstart reflecting the shipped surface. Docs 10/16. Refinement: tasks/refinements/packaging/release_01.md"
+  }
+  task tag_01 "Cut the v0.1.0 tag" {
+    effort 0.5d
+    allocate team
+    depends !release_01, surfaces.import, runtime.plugin_default_search_paths, runtime.camera_change_damage, runtime.placement_damage_maps_to_device, compositor.bounded_content_tile_clip
+    note "Execute doc 10 § Cutting a release steps 1-4 for v0.1.0: roll [Unreleased] to [0.1.0], flip the README release-status sentence, create the annotated tag on the rolled commit. Pushing the tag is a human action (parking lot). Source-of-debt: tasks/refinements/packaging/release_01.md (Decision D1). Docs 10/16."
   }
   task shared_library_build "Export-annotate libarbc and verify shared-build plugin loads" {
     effort 3d

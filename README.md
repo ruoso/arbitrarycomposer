@@ -29,11 +29,117 @@ so you retouch by stacking an editable raster over it.
 
 ## Status
 
-Implementation underway, pre-0.1. The library builds and tests: a levelized
-component tree under `src/`, a per-push CI matrix across GCC/Clang/MSVC ×
-Debug/Release/ASan/TSan/RTSan, and a claims register that pins the design docs'
-promises to tests. Nothing is released and the surface still moves freely; the
-first tag will be 0.1.0 ([CHANGELOG.md](CHANGELOG.md)).
+Implementation underway, pre-0.1. The library is built, tested, and
+installable: a levelized component tree under `src/`, shared and static
+builds, a per-push CI matrix across GCC/Clang/MSVC ×
+Debug/Release/ASan/TSan/RTSan, a claims register that pins the design docs'
+promises to tests, and a relocatable CMake package with shipped, CI-run
+embedding examples. Nothing is tagged yet and the surface still moves freely;
+the first tag will be v0.1.0, and the `[Unreleased]` section of
+[CHANGELOG.md](CHANGELOG.md) describes the surface that tag will name.
+
+## Quickstart: embedding the library
+
+Install from source (any prefix works):
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/arbc"
+cmake --build build
+cmake --install build
+```
+
+Consuming the installed package is a config-mode `find_package`. This is
+[examples/host-offline/CMakeLists.txt](examples/host-offline/CMakeLists.txt),
+verbatim:
+
+<!-- readme-quickstart: consume -->
+```cmake
+find_package(arbc CONFIG REQUIRED)
+
+add_executable(host_offline main.cpp)
+target_link_libraries(host_offline PRIVATE arbc::arbc)
+target_compile_features(host_offline PRIVATE cxx_std_20)
+```
+
+That is the entire dependency surface. The dependency policy is part of the
+public promise (design doc 10, pinned by test): embedding the core never
+transitively imposes codecs, GPU SDKs, or a GUI toolkit.
+
+The embedding itself — bootstrap the kind registry, build a document, render
+one exact frame — is the body of
+[examples/host-offline/main.cpp](examples/host-offline/main.cpp), verbatim:
+
+<!-- readme-quickstart: embed -->
+```cpp
+  // 1. Kind bootstrap: one call presents every built-in kind through the same
+  //    Registry surface loaded plugins register into (doc 03 § Registry).
+  arbc::Registry registry;
+  arbc::register_builtin_kinds(registry);
+
+  // 2. The document: a root composition and two solid layers, bottom-to-top in
+  //    attach order (doc 05). The backdrop goes through the registry's factory
+  //    -- the path a config-driven host takes; the overlay is constructed
+  //    directly -- the programmatic host's path. Solid colors are
+  //    PREMULTIPLIED working-space values (doc 07).
+  arbc::Document document;
+  const arbc::ObjectId comp = document.add_composition(32.0, 32.0);
+
+  const arbc::ContentFactory* solid = registry.factory("org.arbc.solid");
+  if (solid == nullptr) {
+    std::puts("host-offline: org.arbc.solid is not registered");
+    return 1;
+  }
+  // Opaque red, unbounded extent: the factory grammar is "r,g,b,a".
+  arbc::expected<std::unique_ptr<arbc::Content>, std::string> backdrop = (*solid)("1,0,0,1");
+  if (!backdrop.has_value()) {
+    std::printf("host-offline: backdrop construction failed: %s\n", backdrop.error().c_str());
+    return 1;
+  }
+  document.attach_layer(comp, document.add_layer(document.add_content(std::move(*backdrop)),
+                                                 arbc::Affine::identity()));
+
+  // Half-opacity green over the top-left quadrant: unit-square bounds scaled
+  // to 16x16 composition units by the layer transform.
+  const arbc::ObjectId overlay = document.add_content(std::make_shared<arbc::SolidContent>(
+      arbc::Rgba{0.0F, 0.5F, 0.0F, 0.5F}, arbc::Rect{0.0, 0.0, 1.0, 1.0}));
+  document.attach_layer(comp, document.add_layer(overlay, arbc::Affine::scaling(16.0, 16.0)));
+
+  // 3. One exact frame (doc 02:241-253). The target arrives in the
+  //    composition's working space; a backend that cannot store that format
+  //    reports a SurfaceError value, never an abort.
+  arbc::CpuBackend backend;
+  const arbc::Viewport viewport{32, 32, arbc::Affine::identity()};
+  const arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> frame =
+      arbc::render_offline(document, viewport, backend);
+  if (!frame.has_value()) {
+    std::puts("host-offline: render_offline could not produce the target surface");
+    return 1;
+  }
+  const arbc::Surface& surface = **frame;
+```
+
+The rest of that program (working-space floats → straight-alpha sRGB8 → PNG)
+is in the full source. Both snippets above are byte-identical to anchored
+regions of `examples/host-offline/` — a standalone foreign project CI
+configures, builds, and **runs** against a staged install on every lane —
+and a sync test enforces the identity, so this quickstart cannot drift from
+a program that compiles and runs.
+
+More of the shipped surface:
+
+- [examples/host-interactive/](examples/host-interactive/) — the interactive
+  mode: a `HostViewport` + `InteractiveRenderer` pan/zoom frame loop, driven
+  headlessly by a scripted gesture tape.
+- [examples/plugin-template/](examples/plugin-template/) — a third-party
+  layer-kind plugin is `find_package(arbc CONFIG REQUIRED)` plus one line:
+  `arbc_add_plugin(my-plugin SOURCES my_plugin.cpp)`. The helper ships
+  inside the CMake package.
+- `find_package(arbc CONFIG REQUIRED COMPONENTS testing)` adds
+  `arbc::testing` — the contract conformance suite a plugin author runs over
+  their own `Content` factory to get the contract's behavioral promises
+  checked for them.
+
+## Contributing
 
 To build, test, and run the pre-push gate, see
 [CONTRIBUTING.md](CONTRIBUTING.md):

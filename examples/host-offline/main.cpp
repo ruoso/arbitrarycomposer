@@ -15,6 +15,10 @@
 // against expectations derived from first principles
 // (tests/consumer/host_example_artifacts.cpp). Change the scene and that test
 // changes with it.
+//
+// The [readme-quickstart:*] anchors below mark the region README.md's
+// quickstart lifts byte-identically; tests/readme_quickstart.t.cpp enforces
+// the sync (claim 16-sdlc-and-quality#readme-quickstart-is-the-shipped-example).
 
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/builtin_kinds.hpp>
@@ -42,6 +46,7 @@ int main(int argc, char** argv) {
   std::printf("host-offline: arbc header %s, library %s\n", ARBC_VERSION_STRING,
               arbc::linked_version_string());
 
+  // [readme-quickstart:embed]
   // 1. Kind bootstrap: one call presents every built-in kind through the same
   //    Registry surface loaded plugins register into (doc 03 § Registry).
   arbc::Registry registry;
@@ -66,9 +71,8 @@ int main(int argc, char** argv) {
     std::printf("host-offline: backdrop construction failed: %s\n", backdrop.error().c_str());
     return 1;
   }
-  document.attach_layer(
-      comp, document.add_layer(document.add_content(std::move(*backdrop)),
-                               arbc::Affine::identity()));
+  document.attach_layer(comp, document.add_layer(document.add_content(std::move(*backdrop)),
+                                                 arbc::Affine::identity()));
 
   // Half-opacity green over the top-left quadrant: unit-square bounds scaled
   // to 16x16 composition units by the layer transform.
@@ -88,6 +92,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   const arbc::Surface& surface = **frame;
+  // [/readme-quickstart:embed]
 
   // 4. Working space -> PNG. The frame is premultiplied linear-light float
   //    (doc 07); PNG wants straight-alpha sRGB8.
@@ -103,8 +108,8 @@ int main(int argc, char** argv) {
   using Srgb8 = arbc::PixelTraits<arbc::PixelFormat::Rgba8Srgb>;
   const int width = surface.width();
   const int height = surface.height();
-  std::vector<std::uint8_t> rgba(static_cast<std::size_t>(width) * static_cast<std::size_t>(height)
-                                 * 4);
+  std::vector<std::uint8_t> rgba(static_cast<std::size_t>(width) *
+                                 static_cast<std::size_t>(height) * 4);
   for (std::size_t i = 0; i < rgba.size() / 4; ++i) {
     const arbc::WorkingPixel working{pixels[4 * i], pixels[4 * i + 1], pixels[4 * i + 2],
                                      pixels[4 * i + 3]};

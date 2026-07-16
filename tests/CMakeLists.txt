@@ -24,6 +24,20 @@ target_link_libraries(arbc_smoke_t PRIVATE Catch2::Catch2WithMain
                                            arbc_build_flags)
 catch_discover_tests(arbc_smoke_t)
 
+# README quickstart <-> shipped example sync (packaging.release_01, doc
+# 16:88-90): the README's quickstart code blocks are byte-identical to
+# anchored regions of examples/host-offline/, which install.consumer
+# configures, builds, and runs against a staged install on every lane.
+# Byte scan of checked-in sources -- links no arbc component.
+add_executable(arbc_readme_quickstart_t readme_quickstart.t.cpp)
+target_link_libraries(arbc_readme_quickstart_t PRIVATE Catch2::Catch2WithMain
+                                                       arbc_build_flags)
+target_compile_definitions(
+  arbc_readme_quickstart_t
+  PRIVATE ARBC_README_FILE="${CMAKE_SOURCE_DIR}/README.md"
+          ARBC_HOST_OFFLINE_SRC_DIR="${CMAKE_SOURCE_DIR}/examples/host-offline")
+catch_discover_tests(arbc_readme_quickstart_t)
+
 # Contract conformance driver (doc 16, contract.conformance_suite): runs the
 # public arbc-testing suite over one purpose-built double per contract branch
 # plus the org.arbc.solid reference kind. Cross-component (pulls kind_solid), so

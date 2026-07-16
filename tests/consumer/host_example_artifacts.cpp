@@ -144,8 +144,7 @@ bool decode_png(const char* label, const char* path, std::uint32_t dim,
     const std::uint8_t header = idat[pos];
     final_block = (header & 1U) != 0;
     if ((header >> 1U) != 0) {
-      std::printf("%s: deflate block is not STORED (the writers emit only stored blocks)\n",
-                  label);
+      std::printf("%s: deflate block is not STORED (the writers emit only stored blocks)\n", label);
       return false;
     }
     const std::uint32_t len = idat[pos + 1] | (static_cast<std::uint32_t>(idat[pos + 2]) << 8U);
@@ -235,9 +234,9 @@ int main() {
   //
   // host-offline renders at the identity camera: the half-green overlay spans
   // composition [0,16)^2, which is device [0,16)^2.
-  const bool offline_ok = check_artifact(
-      "host_example_artifacts[offline]", ARBC_HOST_OFFLINE_PNG, 32, 16,
-      arbc::WorkingPixel{1.0F, 0.0F, 0.0F, 1.0F}, arbc::WorkingPixel{0.0F, 0.5F, 0.0F, 0.5F});
+  const bool offline_ok = check_artifact("host_example_artifacts[offline]", ARBC_HOST_OFFLINE_PNG,
+                                         32, 16, arbc::WorkingPixel{1.0F, 0.0F, 0.0F, 1.0F},
+                                         arbc::WorkingPixel{0.0F, 0.5F, 0.0F, 0.5F});
 
   // host-interactive's gesture tape nets to a pan of (-64, -64) -- the two
   // zooms cancel exactly -- so the half-gray panel (composition [0,256)^2)

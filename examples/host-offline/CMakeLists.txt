@@ -11,6 +11,10 @@
 # The entire dependency surface is arbc::arbc -- no codec, no GPU SDK, no GUI
 # toolkit (doc 10:34-35). The PNG writer is example-local code shared with
 # host-interactive by relative include (../common/png_writer.hpp).
+#
+# The [readme-quickstart:*] anchors below mark the region README.md's
+# quickstart lifts byte-identically; tests/readme_quickstart.t.cpp enforces
+# the sync (claim 16-sdlc-and-quality#readme-quickstart-is-the-shipped-example).
 cmake_minimum_required(VERSION 3.24)
 
 project(
@@ -19,8 +23,10 @@ project(
   DESCRIPTION "Minimal arbc embedding: one exact offline frame to PNG"
   LANGUAGES CXX)
 
+# [readme-quickstart:consume]
 find_package(arbc CONFIG REQUIRED)
 
 add_executable(host_offline main.cpp)
 target_link_libraries(host_offline PRIVATE arbc::arbc)
 target_compile_features(host_offline PRIVATE cxx_std_20)
+# [/readme-quickstart:consume]
