@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/media/pixel_format.hpp> // PixelFormat (the document's storage format)
 
 #include <cstddef>
@@ -30,7 +31,7 @@ struct ResolvedRef {
 // lands with the kinds that first need it (org.arbc.raster, org.arbc.nested). While
 // none is installed on a `LoadContext`, `load_asset` reports the asset as
 // unavailable rather than blocking (serialize.reader Decision 4).
-class AssetSource {
+class ARBC_API AssetSource {
 public:
   virtual ~AssetSource() = default;
 
@@ -51,7 +52,7 @@ public:
 // statement about identity rather than about spelling: `child.arbc` and
 // `./child.arbc` name one file, so they must yield ONE `ResolvedRef`, one asset
 // request, and one loaded child composition.
-std::string normalize_uri(std::string_view uri);
+ARBC_API std::string normalize_uri(std::string_view uri);
 
 // Resolve `reference` against `base_uri` and normalize the result. A schemed or
 // absolute reference is taken verbatim; a relative one joins onto the base URI's
@@ -61,7 +62,7 @@ std::string normalize_uri(std::string_view uri);
 // Free, not a `LoadContext` member, because `SaveContext` must resolve identically:
 // one seam serves both directions (serialize.raster_tile_store Decision 1), and a
 // blob written under one spelling has to be readable under the other.
-std::string resolve_uri(std::string_view base_uri, std::string_view reference);
+ARBC_API std::string resolve_uri(std::string_view base_uri, std::string_view reference);
 
 // The single resolution / loading choke point a load threads through every kind
 // (doc 08:64-66,74-79; serialize.reader Decision 4 + Constraint 6): base-URI
@@ -71,7 +72,7 @@ std::string resolve_uri(std::string_view base_uri, std::string_view reference);
 // cache so two references to one resolved URI share a single identity. Owned by
 // `arbc::serialize` (Level 4, doc 17:58). Single-writer, not thread-safe: a load
 // runs on one thread.
-class LoadContext {
+class ARBC_API LoadContext {
 public:
   // The base is itself canonicalized, so `base_uri()` IS the document's resolved
   // identity -- which is what lets a loader seed its resolved-URI map with "this

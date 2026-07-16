@@ -29,6 +29,7 @@
 //
 // Names no JSON type, so it rides the runtime PUBLIC headers.
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/serialize/load_context.hpp> // AssetSource
 
@@ -41,7 +42,7 @@
 
 namespace arbc {
 
-class PendingExternalLoads {
+class ARBC_API PendingExternalLoads {
 public:
   // One arrival: the `ObjectId` the loader pre-allocated before the fetch, and the bytes
   // `on_ready` delivered. EMPTY bytes mean the source answered ABSENCE -- unavailable, not

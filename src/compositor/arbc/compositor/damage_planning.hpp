@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/time.hpp>
 #include <arbc/cache/key_shapes.hpp>
@@ -84,7 +85,7 @@ struct DirtyRegion {
 // stale seam); rounding out is conservative in the safe direction, and because
 // the same rounded rects gate the plan, the extra pixels are covered by every
 // layer that covers them.
-Rect repaint_region(const DirtyRegion& dirty, const Viewport& viewport);
+ARBC_API Rect repaint_region(const DirtyRegion& dirty, const Viewport& viewport);
 
 // The rect-count cap on a frame's repaint set (`disjoint_dirty_repaint` Decision
 // 3). A band sweep over *n* input rects can emit O(n^2) output rects in the worst
@@ -144,7 +145,7 @@ inline constexpr std::size_t k_max_repaint_rects = 64;
 // runs are identical, so two plainly non-overlapping rects come back out as two
 // rects rather than three bands. Over `k_max_repaint_rects` output rects the
 // decomposition is abandoned for `{repaint_region(dirty, viewport)}`.
-std::vector<Rect> repaint_regions(const DirtyRegion& dirty, const Viewport& viewport);
+ARBC_API std::vector<Rect> repaint_regions(const DirtyRegion& dirty, const Viewport& viewport);
 
 // Project model/refinement `Damage` onto per-viewport device dirty rects (doc
 // 02:51,57-60). For each `Damage`: (a) a temporal gate -- skip unless
@@ -159,8 +160,8 @@ std::vector<Rect> repaint_regions(const DirtyRegion& dirty, const Viewport& view
 // conservative full-viewport footprint; this signature carries no
 // `ContentResolver` to tighten to `bounds()`). Empty input, or all-gated /
 // all-culled, returns an empty vector -- "no damage -> no work".
-std::vector<Rect> map_damage_to_device(const DocRoot& state, const Viewport& viewport,
-                                       std::span<const Damage> damage, Time now);
+ARBC_API std::vector<Rect> map_damage_to_device(const DocRoot& state, const Viewport& viewport,
+                                                std::span<const Damage> damage, Time now);
 
 // Turn a clock advance into homogeneous `Damage` for the visible non-`Static`
 // layers only (doc 11:133-137, the "clock advance is the temporal damage" axis).
@@ -175,8 +176,10 @@ std::vector<Rect> map_damage_to_device(const DocRoot& state, const Viewport& vie
 // of a still scene produces no damage, so the runtime schedules no frame. The
 // result is homogeneous with model damage, so `map_damage_to_device` consumes it
 // directly.
-std::vector<Damage> clock_advance_damage(const DocRoot& state, const ContentResolver& resolve,
-                                         const Viewport& viewport, const TimeRange& advanced);
+ARBC_API std::vector<Damage> clock_advance_damage(const DocRoot& state,
+                                                  const ContentResolver& resolve,
+                                                  const Viewport& viewport,
+                                                  const TimeRange& advanced);
 
 // Drive the cache invalidation `cache.invalidation` reserved for this task (doc
 // 02:94-95). For each `Damage{object, rect, range}`, drop the damaged tiles of
@@ -187,6 +190,6 @@ std::vector<Damage> clock_advance_damage(const DocRoot& state, const ContentReso
 // invalidation stays lazy-by-keying; this driver covers only the spatial
 // `(content, region)` axis and never calls `drop_superseded` (Decision 5).
 // Returns the total number of tiles dropped.
-std::size_t invalidate_damage(TileCache& cache, std::span<const Damage> damage);
+ARBC_API std::size_t invalidate_damage(TileCache& cache, std::span<const Damage> damage);
 
 } // namespace arbc

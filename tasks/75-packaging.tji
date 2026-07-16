@@ -35,7 +35,14 @@ task packaging "Packaging and release" {
   task shared_library_build "Export-annotate libarbc and verify shared-build plugin loads" {
     effort 3d
     allocate team
+    complete 100
     depends kinds.dual_build, kinds.imageseq_plugin
-    note "Export-annotate libarbc's public symbol surface (ARBC_API macro on public headers, per doc 17:135-141), add a BUILD_SHARED_LIBS=ON CMake preset and CI lane, and re-run arbc-plugin-imageseq, arbc-plugin-miniaudio, and the six arbc-ci-plugin-* loads against the shared libarbc — so a plugin resolves core symbols from the host image instead of carrying a private copy. Source-of-debt: tasks/refinements/kinds/dual_build.md (Decision 6). Docs 03/17."
+    note "Export-annotate libarbc's public symbol surface (ARBC_API macro on public headers, per doc 17:135-141), add a BUILD_SHARED_LIBS=ON CMake preset and CI lane, and re-run arbc-plugin-imageseq, arbc-plugin-miniaudio, and the six arbc-ci-plugin-* loads against the shared libarbc — so a plugin resolves core symbols from the host image instead of carrying a private copy. Source-of-debt: tasks/refinements/kinds/dual_build.md (Decision 6). Docs 03/17. Refinement: tasks/refinements/packaging/shared_library_build.md"
+  }
+  task shared_library_build_msvc "MSVC shared-build lane for libarbc" {
+    effort 1d
+    allocate team
+    depends !shared_library_build
+    note "Add a Windows/MSVC BUILD_SHARED_LIBS=ON lane and verify ARBC_API's __declspec(dllexport)/__declspec(dllimport) branches are correct across the plugin LoadLibrary boundary — the one platform where the export/import asymmetry bites and where MODULE resolution and DLL search paths differ. Source-of-debt: tasks/refinements/packaging/shared_library_build.md (Decision D4). Docs 03/17."
   }
 }

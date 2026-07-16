@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp>
 
 #include <optional>
@@ -17,7 +18,7 @@ struct Rgba {
 // Reference kind org.arbc.solid (doc 03): minimal synchronous content, the
 // "hello world" of the contract. Optionally bounded so placement and
 // culling are exercised; unbounded matches the doc 01 table.
-class SolidContent final : public Content {
+class ARBC_API SolidContent final : public Content {
 public:
   explicit SolidContent(Rgba premultiplied_color, std::optional<Rect> bounds = std::nullopt);
 

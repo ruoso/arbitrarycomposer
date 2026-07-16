@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>     // expected, unexpected
 #include <arbc/contract/registry.hpp> // Registry, RegistryError
 
@@ -88,7 +89,7 @@ namespace detail {
 // RAII wrapper over a `dlopen` handle: `dlclose` on destruction. Move-only so it
 // can live in the host's handle vector; the destructor is out-of-line so this
 // public header pulls in no `<dlfcn.h>`.
-class PluginHandle {
+class ARBC_API PluginHandle {
 public:
   explicit PluginHandle(void* handle) noexcept : d_handle(handle) {}
   ~PluginHandle();
@@ -116,7 +117,7 @@ private:
 // unmapping code that is still live. This is the exact ordering
 // tests/imageseq_plugin_path.t.cpp:79-81 documents by hand, made a property of the
 // type rather than a burden on every embedder.
-class PluginHost {
+class ARBC_API PluginHost {
 public:
   PluginHost() = default;
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
+
 #include <cstddef>
 
 namespace arbc {
@@ -48,6 +50,6 @@ constexpr bool is_float(PixelFormat format) {
   return false;
 }
 
-const char* to_string(PixelFormat format);
+ARBC_API const char* to_string(PixelFormat format);
 
 } // namespace arbc

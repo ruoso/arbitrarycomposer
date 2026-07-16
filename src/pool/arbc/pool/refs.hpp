@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/pool/slab_directory.hpp>
 #include <arbc/pool/slot_store.hpp>
@@ -43,7 +44,7 @@ enum class RefError { CountOverflow };
 // count reaches zero; the sink decides WHEN and HOW to reclaim. This task
 // ships an immediate sink (run the destructor, release the slot); the deferred
 // reclamation queue (pool.reclamation) swaps in via `set_zero_sink`.
-class ZeroCountSink {
+class ARBC_API ZeroCountSink {
 public:
   virtual ~ZeroCountSink() = default;
   virtual void on_zero(SlotIndex index) = 0;

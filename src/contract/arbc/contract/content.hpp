@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp> // expected/unexpected (doc 10: errors as values)
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/rational_time.hpp> // Rational (PlaybackHint rate)
@@ -402,7 +403,7 @@ struct AudioRequest {
 // machinery (that is `arbc::audio-engine`, L4). Because audio and video are two
 // facets of the SAME content object, its audio and pixels can never drift under
 // editing (doc 12:37-41).
-class AudioFacet {
+class ARBC_API AudioFacet {
 public:
   AudioFacet(const AudioFacet&) = delete;
   AudioFacet& operator=(const AudioFacet&) = delete;
@@ -458,7 +459,7 @@ protected:
 //     refcount" both come true. WRITER/DRAIN-THREAD ONLY.
 // The L3 interface only (doc 17:53): pure virtuals and a virtual destructor, no
 // state. `org.arbc.raster` is the first and reference implementer (doc 14:164).
-class Editable {
+class ARBC_API Editable {
 public:
   Editable(const Editable&) = delete;
   Editable& operator=(const Editable&) = delete;
@@ -477,7 +478,7 @@ protected:
 // The layer contract (doc 03). Walking-skeleton subset: the audio facet lands
 // with its system. The operator-graph members below are null/identity defaults,
 // so leaf content is behaviourally unchanged.
-class Content {
+class ARBC_API Content {
 public:
   Content(const Content&) = delete;
   Content& operator=(const Content&) = delete;
@@ -718,7 +719,7 @@ protected:
 // are the L4 concern (`compositor.pull_service`, doc 17:56). The audio pull
 // (`pull_audio`, doc 13:80) joins this interface with `contract.audio_facet`,
 // which owns `AudioRequest`.
-class PullService {
+class ARBC_API PullService {
 public:
   PullService(const PullService&) = delete;
   PullService& operator=(const PullService&) = delete;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/surface/backend.hpp>
@@ -19,7 +20,7 @@ class SurfacePool;
 // recycles it. The wrapped surface is a live target of the requested
 // (width, height, SurfaceFormat); the handle scopes its useful life exactly
 // as the former per-request `unique_ptr<Surface>` did.
-class PooledSurface {
+class ARBC_API PooledSurface {
 public:
   PooledSurface(const PooledSurface&) = delete;
   PooledSurface& operator=(const PooledSurface&) = delete;
@@ -55,7 +56,7 @@ private:
 // Render-thread-confined (doc 09 Threading note): acquire/release run only
 // where allocation runs, so the pool holds no lock and is not thread-safe by
 // design. Not copyable or movable -- callers hold it by reference.
-class SurfacePool {
+class ARBC_API SurfacePool {
 public:
   explicit SurfacePool(Backend& backend) : d_backend(backend) {}
 

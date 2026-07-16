@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/rational_time.hpp> // TimeRange span / TimeMap time_map setter params
@@ -37,7 +38,7 @@ namespace arbc {
 //
 // Not a slab record -- a heap control object -- so it may hold pointers to the
 // document's stores for read traversal.
-class DocRoot {
+class ARBC_API DocRoot {
 public:
   DocRoot(StoreBundle stores, Ref<HamtNode> root, std::uint64_t revision) noexcept
       : d_stores(stores), d_root(std::move(root)), d_revision(revision) {}
@@ -172,7 +173,7 @@ using DocStatePtr = std::shared_ptr<const DocRoot>;
 // both call sites (`set_content_state`'s own parameter, and the reclaimed
 // `ObjectRecord`'s `id`). Widening the seam rather than the handle keeps the
 // mmapped record types standard-layout and fixed-size (doc 15:258-260).
-class StateRefSink {
+class ARBC_API StateRefSink {
 public:
   virtual ~StateRefSink() = default;
   virtual void retain(ObjectId content, StateHandle handle) = 0;
@@ -226,7 +227,7 @@ private:
 // makes the current version crash-recoverable (msync data, flip the A/B root, msync
 // the header), and `open` rebuilds the whole document from the last durable root --
 // counts and free lists included -- by the typed reachability walk below.
-class Model {
+class ARBC_API Model {
 public:
   Model();
   ~Model();

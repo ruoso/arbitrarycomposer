@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
@@ -156,13 +157,13 @@ inline constexpr int k_max_fallback_octaves = 4;
 // `k_tile_size / rung_scale(rung)` local units aligned to the local origin, so
 // a cell is exactly `k_tile_size^2` device pixels at that rung. Empty region ->
 // no cells.
-std::vector<TileCoord> tiles_covering(ScaleRung rung, const Rect& local_region);
+ARBC_API std::vector<TileCoord> tiles_covering(ScaleRung rung, const Rect& local_region);
 
 // The inverse of `tiles_covering`: the layer-local rectangle a single grid cell
 // covers at `rung` (`tiles_covering(rung, tile_local_rect(rung, c))` contains
 // `c`). Axis-aligned in local space; the composed affine (with the <=1-octave
 // remainder, rotation, shear) is applied at composite time, not baked here.
-Rect tile_local_rect(ScaleRung rung, TileCoord coord);
+ARBC_API Rect tile_local_rect(ScaleRung rung, TileCoord coord);
 
 // The source chosen for a tile after the cache lookup and the doc 02:62-67
 // degradation order (fresh -> resident-transient -> stale-revision ->
@@ -246,12 +247,12 @@ struct LayerTilePlan {
 // default) or a `nullopt` from `quantize_time` keeps the raw requested time --
 // the pre-coalescing, byte-identical behaviour; the snap is a single query
 // evaluated once per layer.
-LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revision,
-                         std::optional<std::uint64_t> prior_revision,
-                         const RungSelection& selection, const Rect& local_region,
-                         const Affine& local_to_device, Stability stability, Time time,
-                         StateHandle snapshot, Deadline deadline,
-                         const Content* content_ptr = nullptr);
+ARBC_API LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revision,
+                                  std::optional<std::uint64_t> prior_revision,
+                                  const RungSelection& selection, const Rect& local_region,
+                                  const Affine& local_to_device, Stability stability, Time time,
+                                  StateHandle snapshot, Deadline deadline,
+                                  const Content* content_ptr = nullptr);
 
 // The insert-site temporal-linkage predicate (doc 11:134-137). At a cache miss
 // the compositor keys a `Timed` tile at `quantize_time(time)` *before* it renders
@@ -274,8 +275,8 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
 // content that violates the doc-11 MUST as a fail-fast tripwire rather than a
 // wrong-frame-under-seek bug -- and *directly* from its enforcing test, so the
 // linkage claim holds regardless of `NDEBUG`.
-bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
-                                 Stability stability);
+ARBC_API bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
+                                          Stability stability);
 
 // The synchronous tiled resolve+composite driver: the interactive analog of
 // `render_frame` (doc 02:49-71). It reuses `render_frame`'s per-layer
@@ -438,7 +439,7 @@ bool timed_insert_key_consistent(const TileKey& key, const RenderResult& result,
 // content with no entry has no prior stamp and no stale tier, which is exactly the
 // `nullopt` behavior the offline drivers already pass. Null (the default) keeps the
 // scalar `prior_revision` for every layer, byte-for-byte the pre-task probe.
-void render_frame_interactive(
+ARBC_API void render_frame_interactive(
     const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
     TileCache& cache, Backend& backend, SurfacePool& pool, Surface& target, Deadline deadline,
     std::optional<std::uint64_t> prior_revision, RefinementQueue* pending = nullptr,

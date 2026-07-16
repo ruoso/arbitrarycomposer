@@ -11,6 +11,7 @@
 // handed back, uninterpreted, to the writer. Every component between the two stores and
 // copies it; only `arbc::serialize` parses it.
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 
 #include <cstddef>
@@ -54,7 +55,7 @@ enum class UnknownScope : std::uint8_t {
 // Copyable by design: `capture_snapshot` copies the live document's store into the
 // immutable `ContentSnapshot` so the off-thread save reads no live editor state
 // (Constraint 9, Decision 6). Cheap -- plain maps of `std::string`.
-class UnknownFieldStore {
+class ARBC_API UnknownFieldStore {
 public:
   // Record `fields` for `(scope, id)`; empty fields erase the entry, so an empty store
   // is exactly today's lossy behavior.

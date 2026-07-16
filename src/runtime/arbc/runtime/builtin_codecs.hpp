@@ -17,6 +17,7 @@
 // their already-built input edges (`std::span<const ContentRef> inputs`) at
 // construction (runtime.operator_codecs Decision 2).
 
+#include <arbc/arbc_api.h>
 #include <arbc/serialize/codec.hpp>
 
 namespace arbc {
@@ -46,32 +47,32 @@ inline constexpr const char* k_image_kind_id = "org.arbc.image";
 
 // org.arbc.solid: encodes/decodes `SolidContent`'s premultiplied `Rgba` as a
 // `{"color": [r, g, b, a]}` params object.
-Codec solid_codec();
+ARBC_API Codec solid_codec();
 
 // org.arbc.tone: encodes/decodes `ToneContent`'s `{frequency_hz, amplitude}` as a
 // `{"amplitude": <real>, "frequency_hz": <int>}` params object.
-Codec tone_codec();
+ARBC_API Codec tone_codec();
 
 // org.arbc.fade: a single-input operator codec. Serializes `FadeContent`'s immutable
 // `FadeParams` as `{"shape": "linear", "in"?: {start,end}, "out"?: {start,end}}` (the
 // optional windows omitted when absent); deserializes it back and adopts the one
 // already-built input edge -- `FadeContent(inputs[0], params)`. Wrong input arity is
 // a `ReaderError` value (runtime.operator_codecs Constraint 2).
-Codec fade_codec();
+ARBC_API Codec fade_codec();
 
 // Register the runtime binder for `org.arbc.fade` (a typed attach/detach thunk over
 // the concrete `FadeContent`, `operators.fade_runtime_binding`). Defined in the same
 // TU as `fade_codec()` -- the only runtime TU that legally names `FadeContent`
 // (doc 17:60). Reached once via `register_builtin_operator_binders()`
 // (`operator_binding.hpp`); a sibling operator kind adds its own `register_*_binder`.
-void register_fade_binder();
+ARBC_API void register_fade_binder();
 
 // org.arbc.crossfade: a two-input operator codec. Serializes `CrossfadeContent`'s
 // immutable `CrossfadeParams` as `{"shape": "linear", "start": <int>, "duration":
 // <int>}`; deserializes it back and adopts the two already-built input edges (from =
 // slot 0, to = slot 1) -- `CrossfadeContent(inputs[0], inputs[1], params)`. An input
 // arity other than 2 is a `ReaderError` value.
-Codec crossfade_codec();
+ARBC_API Codec crossfade_codec();
 
 // Register the runtime binder for `org.arbc.crossfade` (a typed attach/detach thunk
 // over the concrete two-input `CrossfadeContent`,
@@ -79,7 +80,7 @@ Codec crossfade_codec();
 // `crossfade_codec()` -- the only runtime TU that legally names `CrossfadeContent`
 // (doc 17:60). Reached once via `register_builtin_operator_binders()`
 // (`operator_binding.hpp`), beside `register_fade_binder()`.
-void register_crossfade_binder();
+ARBC_API void register_crossfade_binder();
 
 // org.arbc.nested: the nesting codec. A nested content's child arrives one of two ways
 // (doc 08 Principle 7 vs Principle 3):
@@ -104,8 +105,8 @@ void register_crossfade_binder();
 // The no-argument overload binds no loader, which is what the SAVE path wants (it never
 // deserializes) and what makes every external reference degrade to the doc-05 placeholder
 // -- the same benign outcome as an absent `AssetSource`.
-Codec nested_codec();
-Codec nested_codec(ExternalCompositionLoader* loader);
+ARBC_API Codec nested_codec();
+ARBC_API Codec nested_codec(ExternalCompositionLoader* loader);
 
 // Register the runtime binder for `org.arbc.nested` (a typed attach/detach thunk over
 // the concrete `NestedContent`, `kinds.nested_runtime_binding`). Defined in the same TU as
@@ -115,7 +116,7 @@ Codec nested_codec(ExternalCompositionLoader* loader);
 // `register_builtin_operator_binders()` (`operator_binding.hpp`), beside the two operator
 // binders. Nested is the kind that consumes the `BindContext`'s resolver and pinned
 // `DocRoot` as well as the services.
-void register_nested_binder();
+ARBC_API void register_nested_binder();
 
 // org.arbc.image: the codec for an OUT-OF-LIB kind, and the worked example of doc 17's
 // "the codec line is a DECODER line" (kinds.image Decision 2). It parses only our own JSON
@@ -150,8 +151,8 @@ void register_nested_binder();
 // no factory for the kind, no codec, and the layer round-trips verbatim as a
 // `PlaceholderContent` -- a user without the plugin opens the document, saves, and loses
 // nothing. That is the existing `CodecTable::find`-miss path; it needs no new machinery.
-Codec image_codec(const Registry& registry);
-Codec image_codec(const Registry& registry, ExternalAssetLoader* loader);
+ARBC_API Codec image_codec(const Registry& registry);
+ARBC_API Codec image_codec(const Registry& registry, ExternalAssetLoader* loader);
 
 // org.arbc.raster: the content-addressed tile store (serialize.raster_tile_store). Unlike
 // every sibling above, this codec has BYTES to persist -- a painted layer's pixels are
@@ -169,15 +170,15 @@ Codec image_codec(const Registry& registry, ExternalAssetLoader* loader);
 // That degradation is deliberate, and it is what lets every existing zero-argument
 // `builtin_codecs()` call site keep working and still save correct pixels -- it just does
 // not get the incremental CPU win.
-Codec raster_codec();
-Codec raster_codec(RasterTileStore* tiles);
+ARBC_API Codec raster_codec();
+ARBC_API Codec raster_codec(RasterTileStore* tiles);
 
 // The PARALLEL-SAVE overload (serialize.tile_store_parallel_save): `dispatch` fans the
 // per-tile encode across pool workers (or, null / default-constructed, runs it inline).
 // Byte-identical to the serial save under any executor (Constraint 1); the fan-out lives
 // wholly in `runtime` (L5) -- `arbc::serialize` gains no pool edge. `dispatch` must
 // outlive the codec.
-Codec raster_codec(RasterTileStore* tiles, TileEncodeDispatch* dispatch);
+ARBC_API Codec raster_codec(RasterTileStore* tiles, TileEncodeDispatch* dispatch);
 
 // The PARALLEL-LOAD overload (serialize.tile_store_parallel_load): `dispatch` fans the
 // per-tile decode (decompress -> unshuffle -> verify-hash) across pool workers, while the
@@ -185,6 +186,6 @@ Codec raster_codec(RasterTileStore* tiles, TileEncodeDispatch* dispatch);
 // the decode inline). Byte-identical to the serial load under any executor (Constraint 1); the
 // fan-out lives wholly in `runtime` (L5) -- `arbc::serialize` gains no pool edge. `dispatch`
 // must outlive the codec. The mirror of the encode overload above, on the decode side.
-Codec raster_codec(RasterTileStore* tiles, TileDecodeDispatch* dispatch);
+ARBC_API Codec raster_codec(RasterTileStore* tiles, TileDecodeDispatch* dispatch);
 
 } // namespace arbc

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
@@ -118,9 +119,10 @@ inline bool is_operator(const Content* content) {
 // are by the visited set; `budget` is the planning-descent backstop, not a fold
 // cutoff (cutting the fold by depth would drop reachable contributions and be
 // unsound), so the fold carries it only for signature uniformity.
-std::uint64_t aggregate_revision(const Content* root,
-                                 const std::function<std::uint64_t(const Content*)>& contribution,
-                                 GraphBudget budget = {});
+ARBC_API std::uint64_t
+aggregate_revision(const Content* root,
+                   const std::function<std::uint64_t(const Content*)>& contribution,
+                   GraphBudget budget = {});
 
 // A visible operator layer for damage routing: its content id (for the emitted
 // `Damage.object`) and its resolved `Content*` (Decision 4). The caller builds
@@ -144,9 +146,9 @@ struct OperatorLayer {
 // is the flat leaf path). Cycle-safe and depth-budgeted: each reachable node is
 // evaluated once, a cycle back-edge contributes nothing, and the walk
 // terminates.
-std::vector<Damage> route_operator_damage(std::span<const OperatorLayer> operators,
-                                          const Content* damaged, const Rect& rect,
-                                          const TimeRange& range, GraphBudget budget = {});
+ARBC_API std::vector<Damage> route_operator_damage(std::span<const OperatorLayer> operators,
+                                                   const Content* damaged, const Rect& rect,
+                                                   const TimeRange& range, GraphBudget budget = {});
 
 // The outcome of resolving an operator layer's identity chain for one request.
 struct IdentityResolution {
@@ -172,7 +174,8 @@ struct IdentityResolution {
 // broken identity index (out of range / null edge) falls back to rendering the
 // current node. Depth-budgeted so an identity cycle terminates on the budget,
 // not on unbounded recursion.
-IdentityResolution resolve_identity(const Content* content, const RenderRequest& request,
-                                    GraphBudget budget = {}, GraphDiagnostics* diag = nullptr);
+ARBC_API IdentityResolution resolve_identity(const Content* content, const RenderRequest& request,
+                                             GraphBudget budget = {},
+                                             GraphDiagnostics* diag = nullptr);
 
 } // namespace arbc

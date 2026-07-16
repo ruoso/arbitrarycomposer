@@ -19,6 +19,7 @@
 // undo history or another editor holds (doc 08 L50-53). See `unreferenced_tiles` for the
 // pure subtraction and `arbc/runtime/asset_gc.hpp` for the driver.
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 
 #include <cstdint>
@@ -47,7 +48,7 @@ struct AssetReaperError {
 // enumerates its tile blobs, reports a blob's size, and removes a blob -- and nothing more.
 // The mark (which hashes to keep) and the plan (subtract, then delete) live above it, in the
 // runtime driver, so this interface stays a pure store operation with no policy.
-class AssetReaper {
+class ARBC_API AssetReaper {
 public:
   virtual ~AssetReaper() = default;
 
@@ -72,7 +73,8 @@ public:
 // at L4 and is unit-testable in isolation. Order-preserving over `present` for deterministic
 // reporting. A `referenced` hash absent from disk is harmless (it simply matches nothing); a
 // `present` hash absent from `referenced` is the orphan this returns.
-std::vector<std::string> unreferenced_tiles(const std::unordered_set<std::string>& referenced,
-                                            std::span<const std::string> present);
+ARBC_API std::vector<std::string>
+unreferenced_tiles(const std::unordered_set<std::string>& referenced,
+                   std::span<const std::string> present);
 
 } // namespace arbc

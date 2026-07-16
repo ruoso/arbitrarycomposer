@@ -12,6 +12,7 @@
 // Names no JSON type, so it rides the runtime PUBLIC headers: a host installs it, and a
 // test drives it, without ever seeing nlohmann.
 
+#include <arbc/arbc_api.h>
 #include <arbc/serialize/load_context.hpp>
 
 #include <cstddef>
@@ -39,7 +40,7 @@ namespace arbc {
 // unopenable (doc 08 Principle 3, as amended).
 //
 // Single-threaded, like the load it serves (`load_context.hpp:47-48`).
-class FilesystemAssetSource final : public AssetSource {
+class ARBC_API FilesystemAssetSource final : public AssetSource {
 public:
   void request(std::string_view resolved_uri,
                std::function<void(std::string_view bytes)> on_ready) override;

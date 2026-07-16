@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/contract/content.hpp>
@@ -62,8 +63,8 @@ struct ReaderError {
 //
 // Returns success, or a `ReaderError` value; on any error the target `Model` is
 // left unmutated (still `revision() == 0`, empty).
-expected<std::monostate, ReaderError> load_document(std::string_view json, const Registry& registry,
-                                                    LoadContext& ctx, Model& into);
+ARBC_API expected<std::monostate, ReaderError>
+load_document(std::string_view json, const Registry& registry, LoadContext& ctx, Model& into);
 
 // What the sink hands back for each reconstructed node (serialize.sharing
 // Decision 3): the `ObjectId` to bind into a layer's `LayerRecord` (for a layer
@@ -115,11 +116,10 @@ using ContentSink = std::function<SunkContent(std::unique_ptr<Content>)>;
 // -> this composition" and collapse a document that references ITSELF onto the
 // in-document Droste case. The default -- an invalid id -- allocates one during the read,
 // exactly as before, so the root stays the lowest-id composition either way.
-expected<std::monostate, ReaderError> load_document(std::string_view json, const Registry& registry,
-                                                    const CodecTable& codecs, LoadContext& ctx,
-                                                    const ContentSink& sink, Model& into,
-                                                    UnknownFieldStore* unknown = nullptr,
-                                                    ObjectId root_composition = ObjectId{});
+ARBC_API expected<std::monostate, ReaderError>
+load_document(std::string_view json, const Registry& registry, const CodecTable& codecs,
+              LoadContext& ctx, const ContentSink& sink, Model& into,
+              UnknownFieldStore* unknown = nullptr, ObjectId root_composition = ObjectId{});
 
 // Install ONE document's composition graph into an EXISTING model as a child subtree,
 // under the caller-supplied root id `root_composition`, and return that id
@@ -154,10 +154,9 @@ expected<std::monostate, ReaderError> load_document(std::string_view json, const
 // level-appropriate widening -- serialize is told "install this subtree and publish this
 // damage together", not what the damage MEANS, so it learns nothing about nesting. Empty
 // (the default) is the in-load case, where the whole graph lands in one baseline anyway.
-expected<ObjectId, ReaderError> load_composition(std::string_view json, const Registry& registry,
-                                                 const CodecTable& codecs, LoadContext& ctx,
-                                                 const ContentSink& sink, Model& into,
-                                                 ObjectId root_composition,
-                                                 std::span<const Damage> damage = {});
+ARBC_API expected<ObjectId, ReaderError>
+load_composition(std::string_view json, const Registry& registry, const CodecTable& codecs,
+                 LoadContext& ctx, const ContentSink& sink, Model& into, ObjectId root_composition,
+                 std::span<const Damage> damage = {});
 
 } // namespace arbc

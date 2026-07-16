@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/compositor/compositor.hpp>
 #include <arbc/runtime/document.hpp>
 
@@ -16,7 +17,7 @@ namespace arbc {
 // working space returns a `SurfaceError` (errors as values, doc 10) rather than
 // aborting -- capability honesty for a document configured for an unstorable
 // format.
-expected<std::unique_ptr<Surface>, SurfaceError>
+ARBC_API expected<std::unique_ptr<Surface>, SurfaceError>
 render_offline(const Document& document, const Viewport& viewport, Backend& backend);
 
 } // namespace arbc

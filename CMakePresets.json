@@ -90,6 +90,15 @@
       "cacheVariables": {
         "ARBC_BENCHMARKS": "ON"
       }
+    },
+    {
+      "name": "shared",
+      "displayName": "Debug + tests, BUILD_SHARED_LIBS=ON (libarbc.so)",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/shared",
+      "cacheVariables": {
+        "BUILD_SHARED_LIBS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -102,7 +111,8 @@
     { "name": "fuzz", "configurePreset": "fuzz" },
     { "name": "install-fetched", "configurePreset": "install-fetched" },
     { "name": "win-dev", "configurePreset": "win-dev" },
-    { "name": "bench", "configurePreset": "bench" }
+    { "name": "bench", "configurePreset": "bench" },
+    { "name": "shared", "configurePreset": "shared" }
   ],
   "testPresets": [
     { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
@@ -114,6 +124,7 @@
     { "name": "fuzz", "configurePreset": "fuzz", "output": { "outputOnFailure": true } },
     { "name": "install-fetched", "configurePreset": "install-fetched", "output": { "outputOnFailure": true } },
     { "name": "win-dev", "configurePreset": "win-dev", "output": { "outputOnFailure": true } },
-    { "name": "bench", "configurePreset": "bench", "output": { "outputOnFailure": true } }
+    { "name": "bench", "configurePreset": "bench", "output": { "outputOnFailure": true } },
+    { "name": "shared", "configurePreset": "shared", "output": { "outputOnFailure": true } }
   ]
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>           // ARBC_API
 #include <arbc/base/ids.hpp>         // ObjectId
 #include <arbc/contract/content.hpp> // PullService, AudioRequest, AudioResult, Content, AudioFacet
 #include <arbc/model/model.hpp>      // DocRoot
@@ -57,8 +58,9 @@ enum class MixPolicy { Flat, Spatial };
 // `NestedContent`'s recursion prototype exactly, one level up (a duplicated cull
 // loop, doc 17:41 Decision), so the top-level mix and nested's recursion are the
 // same behavior at two levels.
-AudioResult mix_composition(const DocRoot& doc, ObjectId composition, const MixResolver& resolve,
-                            PullService& pull, const AudioRequest& request,
-                            MixPolicy policy = MixPolicy::Flat);
+ARBC_API AudioResult mix_composition(const DocRoot& doc, ObjectId composition,
+                                     const MixResolver& resolve, PullService& pull,
+                                     const AudioRequest& request,
+                                     MixPolicy policy = MixPolicy::Flat);
 
 } // namespace arbc

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>      // expected, unexpected
 #include <arbc/base/rational_time.hpp> // Rational, TimeMap, TimeError
 #include <arbc/base/time.hpp>          // Time
@@ -54,8 +55,8 @@ namespace arbc {
 // temporal ring. A pathological rate faults as a `TimeError` value (never wraps),
 // matching the transport's advance contract. `real_lookahead` is a non-negative
 // real-time window the caller supplies.
-expected<PlaybackHint, TimeError> derive_playback_hint(const Transport& transport,
-                                                       Time real_lookahead);
+ARBC_API expected<PlaybackHint, TimeError> derive_playback_hint(const Transport& transport,
+                                                                Time real_lookahead);
 
 // Drive the temporal prefetch from a derived hint over a warm `TileCache`
 // (doc 11:141-149, 175-178). Two effects:
@@ -74,9 +75,9 @@ expected<PlaybackHint, TimeError> derive_playback_hint(const Transport& transpor
 // want-list. Priming is residency-only: `resident_bytes()` and `evictions()` are
 // unchanged across the call. Returns the absent temporal-neighbour keys, in anchor
 // then ring order (the pull service renders and inserts them under `Temporal`).
-std::vector<TileKey> drive_playback_prefetch(const PlaybackHint& hint,
-                                             std::span<Content* const> participating,
-                                             TileCache& cache, std::span<const TileKey> anchors,
-                                             Time step);
+ARBC_API std::vector<TileKey> drive_playback_prefetch(const PlaybackHint& hint,
+                                                      std::span<Content* const> participating,
+                                                      TileCache& cache,
+                                                      std::span<const TileKey> anchors, Time step);
 
 } // namespace arbc

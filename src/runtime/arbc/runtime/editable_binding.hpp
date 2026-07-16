@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/model/journal.hpp> // StateCostFn, RestoreSink
@@ -206,7 +207,7 @@ private:
 // member declaration order; see `document.hpp`. Consequently `~EditableBinding`
 // deliberately touches neither the model nor the journal -- their sink slots die
 // with them. The explicit teardown is `unbind()` / `unbind_all()`.
-class EditableBinding {
+class ARBC_API EditableBinding {
 public:
   EditableBinding() = default;
 

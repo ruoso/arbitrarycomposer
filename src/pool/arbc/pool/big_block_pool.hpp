@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/pool/chunk_source.hpp>
 #include <arbc/pool/refs.hpp>
@@ -136,7 +137,7 @@ private:
 #endif
 };
 
-class BigBlockPool {
+class ARBC_API BigBlockPool {
 public:
   // The page floor (and slot alignment) for every size class. Every rung is a
   // power-of-two >= k_page, so each blob address is page-aligned by

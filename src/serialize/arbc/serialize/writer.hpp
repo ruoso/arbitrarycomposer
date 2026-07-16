@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/model/model.hpp>
@@ -63,7 +64,7 @@ struct SerializeError {
 //
 // Returns the byte buffer, or a `SerializeError` value when a placement scalar is
 // non-finite; no nlohmann exception crosses this boundary.
-expected<std::string, SerializeError> serialize_document(const DocRoot& doc);
+ARBC_API expected<std::string, SerializeError> serialize_document(const DocRoot& doc);
 
 // One layer's content body, resolved by the provider for the writer to emit
 // (serialize.kind_params). `kind`/`kind_version` are the reverse-DNS id + producer
@@ -142,7 +143,7 @@ using ContentMetaProvider = std::function<std::optional<ContentMeta>(const Conte
 // Returns the byte buffer, or a `SerializeError` (a non-finite scalar; a codec that
 // failed / had no registered codec / no metadata for a graph node; or a codec with bytes
 // to store and no sink to store them in); no nlohmann exception crosses the API.
-expected<std::string, SerializeError>
+ARBC_API expected<std::string, SerializeError>
 serialize_document(const DocRoot& doc, const ContentBodyProvider& provider,
                    const ContentMetaProvider& meta, const CodecTable& codecs, SaveContext& ctx,
                    const UnknownFieldStore* unknown = nullptr);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/surface/backend.hpp>
 
 #include <cstddef>
@@ -9,7 +10,7 @@
 
 namespace arbc {
 
-class CpuSurface final : public Surface {
+class ARBC_API CpuSurface final : public Surface {
 public:
   CpuSurface(int width, int height, SurfaceFormat format);
 
@@ -31,7 +32,7 @@ private:
 
 // Reference backend (doc 09): CPU memory surfaces, software compositing.
 // Exists for correctness and determinism (doc 16: byte-exact goldens).
-class CpuBackend final : public Backend {
+class ARBC_API CpuBackend final : public Backend {
 public:
   CpuBackend() = default;
 

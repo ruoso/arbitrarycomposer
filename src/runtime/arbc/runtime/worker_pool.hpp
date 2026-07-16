@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp> // Content, RenderRequest, RenderCompletion (L5->contract, doc 17:60)
 
 #include <atomic>
@@ -148,7 +149,7 @@ struct WorkerPoolConfig {
 // A pool of worker threads with a shared FIFO work queue, a per-content
 // serialization gate, and a condition-variable completion wake. Non-copyable and
 // non-movable: it owns threads, a mutex, and condition variables.
-class WorkerPool {
+class ARBC_API WorkerPool {
 public:
   explicit WorkerPool(WorkerPoolConfig config);
   ~WorkerPool();

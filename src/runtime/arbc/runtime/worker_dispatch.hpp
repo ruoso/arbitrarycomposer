@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/compositor/pull_service.hpp> // RenderDispatch (L5->L4, doc 17:56 vs 60)
 #include <arbc/runtime/worker_pool.hpp>     // WorkerPool
 
@@ -64,6 +65,6 @@ namespace arbc {
 // (`worker_pool.hpp:57-63`), so this dispatch is byte-identical to
 // `direct_dispatch()` -- which is why adopting it is pixel-neutral at the shipped
 // configuration.
-RenderDispatch worker_backed_dispatch(WorkerPool& pool, const void* owner);
+ARBC_API RenderDispatch worker_backed_dispatch(WorkerPool& pool, const void* owner);
 
 } // namespace arbc

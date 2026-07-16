@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/compositor/compositor.hpp>
@@ -63,7 +64,7 @@ enum class RebaseNeed { none, zoom_in, zoom_out };
 // Pure conditioning test on the composed anchor->device scale. A degenerate or
 // non-finite scale is a cull concern (doc 04:115-117), not a rebase, so it
 // reports `none`.
-RebaseNeed rebase_need(double anchor_to_device_scale);
+ARBC_API RebaseNeed rebase_need(double anchor_to_device_scale);
 
 // The re-anchor event value (doc 04:81-84): the host-visible old->new anchor
 // switch `runtime.host_objects` surfaces. `occurred == false` leaves from/to
@@ -100,7 +101,7 @@ struct RebaseResult {
 //   compose(camera, edge).apply(p) == camera.apply(edge.apply(p)).
 // Descendant re-anchor (zoom in) passes the child layer's transform; ancestor
 // re-anchor (zoom out) passes the current anchor edge's inverse.
-Affine reanchor_camera(const Affine& camera, const Affine& edge);
+ARBC_API Affine reanchor_camera(const Affine& camera, const Affine& edge);
 
 // Single-step viewport rebase (doc 04:62-69). If the composed anchor->device
 // scale has left the well-conditioned band and a DESCENDANT node in view is
@@ -117,7 +118,7 @@ Affine reanchor_camera(const Affine& camera, const Affine& edge);
 // whatever composition chain the graph exposes, needing no change as
 // nested-composition rendering lands (`compositor.operator_graph`, Decision 5).
 // Pure: reads the pinned `state`, mutates nothing.
-RebaseResult rebase(const DocRoot& state, const Viewport& viewport);
+ARBC_API RebaseResult rebase(const DocRoot& state, const Viewport& viewport);
 
 // Viewport-outward cull walk (doc 04:70-75). Visits each visible leaf layer
 // reachable from `viewport.anchor`, composing anchor->device transforms outward,
@@ -133,16 +134,17 @@ RebaseResult rebase(const DocRoot& state, const Viewport& viewport);
 //
 // Pure: reads `state`, emits via `visit`, mutates nothing. Depth-agnostic
 // (Decision 5).
-void cull_walk(const DocRoot& state, const Viewport& viewport,
-               const std::function<void(const LayerRecord& layer, const Affine& composed)>& visit);
+ARBC_API void
+cull_walk(const DocRoot& state, const Viewport& viewport,
+          const std::function<void(const LayerRecord& layer, const Affine& composed)>& visit);
 
 // The anchored frame driver: `render_frame` generalized over `viewport.anchor`.
 // Drives the surviving leaves `cull_walk` emits through the SAME per-layer path
 // `render_frame` uses (`render_layer`), so for a flat single-composition scene
 // anchored at its root it is byte-identical to `render_frame` over that same
 // root (refinement byte-exact golden); `anchor == k_root_anchor` emits nothing.
-void render_frame_anchored(const DocRoot& state, const ContentResolver& resolve,
-                           const Viewport& viewport, Backend& backend, SurfacePool& pool,
-                           Surface& target);
+ARBC_API void render_frame_anchored(const DocRoot& state, const ContentResolver& resolve,
+                                    const Viewport& viewport, Backend& backend, SurfacePool& pool,
+                                    Surface& target);
 
 } // namespace arbc

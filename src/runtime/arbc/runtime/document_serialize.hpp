@@ -7,6 +7,7 @@
 // header names NO JSON type (Constraint 7) -- `CodecTable` is only forward-declared,
 // exactly as `writer.hpp`/`reader.hpp` do.
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/contract/registry.hpp>
@@ -41,7 +42,7 @@ class TileDecodeDispatch; // runtime/tile_decode_dispatch.hpp (the parallel-load
 // storage (a `deque`, whose elements never relocate) so the `string_view`s handed
 // to `ContentBody`/`ContentMeta` outlive the serialize call. The uint64 is never
 // serialized (only the string is), so its concrete values do not affect goldens.
-class KindBridge {
+class ARBC_API KindBridge {
 public:
   // The reserved token a `PlaceholderContent` (unknown kind, no codec) is stamped
   // with: it round-trips as a placeholder whose stored body is authoritative, so the
@@ -104,7 +105,7 @@ struct ContentSnapshot {
 // The runtime's built-in codec table for the SAVE path: org.arbc.solid +
 // org.arbc.tone, each a `SerializeFn`/`DeserializeFn` pair. Returned by value (the
 // caller holds it; `CodecTable` is complete at the caller through `codec.hpp`).
-CodecTable builtin_codecs();
+ARBC_API CodecTable builtin_codecs();
 
 // The same table PLUS the codecs of every OUT-OF-LIB kind whose plugin is actually loaded
 // (kinds.image Decision 2). The `Registry` is the plugin-present witness: a registered
@@ -117,27 +118,27 @@ CodecTable builtin_codecs();
 // be `SerializeError::Kind::NoCodec`. The load path (`load_document`) already assembles its
 // table this way. The no-argument overload remains exactly right for a caller that only ever
 // holds built-in kinds.
-CodecTable builtin_codecs(const Registry& registry);
+ARBC_API CodecTable builtin_codecs(const Registry& registry);
 
 // The table a host that OWNS A TILE STORE should save through (serialize.raster_tile_store
 // Decision 5): `tiles` is the `org.arbc.raster` incremental-save hash memo, bound into the
 // raster codec by closure. `nullptr` yields exactly `builtin_codecs(registry)` -- correct,
 // and still saving correct pixels, but re-hashing every tile on every save rather than only
 // the ones the user actually touched.
-CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles);
+ARBC_API CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles);
 
 // The PARALLEL-SAVE table (serialize.tile_store_parallel_save): as above, plus a
 // `TileEncodeDispatch` bound into the raster codec that fans the per-tile encode across
 // pool workers. A null `dispatch` is exactly `builtin_codecs(registry, tiles)` (the inline
 // save). The save is byte-identical under any executor (Constraint 1); `dispatch` must
 // outlive the returned table.
-CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles,
-                          TileEncodeDispatch* dispatch);
+ARBC_API CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles,
+                                   TileEncodeDispatch* dispatch);
 
 // Capture a pinned content-binding snapshot of `doc` (MUST run on the writer
 // thread): pins the current version and copies each layer-bound content's live
 // pointer + bridged kind into an immutable `ContentSnapshot`.
-ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge);
+ARBC_API ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge);
 
 // Emit a captured snapshot to canonical `.arbc` bytes (thread-safe: reads only the
 // immutable snapshot). The content-body provider resolves each content from the
@@ -147,7 +148,7 @@ ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge);
 // of the reader's `LoadContext`: the document's base URI, the `AssetSink` a codec hands
 // finished asset bytes to, and the document-scoped storage format -- and it is
 // AUTHORITATIVE for the `arbc` envelope's `storage_format` key.
-expected<std::string, SerializeError>
+ARBC_API expected<std::string, SerializeError>
 serialize_snapshot(const ContentSnapshot& snapshot, const CodecTable& codecs, SaveContext& ctx);
 
 // The `ctx`-less overloads build a SINK-LESS `SaveContext` (seeded, where a `Document` is
@@ -155,20 +156,23 @@ serialize_snapshot(const ContentSnapshot& snapshot, const CodecTable& codecs, Sa
 // and byte-identical -- and it means a document that DOES hold a raster layer fails there
 // with `SerializeError::Kind::AssetSinkMissing`, loudly, rather than by silently dropping
 // the user's pixels (Constraint 5).
-expected<std::string, SerializeError> serialize_snapshot(const ContentSnapshot& snapshot,
-                                                         const CodecTable& codecs);
+ARBC_API expected<std::string, SerializeError> serialize_snapshot(const ContentSnapshot& snapshot,
+                                                                  const CodecTable& codecs);
 
 // Convenience: `serialize_snapshot(capture_snapshot(doc, bridge), codecs, ctx)`. Pins,
 // captures on the writer thread, then emits.
-expected<std::string, SerializeError> save_document(const Document& doc, const KindBridge& bridge,
-                                                    const CodecTable& codecs, SaveContext& ctx);
+ARBC_API expected<std::string, SerializeError> save_document(const Document& doc,
+                                                             const KindBridge& bridge,
+                                                             const CodecTable& codecs,
+                                                             SaveContext& ctx);
 
-expected<std::string, SerializeError> save_document(const Document& doc, const KindBridge& bridge,
-                                                    const CodecTable& codecs);
+ARBC_API expected<std::string, SerializeError>
+save_document(const Document& doc, const KindBridge& bridge, const CodecTable& codecs);
 
 // Convenience over the built-in codec table (`builtin_codecs()`), so a caller that
 // only round-trips the built-in kinds need not name `CodecTable`.
-expected<std::string, SerializeError> save_document(const Document& doc, const KindBridge& bridge);
+ARBC_API expected<std::string, SerializeError> save_document(const Document& doc,
+                                                             const KindBridge& bridge);
 
 // Load canonical `.arbc` `bytes` into `doc` for the built-in leaf kinds: constructs
 // a `LoadContext`, a per-load session-recording codec table, and a `ContentSink`
@@ -204,7 +208,7 @@ expected<std::string, SerializeError> save_document(const Document& doc, const K
 // A successful load also installs the document's `arbc.storage_format` on `doc`, so a
 // subsequent `save_document` re-emits it rather than silently rewriting every tile at a
 // precision the user never authored (serialize.raster_tile_store Decision 4).
-expected<std::monostate, ReaderError>
+ARBC_API expected<std::monostate, ReaderError>
 load_document(std::string_view bytes, Document& doc, KindBridge& bridge, const Registry& registry,
               std::string base_uri = {}, AssetSource* assets = nullptr,
               RasterTileStore* tiles = nullptr, TileDecodeDispatch* decode = nullptr);
@@ -238,6 +242,7 @@ load_document(std::string_view bytes, Document& doc, KindBridge& bridge, const R
 // Cheap and safe to call on a document with nothing pending: it is one queue check. Not
 // undoable -- a widget finally loading is not an edit, so an undo taken right after must not
 // revert it (doc 14:263-264).
-std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Registry& registry);
+ARBC_API std::size_t settle_external_loads(Document& doc, KindBridge& bridge,
+                                           const Registry& registry);
 
 } // namespace arbc

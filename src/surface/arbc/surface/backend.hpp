@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
@@ -14,7 +15,7 @@ namespace arbc {
 // Backend contract (doc 09): surfaces and the composite operation set. The
 // core never loops over pixels itself; all composite operations route
 // through here so the abstraction maps onto GPU command lists later.
-class Backend {
+class ARBC_API Backend {
 public:
   Backend(const Backend&) = delete;
   Backend& operator=(const Backend&) = delete;

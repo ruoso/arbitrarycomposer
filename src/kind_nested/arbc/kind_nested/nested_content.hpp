@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/surface/backend.hpp>
@@ -54,7 +55,7 @@ using NestedResolver = std::function<Content*(ObjectId)>;
 // the compositor's per-layer cull/compose loop directly (it may not name the
 // sibling `compositor`, an L4->L4 edge) and reuses only the L3 `PullService`
 // interface for the heavy machinery.
-class NestedContent final : public Content {
+class ARBC_API NestedContent final : public Content {
 public:
   // Wrap a reference to child composition `child`. Unattached until `attach`, which
   // injects the whole engine: `render` asserts attachment. The DESCRIPTION methods do

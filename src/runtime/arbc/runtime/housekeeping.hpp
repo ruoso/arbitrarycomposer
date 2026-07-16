@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/pool/workspace_file.hpp> // WorkspaceFileError (the checkpoint error value)
 
@@ -42,7 +43,7 @@ namespace arbc {
 // WHEN, the target knows WHERE. Two implementations ship in
 // `arbc/runtime/housekeeping_targets.hpp`: `ModelHousekeepingTarget` (a live
 // `Document`'s `Model`) and `PoolHousekeepingTarget` (the bare pool triple).
-class HousekeepingTarget {
+class ARBC_API HousekeepingTarget {
 public:
   virtual ~HousekeepingTarget() = default;
 
@@ -114,7 +115,7 @@ struct HousekeepingStats {
   std::uint32_t durable_epoch{0};             // Checkpointer pass-through, 0 if unbound
 };
 
-class Housekeeper {
+class ARBC_API Housekeeper {
 public:
   // `target` must outlive the Housekeeper.
   Housekeeper(HousekeepingTarget& target, HousekeepingConfig config) noexcept;

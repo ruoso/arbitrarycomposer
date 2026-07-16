@@ -24,6 +24,7 @@
 // Names no JSON type and no zstd type, so it rides the component's PUBLIC headers: a
 // host installs a sink, and a test drives one, without ever seeing nlohmann.
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/media/pixel_format.hpp> // PixelFormat (the storage format, Decision 4)
 
@@ -38,12 +39,12 @@ namespace arbc {
 
 // The `arbc.storage_format` token for a permitted storage format (Decision 4).
 // `Rgba8Srgb` is not a permitted storage format and has no token.
-const char* storage_format_token(PixelFormat storage);
+ARBC_API const char* storage_format_token(PixelFormat storage);
 
 // The inverse: `"rgba16f"` / `"rgba32f"`, and `nullopt` for anything else -- which the
 // reader turns into a clean `ReaderError` rather than silently falling back to a default
 // and storing the user's pixels at a precision they did not author.
-std::optional<PixelFormat> storage_format_from_token(std::string_view token);
+ARBC_API std::optional<PixelFormat> storage_format_from_token(std::string_view token);
 
 // A sink write that could not happen. Errors are values (doc 10): a full disk, an
 // unwritable directory, or no sink installed at all surfaces here and rides back out
@@ -71,7 +72,7 @@ struct AssetSinkError {
 // editor may reference a blob this document no longer does, and an incremental save
 // cannot know. Reclaiming unreferenced blobs is an explicit user-driven sweep
 // (`serialize.asset_gc`), never a side effect of saving.
-class AssetSink {
+class ARBC_API AssetSink {
 public:
   virtual ~AssetSink() = default;
 
@@ -110,7 +111,7 @@ public:
 // stays authored rather than inferred -- the lossy/lossless call is the user's.
 // (Note the name: a composition's `format` is its WORKING space, doc 07. Different
 // concept, different key.)
-class SaveContext {
+class ARBC_API SaveContext {
 public:
   SaveContext() = default;
   explicit SaveContext(std::string base_uri);

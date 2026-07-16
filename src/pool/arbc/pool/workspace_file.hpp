@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/pool/chunk_source.hpp>
 
@@ -212,7 +213,7 @@ private:
 // source, `release` unmaps the chunk but defers the punch to the fence, which
 // calls back `punch_now` at the post-durable commit drain. Default is no fence
 // (eager punch — safe only for anonymous/pre-checkpoint use).
-class ChunkReleaseFence {
+class ARBC_API ChunkReleaseFence {
 public:
   virtual ~ChunkReleaseFence() = default;
   // The source has already unmapped the chunk; its file range at `offset` of
@@ -247,7 +248,7 @@ enum class WorkspaceSyscall {
 // instance. The `pread` calls live in the static `open`/`read_header` factories
 // (no instance yet), so their fault paths are exercised by real truncated files
 // rather than this member seam.
-class SyscallInjector {
+class ARBC_API SyscallInjector {
 public:
   virtual ~SyscallInjector() = default;
 
@@ -282,7 +283,7 @@ public:
 //
 // Scope: this source creates and grows FRESH files. Opening an existing file,
 // root discovery, and bookkeeping rebuild are `pool.checkpoints`.
-class WorkspaceFileChunkSource final : public ChunkSource {
+class ARBC_API WorkspaceFileChunkSource final : public ChunkSource {
 public:
   // Create a fresh workspace file at `path` (truncating any existing file) and
   // return a source backed by it. Fails as a value on any syscall error (with
@@ -542,7 +543,8 @@ inline void WorkspaceStoreView::release(ChunkSpan span) noexcept { d_source->rel
 // smuggled pointer. Scans pointer-width aligned words in [record, record+size)
 // and asserts none fall within [map_base, map_base+map_bytes). No-op under
 // NDEBUG.
-void debug_assert_position_independent(const void* record, std::size_t size, const void* map_base,
-                                       std::size_t map_bytes) noexcept;
+ARBC_API void debug_assert_position_independent(const void* record, std::size_t size,
+                                                const void* map_base,
+                                                std::size_t map_bytes) noexcept;
 
 } // namespace arbc

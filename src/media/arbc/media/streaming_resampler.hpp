@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/rt_safety.hpp> // ARBC_RT_NONBLOCKING (RT feed/produce annotations)
 #include <arbc/media/audio_block.hpp>
 
@@ -41,7 +42,7 @@ namespace arbc {
 // thread-safe: the device drain owns it on the RT callback thread (like
 // `d_scratch`); a transport-change flush is routed to it there, never mutated
 // cross-thread.
-class StreamingResampler {
+class ARBC_API StreamingResampler {
 public:
   StreamingResampler() = default;
 

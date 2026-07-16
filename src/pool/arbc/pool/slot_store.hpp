@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/pool/chunk_source.hpp>
 #include <arbc/pool/slab_directory.hpp>
@@ -56,7 +57,7 @@ constexpr std::size_t align_up(std::size_t n, std::size_t align) {
 // list; the fence returns it through `free_now` only once a checkpoint has made
 // the freeing durable. This mirrors the nullable zero-count sink of pool.refs.
 class SlotStore;
-class ReleaseFence {
+class ARBC_API ReleaseFence {
 public:
   virtual ~ReleaseFence() = default;
   // The store has decided `index` is free but a fence is installed: quarantine
@@ -78,7 +79,7 @@ public:
 // column is owned by the size-class store, the backing is a store property
 // supplied at store creation: one backing per size class (the first typed view
 // to mint the store wins; later views over the same class share it).
-class RefcountTableBacking {
+class ARBC_API RefcountTableBacking {
 public:
   virtual ~RefcountTableBacking() = default;
   RefcountTableBacking() = default;
@@ -138,7 +139,7 @@ public:
 // running or deferring destruction is the caller's obligation (doc 15:
 // release enqueues, never destroys inline). This is the seam
 // pool.reclamation's deferred queue plugs into.
-class SlotStore {
+class ARBC_API SlotStore {
 public:
   // `refcount_backing` is null in production (portable `new[]` refcount chunks);
   // a diagnostic harness passes a page-aligned, mprotectable backing to freeze
@@ -363,7 +364,7 @@ private:
 // multi-document / plugin-lifetime ownership that cpioo's `inline static`
 // storage cannot. Same-sized record types share a store (free memory
 // efficiency).
-class Arena {
+class ARBC_API Arena {
 public:
   Arena();                             // owns a default AnonymousChunkSource
   explicit Arena(ChunkSource& source); // borrows an external source

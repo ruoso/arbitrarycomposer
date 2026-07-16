@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp>
 
 #include <array>
@@ -43,7 +44,7 @@ struct FadeParams {
 // compositor serves the input's cached tiles with no render outside the fade
 // window (doc 13:59-65, 128). It pulls its input ONLY through the injected
 // PullService, never `input->render()`.
-class FadeContent final : public Content {
+class ARBC_API FadeContent final : public Content {
 public:
   FadeContent(ContentRef input, FadeParams params);
 

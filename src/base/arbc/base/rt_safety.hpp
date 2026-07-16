@@ -1,5 +1,7 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
+
 // RT-safety enforcement primitives (audio.rt_safety, docs 12/16).
 //
 // Two portable pieces sit at level 0 (doc 17:50-61, Decision D3) so every
@@ -43,7 +45,7 @@ namespace arbc {
 // arming the device callback thread never perturbs the pump / worker threads
 // that legitimately allocate (Constraint 5). Nestable: the flag stays armed
 // until the outermost scope leaves.
-class RtScope {
+class ARBC_API RtScope {
 public:
   RtScope() noexcept;
   ~RtScope() noexcept;

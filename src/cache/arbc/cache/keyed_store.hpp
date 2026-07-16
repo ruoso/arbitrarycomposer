@@ -1,5 +1,7 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -38,7 +40,11 @@ namespace detail {
 // keyed_store.cpp) so the ordering has a single authoritative definition the
 // template's eviction walk reads.
 constexpr std::size_t k_priority_class_count = 5;
-const std::array<PriorityClass, k_priority_class_count>& cache_eviction_order();
+// Out-of-line (keyed_store.cpp) and reached from the header-inline KeyedStore
+// template's pick_victim(), so consumers of the template instantiate a reference
+// to it and it must be exported from a shared libarbc even though it lives in
+// `detail` (packaging.shared_library_build).
+ARBC_API const std::array<PriorityClass, k_priority_class_count>& cache_eviction_order();
 
 // A stored entry. Independent of Key so CacheHold need not name the store's
 // Key: byte cost, priority class, LRU recency tick, the store-internal

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/contract/content.hpp>
 
@@ -48,7 +49,7 @@ using ContentFactory =
 // host registration API, opt-in `ARBC_PLUGIN_PATH` directory scan, error
 // plumbing across the boundary -- is `runtime.plugin_loading`'s deliverable
 // (M8), built on top of this seam, not part of it.
-class Registry {
+class ARBC_API Registry {
 public:
   Registry() = default;
 

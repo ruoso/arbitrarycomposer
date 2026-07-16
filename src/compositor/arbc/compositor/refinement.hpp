@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
@@ -141,8 +142,8 @@ struct RefinementQueue {
 // pulled no inputs and is waiting on nobody, so it has no wave and must keep
 // re-rendering as it does today). A re-render of the same `output` REPLACES its
 // predecessor's wait: the fresh render's unmet set is the current truth.
-void record_operator_wait(RefinementQueue& queue, const TileKey& output,
-                          std::vector<TileKey> unmet);
+ARBC_API void record_operator_wait(RefinementQueue& queue, const TileKey& output,
+                                   std::vector<TileKey> unmet);
 
 // Is `output`'s refinement wave still running -- i.e. is any input tile its last
 // render left unmet still pending? (`compositor.operator_refinement_wave_amplification`,
@@ -189,7 +190,7 @@ void record_operator_wait(RefinementQueue& queue, const TileKey& output,
 // by the frame's outstanding misses, and this is paid only on the miss path (a warm
 // frame never calls it), so the seam is here to hide an index behind if it ever
 // profiles hot.
-bool operator_wave_pending(const RefinementQueue* queue, const TileKey& output) noexcept;
+ARBC_API bool operator_wave_pending(const RefinementQueue* queue, const TileKey& output) noexcept;
 
 // The still-pending members of `output`'s recorded unmet set (empty iff
 // `operator_wave_pending` is false). This is what makes the unmet set transitive
@@ -198,7 +199,8 @@ bool operator_wave_pending(const RefinementQueue* queue, const TileKey& output) 
 // inherits the child's outstanding inputs as its own unmet keys -- so the parent's
 // wait names leaf tiles that are really in `queue.tiles`, and its gate opens on the
 // same wave the child's does, not one frame later.
-std::vector<TileKey> operator_wave_unmet(const RefinementQueue* queue, const TileKey& output);
+ARBC_API std::vector<TileKey> operator_wave_unmet(const RefinementQueue* queue,
+                                                  const TileKey& output);
 
 // Is `key`'s render already in flight? (`compositor.in_flight_tile_dedup`, doc 02
 // § The frame, interactively.) The pending set is the second suppression key
@@ -255,7 +257,7 @@ std::vector<TileKey> operator_wave_unmet(const RefinementQueue* queue, const Til
 // The cross-thread reads are the same ones the interactive driver's own unsettled()
 // park predicate already makes (`interactive.cpp:369-372`) -- no lock, no new
 // atomic, no new shared state; the queue stays frame-thread-only.
-bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept;
+ARBC_API bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept;
 
 // Does the frame still WANT `key`? (`runtime.deadline_cancel_retains_wanted`, doc 02
 // § The frame, interactively.) The predicate the interactive driver's deadline sweep
@@ -296,7 +298,8 @@ bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept;
 // which is the blanket cancel wearing a disguise, and it must not be representable at
 // the one call site that would act on it. The compositor-side SINKS stay nullable (the
 // offline and one-shot drivers pass nothing, and they never sweep).
-bool tile_wanted(const RefinementQueue& queue, const WantedTiles& wanted, const TileKey& key);
+ARBC_API bool tile_wanted(const RefinementQueue& queue, const WantedTiles& wanted,
+                          const TileKey& key);
 
 // The next-rung speculation ring for a zoom gesture (doc 04:99-101). Re-tiles
 // `local_region` at the rung the gesture is heading toward via `tiles_covering`,
@@ -316,9 +319,9 @@ bool tile_wanted(const RefinementQueue& queue, const WantedTiles& wanted, const 
 //   * `== 0` -> empty ring (no gesture -> no speculation).
 // The "previous zoom rung" half of doc 02:92-93 is served by the same builder
 // with the opposite sign -- no separate path.
-std::vector<TileKey> zoom_prefetch_ring(const RungSelection& current, const Rect& local_region,
-                                        ObjectId content, std::uint64_t revision,
-                                        std::optional<Time> achieved_time, int zoom_direction);
+ARBC_API std::vector<TileKey>
+zoom_prefetch_ring(const RungSelection& current, const Rect& local_region, ObjectId content,
+                   std::uint64_t revision, std::optional<Time> achieved_time, int zoom_direction);
 
 // The thin compositor prefetch driver (doc 02:92-93, 04:99-101). Assembles the
 // visible layer's `TileKey` set from `plan`, builds the pan annulus
@@ -330,8 +333,8 @@ std::vector<TileKey> zoom_prefetch_ring(const RungSelection& current, const Rect
 // `resident_bytes()` and `evictions()` are unchanged across the call
 // (`prefetch.hpp:17-25`). The visible region, revision, and `achieved_time` the
 // zoom ring needs are derived from `plan` (its tiles' rects and keys).
-std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan, int zoom_direction,
-                                    std::int32_t pan_radius);
+ARBC_API std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
+                                             int zoom_direction, std::int32_t pan_radius);
 
 // Drain the settled arrivals from `queue` (doc 02:69-71 step 6). For each pending
 // tile whose `RenderCompletion` has `settled()` with a value: move its rendered
@@ -364,8 +367,8 @@ std::vector<TileKey> prime_prefetch(TileCache& cache, const LayerTilePlan& plan,
 // anyway). Pruning is what keeps `waits` bounded; it is not what makes the gate
 // open, since `operator_wave_pending` already answers `false` for a fully-drained
 // unmet set (Constraint 3: a wave that ends always releases what it gated).
-std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
-                                     CompositorCounters* counters = nullptr,
-                                     Backend* backend = nullptr);
+ARBC_API std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
+                                              CompositorCounters* counters = nullptr,
+                                              Backend* backend = nullptr);
 
 } // namespace arbc

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/model/journal_entry.hpp>
 #include <arbc/model/model.hpp>
@@ -22,7 +23,7 @@ namespace arbc {
 // `StateRefSink` and `RestoreSink`: a bare `StateHandle` names a slot in some
 // content's store but not WHICH content's, and the journal is already
 // per-content -- a `ContentStateEdit` carries the owner (`journal_entry.hpp`).
-class StateCostFn {
+class ARBC_API StateCostFn {
 public:
   virtual ~StateCostFn() = default;
   virtual std::size_t cost(ObjectId content, const StateHandle& handle) const = 0;
@@ -35,7 +36,7 @@ public:
 // `StateHandle`, so render workers reading the pinned handle are correct with zero
 // `Editable` calls; the restore only lets the live editor's next `capture()` build
 // on the restored base. When none is registered it is a no-op.
-class RestoreSink {
+class ARBC_API RestoreSink {
 public:
   virtual ~RestoreSink() = default;
   virtual void on_restore(ObjectId content, StateHandle target) = 0;
@@ -51,7 +52,7 @@ public:
 // commit appends at the tip and moves the cursor to the new tip; `undo()` steps
 // the cursor back one entry (rebinding to its *before*), `redo()` forward one
 // (rebinding to its *after*).
-class Journal final : public CommitSink {
+class ARBC_API Journal final : public CommitSink {
 public:
   // A large default budget: trimming is opt-in via `byte_budget` so a journal that
   // does not configure a bound never trims.

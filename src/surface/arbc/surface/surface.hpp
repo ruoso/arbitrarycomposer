@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/media/pixel_traits.hpp>
 #include <arbc/media/surface_format.hpp>
 
@@ -10,7 +11,7 @@ namespace arbc {
 
 // Backend-owned pixel target (doc 09). Opaque handle; allocation goes
 // through a Backend, never directly.
-class Surface {
+class ARBC_API Surface {
 public:
   Surface(const Surface&) = delete;
   Surface& operator=(const Surface&) = delete;

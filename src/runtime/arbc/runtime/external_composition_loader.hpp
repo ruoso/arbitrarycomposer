@@ -16,6 +16,7 @@
 // Names no JSON type (`CodecTable` is forward-declared, exactly as `document_serialize.hpp`
 // does), so it rides the runtime PUBLIC headers.
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/contract/registry.hpp>
 #include <arbc/model/damage.hpp> // Damage (the arrival's own damage, Decision 3)
@@ -59,7 +60,7 @@ inline constexpr std::size_t k_external_ref_depth_cap = 64;
 // nature, so parking the loader itself on the `Document` would mean parking those too, or
 // re-binding its members between loads: a mutable, half-initialized shared service, which is
 // exactly what this comment says it is not. It BORROWS the durable map instead of owning one.
-class ExternalCompositionLoader {
+class ARBC_API ExternalCompositionLoader {
 public:
   // `into`, `registry`, `codecs` and `sink` are the host load's own -- the child's
   // contents are sunk into the HOST document through the same sink, so they are ordinary

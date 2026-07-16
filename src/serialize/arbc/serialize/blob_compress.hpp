@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 
 #include <cstddef>
@@ -70,7 +71,8 @@ struct BlobCompressError {
 // concurrently with no locking and no new TSan surface. A later "optimization" to a
 // shared reused context would be a data race; a per-call or thread-local context is
 // the correct shape if profiling ever demands one (zstd_dep Constraint 6).
-expected<std::vector<std::byte>, BlobCompressError> compress_blob(std::span<const std::byte> blob);
+ARBC_API expected<std::vector<std::byte>, BlobCompressError>
+compress_blob(std::span<const std::byte> blob);
 
 // Decompress a raw zstd frame back to exactly `expected_size` bytes.
 //
@@ -87,7 +89,7 @@ expected<std::vector<std::byte>, BlobCompressError> compress_blob(std::span<cons
 // Returns the decompressed bytes, or a `BlobCompressError` value on a corrupt,
 // truncated, oversized, or hostile frame. Never throws, never aborts, and never
 // allocates beyond `expected_size`.
-expected<std::vector<std::byte>, BlobCompressError>
+ARBC_API expected<std::vector<std::byte>, BlobCompressError>
 decompress_blob(std::span<const std::byte> frame, std::size_t expected_size);
 
 } // namespace arbc

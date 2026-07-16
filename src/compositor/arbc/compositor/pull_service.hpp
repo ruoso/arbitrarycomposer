@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/cache/key_shapes.hpp>
 #include <arbc/cache/keyed_store.hpp>
@@ -49,7 +50,7 @@ using RenderDispatch =
 // pre-task driver's miss-fill did (`tile_planning.cpp:349-350`). This keeps the
 // `render_frame_interactive` null path byte-for-byte identical to today; runtime
 // swaps in a worker-backed dispatch opt-in.
-RenderDispatch direct_dispatch();
+ARBC_API RenderDispatch direct_dispatch();
 
 // The audio worker-dispatch seam (doc 12:31-34,154-164): the audio twin of
 // `RenderDispatch`. A dispatch renders `content`'s audio for `request` and
@@ -69,7 +70,7 @@ using AudioDispatch =
 // (`ResourceUnavailable`); a `nullopt` return leaves `done` live for a later
 // off-thread settle. Lets the mix engine drive real per-content audio through
 // `PullServiceImpl::pull_audio` synchronously in a test / single-threaded monitor.
-AudioDispatch direct_audio_dispatch();
+ARBC_API AudioDispatch direct_audio_dispatch();
 
 // The 1D audio block-cache value (doc 12:169-170, the block-cache-is-tile-cache-1d
 // twin of `TileValue`): an owned interleaved-float32 sample block plus its shape
@@ -98,7 +99,7 @@ using BlockCache = KeyedStore<BlockKey, AudioBlockValue>;
 // `LookaheadRing`/`LookaheadPump` own the fixed block *size* and the prepared-
 // block ring above this per-window-start key. `rate == 0` yields index 0 (a
 // degenerate request).
-std::int64_t audio_block_index(const AudioRequest& request);
+ARBC_API std::int64_t audio_block_index(const AudioRequest& request);
 
 // The per-frame hooks a `PullServiceImpl` threads, all caller-owned and defaulted
 // null/identity so the engine mirrors the pure-seam posture of every compositor
@@ -155,7 +156,7 @@ struct PullConfig {
 // (see `dispatch` below). Holds the frame's `TileCache&`, a `Backend&` (to
 // allocate cache-destined tile surfaces), the injected `RenderDispatch`, and the
 // per-frame `PullConfig` hooks. Not copyable (it references frame state).
-class PullServiceImpl final : public PullService {
+class ARBC_API PullServiceImpl final : public PullService {
 public:
   PullServiceImpl(TileCache& cache, Backend& backend, RenderDispatch dispatch, PullConfig config);
 

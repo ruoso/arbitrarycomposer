@@ -1221,6 +1221,41 @@ add_dependencies(
   arbc-ci-plugin-fade arbc-ci-plugin-crossfade arbc-plugin-imageseq)
 catch_discover_tests(arbc_dual_build_t)
 
+# packaging.shared_library_build: the single-instance symbol-resolution proof
+# (doc 17:173-182, Decision D3). Built ONLY under BUILD_SHARED_LIBS so it is never
+# vacuous in the static lanes -- under a static libarbc a plugin's core references
+# are LOCAL definitions and the undefined-import property below does not hold. A
+# dynamic-symbol-table scan of the built artifacts (paths as compile defs, the
+# containment-test shape) asserts every plugin references core ARBC_API symbols as
+# undefined imports resolved from the single libarbc.so, and that libarbc.so exports
+# them -- the linkage difference the dual_build render assertions cannot see. Loads
+# through the production PluginHost are re-run for free by the shared lane's
+# arbc_dual_build_t / imageseq / miniaudio tests above.
+if(BUILD_SHARED_LIBS)
+  add_executable(arbc_shared_symbol_resolution_t shared_symbol_resolution.t.cpp)
+  target_link_libraries(arbc_shared_symbol_resolution_t
+                        PRIVATE Catch2::Catch2WithMain arbc_build_flags)
+  target_compile_definitions(
+    arbc_shared_symbol_resolution_t
+    PRIVATE ARBC_LIBARBC_FILE="$<TARGET_FILE:arbc>"
+            ARBC_CI_PLUGIN_SOLID_FILE="$<TARGET_FILE:arbc-ci-plugin-solid>"
+            ARBC_CI_PLUGIN_TONE_FILE="$<TARGET_FILE:arbc-ci-plugin-tone>"
+            ARBC_CI_PLUGIN_RASTER_FILE="$<TARGET_FILE:arbc-ci-plugin-raster>"
+            ARBC_CI_PLUGIN_NESTED_FILE="$<TARGET_FILE:arbc-ci-plugin-nested>"
+            ARBC_CI_PLUGIN_FADE_FILE="$<TARGET_FILE:arbc-ci-plugin-fade>"
+            ARBC_CI_PLUGIN_CROSSFADE_FILE="$<TARGET_FILE:arbc-ci-plugin-crossfade>"
+            ARBC_IMAGESEQ_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-imageseq>"
+            ARBC_MINIAUDIO_PLUGIN_FILE="$<TARGET_FILE:arbc-plugin-miniaudio>")
+  # $<TARGET_FILE:...> in COMPILE_DEFINITIONS names a path but does NOT create a
+  # build dependency, so the scanned artifacts must be ordered explicitly.
+  add_dependencies(
+    arbc_shared_symbol_resolution_t
+    arbc arbc-ci-plugin-solid arbc-ci-plugin-tone arbc-ci-plugin-raster
+    arbc-ci-plugin-nested arbc-ci-plugin-fade arbc-ci-plugin-crossfade
+    arbc-plugin-imageseq arbc-plugin-miniaudio)
+  catch_discover_tests(arbc_shared_symbol_resolution_t)
+endif()
+
 # model.per_object_revision: the cache key carries each object's OWN revision stamp, so an
 # edit to one layer stops making every other layer's cached tiles unreachable. The headline
 # 60-dab stroke counter, the composition-arrangement fold pinned at the pixel (its failure

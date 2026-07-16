@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>            // ARBC_API
 #include <arbc/audio_engine/mix.hpp>  // MixResolver, MixPolicy, mix_composition
 #include <arbc/base/ids.hpp>          // ObjectId
 #include <arbc/base/rt_safety.hpp>    // ARBC_RT_NONBLOCKING (the RT drain annotation)
@@ -145,7 +146,7 @@ struct PrefetchWant {
   std::optional<Spatialization> spatial{};
 };
 
-class LookaheadRing {
+class ARBC_API LookaheadRing {
 public:
   LookaheadRing(const DocRoot& doc, PullService& pull, LookaheadRingConfig config);
 

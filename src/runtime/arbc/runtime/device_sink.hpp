@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/media/audio_block.hpp> // ChannelLayout, channel_count
 
 #include <cstdint>
@@ -35,7 +36,7 @@ using DeviceFillCallback = std::function<void(float* out, std::uint32_t frames)>
 // plugin artifact (`arbc-plugin-<device>` under `plugins/`), never on `libarbc`'s
 // link line. Owning a thread/clock/device is runtime policy (doc 17:84-86), so the
 // interface and its `DeviceMonitor` driver live in `runtime`, not the engines.
-class DeviceSink {
+class ARBC_API DeviceSink {
 public:
   DeviceSink(const DeviceSink&) = delete;
   DeviceSink& operator=(const DeviceSink&) = delete;

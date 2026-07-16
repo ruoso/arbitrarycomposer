@@ -101,6 +101,14 @@ TEST_CASE("stress: a host polls Document::memory_stats() while the writer grows 
 
   const std::size_t initial_bytes = doc.memory_stats().bytes_reserved;
 
+  // Rendezvous: don't start writing until the poller has taken at least one sample, so the
+  // poll genuinely overlaps the writer (the whole point of this test, per the file header).
+  // Otherwise the writer's loop can finish and set `stop` before the freshly-spawned panel
+  // thread is ever scheduled, leaving `samples == 0` -- a harness race, not a witnessed hazard.
+  while (samples.load(std::memory_order_relaxed) == 0) {
+    std::this_thread::yield();
+  }
+
   // The writer (this thread). Each composition commits its own version: a record that stays
   // live plus a HAMT path copy, so the arena's high-water climbs and mints chunk after chunk.
   for (int i = 0; i < kWriterRounds; ++i) {
@@ -152,6 +160,14 @@ TEST_CASE("stress: a host polls arena aggregates while the writer mints new size
     }
     final_bytes = arena.total_bytes_reserved();
   });
+
+  // Rendezvous: don't mint stores until the poller has taken at least one sample, so the poll
+  // genuinely overlaps the writer. Without this the writer's ~32 fast allocations can complete
+  // before the freshly-spawned panel thread is ever scheduled, leaving `samples == 0` -- a
+  // harness race, not a witnessed hazard. This is the one that flaked under gcc-release.
+  while (samples.load(std::memory_order_relaxed) == 0) {
+    std::this_thread::yield();
+  }
 
   // The writer (this thread): walk UP the size classes, so each outer round mints a store the
   // poller's walk has never seen, and each blob within a class grows that store's chunks.

@@ -7,6 +7,7 @@
 // Names no JSON type, so it rides the runtime PUBLIC headers: a host installs it, and a
 // test drives it, without ever seeing nlohmann.
 
+#include <arbc/arbc_api.h>
 #include <arbc/serialize/save_context.hpp>
 
 #include <cstddef>
@@ -36,7 +37,7 @@ namespace arbc {
 // concurrent editor may reference a blob this document no longer does, and an incremental
 // save cannot know. Reclaiming unreferenced blobs is an explicit user-driven sweep
 // (`serialize.asset_gc`), never a side effect of saving.
-class FilesystemAssetSink final : public AssetSink {
+class ARBC_API FilesystemAssetSink final : public AssetSink {
 public:
   expected<bool, AssetSinkError> put(std::string_view resolved_uri,
                                      std::span<const std::byte> bytes) override;

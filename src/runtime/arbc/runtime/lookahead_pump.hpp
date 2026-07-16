@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/audio_engine/lookahead.hpp>    // LookaheadRing, PrefetchWant
 #include <arbc/base/time.hpp>                 // Time, TimeRange
 #include <arbc/compositor/pull_service.hpp>   // BlockCache, AudioBlockValue
@@ -62,7 +63,7 @@ struct LookaheadPumpConfig {
   std::function<int()> direction_source;
 };
 
-class LookaheadPump {
+class ARBC_API LookaheadPump {
 public:
   LookaheadPump(LookaheadRing& ring, BlockCache& blocks, AudioWorkerPool& pool,
                 LookaheadPumpConfig config);

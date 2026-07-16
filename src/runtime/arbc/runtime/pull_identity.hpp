@@ -1,6 +1,7 @@
 #ifndef ARBC_RUNTIME_PULL_IDENTITY_HPP
 #define ARBC_RUNTIME_PULL_IDENTITY_HPP
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp> // ObjectId
 
 #include <cstdint>
@@ -36,7 +37,7 @@ using PullIdentityMap = std::unordered_map<const Content*, ObjectId>;
 // record's `ObjectId` to its live `Content*` (the driver's document resolver). The
 // map is built over the immutable pinned graph on the driver thread; the returned
 // `const` map is safe to share read-only across parallel render workers (Constraint 7).
-std::shared_ptr<const PullIdentityMap>
+ARBC_API std::shared_ptr<const PullIdentityMap>
 build_pull_identity_map(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve);
 
 // The `PullConfig::id_of` functor over an ALREADY-built identity map: a `Content*`
@@ -45,13 +46,13 @@ build_pull_identity_map(const DocRoot& state, const std::function<Content*(Objec
 // interactive driver memoizes one map per revision and needs both the functor and
 // the map itself (to invert it for arrival-damage routing), so the lookup rule
 // lives here once rather than being hand-rolled at the second call site.
-std::function<ObjectId(const Content*)>
+ARBC_API std::function<ObjectId(const Content*)>
 pull_identity_of(std::shared_ptr<const PullIdentityMap> ids);
 
 // The `PullConfig::id_of` functor over a freshly built identity map. Both render
 // drivers call this so the seam lands in one place (Constraint 8); a future
 // interactive-audio `id_of` wiring reuses it verbatim.
-std::function<ObjectId(const Content*)>
+ARBC_API std::function<ObjectId(const Content*)>
 make_pull_identity_of(const DocRoot& state, const std::function<Content*(ObjectId)>& resolve);
 
 // The SECOND COLUMN of the same per-revision memo (`model.per_object_revision`
@@ -97,22 +98,22 @@ using PullStampMap = std::unordered_map<ObjectId, std::uint64_t>;
 // `build_pull_identity_map` already has. A lazily-filled memo would need mutable state
 // and a lock on the pull path, which is precisely the shape that produced the
 // audio-lookahead cache-thread-safety trap already on record.
-std::shared_ptr<const PullStampMap> build_pull_stamp_map(const DocRoot& state,
-                                                         const PullIdentityMap& ids);
+ARBC_API std::shared_ptr<const PullStampMap> build_pull_stamp_map(const DocRoot& state,
+                                                                  const PullIdentityMap& ids);
 
 // The `PullConfig::contribution` functor: `Content* -> contribution`, composing the two
 // memo columns. A content with no identity, or an id with no stamp (a synthesized
 // operator-input child is not a model object), contributes 0 -- which is sound because
 // such a content renders as a pure function of its own inputs and of the operator record
 // that constructed it, and BOTH are model objects reachable in the same `inputs()` fold.
-std::function<std::uint64_t(const Content*)>
+ARBC_API std::function<std::uint64_t(const Content*)>
 pull_contribution_of(std::shared_ptr<const PullIdentityMap> ids,
                      std::shared_ptr<const PullStampMap> stamps);
 
 // The same column read by id: the audio lookahead ring's warm-key contribution
 // (`LookaheadRingConfig::contribution`). Same map, same values, so the ring warms exactly
 // the keys `PullServiceImpl::pull_audio` later probes.
-std::function<std::uint64_t(ObjectId)>
+ARBC_API std::function<std::uint64_t(ObjectId)>
 object_contribution_of(std::shared_ptr<const PullStampMap> stamps);
 
 } // namespace arbc

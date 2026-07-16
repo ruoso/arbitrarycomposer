@@ -40,6 +40,7 @@
 // resurrect a dead slot. `peek()` is any-thread, `sha256`/`compress_blob` are stateless,
 // and the save never allocates from the pool.
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/sha256.hpp>
 #include <arbc/media/pixel_format.hpp>
 #include <arbc/pool/big_block_pool.hpp>
@@ -54,7 +55,7 @@
 
 namespace arbc {
 
-class RasterTileStore {
+class ARBC_API RasterTileStore {
 public:
   RasterTileStore() = default;
   RasterTileStore(const RasterTileStore&) = delete;

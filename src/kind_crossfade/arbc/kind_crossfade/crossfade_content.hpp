@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp>
 
 #include <array>
@@ -42,7 +43,7 @@ struct CrossfadeParams {
 // compositor serves the corresponding input's cached tiles with no render
 // outside the transition window (doc 13:59-65). It pulls each input ONLY through
 // the injected PullService, never `input->render()`.
-class CrossfadeContent final : public Content {
+class ARBC_API CrossfadeContent final : public Content {
 public:
   CrossfadeContent(ContentRef from, ContentRef to, CrossfadeParams params);
 

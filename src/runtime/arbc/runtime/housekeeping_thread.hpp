@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/pool/workspace_file.hpp>
 #include <arbc/runtime/housekeeping.hpp>
@@ -61,7 +62,7 @@ struct HousekeepingThreadConfig {
   std::function<void(const WorkspaceFileError&)> on_checkpoint_error;
 };
 
-class HousekeepingThread {
+class ARBC_API HousekeepingThread {
 public:
   // Constructs the owned `Housekeeper{target, policy}` and launches the background
   // loop (started last). `target` must OUTLIVE this object -- the loop drains

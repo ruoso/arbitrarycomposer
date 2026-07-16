@@ -16,6 +16,16 @@
 
 include(GNUInstallDirs)
 
+# The umbrella-owned include ROOT that carries arbc/arbc_api.h (the visibility
+# macro header, packaging.shared_library_build). Every component's public headers
+# `#include <arbc/arbc_api.h>`, but a component object library links no umbrella
+# target, so it does not inherit the umbrella's FILE_SET include dir -- it must
+# carry this root on its own compile line (added PUBLIC in arbc_add_component, so
+# it also flows to dependent components, the umbrella, and arbc-testing). Confined
+# to the build interface: the header installs once, from the umbrella's FILE_SET.
+get_filename_component(ARBC_API_INCLUDE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../src/api"
+                       ABSOLUTE)
+
 # arbc_add_component(NAME <name>
 #                    SOURCES <src...>
 #                    PUBLIC_HEADERS <hdr...>
@@ -35,6 +45,17 @@ function(arbc_add_component)
            ${ARG_PUBLIC_HEADERS})
   target_compile_features(${target} PUBLIC cxx_std_20)
   target_link_libraries(${target} PRIVATE arbc_build_flags)
+  # So every component TU can find <arbc/arbc_api.h> (see ARBC_API_INCLUDE_ROOT
+  # above). BUILD_INTERFACE only -- the header is installed once by the umbrella.
+  target_include_directories(${target}
+                             PUBLIC "$<BUILD_INTERFACE:${ARBC_API_INCLUDE_ROOT}>")
+  # The export-side define of ARBC_API (arbc/arbc_api.h, packaging.shared_library_build
+  # Decision D2). PRIVATE and on EVERY object library, because libarbc's public symbols
+  # are compiled here -- not in the umbrella's lone version.cpp -- so every TU that ends
+  # up inside libarbc must take the export branch. A consumer/plugin never defines it and
+  # takes the import branch. Inert for the static build (ARBC_API is visibility("default")
+  # on ELF either way); the branch only diverges on a future MSVC shared build.
+  target_compile_definitions(${target} PRIVATE ARBC_BUILDING)
   foreach(dep IN LISTS ARG_DEPENDS)
     target_link_libraries(${target} PUBLIC "arbc_${dep}")
   endforeach()
@@ -167,6 +188,21 @@ function(arbc_finalize_library)
   add_library(arbc::arbc ALIAS arbc)
   target_compile_features(arbc PUBLIC cxx_std_20)
   target_link_libraries(arbc PRIVATE "$<BUILD_INTERFACE:arbc_build_flags>")
+  # The umbrella's own version.cpp is inside libarbc too, so it takes the export
+  # branch of ARBC_API like every component object library (D2).
+  target_compile_definitions(arbc PRIVATE ARBC_BUILDING)
+
+  # SOVERSION/VERSION off the single-source-of-truth PROJECT_VERSION
+  # (packaging.shared_library_build Decision D5). Ignored for the STATIC archive
+  # every other lane builds; the soname the BUILD_SHARED_LIBS lane installs.
+  # Pre-1.0 the project moves freely and makes NO ABI promise (doc 16:143-145), so
+  # SOVERSION is the coarse major (0) -- it deliberately does not claim 0.1<->0.2
+  # ABI compatibility; the strict soname-per-incompatible-release discipline
+  # arrives with the 1.0 ABI-checking work item (doc 16:147), not here.
+  set_target_properties(
+    arbc
+    PROPERTIES VERSION "${PROJECT_VERSION}"
+               SOVERSION "${PROJECT_VERSION_MAJOR}")
 
   # arbc/version.hpp (packaging.version_api, doc 10 § Versioning and the version API).
   # Generated into the BUILD tree from one template, so `project(... VERSION ...)` in the
@@ -189,6 +225,19 @@ function(arbc_finalize_library)
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/arbc/version.hpp.in" "${version_header}"
                  @ONLY)
 
+  # arbc/arbc_api.h -- the visibility macro header (packaging.shared_library_build).
+  # Hand-written and checked in (NOT generated -- it derives from nothing, Decision
+  # D1). Umbrella-owned and installed at the include ROOT (<prefix>/include/arbc/arbc_api.h),
+  # exactly like version.hpp. It lives in its OWN dedicated source root (src/api/) so
+  # that root's single FILE_SET base dir does not overlap any component's base dir --
+  # a header under two base dirs is a CMake FILE_SET error, which is why it cannot
+  # simply sit under src/ alongside the components. The same by-construction rule
+  # keeps "no component may reach up to include it" true (this base dir lives only on
+  # the umbrella), and its include spelling (arbc/arbc_api.h, at the root, no
+  # arbc/<component>/ segment) is not matched by scripts/check_levels.py's INCLUDE_RE.
+  set(api_include_root "${CMAKE_CURRENT_SOURCE_DIR}/api")
+  set(api_header "${api_include_root}/arbc/arbc_api.h")
+
   # One FILE_SET, one BASE_DIR per component (plus the generated root above): CMake
   # derives a $<BUILD_INTERFACE:> include dir from each base dir, so this replaces the
   # per-component target_include_directories the pre-install umbrella carried.
@@ -199,9 +248,11 @@ function(arbc_finalize_library)
            BASE_DIRS
            ${component_dirs}
            "${version_include_root}"
+           "${api_include_root}"
            FILES
            ${component_headers}
-           "${version_header}")
+           "${version_header}"
+           "${api_header}")
   foreach(name IN LISTS components)
     target_link_libraries(arbc PRIVATE "$<BUILD_INTERFACE:arbc_${name}>")
   endforeach()

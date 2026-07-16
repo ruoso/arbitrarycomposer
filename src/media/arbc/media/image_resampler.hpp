@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/media/pixel_traits.hpp> // WorkingPixel
 
 #include <algorithm>
@@ -56,12 +57,12 @@ inline constexpr int k_decimate_radius = 3;
 
 // The frozen half-band weight table, in tap order (child `2x-2` .. `2x+3`).
 // Symmetric: `w[i] == w[5 - i]` bit-for-bit.
-const std::array<float, k_decimate_taps>& lanczos3_half_band();
+ARBC_API const std::array<float, k_decimate_taps>& lanczos3_half_band();
 
 // The float32 DC gain of the frozen bank, reduced in the SAME fixed tap order the
 // kernel uses. Exactly `1.0F` -- so a constant child field decimates to that
 // constant (pinned in the unit test).
-float lanczos3_half_band_dc_gain();
+ARBC_API float lanczos3_half_band_dc_gain();
 
 // Clamp each channel to non-negative -- the negative-lobe undershoot guard. RGB is
 // deliberately NOT clamped to <= alpha: above-alpha values are legitimate HDR

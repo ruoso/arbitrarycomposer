@@ -15,6 +15,7 @@
 // pass-through when it has a bound input (doc 13), else a bounded diagnostic fill. A
 // missing plugin never destroys data and never punches a hole.
 
+#include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp>
 
 #include <nlohmann/json.hpp>
@@ -33,7 +34,7 @@ namespace arbc {
 // golden. Premultiplied (doc 07): straight magenta (1, 0, 1) at alpha 0.5.
 inline constexpr std::array<float, 4> k_placeholder_diagnostic{0.5F, 0.0F, 0.5F, 0.5F};
 
-class PlaceholderContent final : public Content {
+class ARBC_API PlaceholderContent final : public Content {
 public:
   // `body` is the layer's LEAF content body, stored verbatim (all keys EXCEPT
   // `inputs`, which the read routing strips -- it is re-derived from `inputs()` on

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 
 #include <cstddef>
@@ -23,7 +24,7 @@ struct ChunkSpan {
 // chunks flow through this interface, so `pool.mmap_backing` can swap in
 // file-backed spans without touching store logic. Bookkeeping tables
 // (directory, free list) never go through a ChunkSource.
-class ChunkSource {
+class ARBC_API ChunkSource {
 public:
   ChunkSource() = default;
   virtual ~ChunkSource() = default;
@@ -49,7 +50,7 @@ public:
 // and big_block_pool also speak, and neither has any notion of a store
 // directory. Routing at bind time instead of at acquire time makes mis-routing
 // structurally impossible rather than one wrong argument away.
-class ChunkSourceRouter {
+class ARBC_API ChunkSourceRouter {
 public:
   ChunkSourceRouter() = default;
   virtual ~ChunkSourceRouter() = default;
@@ -67,7 +68,7 @@ public:
 
 // Default backing: page-aligned anonymous process memory. `pool.mmap_backing`
 // generalizes this to mmap/workspace-file sources through the same interface.
-class AnonymousChunkSource final : public ChunkSource {
+class ARBC_API AnonymousChunkSource final : public ChunkSource {
 public:
   expected<ChunkSpan, PoolError> acquire(std::size_t size, std::size_t alignment) override;
   void release(ChunkSpan span) noexcept override;

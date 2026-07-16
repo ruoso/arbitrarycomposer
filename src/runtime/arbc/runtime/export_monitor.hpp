@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/audio_engine/mix.hpp>        // MixPolicy, MixResolver, mix_composition
 #include <arbc/base/ids.hpp>                // ObjectId
 #include <arbc/base/time.hpp>               // Time, TimeRange
@@ -61,14 +62,14 @@ namespace arbc {
 // range, a non-positive `block_frames`, a `rate` of zero, or a range shorter than
 // one sample yields an empty series (faults-as-values, never an abort, doc 10). A
 // caller may compute the series any other way and feed `render_block_at` raw.
-std::vector<TimeRange> block_windows_over(const TimeRange& range, std::uint32_t rate,
-                                          std::uint32_t block_frames);
+ARBC_API std::vector<TimeRange> block_windows_over(const TimeRange& range, std::uint32_t rate,
+                                                   std::uint32_t block_frames);
 
 // The stateful offline audio export driver (Decision "stateful L5 class").
 // Non-copyable and non-movable: it pins a document revision and owns the pull
 // substrate (a `PullServiceImpl`, its `BlockCache`, a `TileCache`, and the
 // persistent counters) the mix core pulls through.
-class ExportMonitor {
+class ARBC_API ExportMonitor {
 public:
   // What the caller's per-block sink receives: the block's working-rate time
   // window, the owned sample-exact mixed block (caller keeps/resamples/encodes/

@@ -31,6 +31,7 @@
 // blob, the `build_from_tiles` allocation, the memo seed -- lives on the loading thread; a
 // worker touches only its own job-owned frame input and its own output buffer (Constraint 2).
 
+#include <arbc/arbc_api.h>
 #include <arbc/serialize/tile_blob.hpp> // TileBlobError (errors are values across the lane)
 
 #include <cstddef>
@@ -76,7 +77,7 @@ struct TileDecodeReap {
   TileDecodeOutput output;
 };
 
-class TileDecodeDispatch {
+class ARBC_API TileDecodeDispatch {
 public:
   // `fetch(j, in)` stages job j's frame on the CALLING (loading) thread and returns its
   // verdict; on `Ready` it has filled `in` (hash + frame bytes). It runs strictly within
@@ -150,9 +151,9 @@ private:
   FetchFn d_fetch;
   DecodeFn d_decode;
   std::size_t d_count{0};
-  std::size_t d_dispatched{0}; // next index to fetch (both `Ready` and declined advance it)
-  std::size_t d_reaped{0};     // next index to reap
-  std::size_t d_in_flight{0};  // submitted-but-not-reaped worker decode jobs
+  std::size_t d_dispatched{0};   // next index to fetch (both `Ready` and declined advance it)
+  std::size_t d_reaped{0};       // next index to reap
+  std::size_t d_in_flight{0};    // submitted-but-not-reaped worker decode jobs
   std::uint64_t d_cursor_gen{0}; // this pass's `CompletionCursor` state (worker-backed park)
   bool d_open{false};
 };

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/compositor/compositor.hpp> // ContentResolver
 #include <arbc/model/model.hpp>           // DocRoot, DocStatePtr
 
@@ -78,13 +79,13 @@ struct OperatorBinder {
 // `FadeContent::kind_id`). Idempotent per `kind_id` (first registration wins). Not
 // itself thread-safe: reach it only through `register_builtin_operator_binders`,
 // which runs the registration exactly once under a thread-safe guard.
-void register_operator_binder(const char* kind_id, OperatorBinder binder);
+ARBC_API void register_operator_binder(const char* kind_id, OperatorBinder binder);
 
 // Register every built-in operator kind's binder exactly once, thread-safely (a
 // function-local-static guard). The render drivers call this before `bind_operators`
 // so the registry is fully populated (and read-only) before any bind or worker
 // dispatch.
-void register_builtin_operator_binders();
+ARBC_API void register_builtin_operator_binders();
 
 // The RAII binding scope (Decision 1): owns the set of contents attached by
 // `bind_operators` and detaches every one on destruction, so no borrowed service is
@@ -94,7 +95,7 @@ void register_builtin_operator_binders();
 // to keep it alive.
 // The live services MUST outlive this scope (Constraint 4): declare the
 // `PullServiceImpl` and `Backend` BEFORE the scope so they destruct AFTER it.
-class OperatorBindingScope {
+class ARBC_API OperatorBindingScope {
 public:
   OperatorBindingScope() = default;
   OperatorBindingScope(OperatorBindingScope&& other) noexcept;
@@ -147,7 +148,7 @@ private:
 // kind (Decision 2); a content of no registered kind is skipped. Returns the RAII
 // scope that tears every binding down on destruction (Constraint 3). Call
 // `register_builtin_operator_binders()` first.
-OperatorBindingScope bind_operators(const Document& document, PullService& pull, Backend& backend,
-                                    DocStatePtr pin);
+ARBC_API OperatorBindingScope bind_operators(const Document& document, PullService& pull,
+                                             Backend& backend, DocStatePtr pin);
 
 } // namespace arbc

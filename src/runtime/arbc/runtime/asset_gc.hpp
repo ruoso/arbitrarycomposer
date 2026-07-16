@@ -20,6 +20,7 @@
 // save (Decision 6) -- the pool tile is the source of truth, not the blob; only a CLOSED,
 // unnamed document's unique blobs are truly at risk, which is why GC is explicit.
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/serialize/asset_reaper.hpp>
 #include <arbc/serialize/reader.hpp> // ReaderError (the mark walk's fail-safe value)
@@ -38,7 +39,7 @@ namespace arbc {
 // overloads (errors are values), filters basenames by `is_tile_hash`, sizes and removes point
 // blobs, and prunes an emptied two-hex fan-out directory. It reuses `tile_blob_uri` for the
 // per-blob path so its derivation is byte-identical to the sink's.
-class FilesystemAssetReaper final : public AssetReaper {
+class ARBC_API FilesystemAssetReaper final : public AssetReaper {
 public:
   // `tiles_base_uri` is the resolved tiles base (e.g. `<project>/assets/tiles/`); a `file://`
   // prefix is stripped exactly as the sink/source strip it.
@@ -91,7 +92,7 @@ struct GcError {
 // FAIL-SAFE (Constraint 3): unparseable text, a non-array `blobs`, or an entry that is not a
 // valid `is_tile_hash` string is a `ReaderError` value -- and the driver that calls this then
 // deletes nothing. Over-preservation on any doubt.
-expected<std::unordered_set<std::string>, ReaderError>
+ARBC_API expected<std::unordered_set<std::string>, ReaderError>
 collect_referenced_tiles(std::string_view document_json);
 
 // THE SWEEP (Decision 3). Enumerate the on-disk set, subtract `referenced` in FULL, size the
@@ -99,8 +100,9 @@ collect_referenced_tiles(std::string_view document_json);
 // removes only a strict subset of genuine orphans, leaving every referenced blob intact.
 // `dry_run` computes and reports the identical plan without deleting. `referenced` is the
 // UNION across every document the caller preserves (Constraint 5).
-expected<GcReport, GcError> sweep_tile_store(const std::unordered_set<std::string>& referenced,
-                                             AssetReaper& reaper, bool dry_run);
+ARBC_API expected<GcReport, GcError>
+sweep_tile_store(const std::unordered_set<std::string>& referenced, AssetReaper& reaper,
+                 bool dry_run);
 
 // The convenience entry: scan `project_dir` for `*.arbc`, union their marks, resolve the
 // default `assets/tiles/` base against the directory the same way a save/load does, and sweep
@@ -108,7 +110,7 @@ expected<GcReport, GcError> sweep_tile_store(const std::unordered_set<std::strin
 // the direct answer to doc 08's cross-`.arbc` hazard: a blob any of them references survives.
 // A document NOT in `project_dir` is not a root -- its unique blobs are reclaimed, which is
 // the caller-completeness contract (Constraint 5).
-expected<GcReport, GcError> gc_project_directory(const std::filesystem::path& project_dir,
-                                                 bool dry_run);
+ARBC_API expected<GcReport, GcError> gc_project_directory(const std::filesystem::path& project_dir,
+                                                          bool dry_run);
 
 } // namespace arbc

@@ -73,8 +73,8 @@ void TileDecodeDispatch::pump_ahead() {
       // shared mutable state, so no lock on the hot path (Constraint 2).
       slot.done = std::make_shared<WorkCompletion>();
       slot.submitted = true;
-      d_pool->submit_work(WorkTask{[this, j] { d_slots[j].out = d_decode(d_slots[j].in); },
-                                   slot.done, d_owner});
+      d_pool->submit_work(
+          WorkTask{[this, j] { d_slots[j].out = d_decode(d_slots[j].in); }, slot.done, d_owner});
       ++d_in_flight;
       d_peak = std::max<std::uint64_t>(d_peak, d_in_flight);
     }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/geometry.hpp>
 
 #include <optional>
@@ -9,7 +10,7 @@ namespace arbc {
 // 2D affine transform mapping (x, y) -> (a*x + c*y + tx, b*x + d*y + ty).
 // Transforms are stored per edge and composed on demand, never accumulated
 // (doc 04).
-struct Affine {
+struct ARBC_API Affine {
   double a{1.0};
   double b{0.0};
   double c{0.0};
@@ -40,6 +41,6 @@ struct Affine {
 };
 
 // compose(outer, inner).apply(p) == outer.apply(inner.apply(p))
-Affine compose(const Affine& outer, const Affine& inner);
+ARBC_API Affine compose(const Affine& outer, const Affine& inner);
 
 } // namespace arbc

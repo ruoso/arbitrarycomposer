@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/model/model.hpp>
@@ -40,8 +41,9 @@ using ContentResolver = std::function<Content*(ObjectId)>;
 // Per-layer temp targets are acquired from `pool` (doc 09): a caller-owned
 // SurfacePool so a looping renderer can reuse temps across frames with no
 // per-frame allocator churn. The pool composes over `backend`.
-void render_frame(const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
-                  Backend& backend, SurfacePool& pool, Surface& target);
+ARBC_API void render_frame(const DocRoot& state, const ContentResolver& resolve,
+                           const Viewport& viewport, Backend& backend, SurfacePool& pool,
+                           Surface& target);
 
 // Render one layer whose composed local->device transform is `composed` into
 // `target`, applying the pull contract's exact cull/compose/region/sub-pixel
@@ -52,7 +54,8 @@ void render_frame(const DocRoot& state, const ContentResolver& resolve, const Vi
 // so the `anchor == root` case stays byte-identical (refinement Decision 4).
 // Internal to the compositor; declared here so the anchored walk reuses it
 // verbatim rather than duplicating the predicates.
-void render_layer(const ContentResolver& resolve, const LayerRecord& layer, const Affine& composed,
-                  const Rect& device_rect, Backend& backend, SurfacePool& pool, Surface& target);
+ARBC_API void render_layer(const ContentResolver& resolve, const LayerRecord& layer,
+                           const Affine& composed, const Rect& device_rect, Backend& backend,
+                           SurfacePool& pool, Surface& target);
 
 } // namespace arbc

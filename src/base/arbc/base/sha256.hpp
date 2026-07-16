@@ -1,5 +1,7 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
+
 // The tree's content hash (serialize.raster_tile_store Decision 3; doc 00 decision
 // record; doc 08 Principle 8, § Dependency note).
 //
@@ -37,14 +39,14 @@ struct Sha256Digest {
 // SHA-256 over `data`. One-shot, allocation-free, and stateless -- safe from any
 // thread, which is what lets the tile-encode pipeline eventually fan out across the
 // pool workers (`serialize.tile_store_parallel_save`).
-Sha256Digest sha256(std::span<const std::byte> data);
+ARBC_API Sha256Digest sha256(std::span<const std::byte> data);
 
 // Lowercase hex of the whole digest (64 chars).
-std::string to_hex(const Sha256Digest& digest);
+ARBC_API std::string to_hex(const Sha256Digest& digest);
 
 // Lowercase hex of the digest's leading `n` bytes -- the blob-name form (n == 16 is
 // SHA-256/128: a 2^64 birthday bound, set at the generous end because a collision's
 // failure mode is silent pixel corruption). `n` is clamped to the digest width.
-std::string to_hex(const Sha256Digest& digest, std::size_t n);
+ARBC_API std::string to_hex(const Sha256Digest& digest, std::size_t n);
 
 } // namespace arbc

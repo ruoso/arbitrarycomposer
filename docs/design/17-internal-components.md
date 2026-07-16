@@ -170,23 +170,35 @@ Notes on placements that were genuinely contested:
    proof exercises virtual dispatch in *both* directions across the image
    boundary, not just host-calls-plugin.
 
-   One honesty limit is recorded rather than hidden. `libarbc` carries no
-   export annotation on its public symbols yet, so under the global
-   `-fvisibility=hidden` a `SHARED` build would export nothing, and every
-   plugin — the CI dual-build modules and the shipped `arbc-plugin-*` artifacts
-   alike — links the **static** `libarbc` and carries a private copy of the core
-   objects it references. The dual-build therefore proves that the entry point,
-   the factory, the facets, and service injection all cross the boundary; it
-   does *not* yet prove that a plugin resolves core symbols **from the host
-   image**. Export-annotating the public surface and adding the
-   `BUILD_SHARED_LIBS` CI lane is `packaging.shared_library_build`.
+   One honesty limit, recorded rather than hidden, is now discharged on the
+   ELF/shared lane (`packaging.shared_library_build`). `libarbc`'s public symbols
+   carry the `ARBC_API` export annotation (`arbc/arbc_api.h`), so under the global
+   `-fvisibility=hidden` the `BUILD_SHARED_LIBS=ON` build exports exactly the
+   deliberate public API and nothing else. The `gcc-shared` CI lane builds that
+   `libarbc.so` and runs the whole suite against it, and a plugin loaded into the
+   process — the CI dual-build modules and the shipped `arbc-plugin-*` artifacts
+   alike — now resolves core symbols **from the single host image** rather than
+   from a private static copy: `tests/shared_symbol_resolution.t.cpp` scans the
+   dynamic symbol tables of the built artifacts and asserts that every core
+   `ARBC_API` symbol a plugin references is an *undefined import* satisfied by the
+   one `libarbc.so` (which *exports* it), the linkage difference the dual-build's
+   render/facet/service assertions cannot see (they pass with two copies as
+   happily as with one). On the other lanes the dual-build still runs against the
+   **static** `libarbc`, where the same modules carry a private copy — so the
+   boundary is proven regardless of build shape. The remaining piece is the
+   Windows/MSVC shared build, where `ARBC_API`'s
+   `__declspec(dllexport)`/`(dllimport)` asymmetry (unlike ELF's symmetric
+   `visibility("default")`) and DLL search / `LoadLibrary` module resolution
+   differ: that is `packaging.shared_library_build_msvc`.
 
 CMake mechanics (recorded so bootstrap doesn't rediscover them):
 
 - `POSITION_INDEPENDENT_CODE ON` globally (objects must be PIC for the
-  shared `libarbc`); default `-fvisibility=hidden` with an export macro so
-  only the deliberate public API (doc 16) is visible from the shared
-  build; `arbc::<name>` alias targets everywhere; the dependency manifest
+  shared `libarbc`); default `-fvisibility=hidden` with an export macro
+  (`ARBC_API`, `arbc/arbc_api.h`, keyed off the `ARBC_BUILDING` build-side
+  define threaded onto every component object library) so only the deliberate
+  public API (doc 16) is visible from the shared build; `arbc::<name>` alias
+  targets everywhere; the dependency manifest
   lives as data (the CMake lists themselves) consumed by the CI
   levelization check.
 - **Public vs private headers via `FILE_SET HEADERS` (CMake ≥ 3.24), not

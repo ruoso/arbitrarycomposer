@@ -24,6 +24,7 @@
 // The two produce byte-identical output; they differ only in throughput and in transient
 // scratch (O(`worker_count` * tile) vs O(tile)).
 
+#include <arbc/arbc_api.h>
 #include <arbc/serialize/tile_blob.hpp> // TileBlobError (errors are values across the lane)
 
 #include <cstddef>
@@ -48,7 +49,7 @@ struct TileEncodeOutput {
   std::optional<TileBlobError> error;
 };
 
-class TileEncodeDispatch {
+class ARBC_API TileEncodeDispatch {
 public:
   // `encode(j)` produces job j's pure result; it runs on a worker (or inline) and must be
   // reentrant and touch no shared mutable state.

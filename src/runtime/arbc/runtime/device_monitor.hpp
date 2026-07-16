@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/rational_time.hpp>        // Rational
 #include <arbc/base/rt_safety.hpp>            // ARBC_RT_NONBLOCKING (RT callback annotations)
 #include <arbc/base/time.hpp>                 // Time
@@ -79,7 +80,7 @@ struct DeviceMonitorConfig {
   std::function<Affine()> camera_source{};
 };
 
-class DeviceMonitor {
+class ARBC_API DeviceMonitor {
 public:
   // Binds `transport`, `pump`, and `sink` (references, not owned). Starts the owner
   // (mastering) thread and opens the device stream. A device rate ABOVE the working

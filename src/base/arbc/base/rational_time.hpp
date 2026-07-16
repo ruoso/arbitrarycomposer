@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/base/time.hpp>
 
@@ -43,7 +44,7 @@ struct TimeError {
 // any nesting depth (doc 11:41-56). Trivially copyable and STL-free like the
 // `Time`/`TimeRange` value types it sits beside; equality is value-exact on the
 // canonical form.
-class Rational {
+class ARBC_API Rational {
 public:
   constexpr Rational() = default;
 
@@ -115,7 +116,7 @@ private:
 // graph edge stack into a single `ComposedTimeMap`, so the whole composition is
 // evaluated in rational arithmetic and rounded to an integer flick exactly once,
 // at the leaf.
-struct TimeMap {
+struct ARBC_API TimeMap {
   Time in{};
   Rational rate{1, 1};
   Time offset{};
@@ -133,7 +134,7 @@ struct TimeMap {
 // flick timebase happens exactly once, in `evaluate`, at the leaf -- never per
 // edge (doc 11:44-48, doc 04's never-accumulate rule). The default value is the
 // identity map.
-struct ComposedTimeMap {
+struct ARBC_API ComposedTimeMap {
   Rational a{1, 1};
   Rational b{0, 1};
 

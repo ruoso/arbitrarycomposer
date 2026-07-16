@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/media/audio_block.hpp>
 
 namespace arbc {
@@ -35,6 +36,6 @@ namespace arbc {
 // `in.rate != out.rate`, and matching layouts; on any other shape (equal rate,
 // layout mismatch, null) it leaves `out` unchanged (the caller keeps the 1:1 path
 // for the rate-honoring case, which never needs reconstruction).
-void resample_audio(const AudioBlock& in, AudioBlock& out);
+ARBC_API void resample_audio(const AudioBlock& in, AudioBlock& out);
 
 } // namespace arbc

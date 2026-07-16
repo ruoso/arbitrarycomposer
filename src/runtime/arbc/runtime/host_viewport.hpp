@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>                      // ObjectId
 #include <arbc/base/time.hpp>                     // Time
 #include <arbc/base/transform.hpp>                // Affine
@@ -64,7 +65,7 @@ class Document;
 class KindBridge;
 class Registry;
 
-class HostViewport {
+class ARBC_API HostViewport {
 public:
   // The injected wall-clock source -- the SAME kind the renderer uses
   // (Constraint 4/8). Empty selects `steady_clock::now`; a test hands a fake clock

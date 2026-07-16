@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/time.hpp>
@@ -76,7 +77,7 @@ inline void damage_add(std::vector<Damage>& set, const Damage& d) {
 // commit flushes the union of its per-mutation damage here exactly once; abort
 // flushes nothing. The concrete consumer (model.damage propagation, a viewport
 // invalidator) is wired from above at level L3 (doc 17:66-72).
-class DamageSink {
+class ARBC_API DamageSink {
 public:
   virtual ~DamageSink() = default;
   virtual void flush(const std::vector<Damage>& damage) = 0;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp> // Content, AudioRequest, AudioCompletion (L5->contract)
 
 #include <atomic>
@@ -57,7 +58,7 @@ struct AudioWorkerPoolConfig {
   };
 };
 
-class AudioWorkerPool {
+class ARBC_API AudioWorkerPool {
 public:
   explicit AudioWorkerPool(AudioWorkerPoolConfig config);
   ~AudioWorkerPool();

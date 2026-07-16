@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/rational_time.hpp> // TimeMap (set_layer_time_map)
 #include <arbc/base/time.hpp>          // TimeRange (set_layer_span)
@@ -58,7 +59,7 @@ struct DocumentHousekeepingConfig {
 // binding, and the housekeeping thread that manages the model's memory. Records hold
 // opaque content ids; the id-to-Content binding lives here, keeping the model free of
 // the contract vtable (doc 17).
-class Document {
+class ARBC_API Document {
 public:
   // The ANONYMOUS document (doc 15:158-160): process memory, no file, no
   // checkpointer. Its housekeeper is drain-only -- every checkpoint trigger is inert

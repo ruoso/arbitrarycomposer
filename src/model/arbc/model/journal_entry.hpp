@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/model/damage.hpp>
 #include <arbc/model/records.hpp>
@@ -52,12 +53,12 @@ struct JournalEntry {
 // *before* + last entry's *after*, unioned damage, unioned object/content sets.
 // A pure value operation defined here (this task owns "coalescing"); WHICH
 // entries are consecutive in history is `model.journal`'s concern.
-void coalesce_entries(JournalEntry& base, const JournalEntry& follow);
+ARBC_API void coalesce_entries(JournalEntry& base, const JournalEntry& follow);
 
 // Abstract, model-defined commit seam (pure change-notification, doc 02): a
 // non-coalesced commit notifies here exactly once with the assembled entry. The
 // concrete consumer (the byte-budgeted journal) is wired from above at L3.
-class CommitSink {
+class ARBC_API CommitSink {
 public:
   virtual ~CommitSink() = default;
   virtual void on_commit(JournalEntry entry) = 0;

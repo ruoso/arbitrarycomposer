@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>      // expected
 #include <arbc/base/rational_time.hpp> // Rational, TimeMap, TimeError
 #include <arbc/base/time.hpp>          // Time, TimeRange
@@ -31,7 +32,7 @@
 
 namespace arbc {
 
-class Transport {
+class ARBC_API Transport {
 public:
   // A transport starts playing (not paused) at `start`, rate 1/1, no loop bounds.
   explicit Transport(Time start = Time::zero()) : d_playhead(start) {}

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp>
 
 #include <cstdint>
@@ -15,7 +16,7 @@ namespace arbc {
 // at any requested sample rate. Every sample is a pure function of absolute
 // content-local time, so the kind is stateless, block-continuous, and trivially
 // thread-safe.
-class ToneContent final : public Content {
+class ARBC_API ToneContent final : public Content {
 public:
   // frequency_hz is an integer number of cycles per second so the synthesis
   // phase reduces with exact integer arithmetic (see tone_content.cpp);

@@ -27,6 +27,7 @@
 //
 // Names no JSON type, so it rides the runtime PUBLIC headers.
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/ids.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/model/model.hpp>
@@ -44,7 +45,7 @@ namespace arbc {
 // "single-writer, not thread safe: a load runs on one thread" and this inherits that. Built
 // by `LoadAssembly` beside its composition sibling, over the same `Document`-owned durable
 // state, so a settle fetches through exactly the loader a load would have.
-class ExternalAssetLoader {
+class ARBC_API ExternalAssetLoader {
 public:
   // The outcome of resolving and fetching one authored asset reference. THREE outcomes, not
   // two, and the third is the whole task:

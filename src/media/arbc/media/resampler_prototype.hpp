@@ -20,6 +20,8 @@
 // regen dumper); it is the sole place libm's `std::sin`/`std::cos` are evaluated. The RT
 // inner loop MACs over the resident float32 table, no-libm (Constraint 1, doc 16:48-53).
 
+#include <arbc/arbc_api.h>
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -121,7 +123,7 @@ struct FrozenBank {
   std::int64_t taps;
 };
 
-FrozenBank frozen_bank();
+ARBC_API FrozenBank frozen_bank();
 
 } // namespace resampler_prototype
 } // namespace arbc

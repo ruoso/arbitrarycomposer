@@ -74,6 +74,14 @@ jobs:
           # links a foreign project against the staged prefix, so it is that
           # difference this lane actually checks.
           - { name: gcc-install-fetched, os: ubuntu-latest, cxx: g++, preset: install-fetched }
+          # BUILD_SHARED_LIBS=ON lane (packaging.shared_library_build, doc 17:173-191):
+          # builds libarbc.so under the global -fvisibility=hidden and runs the full
+          # suite against it, so the shared build stays green on every push -- including
+          # the new shared_symbol_resolution proof and the eight plugin loads re-run
+          # against the shared libarbc. Find-first (system) zstd, so libzstd is an
+          # ordinary .so dependency (Decision D4/D7); the MSVC shared build is the
+          # deferred packaging.shared_library_build_msvc.
+          - { name: gcc-shared, os: ubuntu-latest, cxx: g++, preset: shared }
           - { name: msvc-debug, os: windows-latest, cxx: "", preset: win-dev }
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

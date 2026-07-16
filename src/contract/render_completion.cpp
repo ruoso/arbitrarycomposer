@@ -84,7 +84,13 @@ template <class Result> std::optional<expected<Result, RenderError>> Completion<
 // `RenderCompletion` and the audio facet's `AudioCompletion` are the only two
 // instantiations, emitted once here so the concurrency-critical logic compiles
 // and is TSan-covered exactly once.
-template class Completion<RenderResult>;
-template class Completion<AudioResult>;
+// ARBC_API on the explicit instantiations so the two shipped Completion<>
+// specializations are exported from a shared libarbc: their members are declared
+// in the header but defined only here (out-of-line), so every consumer -- the
+// contract tests, the kinds, a plugin's async render/audio path -- references
+// them as undefined imports that must resolve to this one definition
+// (packaging.shared_library_build). ARBC_API comes via content.hpp/arbc_api.h.
+template class ARBC_API Completion<RenderResult>;
+template class ARBC_API Completion<AudioResult>;
 
 } // namespace arbc

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>         // expected
 #include <arbc/base/rational_time.hpp>    // Rational
 #include <arbc/base/time.hpp>             // Time, TimeRange
@@ -55,12 +56,12 @@ inline constexpr std::size_t k_default_sequence_cache_budget = 256u * 1024 * 102
 // width yields an empty series (faults-as-values, never an abort). The host may
 // compute the series any other way and feed `render_frame_at`/`render_sequence`
 // raw instants directly -- this is only the common fixed-rate convenience.
-std::vector<Time> frame_times_over(const TimeRange& range, const Rational& output_rate);
+ARBC_API std::vector<Time> frame_times_over(const TimeRange& range, const Rational& output_rate);
 
 // The stateful offline sequence renderer (Decision 1). Non-copyable and
 // non-movable: it pins a document revision and owns a `SurfacePool`, a `TileCache`,
 // and a `WorkerPool` (which owns threads when parallel).
-class SequenceRenderer {
+class ARBC_API SequenceRenderer {
 public:
   // What the caller's per-frame sink receives: the frame instant and the owned
   // frame surface (or the capability-honest `SurfaceError` if the pinned working

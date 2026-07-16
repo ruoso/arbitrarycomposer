@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/time.hpp>             // Time
 #include <arbc/compositor/compositor.hpp> // Viewport, ContentResolver, Backend, SurfacePool, Surface
 #include <arbc/compositor/counters.hpp>   // CompositorCounters, CompositorStats, TileCache
@@ -133,7 +134,7 @@ class Document;
 // frame, `-1` when it shrank, and `0` when unchanged or there is no prior frame
 // (`prev_scale <= 0`, the pre-first-frame sentinel) -- "no gesture -> no zoom
 // speculation". A free function so the derivation is directly unit-testable.
-int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept;
+ARBC_API int zoom_direction_from_scale_delta(double prev_scale, double scale) noexcept;
 
 // The cap on the interactive driver's default worker count
 // (`runtime.interactive_worker_count_default` Decision 2). The DEFAULT pool is
@@ -167,7 +168,7 @@ inline constexpr std::size_t k_max_interactive_workers = 2;
 // A formula rather than a constant because a fixed `4` oversubscribes a 2-core CI
 // runner by 3x and undersubscribes a workstation: a constant that ignores the machine
 // is a measurement of the author's machine.
-std::size_t default_interactive_worker_count();
+ARBC_API std::size_t default_interactive_worker_count();
 
 // The pool config `InteractiveRenderer`'s constructor defaults to: the policy above
 // in `worker_count`, every other knob at its `WorkerPoolConfig` default.
@@ -181,7 +182,7 @@ std::size_t default_interactive_worker_count();
 // "how many threads should an interactive host use?" is render-driver policy (doc
 // 17:110-112), not a property of a config struct that does not know which driver it
 // is about to configure.
-WorkerPoolConfig default_interactive_pool_config();
+ARBC_API WorkerPoolConfig default_interactive_pool_config();
 
 // What a frame needs to BIND its operators, and the only thing the frame signature does
 // not already carry (`runtime.interactive_binder_wiring` Decision 2): the `Document` whose
@@ -205,7 +206,7 @@ struct FrameBinding {
 // Owns the frame-to-frame state doc 17:88-95 assigns to runtime and threads it
 // into the stateless compositor by pointer. Non-copyable and non-movable (it
 // owns a `WorkerPool`, which owns threads).
-class InteractiveRenderer {
+class ARBC_API InteractiveRenderer {
 public:
   // What one frame reports back to the host's event loop (host_objects' owns the
   // actual re-invocation): whether newly-settled arrivals owe a follow-up frame.

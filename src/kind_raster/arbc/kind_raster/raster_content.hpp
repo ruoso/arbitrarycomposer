@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp>
 #include <arbc/media/pixel_traits.hpp>   // WorkingPixel, PixelTraits
 #include <arbc/media/surface_format.hpp> // SurfaceFormat
@@ -97,8 +98,8 @@ using CoverageSampler = std::function<float(int gx, int gy)>;
 // `inner_radius < outer_radius`. No `sqrtf`/`exp` -- the coverage is a byte-exact
 // deterministic function so its goldens are byte-exact (doc 16, Decision: libm-free
 // polynomial falloff). The exact profile is pinned by golden, not a designed invariant.
-CoverageSampler round_dab(double cx, double cy, double inner_radius, double outer_radius,
-                          float opacity);
+ARBC_API CoverageSampler round_dab(double cx, double cy, double inner_radius, double outer_radius,
+                                   float opacity);
 
 // One mip level: a grid of `tiles_x * tiles_y` tile blobs (row-major) covering a
 // `width x height` logical pixel field. Level 0 is the decoded buffer; each
@@ -127,7 +128,7 @@ struct Level {
 // stores: the constructor retains each ref and the destructor releases each --
 // so the caller keeps its own counts on the refs it hands in (a fresh blob's
 // allocate-count, or a predecessor version's shared count).
-class TileTable {
+class ARBC_API TileTable {
 public:
   TileTable(int width, int height, int edge, std::vector<Level> levels, BigBlockPool* pool)
       : d_width(width), d_height(height), d_edge(edge), d_levels(std::move(levels)), d_pool(pool) {
@@ -197,7 +198,7 @@ using TileTablePtr = std::shared_ptr<const TileTable>;
 // versions (doc 14:159-162, refinement Decision 4). `pool.allocate` is
 // writer-only; blob retain/release run only on the writer/drain thread via the
 // version-lifetime path, never on an RT render worker.
-class RasterStore {
+class ARBC_API RasterStore {
 public:
   // Default: own an AnonymousChunkSource and a BigBlockPool over it.
   RasterStore();
@@ -290,7 +291,7 @@ private:
 // A visual-only decoded-buffer raster content (Content + Editable facets). Owns
 // its RasterStore and a live "base" version; render is a pure read of the pinned
 // (or base) version's immutable tiles.
-class RasterContent final : public Content, public Editable {
+class ARBC_API RasterContent final : public Content, public Editable {
 public:
   explicit RasterContent(DecodedImage image, int tile_edge = k_default_tile_edge);
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <arbc/arbc_api.h>
 #include <arbc/model/damage.hpp> // DamageSink, Damage
 #include <arbc/model/model.hpp>  // Model
 
@@ -37,7 +38,7 @@ namespace arbc {
 
 class Document; // forward-declared; the Document& constructor is defined in the .cpp
 
-class DamageRouter final : public DamageSink {
+class ARBC_API DamageRouter final : public DamageSink {
 public:
   // Move-only RAII registration token modeled on `CacheHold`
   // (`cache/keyed_store.hpp:80-108`): destroying (or moving-out of) it unregisters

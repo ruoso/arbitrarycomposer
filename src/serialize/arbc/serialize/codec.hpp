@@ -15,6 +15,7 @@
 // registered from a layer that can see both the concrete kind and the JSON library
 // (`runtime` L5 for built-ins, a plugin's own TU out-of-tree; never L4).
 
+#include <arbc/arbc_api.h>
 #include <arbc/base/expected.hpp>
 #include <arbc/contract/content.hpp>
 #include <arbc/contract/registry.hpp>
@@ -61,7 +62,7 @@ struct Codec {
 // (L2, which cannot hold `std::function`s naming `nlohmann::json`). Concrete
 // codecs register from `runtime` / plugins (Decision 3); this component ships the
 // table + the routing, and its tests register test codecs to prove the seam.
-class CodecTable {
+class ARBC_API CodecTable {
 public:
   // Register `codec` under `kind_id`; a duplicate id overwrites the prior codec
   // (last registration wins -- a plugin may supersede a built-in). No throw.
@@ -121,7 +122,7 @@ private:
 // bytes, and an asset-bearing kind's blobs are the ones this very load just read -- so
 // storing them again would re-encode and re-write the whole document on every open. The
 // mechanism is otherwise untouched (serialize.raster_tile_store Constraint 11).
-expected<std::unique_ptr<Content>, ReaderError>
+ARBC_API expected<std::unique_ptr<Content>, ReaderError>
 content_body_from_json(const nlohmann::json& body, std::span<const ContentRef> inputs,
                        ObjectId composition, const CodecTable& codecs, const Registry& registry,
                        LoadContext& ctx, nlohmann::json* params_residual = nullptr);
@@ -138,7 +139,7 @@ content_body_from_json(const nlohmann::json& body, std::span<const ContentRef> i
 //
 // `ctx` carries the write-side asset seam to every codec (Decision 1). A kind with
 // bytes to store hands them to its `AssetSink`; a kind with none never touches it.
-expected<nlohmann::json, SerializeError>
+ARBC_API expected<nlohmann::json, SerializeError>
 content_body_to_json(std::string_view kind_id, std::string_view kind_version,
                      const Content& content, const CodecTable& codecs, SaveContext& ctx);
 
