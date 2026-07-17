@@ -91,7 +91,6 @@ Every preset name is a configure, build, and test preset alike
 | `coverage` | Debug + coverage instrumentation; what the CI diff-coverage gate builds. |
 | `fuzz` | Debug + the libFuzzer loader harness (Clang only); nightly. |
 | `install-fetched` | Debug + tests with every dependency *fetched*, never found. |
-| `win-dev` | Debug + tests via Ninja, for MSVC developer prompts. |
 | `bench` | Release + Google Benchmark. Opt-in, off the merge path. |
 
 ## Definition of done

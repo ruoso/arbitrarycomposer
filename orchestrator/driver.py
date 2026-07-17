@@ -85,14 +85,14 @@ AUTO_FORMAT_STEP: tuple[str, list[str]] = (
 # real per-push CI (.github/workflows/ci.yml) locally with `act` inside
 # docker containers, so every check GitHub runs also gates each iteration
 # here. ci.yml stays the single source of truth for the steps — the lane
-# list below only selects which matrix legs to run. The `msvc-debug` leg is
-# excluded: there is no local Windows container runtime.
+# list below only selects which matrix legs to run. All ci.yml lanes are
+# Linux (MSVC/cl.exe is not a supported toolchain).
 ACT_RUNNER_IMAGE = "arbitrarycomposer/act-runner:latest"
 ACT_RUNNER_DOCKERFILE = REPO_ROOT / ".github" / "act" / "runner.Dockerfile"
 ACT_EVENT_FILE = STATE_DIR / "act-event.json"
 ACT_CCACHE_VOLUME = "arbitrarycomposer-act-ccache"
 
-# ci.yml `build-test` matrix legs runnable locally (all but msvc-debug).
+# ci.yml `build-test` matrix legs replayed locally by the driver.
 CI_BUILD_LANES: list[str] = [
     "gcc-debug",
     "gcc-release",

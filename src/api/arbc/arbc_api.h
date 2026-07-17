@@ -30,27 +30,14 @@
 //
 // On ELF the export and import branches are the symmetric visibility("default"),
 // so the whole gcc BUILD_SHARED_LIBS lane is proven with one branch; the
-// __declspec(dllexport)/(dllimport) asymmetry only bites on MSVC, where the shared
-// build is the deferred follow-up packaging.shared_library_build_msvc.
+// __declspec(dllexport)/(dllimport) asymmetry is the Windows form, used by a Clang
+// Windows build (MSVC/cl.exe is not a supported toolchain and is untested).
 
 #ifndef ARBC_ARBC_API_H
 #define ARBC_ARBC_API_H
 
 #if defined(_WIN32)
-#if defined(ARBC_STATIC)
-// A STATIC libarbc has no DLL boundary, so __declspec(dllexport)/(dllimport) is
-// meaningless -- and on MSVC it makes every exported class with an STL member
-// (std::vector, std::mutex, std::unique_ptr, ...) emit C4251 "needs to have
-// dll-interface", which /WX turns fatal. The warning is a false alarm here
-// anyway: the whole closed world (libarbc, its tests, its plugins) is built with
-// one MSVC and one STL, so there is no cross-DLL layout mismatch to guard. Expand
-// to nothing for the static build. ARBC_STATIC is the sibling of CMake's
-// generate_export_header STATIC_DEFINE; it rides arbc_build_flags for the in-tree
-// build and the umbrella's exported interface for installed consumers
-// (cmake/ArbcComponent.cmake), so every TU that sees a static libarbc agrees on
-// the (empty) annotation.
-#define ARBC_API
-#elif defined(ARBC_BUILDING)
+#if defined(ARBC_BUILDING)
 #define ARBC_API __declspec(dllexport)
 #else
 #define ARBC_API __declspec(dllimport)

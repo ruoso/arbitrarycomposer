@@ -22,8 +22,8 @@ that the driver owns:
    `clang-format -i` (auto-fixup), then `scripts/gate` (fast host-side
    pre-check), then replays the real per-push CI
    (`.github/workflows/ci.yml`) locally with `act` in docker containers:
-   the `lint` job, every `build-test` matrix leg except `msvc-debug` (no
-   local Windows container runtime), and the `coverage` job including its
+   the `lint` job, the `build-test` matrix legs (all Linux; MSVC/cl.exe is
+   not a supported toolchain), and the `coverage` job including its
    diff-coverage gate (each output tee'd to
    `logs/iter-NNNN-verify-<step>.log`). `ci.yml` is the single source of
    truth for what runs — the driver only selects jobs/legs, so local

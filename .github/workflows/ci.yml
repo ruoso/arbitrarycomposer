@@ -79,29 +79,14 @@ jobs:
           # suite against it, so the shared build stays green on every push -- including
           # the new shared_symbol_resolution proof and the eight plugin loads re-run
           # against the shared libarbc. Find-first (system) zstd, so libzstd is an
-          # ordinary .so dependency (Decision D4/D7); the MSVC shared build is the
-          # deferred packaging.shared_library_build_msvc.
+          # ordinary .so dependency (Decision D4/D7). (Windows/MSVC lanes were
+          # removed: MSVC/cl.exe is no longer a supported toolchain -- a Windows
+          # build, if attempted, uses Clang, which the Linux clang lanes cover.)
           - { name: gcc-shared, os: ubuntu-latest, cxx: g++, preset: shared }
-          - { name: msvc-debug, os: windows-latest, cxx: "", preset: win-dev }
-          # MSVC BUILD_SHARED_LIBS=ON lane (packaging.shared_library_build_msvc, doc
-          # 17:188-192): builds arbc.dll + its import lib and runs the full suite
-          # against it, so ARBC_API's __declspec(dllexport)/(dllimport) asymmetry --
-          # unlike ELF's symmetric visibility("default") -- is proven correct across
-          # the LoadLibrary boundary, including the PE branch of the
-          # shared_symbol_resolution proof. Reuses the msvc-dev-cmd + ninja setup
-          # steps below (gated runner.os == 'Windows'); the static msvc-debug sibling
-          # above is unchanged.
-          - { name: msvc-shared, os: windows-latest, cxx: "", preset: win-shared }
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: MSVC dev environment
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-      - name: install ninja (Windows)
-        if: runner.os == 'Windows'
-        run: pip install ninja
       # Skipped when clang-20 is already present (e.g. the local act runner
       # image pre-installs it, keeping orchestrator iterations offline-fast).
       - name: install clang-20
