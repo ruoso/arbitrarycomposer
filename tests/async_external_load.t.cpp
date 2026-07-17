@@ -750,10 +750,11 @@ TEST_CASE("a deferred external arrival settles inside the frame that observes it
   DocumentViewport viewport(doc, bridge, registry, 16);
 
   // A baseline step with nothing arrived: the load's own commits predate the viewport's sink
-  // install, so there is no damage, no frame, and the settle hook finds an empty queue. An
-  // idle document-bound viewport costs one queue check per step and nothing more.
+  // install, so there is no damage and the settle hook finds an empty queue -- but the first
+  // step is the BOOTSTRAP frame (doc 02 -- a never-rendered viewport is stale, not still), so
+  // it composites the placeholder scene once. Idleness starts after it.
   viewport->step();
-  CHECK(viewport->frames_issued() == 0);
+  CHECK(viewport->frames_issued() == 1);
   CHECK(viewport->external_loads_settled() == 0);
   CHECK(doc.pending_external_loads() == 1);
 
@@ -770,12 +771,12 @@ TEST_CASE("a deferred external arrival settles inside the frame that observes it
   CHECK(viewport->external_loads_settled() == 1);
   CHECK(doc.pin()->revision() > before);
   CHECK(doc.pin()->find_composition(child) != nullptr);
-  CHECK(viewport->frames_issued() == 1);
+  CHECK(viewport->frames_issued() == 2);
 
   // Steady state again: the hook is polled, settles nothing, and wakes no frame by itself.
   viewport->step();
   CHECK(viewport->external_loads_settled() == 1);
-  CHECK(viewport->frames_issued() == 1);
+  CHECK(viewport->frames_issued() == 2);
 }
 
 // enforces: 05-recursive-composition#deferred-external-chain-and-cycle-terminate

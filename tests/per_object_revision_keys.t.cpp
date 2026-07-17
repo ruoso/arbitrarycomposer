@@ -201,9 +201,14 @@ TEST_CASE("a 60-dab stroke leaves every unedited layer's tiles keyed, cached, an
   // zoom after the stroke re-renders the entire viewport cold.
   CHECK(renderer.counters().requests_issued() - requests_before == k_dabs);
 
-  // The pan. Sub-tile, so the covered tile set is unchanged, and carrying the last dab's
-  // damage so the frame is not a still-scene early-out. The still layers composite from
-  // the cache with ZERO dispatched renders; only the painted layer owes one.
+  // The pan. Sub-tile, so the covered tile set is unchanged. A camera edit is a
+  // device-mapping delta, so the frame plans the WHOLE viewport (02-architecture § "A
+  // camera change is device damage") -- every tile of all three layers is probed, not
+  // just the dab's. The still layers' keys did not move, so all EIGHT of their tiles are
+  // fresh hits: ZERO dispatched renders. The painted layer's stamp moved with the
+  // carried dab, so its full 2x2 grid misses -- every render the pan dispatches is owed
+  // by the edited layer alone. Under the document-global key the same pan re-renders the
+  // entire viewport cold: twelve.
   const std::uint64_t before_pan = renderer.counters().requests_issued();
   dab(scene.doc, scene.painted);
   pin = scene.doc.pin();
@@ -211,7 +216,11 @@ TEST_CASE("a 60-dab stroke leaves every unedited layer's tiles keyed, cached, an
   const std::vector<Damage> damage{Damage{scene.painted, k_dab, TimeRange::all()}};
   renderer.render_frame(*pin, resolve, panned, cache, backend, pool, **target, damage, Time{0},
                         k_budget);
-  CHECK(renderer.counters().requests_issued() - before_pan == 1U);
+  CHECK(renderer.counters().requests_issued() - before_pan == 4U);
+  // ...and the still layers' tiles survived the pan un-orphaned: the camera change
+  // repainted without invalidating anything.
+  CHECK(tiles_for(cache, scene.still_a) == 4U);
+  CHECK(tiles_for(cache, scene.still_b) == 4U);
 }
 
 namespace {

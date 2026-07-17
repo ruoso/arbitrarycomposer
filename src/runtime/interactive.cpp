@@ -231,6 +231,18 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   // the frame plans the WHOLE viewport (null `DirtyRegion`) rather than gating on
   // an as-yet-nonexistent damage stream.
   const bool first_frame = !d_prev_time.has_value();
+  // A device-mapping delta -- camera matrix, anchor id, or device dims -- since the
+  // frame this renderer last composited is CAMERA-CHANGE damage (doc 02 § "A camera
+  // change is device damage"). It has no model-space key, so it is detected here,
+  // against the renderer's own previous frame -- the structural twin of the clock
+  // advance above -- and it covers the whole viewport: the frame reuses the
+  // first-frame plan below. It REPAINTS and never INVALIDATES: no content changed,
+  // so Step 3 sees no camera-derived record and every cached tile stays resident. A
+  // rebase-driven `(anchor, camera)` rewrite lands here too and repaints
+  // byte-identically (rebase preserves the composed mapping, doc 04:62-67); it is
+  // never suppressed, because a rebase only fires on a frame whose camera edit
+  // already forces the full repaint.
+  const bool mapping_changed = d_prev_viewport.has_value() && !(viewport == *d_prev_viewport);
 
   // --- Step 1: collect damage (doc 02:51-52). ------------------------------
   // The host-drained model damage unions with the clock-advance temporal damage
@@ -290,8 +302,10 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   // maps to an empty device dirty region AND whose refinement queue is empty
   // plans nothing, renders nothing, composites nothing (it does NOT clear
   // `target`), and schedules no follow-up frame -- zero deltas on
-  // requests_issued / composites / follow_up_frames.
-  if (!first_frame && dirty.device_rects.empty() && d_pending.tiles.empty()) {
+  // requests_issued / composites / follow_up_frames. A mapping delta disables the
+  // early-out: a camera-only frame carries empty model damage but is never a no-op
+  // (doc 02 § "A camera change is device damage").
+  if (!first_frame && !mapping_changed && dirty.device_rects.empty() && d_pending.tiles.empty()) {
     // `d_prior_stamps` is deliberately NOT advanced here: a still frame composites
     // nothing, so no content's last-composited stamp moved, and each keeps the one the
     // last frame that actually planned it recorded (Decision 7).
@@ -399,9 +413,12 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   // `wait_completions` park bound -- one instant, two uses, no drift.
   const std::chrono::steady_clock::time_point deadline_at = d_clock() + budget;
   const Deadline deadline{deadline_at};
-  // The first frame plans the whole viewport (null dirty clears + full re-plan);
-  // every later frame is damage-gated onto the caller-persisted `target`.
-  const DirtyRegion* const dirty_ptr = first_frame ? nullptr : &dirty;
+  // The first frame plans the whole viewport (null dirty clears + full re-plan), and
+  // so does a frame whose device mapping changed -- camera-change damage is the whole
+  // viewport by definition, and reusing the first-frame plan is what keeps it a
+  // repaint (never a synthetic `DirtyRegion`, never an invalidation). Every other
+  // frame is damage-gated onto the caller-persisted `target`.
+  const DirtyRegion* const dirty_ptr = (first_frame || mapping_changed) ? nullptr : &dirty;
   // Surface the per-visible-layer plans the driver composited from so Step 7 can
   // drive speculation render-free without re-planning (the whole point of this
   // seam). A frame-local: consumed by Step 7 and dropped at frame end, so the
@@ -555,6 +572,7 @@ InteractiveRenderer::FrameOutcome InteractiveRenderer::render_frame(
   // (`d_prior_stamps` advanced per composited layer in Step 7, from the plans.)
   d_prev_time = composition_time;
   d_prev_camera_scale = camera_scale;
+  d_prev_viewport = viewport; // the mapping the camera-change delta compares against
   return FrameOutcome{schedule_follow_up};
 }
 

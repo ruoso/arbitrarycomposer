@@ -182,12 +182,20 @@ HostViewport::StepOutcome HostViewport::step() {
   //    It does not weaken `02-architecture#idle-viewport-issues-no-frames`: a genuinely
   //    idle viewport has an EMPTY refinement queue, so the early-out still fires and a
   //    still scene still costs nothing.
+  //
+  //    The `d_rendered_once` gate is the BOOTSTRAP frame (doc 01:116-123 -- binding is
+  //    the host's single wiring step; doc 02 § "A camera change is device damage"): a
+  //    viewport bound to a document whose commits all predate the sink install drains
+  //    no damage, but it has never shown the scene, so its first step must reach
+  //    `render_frame` -- whose first-frame path plans the whole viewport as the
+  //    degenerate case of "no previous mapping". A never-rendered viewport is not
+  //    still, it is stale; idleness is measured AFTER the first composite.
   std::vector<Damage> damage = d_sink.drain();
   const bool scene_moved = d_rendered_once && (d_viewport.camera != d_last_render_camera ||
                                                d_viewport.anchor != d_last_render_anchor ||
                                                composition_time != d_last_render_time);
   const bool work_in_flight = !d_renderer.pending().tiles.empty();
-  if (damage.empty() && !d_follow_up_owed && !scene_moved && !work_in_flight) {
+  if (d_rendered_once && damage.empty() && !d_follow_up_owed && !scene_moved && !work_in_flight) {
     return outcome; // idle: a still scene costs nothing
   }
 

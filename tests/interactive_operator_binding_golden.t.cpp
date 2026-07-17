@@ -142,10 +142,11 @@ public:
     d_view.set_playhead_source([this] { return d_time; });
   }
 
-  // Drive one frame at `time`. A fresh viewport has no damage, no owed follow-up and an
-  // unmoved scene, so its first `step()` would legitimately issue zero frames (doc
-  // 01:140) -- a trivial re-set of the bootstrap layer's transform is the model edit that
-  // damages it and makes the first step render, exactly as `host_viewport.t.cpp` does.
+  // Drive one frame at `time`. A fresh viewport's first `step()` composites the bound
+  // scene on its own (the bootstrap frame, `runtime.camera_change_damage`); the trivial
+  // re-set of the bootstrap layer's transform predates that seam and is kept because it
+  // is harmless -- the damage and the bootstrap land in the SAME first frame, so every
+  // per-frame count below is exactly what it always was.
   HostViewport::StepOutcome step_at(Time time) {
     d_time = time;
     if (!d_bootstrapped) {

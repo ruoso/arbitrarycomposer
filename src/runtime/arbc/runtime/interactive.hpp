@@ -433,6 +433,14 @@ private:
   // which per-object stamps make meaningless.
   PriorStamps d_prior_stamps;
   std::optional<Time> d_prev_time; // previous composition time (clock advance)
+  // The previous frame's device mapping `(width, height, camera, anchor)`, the state
+  // camera-change damage is detected against (doc 02 § "A camera change is device
+  // damage"): a mapping delta has no model-space key, so the frame detects it here --
+  // the structural twin of `d_prev_time`'s clock advance -- and plans the whole
+  // viewport through the first-frame path. Engaged by the first frame that renders
+  // (Step 8) and never by the still-frame early-out, which by construction only fires
+  // when the mapping is unchanged.
+  std::optional<Viewport> d_prev_viewport;
   // The previous frame's viewport camera scale magnitude (`camera.max_scale()`),
   // the only inter-frame camera state the loop keeps -- Step 7 compares it with
   // this frame's to pick a `zoom_direction` sign for `prime_prefetch` (Decision

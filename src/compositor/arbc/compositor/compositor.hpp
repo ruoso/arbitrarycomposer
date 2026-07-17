@@ -28,6 +28,11 @@ struct Viewport {
   // Rebasing re-picks this as the user zooms; the persistent value lives in
   // runtime (doc 17), the compositor stays a pure per-frame library.
   ObjectId anchor{};
+
+  // Value equality over the whole device mapping `(width, height, camera, anchor)`:
+  // what the interactive loop compares against its previous frame to detect
+  // camera-change damage (doc 02 § "A camera change is device damage").
+  friend constexpr bool operator==(const Viewport&, const Viewport&) = default;
 };
 
 // Resolves a content id from the pinned state to its implementation; the

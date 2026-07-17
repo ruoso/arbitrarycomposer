@@ -535,6 +535,70 @@ TEST_CASE("interactive: a still scene advancing only the clock does no work") {
   CHECK(bytes_identical(after_frame1, snapshot(**target)));
 }
 
+// enforces: 02-architecture#camera-change-repaints-full-viewport
+// enforces: 02-architecture#interactive-still-scene-schedules-no-frame
+TEST_CASE("interactive: a device-mapping delta composites the full viewport; an unchanged "
+          "mapping plans nothing") {
+  // Camera-change damage is detected by the RENDERER against its own previous frame
+  // (doc 02 § "A camera change is device damage"): `render_frame` called with the same
+  // state, the same time and EMPTY damage but a changed `Viewport` must composite the
+  // full viewport -- no new parameter, no host-side flag -- and called again with that
+  // same `Viewport` it must plan nothing, so the still-scene guarantee holds at the
+  // new camera exactly as it did at the old one.
+  MarkBackend backend;
+  SyncSolid content(Stability::Static);
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  const arbc::DocStatePtr state = model.current();
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), scene.comp};
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  // Frame 1: the first frame plans the whole viewport and records the mapping.
+  renderer.render_frame(*state, resolver, viewport, cache, backend, pool, **target, {},
+                        arbc::Time{0}, k_budget);
+  REQUIRE(renderer.frames_rendered() == 1);
+
+  // Frame 2: same mapping, empty damage -> the still-scene early-out fires.
+  const auto still = renderer.render_frame(*state, resolver, viewport, cache, backend, pool,
+                                           **target, {}, arbc::Time{0}, k_budget);
+  CHECK_FALSE(still.schedule_follow_up);
+  CHECK(renderer.frames_rendered() == 1);
+
+  // Frame 3: same state, same time, EMPTY damage -- but a changed `Viewport`. The
+  // mapping delta is camera damage and the frame composites the full viewport.
+  const arbc::Viewport panned{256, 256, arbc::Affine::translation(-64.0, -64.0), scene.comp};
+  const std::uint64_t composites_at_a = renderer.counters().composites();
+  renderer.render_frame(*state, resolver, panned, cache, backend, pool, **target, {}, arbc::Time{0},
+                        k_budget);
+  CHECK(renderer.frames_rendered() == 2);
+  CHECK(renderer.counters().composites() > composites_at_a);
+
+  // Byte-identity (doc 02:120-130): the repaint equals a fresh renderer's first frame
+  // at the panned mapping -- the very plan the mapping delta reuses.
+  arbc::InteractiveRenderer fresh({}, epoch_clock());
+  arbc::SurfacePool fresh_pool(backend);
+  TileCache fresh_cache(64u * 1024 * 1024);
+  auto fresh_target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(fresh_target.has_value());
+  fresh.render_frame(*state, resolver, panned, fresh_cache, backend, fresh_pool, **fresh_target, {},
+                     arbc::Time{0}, k_budget);
+  CHECK(bytes_identical(snapshot(**target), snapshot(**fresh_target)));
+
+  // Frame 4: the panned mapping again, unchanged -> plans nothing (the delta detection
+  // is value-based, so the guarantee is not "any camera-carrying frame repaints").
+  const auto still_b = renderer.render_frame(*state, resolver, panned, cache, backend, pool,
+                                             **target, {}, arbc::Time{0}, k_budget);
+  CHECK_FALSE(still_b.schedule_follow_up);
+  CHECK(renderer.frames_rendered() == 2);
+}
+
 // --- The per-revision pull-identity memo (runtime.interactive_pull_wiring) ----
 
 // The frame's `PullConfig::id_of` comes from `make_pull_identity_of`, which walks the

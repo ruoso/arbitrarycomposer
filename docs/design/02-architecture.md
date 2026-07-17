@@ -86,6 +86,24 @@ surface to every frame, and the pixels a frame does not repaint are the
 pixels the previous frame left there. That is what makes step 1's "no damage
 → no work" a *visual* no-op and not a black screen.
 
+**A camera change is device damage, and it covers the whole viewport.**
+Content and placement damage are model-space: they name an object and map
+through the camera to device rects. A camera (or anchor) change is a change
+to that mapping itself, so it has no model-space key — the frame detects it
+as a device-mapping delta since its own previous frame (the same
+previous-frame state that turns clock advances into damage) and plans the
+full viewport as its repaint region, exactly as the first frame does. It
+repaints; it does not invalidate: no content changed, so cached tiles stay
+resident, and a camera that returns to a mapping whose tiles are still
+cached re-plans to cache hits. A re-anchor (doc 04) rebuilds the `(anchor,
+matrix)` pair while preserving the composed mapping, so a frame may treat
+it as a mapping delta — a byte-identical repaint — and a re-anchor never
+occurs on a still camera. The first frame a viewport composites is the
+degenerate case — no previous mapping, so the whole viewport is the repaint
+region — and that holds for a viewport bound to a document whose commits
+all predate the binding: its first step collects no damage, but it has
+never shown the scene, and it composites it.
+
 **A damage-gated frame repaints a device repaint region — clearing it
 first.** Step 1's damage maps to a device **repaint region**: a set of
 **pairwise-disjoint**, integer-aligned device rects. The frame clears that

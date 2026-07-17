@@ -254,8 +254,9 @@ task runtime "Runtime" {
   task camera_change_damage "Emit damage when HostViewport camera changes" {
     effort 1d
     allocate team
+    complete 100
     depends !host_viewport_document_binding
-    note "Doc 02:51 lists camera-transform edits as a damage source, but HostViewport::set_camera and reanchor/rebase do not flush a damage notification — a camera-only step() produces no repaint. The fix: after any camera mutation that changes the device mapping, emit full-viewport device damage through the registered DamageSink so the interactive driver repaints. Surfaced by the host-interactive example (host must call force_repaint() after camera edits; documented workaround in examples/host-interactive/). Source-of-debt: tasks/refinements/packaging/examples.md. Docs 01/02."
+    note "Doc 02:51 lists camera-transform edits as a damage source, but HostViewport::set_camera and reanchor/rebase do not flush a damage notification — a camera-only step() produces no repaint. The fix: after any camera mutation that changes the device mapping, emit full-viewport device damage through the registered DamageSink so the interactive driver repaints. Surfaced by the host-interactive example (host must call force_repaint() after camera edits; documented workaround in examples/host-interactive/). Source-of-debt: tasks/refinements/packaging/examples.md. Docs 01/02. Refinement: tasks/refinements/runtime/camera_change_damage.md"
   }
   task placement_damage_maps_to_device "Map layer-keyed placement damage to device damage" {
     effort 1d

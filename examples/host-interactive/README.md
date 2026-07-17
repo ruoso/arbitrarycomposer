@@ -24,7 +24,10 @@ What it demonstrates, in order:
    viewport has rebased the camera to.
 4. **The frame loop** — `HostViewport::step()` after each gesture, repeated
    while a follow-up frame is owed; the target surface persists across frames
-   (doc 02) and holds the latest composed pixels at all times.
+   (doc 02) and holds the latest composed pixels at all times. The first step
+   composites the bound scene even though every commit predates the binding
+   (the bootstrap frame), and each camera edit repaints on the next step —
+   the host never forges damage.
 5. **Artifact** — the final frame is converted to straight-alpha sRGB8 through
    the library's `PixelTraits` encode and written as a PNG via
    `../common/png_writer.hpp`, so CI validates the loop's output, not just its
@@ -38,11 +41,10 @@ real windowing toolkit, replace the `tape` array and its `for` loop in
 
 - mouse-drag / touch-pan handler → `view.set_camera(compose(pan(dx, dy), view.camera()))`
 - wheel / pinch handler → `view.set_camera(compose(zoom_about(factor, x, y), view.camera()))`
-- until the runtime synthesizes damage from camera deltas (doc 02 lists camera
-  changes among a frame's damage sources; today it does not), follow each
-  camera edit with the `force_repaint()` pattern shown in `main.cpp` so the
-  next `step()` repaints; a scene with timed content and an advancing playhead
-  repaints on its own
+- a camera edit is damage (doc 02): the next `step()` repaints the full
+  viewport at the new camera, with nothing else required of the host — and it
+  repaints without invalidating, so panning back over already-rendered content
+  re-plans from the tile cache
 - frame tick (vsync callback, idle hook, or timer) → `view.step()`, re-arming
   the tick while `StepOutcome::schedule_follow_up` is set, then presenting the
   target surface (blit or texture upload — the pixels are CPU-readable

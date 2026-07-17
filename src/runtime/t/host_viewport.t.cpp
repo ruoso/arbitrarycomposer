@@ -522,7 +522,7 @@ TEST_CASE("host_viewport: an audio-mastered viewport chases the playhead and nev
 }
 
 // enforces: 02-architecture#idle-viewport-issues-no-frames
-TEST_CASE("host_viewport: an idle viewport issues no frames, a still scene costs nothing") {
+TEST_CASE("host_viewport: an idle viewport issues no frames after its bootstrap frame") {
   MarkBackend backend;
   arbc::Model model;
   const Scene scene = add_single_layer(model);
@@ -544,18 +544,34 @@ TEST_CASE("host_viewport: an idle viewport issues no frames, a still scene costs
   arbc::HostViewport viewport(renderer, model, resolve, backend, pool, cache, **target,
                               epoch_clock(), cfg);
 
-  // No pending damage, no follow-up owed, no scene motion -> zero render invocations.
+  // The first step is the BOOTSTRAP frame (doc 02 -- a never-rendered viewport is not
+  // still, it is stale): the scene's commits predate the sink install, so no damage is
+  // drained, yet the viewport composites the scene once.
+  viewport.step();
+  CHECK(viewport.frames_issued() == 1);
+
+  // Idleness is measured AFTER the first composite: no pending damage, no follow-up
+  // owed, no scene motion -> zero further render invocations (a still scene costs
+  // nothing).
   for (int i = 0; i < 5; ++i) {
     const arbc::HostViewport::StepOutcome step = viewport.step();
     CHECK_FALSE(step.schedule_follow_up);
   }
-  CHECK(viewport.frames_issued() == 0);
-  CHECK(viewport.transport_advances() == 5); // free-running, but every advance is zero flicks
+  CHECK(viewport.frames_issued() == 1);
+  CHECK(viewport.transport_advances() == 6); // free-running, but every advance is zero flicks
+
+  // A no-op set_camera stays inside that idleness (A2): the delta detection is
+  // value-based, so re-setting the IDENTICAL camera issues no frame.
+  viewport.set_camera(viewport.camera());
+  for (int i = 0; i < 3; ++i) {
+    viewport.step();
+  }
+  CHECK(viewport.frames_issued() == 1);
 
   // The gate is not dead: a model edit produces damage, and the next step renders.
   bump_damage(model, scene.layer);
   viewport.step();
-  CHECK(viewport.frames_issued() == 1);
+  CHECK(viewport.frames_issued() == 2);
 }
 
 // enforces: 01-core-concepts#multiple-viewports-observe-one-composition
@@ -866,31 +882,36 @@ TEST_CASE("host_viewport: the document's damage reaches a Document-bound viewpor
   arbc::HostViewport viewport(renderer, doc, arbc::HostViewport::DocumentBinding{}, backend, pool,
                               cache, **target, epoch_clock(), doc_config());
 
-  // The scene was built BEFORE the viewport existed, so its commits predate the sink install:
-  // an opening step has nothing to draw and costs nothing (doc 02: no damage -> no work).
+  // The scene was built BEFORE the viewport existed, so its commits predate the sink
+  // install: the opening step drains no damage, but it is the BOOTSTRAP frame (doc 02
+  // -- the never-rendered viewport is the degenerate mapping delta) and composites the
+  // bound scene once.
   viewport.step();
-  CHECK(viewport.frames_issued() == 0);
+  CHECK(viewport.frames_issued() == 1);
 
   // A placement change auto-damages the layer, and that damage reaches this viewport's
   // accumulator because the CONSTRUCTOR installed it on the document's sink slot. The host
   // never called `doc.set_damage_sink` -- there is nothing for it to call it WITH.
   doc.set_layer_transform(scene.layer, Affine::translation(4.0, 4.0));
   viewport.step();
-  CHECK(viewport.frames_issued() == 1);
+  CHECK(viewport.frames_issued() == 2);
 
   // Still true on the next commit, and an undamaged step in between stays free.
   viewport.step();
-  CHECK(viewport.frames_issued() == 1);
+  CHECK(viewport.frames_issued() == 2);
   doc.set_layer_transform(scene.layer, Affine::identity());
   viewport.step();
-  CHECK(viewport.frames_issued() == 2);
+  CHECK(viewport.frames_issued() == 3);
 }
 
 // enforces: 02-architecture#idle-viewport-issues-no-frames
-TEST_CASE("host_viewport: an idle Document-bound viewport with a settle hook issues no frames") {
+TEST_CASE("host_viewport: an idle Document-bound viewport with a settle hook issues no frames "
+          "after its bootstrap frame") {
   // A full `DocumentBinding` over a document with no external references: the derived settle
   // hook runs on every step, finds an empty queue, installs nothing -- and, crucially, does NOT
   // wake the frame loop by itself. The seam costs an idle viewport one queue check per step.
+  // Idleness is measured AFTER the bootstrap frame (doc 02): the first step composites the
+  // bound scene once, and every later still step is free.
   MarkBackend backend;
   arbc::Document doc;
   arbc::KindBridge bridge;
@@ -906,18 +927,20 @@ TEST_CASE("host_viewport: an idle Document-bound viewport with a settle hook iss
                               arbc::HostViewport::DocumentBinding{&bridge, &registry}, backend,
                               pool, cache, **target, epoch_clock(), doc_config());
 
+  viewport.step(); // the bootstrap frame: composites once, settles nothing
+  CHECK(viewport.frames_issued() == 1);
   for (int i = 0; i < 5; ++i) {
     const arbc::HostViewport::StepOutcome step = viewport.step();
     CHECK_FALSE(step.schedule_follow_up);
   }
-  CHECK(viewport.frames_issued() == 0);
+  CHECK(viewport.frames_issued() == 1);
   CHECK(viewport.external_loads_settled() == 0);
   CHECK(doc.pending_external_loads() == 0);
 
   // The gate is not dead: a document edit still wakes the very next step, and settles nothing.
   doc.set_layer_transform(scene.layer, Affine::identity());
   viewport.step();
-  CHECK(viewport.frames_issued() == 1);
+  CHECK(viewport.frames_issued() == 2);
   CHECK(viewport.external_loads_settled() == 0);
 }
 
@@ -967,4 +990,254 @@ TEST_CASE("host_viewport: two Document-bound viewports fan out through one Damag
   CHECK(router.deliveries() == 3);
   vp_a.step();
   CHECK(vp_a.frames_issued() == 2);
+}
+
+// --- Camera-change damage (runtime.camera_change_damage, doc 02 § "A camera change is
+// device damage") ---------------------------------------------------------------------
+
+namespace {
+
+// A still TWO-layer scene, so the full-viewport repaint below composites a real
+// multi-layer plan and a dropped layer would show in the bytes.
+struct TwoLayerScene {
+  ObjectId content_a;
+  ObjectId content_b;
+};
+
+TwoLayerScene add_two_layers(arbc::Model& model) {
+  auto txn = model.transact();
+  const ObjectId a = txn.add_content(0);
+  const ObjectId b = txn.add_content(0);
+  const ObjectId comp = txn.add_composition(512.0, 512.0);
+  txn.attach_layer(comp, txn.add_layer(a, Affine::identity()));
+  txn.attach_layer(comp, txn.add_layer(b, Affine::translation(64.0, 64.0)));
+  REQUIRE(txn.commit().has_value());
+  return {a, b};
+}
+
+std::vector<std::byte> snapshot(const arbc::Surface& surface) {
+  const std::span<const std::byte> bytes = surface.cpu_bytes();
+  return {bytes.begin(), bytes.end()};
+}
+
+} // namespace
+
+// enforces: 02-architecture#camera-change-repaints-full-viewport
+TEST_CASE("host_viewport: a camera edit repaints the full viewport, byte-identical to a fresh "
+          "render at the new camera") {
+  MarkBackend backend;
+  arbc::Model model;
+  const TwoLayerScene scene = add_two_layers(model);
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return (id == scene.content_a || id == scene.content_b) ? &content : nullptr;
+  };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  arbc::HostViewport::Config cfg;
+  cfg.viewport = Viewport{256, 256, Affine::identity()};
+  cfg.budget = k_budget;
+  arbc::HostViewport viewport(renderer, model, resolve, backend, pool, cache, **target,
+                              epoch_clock(), cfg);
+
+  // The bootstrap frame composites the scene at camera A.
+  viewport.step();
+  REQUIRE(viewport.frames_issued() == 1);
+  const std::vector<std::byte> at_a = snapshot(**target);
+
+  // The gesture: a pure translation, and separately a zoom about the viewport center.
+  Affine camera_b = Affine::translation(-64.0, -64.0);
+  SECTION("a pure translation") {}
+  SECTION("a zoom about the viewport center") {
+    camera_b = compose(Affine::translation(128.0, 128.0),
+                       compose(Affine::scaling(2.0, 2.0), Affine::translation(-128.0, -128.0)));
+  }
+
+  // The edit + one step: EXACTLY one frame, repainting the full viewport at the new
+  // camera with no host-forged damage and no other host action at all.
+  const std::uint64_t composites_at_a = renderer.counters().composites();
+  viewport.set_camera(camera_b);
+  viewport.step();
+  CHECK(viewport.frames_issued() == 2);
+  // The repaint really happened (non-vacuous whatever the byte coincidences): the
+  // camera-only frame composited tiles.
+  CHECK(renderer.counters().composites() > composites_at_a);
+
+  // The correctness bar (doc 02:120-130): the persistent target is byte-identical to a
+  // fresh single-pass render at the new camera -- a fresh viewport over an identical
+  // scene, whose bootstrap frame plans the same whole viewport.
+  arbc::Model fresh_model;
+  const TwoLayerScene fresh_scene = add_two_layers(fresh_model);
+  const auto fresh_resolve = [&](ObjectId id) -> arbc::Content* {
+    return (id == fresh_scene.content_a || id == fresh_scene.content_b) ? &content : nullptr;
+  };
+  arbc::InteractiveRenderer fresh_renderer({}, epoch_clock());
+  arbc::SurfacePool fresh_pool(backend);
+  arbc::TileCache fresh_cache(64u * 1024 * 1024);
+  auto fresh_target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(fresh_target.has_value());
+  arbc::HostViewport::Config fresh_cfg;
+  fresh_cfg.viewport = Viewport{256, 256, camera_b};
+  fresh_cfg.budget = k_budget;
+  arbc::HostViewport fresh(fresh_renderer, fresh_model, fresh_resolve, backend, fresh_pool,
+                           fresh_cache, **fresh_target, epoch_clock(), fresh_cfg);
+  fresh.step();
+  REQUIRE(fresh.frames_issued() == 1);
+  const std::vector<std::byte> at_b = snapshot(**target);
+  CHECK(at_b == snapshot(**fresh_target));
+
+  // And a further still step issues nothing: the camera edit was consumed by its frame.
+  viewport.step();
+  CHECK(viewport.frames_issued() == 2);
+  CHECK(snapshot(**target) == at_b);
+}
+
+// enforces: 02-architecture#camera-change-does-not-invalidate
+TEST_CASE("host_viewport: camera damage repaints without invalidating -- pan away and back "
+          "re-plans entirely from cache") {
+  MarkBackend backend;
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024); // ample: nothing is ever evicted for capacity
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  arbc::HostViewport::Config cfg;
+  cfg.viewport = Viewport{256, 256, Affine::identity()};
+  cfg.budget = k_budget;
+  arbc::HostViewport viewport(renderer, model, resolve, backend, pool, cache, **target,
+                              epoch_clock(), cfg);
+
+  // Bootstrap at camera A: the visible tiles render and land in the cache.
+  viewport.step();
+  const std::uint64_t after_a = renderer.counters().requests_issued();
+  CHECK(after_a > 0);
+
+  // Pan to B: the newly exposed tiles render (renders happened FOR B)...
+  viewport.set_camera(Affine::translation(-64.0, -64.0));
+  viewport.step();
+  const std::uint64_t after_b = renderer.counters().requests_issued();
+  CHECK(after_b > after_a);
+
+  // ...and back to A: camera damage invalidated NOTHING, so the third frame re-plans
+  // entirely from cache -- a requests_issued delta of exactly 0 (all hits), while the
+  // frame itself really issued and really composited. Never a wall-clock assertion.
+  viewport.set_camera(Affine::identity());
+  const std::uint64_t composites_before = renderer.counters().composites();
+  viewport.step();
+  CHECK(viewport.frames_issued() == 3);
+  CHECK(renderer.counters().requests_issued() == after_b); // delta 0: nothing was evicted
+  CHECK(renderer.counters().composites() > composites_before);
+}
+
+// enforces: 02-architecture#first-step-composites-bound-scene
+TEST_CASE("host_viewport: the first step composites a bound scene whose commits all predate the "
+          "binding") {
+  MarkBackend backend;
+
+  // (a) the viewport under test: the whole scene is committed BEFORE the binding, so
+  // its damage sink never sees a single record.
+  arbc::Document doc;
+  const Scene scene = add_single_layer(doc);
+  static_cast<void>(scene);
+  arbc::SurfacePool pool_a(backend);
+  arbc::TileCache cache_a(64u * 1024 * 1024);
+  auto target_a = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_a.has_value());
+  arbc::InteractiveRenderer renderer_a({}, epoch_clock());
+  arbc::HostViewport bound(renderer_a, doc, arbc::HostViewport::DocumentBinding{}, backend, pool_a,
+                           cache_a, **target_a, epoch_clock(), doc_config());
+
+  // One step, no edits: the bootstrap frame composites the bound scene.
+  bound.step();
+  CHECK(bound.frames_issued() == 1);
+
+  // (b) the oracle: an identical document whose viewport is bootstrapped by a damage
+  // commit -- the shape every host had to forge before the bootstrap frame existed.
+  arbc::Document oracle_doc;
+  const Scene oracle_scene = add_single_layer(oracle_doc);
+  arbc::SurfacePool pool_b(backend);
+  arbc::TileCache cache_b(64u * 1024 * 1024);
+  auto target_b = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_b.has_value());
+  arbc::InteractiveRenderer renderer_b({}, epoch_clock());
+  arbc::HostViewport oracle(renderer_b, oracle_doc, arbc::HostViewport::DocumentBinding{}, backend,
+                            pool_b, cache_b, **target_b, epoch_clock(), doc_config());
+  oracle_doc.set_layer_transform(oracle_scene.layer, Affine::identity());
+  oracle.step();
+  REQUIRE(oracle.frames_issued() == 1);
+
+  // The bootstrap frame matches the full render, and it is not vacuously blank.
+  const std::span<const std::byte> a = (*target_a)->cpu_bytes();
+  const std::span<const std::byte> b = (*target_b)->cpu_bytes();
+  REQUIRE(a.size() == b.size());
+  CHECK(std::equal(a.begin(), a.end(), b.begin()));
+  CHECK(std::any_of(a.begin(), a.end(), [](std::byte v) { return v != std::byte{0}; }));
+
+  // The bootstrap happens ONCE: subsequent still steps stay at 1.
+  for (int i = 0; i < 3; ++i) {
+    bound.step();
+  }
+  CHECK(bound.frames_issued() == 1);
+}
+
+// enforces: 01-core-concepts#multiple-viewports-observe-one-composition
+TEST_CASE("host_viewport: a camera edit repaints only its own viewport -- a router-sharing "
+          "sibling stays idle") {
+  MarkBackend backend;
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache_a(64u * 1024 * 1024);
+  arbc::TileCache cache_b(64u * 1024 * 1024);
+  auto target_a = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  auto target_b = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_a.has_value());
+  REQUIRE(target_b.has_value());
+  // One renderer EACH: the camera-delta detection state is per-viewport frame state
+  // (`interactive.hpp` -- sharing a renderer cross-contaminates one viewport's frame
+  // into another's).
+  arbc::InteractiveRenderer renderer_a({}, epoch_clock());
+  arbc::InteractiveRenderer renderer_b({}, epoch_clock());
+
+  arbc::DamageRouter router(model);
+  arbc::HostViewport::Config cfg;
+  cfg.viewport = Viewport{256, 256, Affine::identity()};
+  cfg.budget = k_budget;
+  cfg.router = &router;
+  arbc::HostViewport vp_a(renderer_a, model, resolve, backend, pool, cache_a, **target_a,
+                          epoch_clock(), cfg);
+  arbc::HostViewport vp_b(renderer_b, model, resolve, backend, pool, cache_b, **target_b,
+                          epoch_clock(), cfg);
+
+  // Both bootstrap once.
+  vp_a.step();
+  vp_b.step();
+  CHECK(vp_a.frames_issued() == 1);
+  CHECK(vp_b.frames_issued() == 1);
+
+  // A camera edit on viewport 1 ONLY. Camera damage is per-viewport and device-side
+  // (doc 01:108-110): nothing is flushed into the model's sink, so the router delivers
+  // nothing and the sibling stays exactly idle.
+  const std::uint64_t deliveries = router.deliveries();
+  vp_a.set_camera(Affine::translation(-32.0, 0.0));
+  vp_a.step();
+  vp_b.step();
+  CHECK(vp_a.frames_issued() == 2);
+  CHECK(vp_b.frames_issued() == 1);         // delta 0: the sibling's camera did not change
+  CHECK(router.deliveries() == deliveries); // nothing reached the model's damage slot
 }

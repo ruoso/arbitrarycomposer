@@ -189,7 +189,11 @@ public:
   ObjectId anchor() const noexcept { return d_viewport.anchor; }
   // Pan/zoom/rotate mutate the camera MATRIX; the anchor changes only via
   // re-anchoring (doc 04:81-84). The new matrix maps the current anchor's local
-  // space -> device pixels; the next `step()` rebases it if it left the band.
+  // space -> device pixels; the next `step()` rebases it if it left the band and
+  // issues a frame that repaints the full viewport at the new camera -- camera-change
+  // damage is detected by the renderer against its own previous frame (doc 02 § "A
+  // camera change is device damage"), so the host does nothing beyond stepping.
+  // Setting a value-identical camera stays free: the next step issues no frame.
   void set_camera(const Affine& camera) noexcept { d_viewport.camera = camera; }
 
   // --- Transport + monitor seams (Constraint 6) --------------------------------
@@ -213,9 +217,12 @@ public:
   // Drive one interactive frame (doc 02:49-71). Samples `composition_time` from the
   // playhead policy, applies the pure `rebase()` result across frames (Decisions 2
   // & 4), drains accumulated model damage into `render_frame`, and honors
-  // `FrameOutcome::schedule_follow_up`. Issues ZERO `render_frame` invocations when
-  // there is no pending damage, no owed follow-up, and the scene has not moved
-  // (Constraint 7, doc 01:140). Returns the poll-style outcome.
+  // `FrameOutcome::schedule_follow_up`. The FIRST step always composites -- a freshly
+  // bound viewport has never shown the scene, even when every commit predates the
+  // binding (doc 01:116-123, doc 02 § "A camera change is device damage"). After that
+  // bootstrap frame, issues ZERO `render_frame` invocations when there is no pending
+  // damage, no owed follow-up, and the scene has not moved (Constraint 7, doc
+  // 01:140). Returns the poll-style outcome.
   StepOutcome step();
 
   // --- Behavioral counters (doc 16:54-62; wall-clock-free) ---------------------

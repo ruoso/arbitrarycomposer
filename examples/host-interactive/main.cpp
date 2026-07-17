@@ -133,30 +133,10 @@ int main(int argc, char** argv) {
   // camera. A media host would instead let the owned transport free-run.
   view.set_playhead_source([] { return arbc::Time::zero(); });
 
-  // KNOWN GAP the next lambda compensates for: doc 02 lists "camera changes"
-  // among a frame's damage sources, but the runtime does not yet synthesize
-  // damage from a camera delta -- a camera-only step() issues a frame that
-  // repaints nothing, so a fully static scene would pan as a frozen image.
-  // Until that seam lands, the host forces the repaint itself: re-adding a
-  // fully transparent content emits structural content-keyed damage, which
-  // maps to a whole-viewport repaint at the CURRENT camera. A pixel-exact
-  // no-op -- compositing a transparent solid changes nothing.
-  arbc::ObjectId driver_content{};
-  arbc::ObjectId driver_layer{};
-  const auto force_repaint = [&] {
-    if (driver_layer.valid()) {
-      document.remove_content(driver_content, comp, driver_layer);
-    }
-    driver_content = document.add_content(std::make_shared<arbc::SolidContent>(
-        arbc::Rgba{0.0F, 0.0F, 0.0F, 0.0F}, arbc::Rect{0.0, 0.0, 256.0, 256.0}));
-    driver_layer = document.add_layer(driver_content, arbc::Affine::identity());
-    document.attach_layer(comp, driver_layer);
-  };
-
   // The scene above was committed before the viewport existed, so those
-  // commits predate its damage sink; the driver commit is the edit that
-  // damages the scene and bootstraps the first frame.
-  force_repaint();
+  // commits predate its damage sink -- and that is fine: a freshly bound
+  // viewport's first step() composites the scene as its bootstrap frame (doc
+  // 02 -- the never-rendered viewport is the degenerate device-mapping delta).
   if (!settle(view, renderer)) {
     std::puts("host-interactive: the first frame never settled");
     return 1;
@@ -165,7 +145,9 @@ int main(int argc, char** argv) {
   // The gesture tape: pan, zoom in about the viewport center, zoom back out,
   // pan again -- ending at a net pan of (-64, -64). Each iteration is EXACTLY
   // what a real host's input handler does: compose the gesture onto the
-  // current camera, set it, and let the frame loop render.
+  // current camera, set it, and let the frame loop render -- a camera edit is
+  // damage (doc 02), so the next step() repaints the full viewport at the new
+  // camera with no further host action.
   const arbc::Affine tape[] = {
       pan(32.0, 32.0),
       zoom_about(2.0, 256.0, 256.0),
@@ -174,7 +156,6 @@ int main(int argc, char** argv) {
   };
   for (const arbc::Affine& gesture : tape) {
     view.set_camera(compose(gesture, view.camera()));
-    force_repaint(); // see the KNOWN GAP note above
     if (!settle(view, renderer)) {
       std::puts("host-interactive: a gesture's frame never settled");
       return 1;
