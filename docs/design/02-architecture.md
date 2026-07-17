@@ -75,7 +75,18 @@
    defers composites, which is why deferring changes no pixels.
 5. **Composite.** Draw tiles bottom-to-top onto the target surface with each
    layer's composed transform and opacity. Tiles rendered at a ladder rung
-   are resampled by the ≤1-octave remainder during this pass.
+   are resampled by the ≤1-octave remainder during this pass. A tile is a
+   whole cache cell, so a layer whose content declares finite `bounds()`
+   (doc 03) may own a tile whose cell extends past that extent; **every
+   composite of such a layer is clipped to the content's bounds mapped into
+   device space** (via the same backend clip primitive as the repaint-region
+   clip, doc 09 § Backend contract), so the overhang of a sub-tile bounded
+   content does not paint beyond its declared extent. The device-space bound
+   is rounded *out* to whole pixels, so the clip never removes a pixel the
+   content legitimately covers; for an axis-aligned placement it is exact,
+   and for a rotated or sheared placement it is the conservative device AABB
+   of the transformed extent. A layer with unbounded content (`bounds()` is
+   `nullopt`) is composited unclipped, byte-for-byte as before.
 6. **Refine.** Async results that arrive later produce damage for their
    region, scheduling a follow-up frame. Zooming therefore shows
    progressively sharper content rather than blocking.

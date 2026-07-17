@@ -49,6 +49,16 @@ std::int32_t floor_div(std::int32_t numerator, std::int32_t divisor) {
   return quotient;
 }
 
+// Round a device-space rect OUT to whole pixels: floor the min corner, ceil the
+// max (the `floor/floor/ceil/ceil` convention of damage_planning.cpp:39-40). A
+// clip rounded out never removes a pixel the content legitimately covers -- a
+// coverage gap is a worse defect than a bounded bleed (bounded_content_tile_clip
+// Constraint 2). Axis-aligned integer bounds round to themselves (exact); a
+// rotated/sheared extent yields a conservative AABB (Decision 3).
+Rect round_out(const Rect& rect) {
+  return Rect{std::floor(rect.x0), std::floor(rect.y0), std::ceil(rect.x1), std::ceil(rect.y1)};
+}
+
 // Map a tile surface (whose pixel (i, j) covers `local_rect.origin + (i, j) /
 // scale`) into device space through `local_to_device`, mirroring
 // `compositor.cpp:95-99`. At an integer-aligned power-of-two rung the composite
@@ -91,12 +101,28 @@ std::uint64_t coord_key(TileCoord coord) {
 // call sites: `composites` honestly reports two clipped blends for a straddling tile
 // (Decision 4). At one clip -- every un-gated frame, every single-rect gated frame --
 // it is one bump, exactly as before.
+//
+// `device_bounds`, when non-null, is the content's finite `bounds()` mapped
+// (rounded out) into device space (`bounded_content_tile_clip`): the composite
+// is clipped to it so a whole-cell tile extending past the declared extent paints
+// no pixel beyond it, matching the offline path (compositor.cpp:28-34). It
+// composes with the repaint-region clip by intersection -- a subset of the
+// disjoint repaint rect, so each pixel is still painted once (Constraint 5). A
+// null entry (the un-gated path) with finite bounds routes to `composite_clipped`
+// carrying just the device bound; a null entry with `nullptr` bounds (unbounded
+// content) stays on the plain unclipped `composite`, byte-identical to before
+// (Constraint 4). The counter bump stays once per clip entry -- counter-neutral,
+// since a planned tile overlaps its clip by construction (Constraint 3).
 void composite_onto_target(Backend& backend, Surface& target, const Surface& src,
                            const Affine& src_to_dst, double opacity,
-                           std::span<const Rect* const> clips, CompositorCounters* counters) {
+                           std::span<const Rect* const> clips, CompositorCounters* counters,
+                           const Rect* device_bounds) {
   for (const Rect* clip : clips) {
     if (clip != nullptr) {
-      backend.composite_clipped(target, src, src_to_dst, opacity, *clip);
+      const Rect clipped = (device_bounds != nullptr) ? clip->intersect(*device_bounds) : *clip;
+      backend.composite_clipped(target, src, src_to_dst, opacity, clipped);
+    } else if (device_bounds != nullptr) {
+      backend.composite_clipped(target, src, src_to_dst, opacity, *device_bounds);
     } else {
       backend.composite(target, src, src_to_dst, opacity);
     }
@@ -117,7 +143,7 @@ void composite_onto_target(Backend& backend, Surface& target, const Surface& src
 void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
                        const PlannedTile& tile, const Affine& local_to_device, ScaleRung rung,
                        double opacity, CompositorCounters* counters,
-                       std::span<const Rect* const> clips) {
+                       std::span<const Rect* const> clips, const Rect* device_bounds) {
   const double rung_px = rung_scale(rung);
   const int octave = rung.index - tile.source_rung.index;
   const std::int32_t factor = std::int32_t{1} << octave;
@@ -149,7 +175,7 @@ void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
 
   composite_onto_target(backend, target, temp_surface,
                         surface_to_device(local_to_device, tile.local_rect, rung_px), opacity,
-                        clips, counters);
+                        clips, counters, device_bounds);
 }
 
 } // namespace
@@ -440,9 +466,19 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       return; // degenerate placement: cull (doc 04)
     }
     Rect region = inv->map_rect(device_rect);
+    // The content's finite `bounds()`, mapped (rounded out) into device space,
+    // is the composite-time clip that keeps a sub-tile bounded content from
+    // painting its whole-cell overhang (`bounded_content_tile_clip`). It is
+    // computed once per layer, from the SAME `bounds()` that culls `region`
+    // below, and threaded to every composite call. `nullopt` (unbounded content,
+    // doc 01:68-77) leaves the pointer null and every composite unclipped --
+    // byte-identical to before (Constraint 4).
+    std::optional<Rect> device_bounds;
     if (const std::optional<Rect> bounds = content->bounds(); bounds.has_value()) {
       region = region.intersect(*bounds);
+      device_bounds = round_out(composed.map_rect(*bounds));
     }
+    const Rect* const device_bounds_ptr = device_bounds.has_value() ? &*device_bounds : nullptr;
     if (region.empty()) {
       return;
     }
@@ -781,7 +817,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                 // counted degraded (offline no-degrade guarantee).
                 composite_onto_target(backend, target, tile_surface,
                                       surface_to_device(composed, tile.local_rect, rung_px),
-                                      layer.opacity, clips, counters);
+                                      layer.opacity, clips, counters, device_bounds_ptr);
                 tile.hold = CacheHold<TileValue>{};
                 tile.display_source = TileSource::Fresh;
               }
@@ -803,7 +839,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, clips, counters);
+                                layer.opacity, clips, counters, device_bounds_ptr);
         }
         break;
       case TileSource::Transient:
@@ -821,7 +857,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, clips, counters);
+                                layer.opacity, clips, counters, device_bounds_ptr);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }
@@ -838,7 +874,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, clips, counters);
+                                layer.opacity, clips, counters, device_bounds_ptr);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }
@@ -848,7 +884,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         // A degraded display: a coarser-rung tile rescaled up (doc 02:64).
         if (tile.hold.valid()) {
           composite_coarser(backend, pool, target, tile, composed, selection.rung, layer.opacity,
-                            counters, clips);
+                            counters, clips, device_bounds_ptr);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }

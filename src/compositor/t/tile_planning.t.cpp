@@ -6,6 +6,8 @@
 #include <arbc/cache/key_shapes.hpp>
 #include <arbc/cache/keyed_store.hpp>
 #include <arbc/compositor/compositor.hpp>
+#include <arbc/compositor/counters.hpp>
+#include <arbc/compositor/damage_planning.hpp>
 #include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 #include <arbc/contract/content.hpp>
@@ -155,6 +157,72 @@ public:
     return arbc::RenderResult{request.scale, /*exact=*/true};
   }
 };
+
+// A content with a CONFIGURABLE bounds() that answers synchronously with an
+// exact, at-scale result -- the fixture for the composite-time clip
+// (`compositor.bounded_content_tile_clip`). A sub-tile bounds() still fills the
+// whole tile cell on render (the solid is infinite extent and ignores bounds);
+// the clip is applied at composite, so a recording backend can observe the device
+// clip it carries.
+class BoundedSolid : public arbc::Content {
+public:
+  explicit BoundedSolid(std::optional<arbc::Rect> extent) : d_bounds(extent) {}
+  std::optional<arbc::Rect> bounds() const override { return d_bounds; }
+  Stability stability() const override { return Stability::Static; }
+  std::optional<arbc::TimeRange> time_extent() const override { return std::nullopt; }
+  std::optional<arbc::RenderResult>
+  render(const arbc::RenderRequest& request,
+         std::shared_ptr<arbc::RenderCompletion> /*done*/) override {
+    const std::span<std::byte> bytes = request.target.cpu_bytes();
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+      bytes[i] = static_cast<std::byte>((i * 31u + 7u) & 0xFFu);
+    }
+    return arbc::RenderResult{request.scale, /*exact=*/true};
+  }
+
+private:
+  std::optional<arbc::Rect> d_bounds;
+};
+
+// A backend that RECORDS the device clip of every clipped composite and counts
+// plain composites, so the routing and clip value the compositor computes for
+// bounded content are observable. It makes real CPU-buffer surfaces so a cold miss
+// renders inline; the paints themselves are irrelevant to the routing assertions,
+// so it does not model pixels (these overrides replace StubBackend's clip-scoped
+// delegation).
+class ClipRecordingBackend : public arbc::testing::StubBackend {
+public:
+  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
+  make_surface(int width, int height, arbc::SurfaceFormat /*format*/) override {
+    return std::unique_ptr<arbc::Surface>(std::make_unique<BufferSurface>(width, height));
+  }
+  void composite(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/, const arbc::Affine& /*m*/,
+                 double /*opacity*/) override {
+    ++composite_calls;
+  }
+  void composite_clipped(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/,
+                         const arbc::Affine& /*m*/, double /*opacity*/,
+                         const arbc::Rect& device_clip) override {
+    ++composite_clipped_calls;
+    clips.push_back(device_clip);
+  }
+
+  int composite_calls = 0;
+  int composite_clipped_calls = 0;
+  std::vector<arbc::Rect> clips;
+};
+
+// Commit a one-layer, one-composition scene and return the content id (its comp
+// via `comp`), mirroring the driver-seam test above.
+arbc::ObjectId make_single_layer(arbc::Model& model, arbc::ObjectId& comp, double w, double h) {
+  auto txn = model.transact();
+  const arbc::ObjectId content_id = txn.add_content(0);
+  const arbc::ObjectId layer = txn.add_layer(content_id, arbc::Affine::identity());
+  comp = txn.add_composition(w, h);
+  txn.attach_layer(comp, layer);
+  REQUIRE(txn.commit().has_value());
+  return content_id;
+}
 
 } // namespace
 
@@ -516,4 +584,108 @@ TEST_CASE("render_frame_interactive: the surfaced plan equals the composited pla
   const std::span<const std::byte> bytes_b = (*target_b)->cpu_bytes();
   REQUIRE(bytes_a.size() == bytes_b.size());
   CHECK(std::memcmp(bytes_a.data(), bytes_b.data(), bytes_a.size_bytes()) == 0);
+}
+
+// --- Composite-time clip to content bounds (bounded_content_tile_clip) ---------
+
+// enforces: 02-architecture#tile-composite-clipped-to-content-bounds
+TEST_CASE("render_frame_interactive: a sub-tile bounded layer composites clipped to its device "
+          "bounds, counter-neutral") {
+  arbc::Model model;
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = make_single_layer(model, comp, 256, 256);
+  const arbc::DocStatePtr state = model.current();
+  BoundedSolid content{arbc::Rect{0.0, 0.0, 64.0, 64.0}}; // a 64x64 extent in one 256px cell
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == content_id ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp};
+
+  ClipRecordingBackend backend;
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::CompositorCounters counters;
+  arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
+                                 arbc::Deadline::none(), std::nullopt, nullptr, &counters);
+
+  // region = viewport ∩ bounds = {0,0,64,64} -> one rung-0 tile, composited ONCE
+  // through composite_clipped (never the plain composite), clipped to the device
+  // bound (identity transform -> {0,0,64,64} rounded out to itself).
+  CHECK(backend.composite_calls == 0);
+  CHECK(backend.composite_clipped_calls == 1);
+  REQUIRE(backend.clips.size() == 1);
+  CHECK(backend.clips[0] == arbc::Rect{0.0, 0.0, 64.0, 64.0});
+  // Counter-neutral: one composite and one render request per planned tile, exactly
+  // as the unclipped path -- the clip changes pixels, not counts.
+  CHECK(counters.composites() == 1);
+  CHECK(counters.requests_issued() == 1);
+}
+
+// enforces: 02-architecture#tile-composite-clipped-to-content-bounds
+TEST_CASE(
+    "render_frame_interactive: a gated sub-tile bounded composite clips to repaint ∩ bounds") {
+  arbc::Model model;
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = make_single_layer(model, comp, 256, 256);
+  const arbc::DocStatePtr state = model.current();
+  BoundedSolid content{arbc::Rect{0.0, 0.0, 64.0, 64.0}};
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == content_id ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp};
+
+  ClipRecordingBackend backend;
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+
+  // Warm the cache with an un-gated pass (renders + inserts the tile), then reset
+  // the recorder so the gated pass's clip is what we observe.
+  arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
+                                 arbc::Deadline::none(), std::nullopt);
+  backend.clips.clear();
+  backend.composite_calls = 0;
+  backend.composite_clipped_calls = 0;
+
+  // A gated pass over a rect narrower than the bounds in x: repaint_rect =
+  // {0,0,32,256}, device_bounds = {0,0,64,64}, so the effective clip is their
+  // intersection {0,0,32,64}. The tile is warm (Fresh), so it re-composites with
+  // no render.
+  arbc::DirtyRegion dirty;
+  dirty.device_rects.push_back(arbc::Rect{0.0, 0.0, 32.0, 256.0});
+  arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
+                                 arbc::Deadline::none(), std::nullopt, nullptr, nullptr, &dirty);
+
+  CHECK(backend.composite_calls == 0);
+  REQUIRE(backend.clips.size() == 1);
+  CHECK(backend.clips[0] == arbc::Rect{0.0, 0.0, 32.0, 64.0});
+}
+
+// enforces: 02-architecture#tile-composite-clipped-to-content-bounds
+TEST_CASE("render_frame_interactive: an unbounded layer composites through the plain composite") {
+  arbc::Model model;
+  arbc::ObjectId comp{};
+  const arbc::ObjectId content_id = make_single_layer(model, comp, 256, 256);
+  const arbc::DocStatePtr state = model.current();
+  BoundedSolid content{std::nullopt}; // unbounded: no device bound to clip to
+  const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
+    return id == content_id ? &content : nullptr;
+  };
+  const arbc::Viewport viewport{256, 256, arbc::Affine::identity(), comp};
+
+  ClipRecordingBackend backend;
+  arbc::SurfacePool pool(backend);
+  TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
+                                 arbc::Deadline::none(), std::nullopt);
+
+  // Unbounded content -> region is the whole 256 viewport -> one rung-0 tile,
+  // composited through the plain (unclipped) composite: byte-identical to before.
+  CHECK(backend.composite_clipped_calls == 0);
+  CHECK(backend.composite_calls == 1);
 }
