@@ -17,7 +17,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+// The extern "C" plugin seam is cross-platform: LoadLibrary/GetProcAddress/FreeLibrary
+// on Windows, dlopen/dlsym/dlclose elsewhere -- the same _WIN32 seam the production
+// runtime::PluginHost loader uses (src/runtime/plugin_host.cpp).
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 #include <memory>
 
@@ -29,12 +38,21 @@ constexpr const char* k_kind_id = "org.arbc.imageseq";
 
 // enforces: 03-layer-plugin-interface#plugin-registers-through-extern-c-entry
 TEST_CASE("org.arbc.imageseq registers and constructs across the extern \"C\" boundary") {
-  void* handle = dlopen(ARBC_IMAGESEQ_PLUGIN_FILE, RTLD_NOW | RTLD_LOCAL);
+#if defined(_WIN32)
+  const HMODULE handle = ::LoadLibraryA(ARBC_IMAGESEQ_PLUGIN_FILE);
+#else
+  void* const handle = ::dlopen(ARBC_IMAGESEQ_PLUGIN_FILE, RTLD_NOW | RTLD_LOCAL);
+#endif
   REQUIRE(handle != nullptr);
 
   using RegisterFn = void (*)(Registry&);
+#if defined(_WIN32)
+  const FARPROC symbol = ::GetProcAddress(handle, "arbc_plugin_register");
+#else
+  void* const symbol = ::dlsym(handle, "arbc_plugin_register");
+#endif
   // NOLINTNEXTLINE(*-reinterpret-cast): the extern "C" entry point ABI.
-  auto register_fn = reinterpret_cast<RegisterFn>(dlsym(handle, "arbc_plugin_register"));
+  auto register_fn = reinterpret_cast<RegisterFn>(symbol);
   REQUIRE(register_fn != nullptr);
 
   {
@@ -78,5 +96,10 @@ TEST_CASE("org.arbc.imageseq registers and constructs across the extern \"C\" bo
     REQUIRE(dup.error() == RegistryError::DuplicateId);
   } // registry (holding the .so's factory) and the content are destroyed here...
 
-  dlclose(handle); // ...before the code backing them is unmapped.
+  // ...before the code backing them is unmapped.
+#if defined(_WIN32)
+  ::FreeLibrary(handle);
+#else
+  ::dlclose(handle);
+#endif
 }

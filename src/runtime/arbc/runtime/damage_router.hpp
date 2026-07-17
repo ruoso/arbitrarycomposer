@@ -46,7 +46,11 @@ public:
   // destroy is structural rather than a caller obligation (Constraint 3/Decision 3).
   // A default-constructed or moved-from handle is inert (`valid() == false`) and
   // unregisters nothing.
-  class Registration {
+  // ARBC_API on its own: MSVC does not propagate the enclosing DamageRouter's
+  // dllexport to this nested class, so the shared arbc.dll would omit its members
+  // (e.g. release()) and downstream images fail to link. Inert in the static build
+  // and on ELF (see the matching note on Model::Transaction).
+  class ARBC_API Registration {
   public:
     Registration() noexcept = default;
 

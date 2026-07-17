@@ -375,7 +375,7 @@ TEST_CASE(
   REQUIRE(refusing
               .add("org.arbc.image",
                    [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
-                     return unexpected<std::string>("image: refused");
+                     return arbc::unexpected<std::string>("image: refused");
                    })
               .has_value());
   const Codec hostile = image_codec(refusing);

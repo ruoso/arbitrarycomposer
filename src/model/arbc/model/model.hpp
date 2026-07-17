@@ -365,7 +365,12 @@ public:
   // leaves the current version in place (nothing observed).
   expected<std::monostate, PoolError> navigate(const JournalEntry& entry, NavDirection dir);
 
-  class Transaction {
+  // ARBC_API on its own: MSVC's __declspec(dllexport) on the enclosing Model does
+  // NOT propagate to a nested class, so without this the shared arbc.dll omits every
+  // Transaction method from its export table and downstream test/plugin images fail
+  // to link (LNK2019). Inert in the static build (ARBC_API is empty) and on ELF
+  // (visibility("default"), where the gcc-shared lane already resolved these).
+  class ARBC_API Transaction {
   public:
     Transaction(const Transaction&) = delete;
     Transaction& operator=(const Transaction&) = delete;

@@ -465,19 +465,19 @@ TEST_CASE("plugin codec failures are error values, never throws") {
       codec.kind_version = "1";
       codec.serialize = [text = hook.text](const Content&) -> expected<std::string, std::string> {
         if (text == nullptr) {
-          return unexpected<std::string>("org.arbc.ci.badcodec: serialize failed");
+          return arbc::unexpected<std::string>("org.arbc.ci.badcodec: serialize failed");
         }
         return std::string(text);
       };
       codec.deserialize = [](std::string_view, std::span<const ContentRef>,
                              ObjectId) -> expected<std::unique_ptr<Content>, std::string> {
-        return unexpected<std::string>("unused");
+        return arbc::unexpected<std::string>("unused");
       };
       REQUIRE(registry
                   .add(
                       "org.arbc.ci.badcodec",
                       [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
-                        return unexpected<std::string>("unused");
+                        return arbc::unexpected<std::string>("unused");
                       },
                       KindMetadata{"Bad Codec", "1"}, std::move(codec))
                   .has_value());
@@ -506,13 +506,13 @@ TEST_CASE("plugin codec failures are error values, never throws") {
     };
     codec.deserialize = [](std::string_view, std::span<const ContentRef>,
                            ObjectId) -> expected<std::unique_ptr<Content>, std::string> {
-      return unexpected<std::string>("unused");
+      return arbc::unexpected<std::string>("unused");
     };
     REQUIRE(registry
                 .add(
                     "org.arbc.ci.okcodec",
                     [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
-                      return unexpected<std::string>("unused");
+                      return arbc::unexpected<std::string>("unused");
                     },
                     KindMetadata{"Ok Codec", "1"}, std::move(codec))
                 .has_value());

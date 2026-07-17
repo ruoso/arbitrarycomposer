@@ -59,9 +59,9 @@ KindCodec stub_codec() {
     // as an "error" so the test can observe the stored hook was invoked with the
     // text it passed -- no real content is constructed in a registry unit test.
     if (inputs.size() != 1) {
-      return unexpected<std::string>("stub: expected exactly one input");
+      return arbc::unexpected<std::string>("stub: expected exactly one input");
     }
-    return unexpected<std::string>(std::string(params_text));
+    return arbc::unexpected<std::string>(std::string(params_text));
   };
   return codec;
 }

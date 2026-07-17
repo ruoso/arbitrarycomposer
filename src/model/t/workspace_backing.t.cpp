@@ -615,11 +615,21 @@ TEST_CASE("Model::open surfaces a missing or corrupt workspace file as a value")
   // A file that exists but is not a workspace file.
   TempPath garbage;
   {
+    const char junk[256] = {'n', 'o', 't', ' ', 'a', 'r', 'b', 'c'};
+#if defined(_WIN32)
+    const HANDLE h = ::CreateFileA(garbage.str().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(h != INVALID_HANDLE_VALUE);
+    DWORD written = 0;
+    REQUIRE(::WriteFile(h, junk, sizeof(junk), &written, nullptr) != 0);
+    REQUIRE(written == sizeof(junk));
+    ::CloseHandle(h);
+#else
     const int fd = ::open(garbage.str().c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
     REQUIRE(fd >= 0);
-    const char junk[256] = {'n', 'o', 't', ' ', 'a', 'r', 'b', 'c'};
     REQUIRE(::write(fd, junk, sizeof(junk)) == static_cast<ssize_t>(sizeof(junk)));
     ::close(fd);
+#endif
   }
   auto bad = arbc::Model::open(garbage.str());
   REQUIRE_FALSE(bad.has_value());

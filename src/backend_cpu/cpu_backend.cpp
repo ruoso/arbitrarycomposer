@@ -277,7 +277,12 @@ void CpuBackend::convert(Surface& dst, const Surface& src) {
   const std::size_t pixel_count =
       static_cast<std::size_t>(dst.width()) * static_cast<std::size_t>(dst.height());
   visit_surface(dst, [&](auto dst_typed) {
-    constexpr PixelFormat DstF = decltype(dst_typed)::format;
+    // [[maybe_unused]]: DstF is odr-used only inside the nested visit_pixel_format
+    // lambda, and only in compile-time contexts (the `if constexpr` condition and as
+    // a convert_kernel template argument). MSVC then reports C4189 "initialized but
+    // not referenced" for the outer lambda's scope (a false positive /WX would make
+    // fatal); GCC/Clang do not warn and the attribute is inert there.
+    [[maybe_unused]] constexpr PixelFormat DstF = decltype(dst_typed)::format;
     visit_pixel_format(src.format().pixel_format, [&](auto src_tag) {
       constexpr PixelFormat SrcF = decltype(src_tag)::format;
       if constexpr (SrcF == DstF) {

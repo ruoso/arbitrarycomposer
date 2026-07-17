@@ -51,7 +51,9 @@ using namespace arbc;
 
 using Made = expected<std::unique_ptr<Content>, std::string>;
 
-inline Made made_error(std::string message) { return unexpected<std::string>(std::move(message)); }
+inline Made made_error(std::string message) {
+  return arbc::unexpected<std::string>(std::move(message));
+}
 
 // --- Config parsing. `strto*` rather than `std::from_chars` because
 //     floating-point `from_chars` is not available on every standard library the

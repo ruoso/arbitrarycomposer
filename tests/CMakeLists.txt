@@ -1,23 +1,11 @@
 # Cross-component tests: integration, claims-register golden tests, and the
 # harness smoke test. Component unit tests live in src/<component>/t/.
 
-# DLL search wiring for the MSVC shared lane (packaging.shared_library_build_msvc,
-# Decision D4). Under BUILD_SHARED_LIBS on Windows, libarbc is arbc.dll and there is
-# no ELF rpath: every test executable that links arbc -- and every plugin the loaders
-# LoadLibrary, whose own arbc.dll import is resolved by the DLL search order -- must
-# find arbc.dll at BOTH catch_discover_tests' POST_BUILD discovery run AND ctest run
-# time. Wrapping catch_discover_tests to add DL_PATHS emits exactly the per-test
-# PATH=path_list_prepend:<arbc dir> ENVIRONMENT_MODIFICATION D4 specifies (and sets
-# PATH for discovery too), keeping all 100+ call sites unchanged; the original stays
-# reachable as _catch_discover_tests. Gated WIN32 AND BUILD_SHARED_LIBS, so every
-# other lane -- static msvc-debug, the ELF shared lanes, all Linux lanes -- is
-# untouched (there, arbc is a static archive or found via rpath, and nothing is
-# overridden).
-if(WIN32 AND BUILD_SHARED_LIBS)
-  function(catch_discover_tests _arbc_target)
-    _catch_discover_tests("${_arbc_target}" ${ARGN} DL_PATHS "$<TARGET_FILE_DIR:arbc>")
-  endfunction()
-endif()
+# The MSVC-shared DLL-search wrapper around catch_discover_tests (DL_PATHS to
+# arbc.dll) lives in the TOP-LEVEL CMakeLists, right after include(Catch) -- it must
+# be defined before add_subdirectory(src) so the component unit tests pick it up too,
+# not just the cross-component tests in this directory (a function override only
+# reaches subdirectories added after it). See the note there.
 
 add_executable(arbc_smoke_t smoke.t.cpp)
 target_link_libraries(arbc_smoke_t PRIVATE Catch2::Catch2WithMain
