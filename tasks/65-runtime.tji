@@ -56,8 +56,9 @@ task runtime "Runtime" {
   task plugin_default_search_paths "Platform-conventional default plugin directories" {
     effort 1d
     allocate team
+    complete 100
     depends !plugin_loading, packaging.release_01
-    note "Add platform-conventional default plugin directories (install-relative libdir + XDG/AppData data dirs) to the opt-in scan after ARBC_PLUGIN_PATH; ordering and dedup against explicitly-listed dirs. Source: tasks/refinements/runtime/plugin_loading.md Decision 5."
+    note "Add platform-conventional default plugin directories (install-relative libdir + XDG/AppData data dirs) to the opt-in scan after ARBC_PLUGIN_PATH; ordering and dedup against explicitly-listed dirs. Source: tasks/refinements/runtime/plugin_loading.md Decision 5. Refinement: tasks/refinements/runtime/plugin_default_search_paths.md"
   }
   task document_serialize "Wire Document to serialize content seams" {
     effort 2d

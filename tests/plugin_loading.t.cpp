@@ -21,7 +21,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <variant>
 
@@ -37,6 +39,15 @@ constexpr const char* k_kind_id = "org.arbc.imageseq";
 constexpr char k_path_list_separator = ';';
 #else
 constexpr char k_path_list_separator = ':';
+#endif
+
+// The env var naming the per-user data dir the default-directory resolver reads
+// first (runtime.plugin_default_search_paths Decision 2) -- the lane this suite
+// stages fixture plugins into.
+#if defined(_WIN32)
+constexpr const char* k_user_data_env = "LOCALAPPDATA";
+#else
+constexpr const char* k_user_data_env = "XDG_DATA_HOME";
 #endif
 
 // Portable ARBC_PLUGIN_PATH mutation: `_putenv_s` on Windows, `setenv`/`unsetenv` on
@@ -80,6 +91,100 @@ private:
   bool d_had = false;
   std::string d_prior;
 };
+
+// Portable mutation of an arbitrary environment variable -- the ARBC_PLUGIN_PATH
+// helpers above generalized to the default-directory env inputs.
+void set_env_var(const char* name, const char* value) {
+#if defined(_WIN32)
+  ::_putenv_s(name, value);
+#else
+  ::setenv(name, value, 1);
+#endif
+}
+void unset_env_var(const char* name) {
+#if defined(_WIN32)
+  ::_putenv_s(name, "");
+#else
+  ::unsetenv(name);
+#endif
+}
+
+// RAII save/restore of one named environment variable, so a test pinning the
+// default-directory inputs does not leak them into sibling test cases.
+class ScopedEnvVar {
+public:
+  explicit ScopedEnvVar(const char* name) : d_name(name) {
+    const char* prior = std::getenv(name);
+    if (prior != nullptr) {
+      d_had = true;
+      d_prior = prior;
+    }
+  }
+  ~ScopedEnvVar() {
+    if (d_had) {
+      set_env_var(d_name, d_prior.c_str());
+    } else {
+      unset_env_var(d_name);
+    }
+  }
+  ScopedEnvVar(const ScopedEnvVar&) = delete;
+  ScopedEnvVar& operator=(const ScopedEnvVar&) = delete;
+
+private:
+  const char* d_name;
+  bool d_had = false;
+  std::string d_prior;
+};
+
+// A per-case staging root under the system temp dir: recreated on entry, removed
+// on exit, so a crashed prior run cannot leak staged plugins into this one. Tags
+// are unique per TEST_CASE, and catch_discover_tests runs each case as its own
+// ctest entry, so parallel cases never share a root.
+class ScopedTempDir {
+public:
+  explicit ScopedTempDir(const char* tag)
+      : d_path(std::filesystem::temp_directory_path() /
+               (std::string("arbc_plugin_default_scan_") + tag)) {
+    std::filesystem::remove_all(d_path);
+    std::filesystem::create_directories(d_path);
+  }
+  ~ScopedTempDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(d_path, ec); // best-effort cleanup
+  }
+  ScopedTempDir(const ScopedTempDir&) = delete;
+  ScopedTempDir& operator=(const ScopedTempDir&) = delete;
+
+  const std::filesystem::path& path() const { return d_path; }
+
+private:
+  std::filesystem::path d_path;
+};
+
+// Copy the built imageseq plugin into `dir` (created as needed), returning the
+// staged module path. The copy keeps the original's absolute build-tree RPATH, so
+// it loads from any staged location.
+std::filesystem::path stage_imageseq_copy(const std::filesystem::path& dir) {
+  const std::filesystem::path source(ARBC_IMAGESEQ_PLUGIN_FILE);
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path staged = dir / source.filename();
+  std::filesystem::copy_file(source, staged, std::filesystem::copy_options::overwrite_existing);
+  return staged;
+}
+
+// The report outcome for one exact staged path, or nullopt when the path produced
+// no entry -- so assertions stay per-directory-contained (Constraint 9: a
+// developer machine's REAL default dirs may add entries of their own; those never
+// carry our staged paths).
+std::optional<PluginScanEntry::Outcome> outcome_of(const PluginScanReport& report,
+                                                   const std::filesystem::path& path) {
+  for (const PluginScanEntry& entry : report.entries) {
+    if (entry.path == path.string()) {
+      return entry.outcome;
+    }
+  }
+  return std::nullopt;
+}
 
 // Construct the kind through a resolved factory and render one frame across the
 // boundary, asserting the Timed facet and a settled frame -- the proof that the
@@ -214,6 +319,81 @@ TEST_CASE("scan_plugin_path splits ARBC_PLUGIN_PATH on the platform separator") 
   require_constructs_and_renders(*factory);
 }
 
+// enforces: 03-layer-plugin-interface#standard-scan-orders-env-before-defaults-and-dedups
+TEST_CASE("scan_standard_paths walks env dirs before defaults and dedups directories") {
+  ScopedPluginPath path_guard;
+  ScopedEnvVar user_data_guard(k_user_data_env);
+#if !defined(_WIN32)
+  ScopedEnvVar data_dirs_guard("XDG_DATA_DIRS");
+#endif
+  ScopedTempDir stage_root("combined");
+  const std::filesystem::path user_base = stage_root.path() / "user-data";
+  const std::filesystem::path user_plugins = user_base / "arbc" / "plugins";
+#if !defined(_WIN32)
+  // Neutralize the system data dirs: a machine's real /usr/local/share/arbc/plugins
+  // must not leak entries into this report (hermeticity, Constraint 9).
+  set_env_var("XDG_DATA_DIRS", (stage_root.path() / "no-such-data-dir").string().c_str());
+#endif
+  set_env_var(k_user_data_env, user_base.string().c_str());
+
+  SECTION("env unset: a fixture plugin in the per-user default dir is discovered") {
+    unset_plugin_path();
+    const std::filesystem::path staged = stage_imageseq_copy(user_plugins);
+
+    PluginHost host;
+    PluginScanReport report;
+    REQUIRE_NOTHROW(report = host.scan_standard_paths());
+
+    REQUIRE(outcome_of(report, staged) == PluginScanEntry::Outcome::Loaded);
+    const ContentFactory* factory = host.registry().factory(k_kind_id);
+    REQUIRE(factory != nullptr);
+    require_constructs_and_renders(*factory);
+  }
+
+  SECTION("a dir listed in both ARBC_PLUGIN_PATH and the defaults is scanned once") {
+    const std::filesystem::path staged = stage_imageseq_copy(user_plugins);
+    // The env-listed dir IS the per-user default dir: the combined scan must
+    // visit it exactly once -- one report entry for the staged module, Loaded,
+    // with no self-inflicted DuplicateId from a second visit.
+    set_plugin_path(user_plugins.string().c_str());
+
+    PluginHost host;
+    PluginScanReport report;
+    REQUIRE_NOTHROW(report = host.scan_standard_paths());
+
+    std::size_t entries_for_staged = 0;
+    for (const PluginScanEntry& entry : report.entries) {
+      if (entry.path == staged.string()) {
+        ++entries_for_staged;
+        REQUIRE(entry.outcome == PluginScanEntry::Outcome::Loaded);
+      }
+    }
+    REQUIRE(entries_for_staged == 1);
+    REQUIRE(host.registry().factory(k_kind_id) != nullptr);
+  }
+
+  SECTION("an env-dir kind survives the same kind in a default dir as DuplicateId") {
+    const std::filesystem::path env_dir = stage_root.path() / "env-plugins";
+    const std::filesystem::path env_copy = stage_imageseq_copy(env_dir);
+    const std::filesystem::path default_copy = stage_imageseq_copy(user_plugins);
+    set_plugin_path(env_dir.string().c_str());
+
+    PluginHost host;
+    PluginScanReport report;
+    REQUIRE_NOTHROW(report = host.scan_standard_paths());
+
+    // Env dirs walk FIRST (Constraint 2), so the env copy registers the kind and
+    // the default-dir copy is the additive per-entry DuplicateId (Constraint 4).
+    REQUIRE(outcome_of(report, env_copy) == PluginScanEntry::Outcome::Loaded);
+    REQUIRE(outcome_of(report, default_copy) == PluginScanEntry::Outcome::DuplicateId);
+
+    // The env-dir registration is intact and functional.
+    const ContentFactory* factory = host.registry().factory(k_kind_id);
+    REQUIRE(factory != nullptr);
+    require_constructs_and_renders(*factory);
+  }
+}
+
 // enforces: 03-layer-plugin-interface#explicit-host-registration-precedes-scan
 TEST_CASE("explicit host registration precedes and beats the scan") {
   ScopedPluginPath guard;
@@ -246,5 +426,28 @@ TEST_CASE("explicit host registration precedes and beats the scan") {
 
   // The original factory is untouched and still constructs the kind.
   REQUIRE(host.registry().size() == 1);
+  require_constructs_and_renders(*host.registry().factory(k_kind_id));
+
+  // The same precedence holds against a DEFAULT-dir plugin through the combined
+  // scan (runtime.plugin_default_search_paths): stage a copy into a temp per-user
+  // data dir -- the explicitly-registered kind stays, the staged copy is a
+  // per-entry DuplicateId. No registry-size assertion after this scan: a machine's
+  // real install libdir may legitimately add kinds of its own (Constraint 9).
+  ScopedEnvVar user_data_guard(k_user_data_env);
+#if !defined(_WIN32)
+  ScopedEnvVar data_dirs_guard("XDG_DATA_DIRS");
+#endif
+  ScopedTempDir stage_root("precedence");
+#if !defined(_WIN32)
+  set_env_var("XDG_DATA_DIRS", (stage_root.path() / "no-such-data-dir").string().c_str());
+#endif
+  const std::filesystem::path user_base = stage_root.path() / "user-data";
+  const std::filesystem::path staged = stage_imageseq_copy(user_base / "arbc" / "plugins");
+  set_env_var(k_user_data_env, user_base.string().c_str());
+  unset_plugin_path();
+
+  PluginScanReport combined;
+  REQUIRE_NOTHROW(combined = host.scan_standard_paths());
+  REQUIRE(outcome_of(combined, staged) == PluginScanEntry::Outcome::DuplicateId);
   require_constructs_and_renders(*host.registry().factory(k_kind_id));
 }

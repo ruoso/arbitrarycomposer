@@ -86,6 +86,125 @@ bool has_suffix(std::string_view name, std::string_view suffix) {
          name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+// The path-join separator for composing default-directory paths -- a platform
+// leaf under the single `_WIN32` seam (plugin_loading_win32 Decision 1).
+#if defined(_WIN32)
+constexpr char k_dir_separator = '\\';
+#else
+constexpr char k_dir_separator = '/';
+#endif
+
+bool is_dir_separator(char c) {
+#if defined(_WIN32)
+  return c == '\\' || c == '/';
+#else
+  return c == '/';
+#endif
+}
+
+// Read-only environment lookup (Decision 5: no shell APIs, no platform-paths
+// library). MSVC deprecates getenv in favour of _dupenv_s; suppress the warning
+// since getenv is both correct and portable here.
+const char* read_env(const char* name) {
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+  return std::getenv(name);
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+}
+
+// Split a separator-delimited directory list, dropping empty segments -- shared
+// by the ARBC_PLUGIN_PATH read and the $XDG_DATA_DIRS read.
+std::vector<std::string> split_directory_list(std::string_view spec, char separator) {
+  std::vector<std::string> directories;
+  std::size_t start = 0;
+  while (start <= spec.size()) {
+    const std::size_t sep = spec.find(separator, start);
+    const std::size_t end = sep == std::string_view::npos ? spec.size() : sep;
+    if (end > start) {
+      directories.emplace_back(spec.substr(start, end - start));
+    }
+    if (sep == std::string_view::npos) {
+      break;
+    }
+    start = sep + 1;
+  }
+  return directories;
+}
+
+// Trailing-separator trim: the combined scan's directory dedup key (Decision 4 --
+// string equality, no canonicalization; aliased paths fall through to the
+// registry's DuplicateId guard) and the normalization the default-dir join
+// applies before appending the plugin subdir.
+std::string trim_trailing_separators(std::string_view dir) {
+  std::size_t end = dir.size();
+  while (end > 0 && is_dir_separator(dir[end - 1])) {
+    --end;
+  }
+  return std::string(dir.substr(0, end));
+}
+
+// `<base>/arbc/plugins` with the platform join separator: the shipped install
+// layout's plugin subdir (packaging/install.md D6) under a conventional data dir.
+std::string plugins_subdir_under(std::string_view base) {
+  std::string dir = trim_trailing_separators(base);
+  dir += k_dir_separator;
+  dir += "arbc";
+  dir += k_dir_separator;
+  dir += "plugins";
+  return dir;
+}
+
+// The directory holding the binary image this resolver is compiled into --
+// libarbc in a shared build, the host executable in a static one (Decision 3).
+// `dladdr` on an in-image anchor / `GetModuleHandleExA(FROM_ADDRESS)` +
+// `GetModuleFileNameA`; both read the loader's in-memory module table, no
+// filesystem access. Returns empty when unresolvable (the caller skips the
+// image-relative entry; the configure-time libdir backstops it).
+std::string image_directory() {
+  std::string path;
+#if defined(_WIN32)
+  HMODULE module = nullptr;
+  if (::GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           // NOLINTNEXTLINE(*-reinterpret-cast): the FROM_ADDRESS lookup ABI.
+                           reinterpret_cast<LPCSTR>(&image_directory), &module) == 0) {
+    return "";
+  }
+  path.resize(MAX_PATH, '\0');
+  for (;;) {
+    const DWORD len = ::GetModuleFileNameA(module, path.data(), static_cast<DWORD>(path.size()));
+    if (len == 0) {
+      return "";
+    }
+    if (len < path.size()) {
+      path.resize(len);
+      break;
+    }
+    path.resize(path.size() * 2, '\0'); // truncated: grow and retry
+  }
+#else
+  Dl_info info{};
+  // NOLINTNEXTLINE(*-reinterpret-cast): dladdr takes the anchor as an object pointer.
+  if (::dladdr(reinterpret_cast<void*>(&image_directory), &info) == 0 ||
+      info.dli_fname == nullptr) {
+    return "";
+  }
+  path = info.dli_fname;
+#endif
+  std::size_t last = path.size();
+  while (last > 0 && !is_dir_separator(path[last - 1])) {
+    --last;
+  }
+  if (last == 0) {
+    return ""; // no directory component to anchor on
+  }
+  return trim_trailing_separators(std::string_view(path).substr(0, last));
+}
+
 // The shared open+resolve step. Returns the resolved entry point (and, on the
 // caller's side, ownership of the handle in `*out_handle`) or leaves `*out_fn`
 // null with `*out_handle` cleaned up. `symbol_missing` distinguishes "opened but
@@ -148,6 +267,58 @@ OpenResult open_and_resolve(const std::string& path) {
 
 } // namespace
 
+std::vector<std::string> default_plugin_directories() {
+  std::vector<std::string> directories;
+
+#if defined(_WIN32)
+  // Per-user data dir: %LOCALAPPDATA% -- machine-specific binaries must not roam,
+  // so not %APPDATA% (Decision 2). Unset/empty -> skip (Constraint 5).
+  const char* local_app_data = read_env("LOCALAPPDATA");
+  if (local_app_data != nullptr && local_app_data[0] != '\0') {
+    directories.push_back(plugins_subdir_under(local_app_data));
+  }
+#else
+  // Per-user data dir: $XDG_DATA_HOME, XDG Base Directory fallback
+  // $HOME/.local/share; skipped when neither resolves (Constraint 5). First in
+  // the list, so a per-user plugin shadows a system/shipped one with the same
+  // kind id under first-registration-wins -- the conventional XDG semantics.
+  const char* xdg_data_home = read_env("XDG_DATA_HOME");
+  if (xdg_data_home != nullptr && xdg_data_home[0] != '\0') {
+    directories.push_back(plugins_subdir_under(xdg_data_home));
+  } else {
+    const char* home = read_env("HOME");
+    if (home != nullptr && home[0] != '\0') {
+      directories.push_back(plugins_subdir_under(trim_trailing_separators(home) + "/.local/share"));
+    }
+  }
+
+  // System data dirs: each $XDG_DATA_DIRS entry in listed order, spec fallback
+  // /usr/local/share:/usr/share. The XDG list separator is ':' by spec.
+  const char* xdg_data_dirs = read_env("XDG_DATA_DIRS");
+  const std::string_view data_dirs = xdg_data_dirs != nullptr && xdg_data_dirs[0] != '\0'
+                                         ? std::string_view(xdg_data_dirs)
+                                         : std::string_view("/usr/local/share:/usr/share");
+  for (const std::string& dir : split_directory_list(data_dirs, ':')) {
+    directories.push_back(plugins_subdir_under(dir));
+  }
+#endif
+
+  // Install-relative libdir, image-relative first: in a shared install the arbc
+  // image sits AT `<prefix>/<libdir>`, sibling to the `arbc/plugins` subdir, so
+  // this entry survives relocation (staged `cmake --install --prefix` trees,
+  // relocatable packages). The configure-time libdir follows as the static-build
+  // backstop, where the "image" is the host executable and the image-relative dir
+  // is usually meaningless (Decision 3); in a non-relocated install the two
+  // coincide and the combined scan's dedup collapses them (Constraint 3).
+  const std::string image_dir = image_directory();
+  if (!image_dir.empty()) {
+    directories.push_back(plugins_subdir_under(image_dir));
+  }
+  directories.push_back(plugins_subdir_under(ARBC_INSTALL_LIBDIR));
+
+  return directories;
+}
+
 expected<std::monostate, PluginLoadError> PluginHost::load_plugin(std::string_view path) {
   const std::string path_str(path); // dlopen needs a NUL-terminated C string
   OpenResult opened = open_and_resolve(path_str);
@@ -180,120 +351,137 @@ expected<std::monostate, PluginLoadError> PluginHost::load_plugin(std::string_vi
   return std::monostate{};
 }
 
+// The per-directory enumeration + load step both scans drive (the factored-out
+// helper of runtime.plugin_default_search_paths Decision 1 -- scan_plugin_path's
+// original per-directory body, semantics unchanged).
+void PluginHost::scan_directory(const std::string& directory, PluginScanReport& report) {
+  // Enumerate the directory's shared-library entries. Missing/unreadable
+  // directories are silently ignored -- a stale `ARBC_PLUGIN_PATH` entry or an
+  // absent default directory is not a loader error. The candidate set is filtered
+  // by the shared `has_suffix`, so the library suffix is single-sourced across
+  // platforms.
+  std::vector<std::string> candidates;
+#if defined(_WIN32)
+  // FindFirstFile over `dir\*`; INVALID_HANDLE_VALUE is the `opendir == nullptr`
+  // silent skip. Its enumeration order is unspecified -- the shared std::sort below
+  // is what makes the scan deterministic (Constraint 4/5).
+  std::string pattern = directory;
+  if (!pattern.empty() && pattern.back() != '\\' && pattern.back() != '/') {
+    pattern.push_back('\\');
+  }
+  pattern.push_back('*');
+  WIN32_FIND_DATAA find_data;
+  HANDLE handle = ::FindFirstFileA(pattern.c_str(), &find_data);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  do {
+    const std::string_view name(find_data.cFileName);
+    if (has_suffix(name, k_shared_lib_suffix)) {
+      std::string full = directory;
+      if (!full.empty() && full.back() != '\\' && full.back() != '/') {
+        full.push_back('\\');
+      }
+      full.append(name);
+      candidates.push_back(std::move(full));
+    }
+  } while (::FindNextFileA(handle, &find_data) != 0);
+  ::FindClose(handle);
+#else
+  DIR* handle = ::opendir(directory.c_str());
+  if (handle == nullptr) {
+    return;
+  }
+  for (const dirent* entry = ::readdir(handle); entry != nullptr; entry = ::readdir(handle)) {
+    const std::string_view name(entry->d_name);
+    if (has_suffix(name, k_shared_lib_suffix)) {
+      std::string full = directory;
+      if (!full.empty() && full.back() != '/') {
+        full.push_back('/');
+      }
+      full.append(name);
+      candidates.push_back(std::move(full));
+    }
+  }
+  ::closedir(handle);
+#endif
+
+  // Deterministic load order (Constraint 5): sort lexicographically so the
+  // registration sequence -- and thus any DuplicateId outcome -- is reproducible.
+  std::sort(candidates.begin(), candidates.end());
+
+  for (const std::string& candidate : candidates) {
+    OpenResult opened = open_and_resolve(candidate);
+    if (!opened.opened) {
+      report.entries.push_back(
+          {candidate, PluginScanEntry::Outcome::CannotOpen, std::move(opened.diagnostic)});
+      continue;
+    }
+    if (opened.fn == nullptr) {
+      // A support library in the plugin directory: skip, do not fail the scan
+      // (Decision 3).
+      report.entries.push_back({candidate, PluginScanEntry::Outcome::SkippedNoEntry, ""});
+      continue;
+    }
+
+    d_handles.emplace_back(opened.handle);
+    const std::size_t before = d_registry.size();
+    opened.fn(d_registry);
+    if (d_registry.size() == before) {
+      // Registered nothing new -> a DuplicateId collision; the earlier
+      // registration is left intact (Decision 2, explicit registration wins).
+      report.entries.push_back({candidate, PluginScanEntry::Outcome::DuplicateId, ""});
+    } else {
+      report.entries.push_back({candidate, PluginScanEntry::Outcome::Loaded, ""});
+      ++report.loaded;
+    }
+  }
+}
+
 PluginScanReport PluginHost::scan_plugin_path() {
   PluginScanReport report;
 
-  // MSVC deprecates getenv in favour of _dupenv_s; suppress the warning since
-  // getenv is both correct and portable for a read-only environment lookup.
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-  const char* env = std::getenv("ARBC_PLUGIN_PATH");
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
+  const char* env = read_env("ARBC_PLUGIN_PATH");
   if (env == nullptr || env[0] == '\0') {
     return report; // genuinely opt-in: unset/empty -> zero loads, zero fs access
   }
 
-  // Split the directory list on the platform separator.
-  std::vector<std::string> directories;
-  std::string_view spec(env);
-  std::size_t start = 0;
-  while (start <= spec.size()) {
-    const std::size_t sep = spec.find(k_path_separator, start);
-    const std::size_t end = sep == std::string_view::npos ? spec.size() : sep;
-    if (end > start) {
-      directories.emplace_back(spec.substr(start, end - start));
-    }
-    if (sep == std::string_view::npos) {
-      break;
-    }
-    start = sep + 1;
+  // Split the directory list on the platform separator and scan each in listed
+  // order.
+  for (const std::string& dir : split_directory_list(env, k_path_separator)) {
+    scan_directory(dir, report);
   }
 
+  return report;
+}
+
+PluginScanReport PluginHost::scan_standard_paths() {
+  PluginScanReport report;
+
+  // Env-listed dirs first, exactly as scan_plugin_path orders them, then the
+  // platform-conventional defaults (Constraint 2): the full walk order is a pure
+  // function of environment + build constants.
+  std::vector<std::string> directories;
+  const char* env = read_env("ARBC_PLUGIN_PATH");
+  if (env != nullptr && env[0] != '\0') {
+    directories = split_directory_list(env, k_path_separator);
+  }
+  for (std::string& dir : default_plugin_directories()) {
+    directories.push_back(std::move(dir));
+  }
+
+  // Each directory is scanned at most once per combined scan (Constraint 3):
+  // dedup by string equality after trailing-separator trim (Decision 4). Aliased
+  // paths this cannot see (symlinks, case) stay covered by the registry's
+  // DuplicateId guard -- the semantic safety net.
+  std::vector<std::string> visited;
   for (const std::string& dir : directories) {
-    // Enumerate the directory's shared-library entries. Missing/unreadable
-    // directories are silently ignored -- a stale `ARBC_PLUGIN_PATH` entry is not a
-    // loader error. The candidate set is filtered by the shared `has_suffix`, so the
-    // library suffix is single-sourced across platforms.
-    std::vector<std::string> candidates;
-#if defined(_WIN32)
-    // FindFirstFile over `dir\*`; INVALID_HANDLE_VALUE is the `opendir == nullptr`
-    // silent skip. Its enumeration order is unspecified -- the shared std::sort below
-    // is what makes the scan deterministic (Constraint 4/5).
-    std::string pattern = dir;
-    if (!pattern.empty() && pattern.back() != '\\' && pattern.back() != '/') {
-      pattern.push_back('\\');
-    }
-    pattern.push_back('*');
-    WIN32_FIND_DATAA find_data;
-    HANDLE handle = ::FindFirstFileA(pattern.c_str(), &find_data);
-    if (handle == INVALID_HANDLE_VALUE) {
+    std::string key = trim_trailing_separators(dir);
+    if (std::find(visited.begin(), visited.end(), key) != visited.end()) {
       continue;
     }
-    do {
-      const std::string_view name(find_data.cFileName);
-      if (has_suffix(name, k_shared_lib_suffix)) {
-        std::string full = dir;
-        if (!full.empty() && full.back() != '\\' && full.back() != '/') {
-          full.push_back('\\');
-        }
-        full.append(name);
-        candidates.push_back(std::move(full));
-      }
-    } while (::FindNextFileA(handle, &find_data) != 0);
-    ::FindClose(handle);
-#else
-    DIR* handle = ::opendir(dir.c_str());
-    if (handle == nullptr) {
-      continue;
-    }
-    for (const dirent* entry = ::readdir(handle); entry != nullptr; entry = ::readdir(handle)) {
-      const std::string_view name(entry->d_name);
-      if (has_suffix(name, k_shared_lib_suffix)) {
-        std::string full = dir;
-        if (!full.empty() && full.back() != '/') {
-          full.push_back('/');
-        }
-        full.append(name);
-        candidates.push_back(std::move(full));
-      }
-    }
-    ::closedir(handle);
-#endif
-
-    // Deterministic load order (Constraint 5): sort lexicographically so the
-    // registration sequence -- and thus any DuplicateId outcome -- is reproducible.
-    std::sort(candidates.begin(), candidates.end());
-
-    for (const std::string& candidate : candidates) {
-      OpenResult opened = open_and_resolve(candidate);
-      if (!opened.opened) {
-        report.entries.push_back(
-            {candidate, PluginScanEntry::Outcome::CannotOpen, std::move(opened.diagnostic)});
-        continue;
-      }
-      if (opened.fn == nullptr) {
-        // A support library in the plugin directory: skip, do not fail the scan
-        // (Decision 3).
-        report.entries.push_back({candidate, PluginScanEntry::Outcome::SkippedNoEntry, ""});
-        continue;
-      }
-
-      d_handles.emplace_back(opened.handle);
-      const std::size_t before = d_registry.size();
-      opened.fn(d_registry);
-      if (d_registry.size() == before) {
-        // Registered nothing new -> a DuplicateId collision; the earlier
-        // registration is left intact (Decision 2, explicit registration wins).
-        report.entries.push_back({candidate, PluginScanEntry::Outcome::DuplicateId, ""});
-      } else {
-        report.entries.push_back({candidate, PluginScanEntry::Outcome::Loaded, ""});
-        ++report.loaded;
-      }
-    }
+    visited.push_back(std::move(key));
+    scan_directory(dir, report);
   }
 
   return report;

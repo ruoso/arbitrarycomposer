@@ -174,6 +174,22 @@ target_compile_features(plugin_scan PRIVATE cxx_std_20)
 add_test(NAME plugin_scan COMMAND plugin_scan)
 set_property(TEST plugin_scan PROPERTY ENVIRONMENT "ARBC_PLUGIN_PATH=${arbc_plugin_dir}")
 
+# runtime.plugin_default_search_paths: the zero-configuration story -- the SAME staged
+# plugins discovered with NO env vars, through scan_standard_paths()'s image-relative
+# install-libdir default. Gated to the shared build like the DT_NEEDED machinery: only
+# there is the arbc image a shared library sitting in the staged libdir, putting the
+# image-relative default (<libdir>/arbc/plugins) inside the stage; a static consumer's
+# image is this executable and the compiled-in fallback names the configure-time
+# prefix, not the stage. The binary unsets/pins its own env (no ENVIRONMENT property).
+if(arbc_libtype STREQUAL "SHARED_LIBRARY")
+  add_executable(plugin_default_scan plugin_default_scan.cpp)
+  target_link_libraries(plugin_default_scan PRIVATE arbc::arbc)
+  target_compile_features(plugin_default_scan PRIVATE cxx_std_20)
+  target_compile_definitions(plugin_default_scan
+                             PRIVATE "ARBC_STAGED_PLUGIN_DIR=\"${arbc_plugin_dir}\"")
+  add_test(NAME plugin_default_scan COMMAND plugin_default_scan)
+endif()
+
 # packaging.plugin_helper: run_staged_install.cmake built examples/plugin-template --
 # find_package + one arbc_add_plugin() call -- against the SAME staged prefix and hands
 # the produced module's path here. The test loads it through the production

@@ -20,7 +20,9 @@
 // Two audiences, one object (doc 10:49-52): an embedder drives `registry()` +
 // `load_plugin(path)` explicitly ("embedders usually want control"); an
 // application host additionally calls `scan_plugin_path()` for the opt-in
-// `ARBC_PLUGIN_PATH` directory sweep. The ordering contract -- "explicit host
+// `ARBC_PLUGIN_PATH` directory sweep, or `scan_standard_paths()` for that sweep
+// PLUS the platform-conventional default directories (doc 10:50-53,
+// runtime.plugin_default_search_paths). The ordering contract -- "explicit host
 // registration first" -- is realized on the `Registry`'s existing `DuplicateId`
 // return: the host registers explicitly BEFORE scanning, and a scanned kind that
 // collides with an already-registered id is a per-entry value, not a silent
@@ -84,6 +86,21 @@ struct PluginScanReport {
   std::size_t loaded = 0;
   std::vector<PluginScanEntry> entries;
 };
+
+// The platform-conventional default plugin directories, in pinned priority order
+// (runtime.plugin_default_search_paths Decision 2): the per-user data dir
+// (`$XDG_DATA_HOME`, else `$HOME/.local/share`; `%LOCALAPPDATA%` on Windows), each
+// system data dir (`$XDG_DATA_DIRS` in listed order, XDG spec fallback
+// `/usr/local/share:/usr/share`; none on Windows), the directory holding the arbc
+// binary image itself (`dladdr` / `GetModuleFileNameA` -- correct across relocated
+// and staged installs), and the configure-time install libdir (the static-build
+// backstop; Decision 3) -- each suffixed `arbc/plugins` to match the shipped
+// install layout (packaging/install.md D6). Pure resolution: reads only the
+// environment and the loaded-image table; touches no filesystem, dlopens nothing,
+// and silently skips entries whose inputs are unset (an unset `$HOME`, an
+// unresolvable image path). Duplicates are NOT collapsed here -- the combined scan
+// dedups across the env-listed dirs too (`scan_standard_paths()`).
+ARBC_API std::vector<std::string> default_plugin_directories();
 
 namespace detail {
 
@@ -152,7 +169,26 @@ public:
   // value that leaves the earlier registration intact (Decision 2). Never throws.
   PluginScanReport scan_plugin_path();
 
+  // The combined opt-in scan for application-style hosts (doc 10:50-53's
+  // "platform-conventional locations", runtime.plugin_default_search_paths): every
+  // `ARBC_PLUGIN_PATH` directory first, in listed order and with the exact
+  // per-directory semantics of `scan_plugin_path()`, then every
+  // `default_plugin_directories()` entry -- each directory visited at most once
+  // (string dedup after trailing-separator trim; aliased paths dedup cannot see
+  // stay covered by the registry's `DuplicateId` guard). Precedence is unchanged:
+  // the scan stays additive and first-registration-wins, so explicit registration
+  // beats env-listed dirs beats defaults, and a collision is a per-entry
+  // `DuplicateId` value. Defaults are reachable ONLY through this method --
+  // `scan_plugin_path()` keeps its zero-fs-access contract verbatim. Never throws.
+  PluginScanReport scan_standard_paths();
+
 private:
+  // The shared per-directory enumeration + load step both scans drive: enumerate
+  // `directory`'s shared-library entries (a missing/unreadable directory is a
+  // silent skip), sort lexicographically, load each candidate, and append the
+  // per-entry outcomes to `report`.
+  void scan_directory(const std::string& directory, PluginScanReport& report);
+
   std::vector<detail::PluginHandle> d_handles; // destroyed AFTER d_registry (dlclose last)
   Registry d_registry;                         // destroyed FIRST (factories released first)
 };

@@ -55,6 +55,14 @@ target_link_libraries(arbc_runtime PRIVATE nlohmann_json::nlohmann_json)
 # `arbc_*` component, so it is invisible to check_levels.py (no new edge).
 target_link_libraries(arbc_runtime PRIVATE ${CMAKE_DL_LIBS})
 
+# The configure-time install libdir, compiled PRIVATE into the default-directory
+# resolver (runtime.plugin_default_search_paths Decision 3): the static-build
+# backstop behind the image-relative entry -- dladdr/GetModuleFileNameA answers
+# relocated and staged installs; this constant answers the classic non-relocated
+# prefix, where the two coincide and the combined scan's dedup collapses them.
+target_compile_definitions(arbc_runtime
+                           PRIVATE "ARBC_INSTALL_LIBDIR=\"${CMAKE_INSTALL_FULL_LIBDIR}\"")
+
 arbc_component_test(COMPONENT runtime
                     SOURCES t/housekeeping.t.cpp t/housekeeping_thread.t.cpp
                             t/housekeeping_document.t.cpp t/worker_pool.t.cpp
@@ -90,4 +98,12 @@ arbc_component_bench(COMPONENT runtime SOURCES bench/interactive_worker_bench.cp
 # and no new dependency (doc 10).
 if(TARGET arbc_runtime_t)
   target_link_libraries(arbc_runtime_t PRIVATE nlohmann_json::nlohmann_json)
+  # t/plugin_host.t.cpp asserts default_plugin_directories()' exact ordered output
+  # (runtime.plugin_default_search_paths), so it needs the same configured-libdir
+  # constant the resolver compiled in, plus the platform dynamic loader to compute
+  # the expected image-relative entry independently (dladdr on the resolver's own
+  # public symbol).
+  target_compile_definitions(arbc_runtime_t
+                             PRIVATE "ARBC_INSTALL_LIBDIR=\"${CMAKE_INSTALL_FULL_LIBDIR}\"")
+  target_link_libraries(arbc_runtime_t PRIVATE ${CMAKE_DL_LIBS})
 endif()
