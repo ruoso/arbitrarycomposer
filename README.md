@@ -29,14 +29,13 @@ so you retouch by stacking an editable raster over it.
 
 ## Status
 
-Implementation underway, pre-0.1. The library is built, tested, and
-installable: a levelized component tree under `src/`, shared and static
-builds, a per-push CI matrix across GCC/Clang/MSVC ×
-Debug/Release/ASan/TSan/RTSan, a claims register that pins the design docs'
-promises to tests, and a relocatable CMake package with shipped, CI-run
-embedding examples. Nothing is tagged yet and the surface still moves freely;
-the first tag will be v0.1.0, and the `[Unreleased]` section of
-[CHANGELOG.md](CHANGELOG.md) describes the surface that tag will name.
+Released: **v0.1.0**. The library is built, tested, and installable: a
+levelized component tree under `src/`, shared and static builds, a per-push CI
+matrix across GCC/Clang/MSVC × Debug/Release/ASan/TSan/RTSan, a claims register
+that pins the design docs' promises to tests, and a relocatable CMake package
+with shipped, CI-run embedding examples. Pre-1.0 the surface still moves freely;
+[CHANGELOG.md](CHANGELOG.md) records what each tag ships, and its `[0.1.0]`
+section describes this release's surface.
 
 ## Quickstart: embedding the library
 

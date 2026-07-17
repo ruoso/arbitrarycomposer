@@ -19,7 +19,11 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
-The surface the first tag (0.1.0) will name. There is no released version yet, so
+_Nothing yet._
+
+## [0.1.0] - 2026-07-17
+
+The surface the first tag (0.1.0) names. There is no predecessor version, so
 there is nothing for these to have changed *from*: this section describes what
 0.1.0 ships, not a diff against a predecessor.
 
@@ -55,7 +59,10 @@ there is nothing for these to have changed *from*: this section describes what
 - **Rendering** — a CPU reference backend with byte-exact deterministic output,
   compositing source-over on premultiplied alpha in a per-composition working color
   space, with a power-of-two scale-rung tile cache and higher-order (Lanczos-3 /
-  Catmull-Rom) resampling.
+  Catmull-Rom) resampling. Content may hand back its own surface (a decoder's
+  output, an engine framebuffer) instead of filling the target, and caller CPU
+  memory imports wrap-or-copy through the backend — foreign pixel formats converted
+  at import so no foreign tag reaches the compositor.
 - **Audio** — a block cache, a composition mixer, and a lookahead scheduler that
   keeps the RT device callback free of rendering work.
 - **The versioned data model** — persistent, structurally shared document state with
