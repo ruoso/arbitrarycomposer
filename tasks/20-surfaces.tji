@@ -19,6 +19,7 @@ task surfaces "Surfaces and backends" {
   task import "External import (wrap-or-copy)" {
     effort 2d
     allocate team
+    complete 100
     depends !capabilities
     note "Import of caller memory as surfaces in the CPU backend (wrap; copy for anything else), sync token API shaped for GPU fences later. DECIDED POLICY (parking-lot triage 2026-07-16, resolving tasks/parking-lot.md 2026-07-07 'Cross-tag convert-at-composite for content-provided surfaces'): foreign-tagged caller memory takes the COPY path and converts at import time — the image/imageseq precedent (Rgba8Srgb → WorkingPixel → k_working_rgba32f, imageseq_content.cpp) — and zero-copy WRAP is reserved for working-space-tagged memory, making the wrap/copy fork deterministic on the tag. Convert-at-composite stays out of v0.1 entirely: no backend seam, no foreign tag ever reaches the compositor. Doc 09."
   }

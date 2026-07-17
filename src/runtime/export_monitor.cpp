@@ -35,6 +35,9 @@ public:
   void composite_clipped(Surface&, const Surface&, const Affine&, double, const Rect&) override {}
   void downsample(Surface&, const Surface&) override {}
   void convert(Surface&, const Surface&) override {}
+  expected<std::unique_ptr<Surface>, SurfaceError> import_cpu_memory(const CpuImport&) override {
+    return unexpected(SurfaceError::UnsupportedFormat);
+  }
 };
 
 // The visual tile cache and the 1D block cache the pull substrate owns. Both stay

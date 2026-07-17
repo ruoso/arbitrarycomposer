@@ -4,7 +4,7 @@ arbc_add_component(
   PUBLIC_HEADERS arbc/surface/backend.hpp arbc/surface/surface.hpp
                  arbc/surface/typed_span.hpp arbc/surface/capabilities.hpp
                  arbc/surface/surface_error.hpp arbc/surface/surface_pool.hpp
-                 arbc/surface/surface_ref.hpp
+                 arbc/surface/surface_ref.hpp arbc/surface/import.hpp
                  arbc/surface/testing/stub_backend.hpp
                  arbc/surface/testing/forwarding_backend.hpp
                  arbc/surface/testing/counting_backend.hpp

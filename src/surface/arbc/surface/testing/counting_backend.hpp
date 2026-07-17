@@ -74,6 +74,12 @@ public:
     ForwardingBackend::convert(dst, src);
   }
 
+  expected<std::unique_ptr<Surface>, SurfaceError>
+  import_cpu_memory(const CpuImport& import) override {
+    ++import_cpu_memory_calls;
+    return ForwardingBackend::import_cpu_memory(import);
+  }
+
   void reset() {
     capabilities_calls = 0;
     make_surface_calls = 0;
@@ -83,6 +89,7 @@ public:
     composite_clipped_calls = 0;
     downsample_calls = 0;
     convert_calls = 0;
+    import_cpu_memory_calls = 0;
   }
 
   mutable int capabilities_calls = 0;
@@ -93,6 +100,7 @@ public:
   int composite_clipped_calls = 0;
   int downsample_calls = 0;
   int convert_calls = 0;
+  int import_cpu_memory_calls = 0;
 };
 
 } // namespace arbc::testing

@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <functional>
 #include <memory>
 #include <span>
 #include <utility>
@@ -261,10 +263,14 @@ TEST_CASE("the reference backend advertises its honest current capabilities") {
   REQUIRE(s.has_value());
   REQUIRE_FALSE((*s)->cpu_bytes().empty());
 
-  // No import or sync machinery exists yet, so neither is advertised until
-  // surfaces.import / GPU backends land it.
-  REQUIRE(caps.import_handles.empty());
-  REQUIRE_FALSE(caps.import_handles.test(arbc::ImportHandle::CpuMemory));
+  // CPU-memory import lands with surfaces.import, so that one handle bit is now
+  // advertised. The GPU handle types and sync primitives stay off until a GPU
+  // backend lands them -- advertising machinery that does not exist is exactly the
+  // dishonesty capability honesty forbids.
+  REQUIRE(caps.import_handles.test(arbc::ImportHandle::CpuMemory));
+  REQUIRE_FALSE(caps.import_handles.test(arbc::ImportHandle::GlTexture));
+  REQUIRE_FALSE(caps.import_handles.test(arbc::ImportHandle::VulkanImage));
+  REQUIRE_FALSE(caps.import_handles.test(arbc::ImportHandle::DmaBuf));
   REQUIRE(caps.sync_primitives == false);
 }
 
@@ -922,6 +928,142 @@ TEST_CASE("a clip is rounded OUT to whole device pixels") {
                              : arbc::WorkingPixel{1.0F, 0.0F, 0.0F, 1.0F}));
     }
   }
+}
+
+// ---- surfaces.import: wrap-or-copy of caller CPU memory (doc 09) ----
+
+// A caller-owned byte buffer holding w*h pixels encoded in format F from one
+// working sample, row-major: the "external memory" an import wraps or copies.
+// Returned by value; the test lends its bytes to a CpuImport.
+template <PixelFormat F>
+std::vector<std::byte> caller_pixels(int w, int h, const arbc::WorkingPixel& sample) {
+  using Storage = typename arbc::PixelTraits<F>::Storage;
+  std::vector<std::byte> bytes(static_cast<std::size_t>(w) * h * arbc::bytes_per_pixel(F),
+                               std::byte{0});
+  auto* px = reinterpret_cast<Storage*>(bytes.data());
+  for (int i = 0; i < w * h; ++i) {
+    arbc::PixelTraits<F>::encode(sample, &px[static_cast<std::size_t>(i) * 4]);
+  }
+  return bytes;
+}
+
+// enforces: 09-surfaces-and-backends#import-wraps-matching-tag-zero-copy
+TEST_CASE("import wraps working-space caller memory zero-copy and releases on destroy") {
+  arbc::CpuBackend backend;
+  std::vector<std::byte> mem =
+      caller_pixels<PixelFormat::Rgba32fLinearPremul>(2, 2, {0.25F, 0.5F, 0.75F, 1.0F});
+  const std::byte* caller_ptr = mem.data();
+
+  int releases = 0;
+  {
+    const arbc::CpuImport imp{
+        .memory = mem,
+        .width = 2,
+        .height = 2,
+        .source_format = arbc::k_working_rgba32f,
+        .target_format = arbc::k_working_rgba32f,
+        .release = [&releases] { ++releases; },
+        .sync = {},
+    };
+    const arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> imported =
+        backend.import_cpu_memory(imp);
+    REQUIRE(imported.has_value());
+    REQUIRE((*imported)->format() == arbc::k_working_rgba32f);
+    REQUIRE((*imported)->width() == 2);
+    REQUIRE((*imported)->height() == 2);
+    // Zero copy: the surface's bytes ARE the caller's, same pointer -- no
+    // allocation, no conversion.
+    REQUIRE((*imported)->cpu_bytes().data() == caller_ptr);
+    REQUIRE(releases == 0); // not released while the wrapping surface is live
+  }
+  REQUIRE(releases == 1); // exactly once, on destruction: the buffer is free now
+}
+
+// enforces: 09-surfaces-and-backends#import-converts-foreign-tag-at-import
+TEST_CASE("import copies and converts a foreign-tagged source at import time") {
+  arbc::CpuBackend backend;
+  std::vector<std::byte> mem =
+      caller_pixels<PixelFormat::Rgba8Srgb>(2, 2, {0.25F, 0.5F, 0.75F, 1.0F});
+  const std::byte* caller_ptr = mem.data();
+
+  int releases = 0;
+  const arbc::CpuImport imp{
+      .memory = mem,
+      .width = 2,
+      .height = 2,
+      .source_format = arbc::k_fast_rgba8srgb,
+      .target_format = arbc::k_working_rgba32f,
+      .release = [&releases] { ++releases; },
+      .sync = {},
+  };
+  const arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> imported =
+      backend.import_cpu_memory(imp);
+  REQUIRE(imported.has_value());
+  // A FRESH surface (distinct pointer) carrying the WORKING tag -- so no foreign
+  // tag reaches the compositor -- and the caller's memory is untouched.
+  REQUIRE((*imported)->format() == arbc::k_working_rgba32f);
+  REQUIRE((*imported)->cpu_bytes().data() != caller_ptr);
+  REQUIRE(releases == 1); // fired before return: the copy is already done
+
+  // The imported pixels are byte-identical to the backend's own convert of the
+  // same source bytes -- the copy path IS one Backend::convert, not a private
+  // decode loop.
+  arbc::CpuSurface src(2, 2, arbc::k_fast_rgba8srgb);
+  std::memcpy(src.cpu_bytes().data(), mem.data(), mem.size());
+  arbc::CpuSurface want(2, 2, arbc::k_working_rgba32f);
+  backend.convert(want, src);
+  REQUIRE((*imported)->cpu_bytes().size() == want.cpu_bytes().size());
+  REQUIRE(std::memcmp((*imported)->cpu_bytes().data(), want.cpu_bytes().data(),
+                      want.cpu_bytes().size()) == 0);
+}
+
+// enforces: 09-surfaces-and-backends#import-faults-as-value
+TEST_CASE("import faults as a value on an unstorable source and fires no release") {
+  arbc::CpuBackend backend;
+  std::vector<std::byte> mem(static_cast<std::size_t>(2) * 2 * 16, std::byte{0});
+
+  int releases = 0;
+  // A source tag no codec honors (nonlinear rgba32f): the backend cannot read it
+  // back, so import faults as a value -- never an abort -- and the caller keeps
+  // its memory (release unfired).
+  const arbc::SurfaceFormat nonlinear{PixelFormat::Rgba32fLinearPremul, arbc::k_srgb,
+                                      arbc::Premultiplied::Yes};
+  const arbc::CpuImport bad{
+      .memory = mem,
+      .width = 2,
+      .height = 2,
+      .source_format = nonlinear,
+      .target_format = arbc::k_working_rgba32f,
+      .release = [&releases] { ++releases; },
+      .sync = {},
+  };
+  const arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> refused =
+      backend.import_cpu_memory(bad);
+  REQUIRE_FALSE(refused.has_value());
+  REQUIRE(refused.error() == arbc::SurfaceError::UnsupportedFormat);
+  REQUIRE(releases == 0); // the import did not happen; nothing to release
+
+#ifdef NDEBUG
+  // A memory span inconsistent with the declared geometry is a caller error the
+  // debug build asserts on; in release it is defended with the same value return
+  // (never an OOB read of foreign memory), and still fires no release.
+  int short_releases = 0;
+  std::vector<std::byte> short_mem(static_cast<std::size_t>(2) * 2 * 16 - 4, std::byte{0});
+  const arbc::CpuImport short_import{
+      .memory = short_mem,
+      .width = 2,
+      .height = 2,
+      .source_format = arbc::k_working_rgba32f,
+      .target_format = arbc::k_working_rgba32f,
+      .release = [&short_releases] { ++short_releases; },
+      .sync = {},
+  };
+  const arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> short_refused =
+      backend.import_cpu_memory(short_import);
+  REQUIRE_FALSE(short_refused.has_value());
+  REQUIRE(short_refused.error() == arbc::SurfaceError::UnsupportedFormat);
+  REQUIRE(short_releases == 0);
+#endif
 }
 
 } // namespace

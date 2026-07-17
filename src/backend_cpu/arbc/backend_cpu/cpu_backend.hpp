@@ -51,6 +51,11 @@ public:
                          const Rect& device_clip) override;
   void downsample(Surface& dst, const Surface& src) override;
   void convert(Surface& dst, const Surface& src) override;
+  // Wrap-or-copy import of caller CPU memory (doc 09:59-61,114-120). Equal
+  // source/target tags wrap `import.memory` zero-copy; unequal tags copy and
+  // convert into a fresh `target_format` surface at import time. Errors as values.
+  expected<std::unique_ptr<Surface>, SurfaceError>
+  import_cpu_memory(const CpuImport& import) override;
 };
 
 } // namespace arbc

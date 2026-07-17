@@ -91,8 +91,8 @@ TEST_CASE("bounded clip golden: a sub-tile bounded solid does not paint past its
 
   const auto whole = render_offline(document, viewport, backend);
   REQUIRE(whole.has_value());
-  const auto tiled = render_tiled(document, viewport, backend, (*whole)->width(),
-                                  (*whole)->height());
+  const auto tiled =
+      render_tiled(document, viewport, backend, (*whole)->width(), (*whole)->height());
   REQUIRE(tiled.has_value());
 
   // The overhang pixels (extent edge -> tile edge) equal the backdrop, byte for
@@ -119,8 +119,8 @@ TEST_CASE("bounded clip golden: a bounded solid straddling a tile boundary is cl
 
   const auto whole = render_offline(document, viewport, backend);
   REQUIRE(whole.has_value());
-  const auto tiled = render_tiled(document, viewport, backend, (*whole)->width(),
-                                  (*whole)->height());
+  const auto tiled =
+      render_tiled(document, viewport, backend, (*whole)->width(), (*whole)->height());
   REQUIRE(tiled.has_value());
   REQUIRE(byte_identical(**whole, **tiled));
 }
@@ -146,7 +146,8 @@ TEST_CASE("bounded clip golden: gated repaint of sub-tile bounds does not bleed"
   const auto resolver = resolver_for(document);
   arbc::SurfacePool pool(backend);
   arbc::TileCache cache(64u * 1024 * 1024);
-  auto target = backend.make_surface((*whole)->width(), (*whole)->height(), arbc::k_working_rgba32f);
+  auto target =
+      backend.make_surface((*whole)->width(), (*whole)->height(), arbc::k_working_rgba32f);
   REQUIRE(target.has_value());
 
   // A full (un-gated) pass warms the cache and fills the whole target -- equal to

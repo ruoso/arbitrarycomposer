@@ -5,6 +5,7 @@
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
 #include <arbc/surface/capabilities.hpp>
+#include <arbc/surface/import.hpp>
 #include <arbc/surface/surface.hpp>
 #include <arbc/surface/surface_error.hpp>
 
@@ -97,6 +98,25 @@ public:
   // import and display-out edges reuse -- so it carries no caller-specific
   // parameters.
   virtual void convert(Surface& dst, const Surface& src) = 0;
+
+  // Import caller-owned CPU memory as a surface (doc 09:59-61,114-120: "import is
+  // wrap-or-copy of caller memory"), gated on the `ImportHandle::CpuMemory`
+  // capability bit. Errors as values (doc 10), symmetric with `make_surface`: a
+  // backend with no CPU-memory import, or an unstorable source tag, or a `memory`
+  // span inconsistent with the declared (width, height, source_format), yields a
+  // SurfaceError -- never a null handle, never an abort.
+  //
+  // The wrap/copy fork is deterministic on the tag (`CpuImport`): equal source
+  // and target tags WRAP `import.memory` zero-copy; unequal tags COPY, converting
+  // the source into a fresh `target_format` surface at import time so no foreign
+  // tag ever reaches the compositor (doc 09:220-230). The returned surface always
+  // carries `target_format`. `import.release` fires when the backend is done with
+  // `import.memory` -- at the wrapped surface's destruction, or before return on
+  // the copy path -- and never at all if the import faults (the caller keeps its
+  // memory). CPU memory is the one handle type every backend can accept; a GPU
+  // backend adds its own handle-typed import for GL/Vulkan/DMA-BUF.
+  virtual expected<std::unique_ptr<Surface>, SurfaceError>
+  import_cpu_memory(const CpuImport& import) = 0;
 
 protected:
   Backend() = default;

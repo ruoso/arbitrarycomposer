@@ -77,6 +77,12 @@ public:
 
   void convert(arbc::Surface&, const arbc::Surface&) override { ++convert_seen; }
 
+  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>
+  import_cpu_memory(const arbc::CpuImport&) override {
+    ++import_cpu_memory_seen;
+    return arbc::unexpected(arbc::SurfaceError::UnsupportedFormat);
+  }
+
   mutable int capabilities_seen = 0;
   int make_surface_seen = 0;
   int clear_seen = 0;
@@ -85,6 +91,7 @@ public:
   int composite_clipped_seen = 0;
   int downsample_seen = 0;
   int convert_seen = 0;
+  int import_cpu_memory_seen = 0;
   int live = 0;
   float clear_red = 0.0F;
   double composite_opacity = 0.0;
@@ -101,10 +108,11 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   RecordingBackend inner;
   arbc::testing::CountingBackend backend(inner);
 
-  // Drive each of the eight operations exactly once through the decorator. The
+  // Drive each of the nine operations exactly once through the decorator. The
   // clip-scoped pair (`clear_rect` / `composite_clipped`) joined the contract with
-  // `compositor.refine_frame_composite_idempotence`, and this claim is about EVERY
-  // operation -- so growing the contract grows this test by construction.
+  // `compositor.refine_frame_composite_idempotence`, and `import_cpu_memory` joined
+  // it with `surfaces.import`; this claim is about EVERY operation -- so growing the
+  // contract grows this test by construction.
   const arbc::BackendCaps caps = backend.capabilities();
 
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> surface =
@@ -119,6 +127,7 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   backend.composite_clipped(**surface, other, arbc::Affine::identity(), 0.5, clip);
   backend.downsample(**surface, other);
   backend.convert(**surface, other);
+  backend.import_cpu_memory(arbc::CpuImport{});
 
   // Each operation was counted exactly once ...
   CHECK(backend.capabilities_calls == 1);
@@ -129,6 +138,7 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   CHECK(backend.composite_clipped_calls == 1);
   CHECK(backend.downsample_calls == 1);
   CHECK(backend.convert_calls == 1);
+  CHECK(backend.import_cpu_memory_calls == 1);
 
   // ... and, decisively, each one ARRIVED at the inner backend. This is the whole
   // promise: a decorator observes an operation, it does not absorb it. A base with
@@ -142,6 +152,7 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   CHECK(inner.composite_clipped_seen == 1);
   CHECK(inner.downsample_seen == 1);
   CHECK(inner.convert_seen == 1);
+  CHECK(inner.import_cpu_memory_seen == 1);
 
   // The forwards carry their arguments and their results through unmangled --
   // including the clip rects, which a decorator must pass through untouched.
@@ -164,6 +175,7 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
   CHECK(backend.composite_clipped_calls == 0);
   CHECK(backend.downsample_calls == 0);
   CHECK(backend.convert_calls == 0);
+  CHECK(backend.import_cpu_memory_calls == 0);
 }
 
 // enforces: 09-surfaces-and-backends#forwarding-double-delegates-every-op

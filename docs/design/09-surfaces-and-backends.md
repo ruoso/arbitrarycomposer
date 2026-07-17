@@ -229,6 +229,46 @@ is fully specified; the v1 implementation pins three points it left implicit:
    multi-format/GPU backend work (`color.kernels` / GPU backends) — a
    parking-lot item tied to that capability, not a standalone task.
 
+**Realization addendum (`surfaces.import`).** The wrap-or-copy import above
+(`09:59-61,114-120`) is realized as one backend seam,
+`Backend::import_cpu_memory(const CpuImport&)`
+(`src/surface/arbc/surface/import.hpp`, `backend.hpp`), returning
+`expected<unique_ptr<Surface>, SurfaceError>` symmetric with `make_surface`. It
+pins three points the contract left implicit:
+
+1. **The wrap/copy fork is `source_format == target_format`** — full-triple
+   equality, the DECIDED POLICY (parking-lot triage 2026-07-16, resolving the
+   2026-07-07 "cross-tag convert-at-composite" entry after four re-parks). Equal
+   tags **wrap**: the returned surface references the caller's bytes zero-copy
+   (no allocation, no convert), and the caller's `release` fires when that
+   surface is destroyed. Unequal tags **copy**: a fresh `target_format` surface
+   is allocated and the source is **converted at import time** — one
+   `Backend::convert` (the reuse `09:40-42` names), the image/imageseq decode
+   precedent generalized — with `release` fired before import returns. The
+   returned surface therefore *always* carries `target_format`, so **no foreign
+   tag ever reaches the compositor** and convert-at-composite stays out of v0.1
+   (the same boundary the addendum above draws for provided surfaces). The
+   reasoning the policy turns on: for wrap-or-copy content, "wrap" and
+   "convert-at-composite" are the *same* choice and "copy" and
+   "convert-at-decode" are the *same* choice — wrapping host memory zero-copy is
+   incompatible with converting at decode (converting writes new pixels, i.e.
+   copies, defeating the wrap).
+2. **CPU memory is the only seamed handle.** `CpuBackend::capabilities()` flips
+   the `ImportHandle::CpuMemory` bit on and leaves `GlTexture`/`VulkanImage`/
+   `DmaBuf` and `sync_primitives` off (capability honesty — advertise only what
+   is implemented). The GL/Vulkan/DMA-BUF handles `09:114-116` lists, and a live
+   sync-primitive wait, are a GPU backend's to add; `CpuImport::sync`
+   (`ImportSync`) is shipped **inert but shaped** so that seam's signature stays
+   stable. This exercises the API path "from day one even though zero-copy only
+   pays off on GPU" (`09:118-120`) without wiring a content kind that produces
+   foreign caller memory (none exists in v0.1's image-editor scope).
+3. **Import faults as a value; a fault fires no release.** An unstorable source
+   tag (one outside the closed working set) — or, defensively in release, a
+   `memory` span inconsistent with the declared geometry — is a
+   `SurfaceError::UnsupportedFormat` value, never an abort. Because the import
+   did not happen, the caller's `release` is not fired: the caller retains
+   ownership of its memory, exactly as on the wrap path before consumption.
+
 ## Threading note
 
 Backend objects follow the doc-02 model: surface allocation and composite

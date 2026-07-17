@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -43,6 +44,51 @@ template <class Visitor> void visit_pixel_format(PixelFormat format, Visitor&& v
     return;
   }
 }
+
+// The three closed working formats the reference backend can store and read (doc
+// 07:110-115): premultiplied linear-light rgba32f and rgba16f, and the
+// straight-alpha 8-bit sRGB fast mode. Each pins a DISTINCT pixel format, so a
+// tag is storable iff it equals one of the three -- a color space or
+// premultiplication no codec honors is not. `make_surface` and `import_cpu_memory`
+// share this one predicate (the "can I form/read a surface of this tag?" test).
+bool is_storable(SurfaceFormat format) {
+  return format == k_working_rgba32f || format == k_working_rgba16f || format == k_fast_rgba8srgb;
+}
+
+// A CPU surface that WRAPS caller-owned bytes zero-copy rather than owning a
+// buffer (doc 09's import "wrap when given memory"). Holds an optional release
+// callback fired at destruction -- the doc-09 "hands a release back" -- so the
+// caller learns when its memory is free to reclaim/mutate. Non-owning: the bytes
+// outlive nothing here; the caller guarantees they stay valid until release
+// fires. The same class serves as the read-only convert SOURCE on the copy path
+// (constructed with a null release, which is then fired manually once the copy is
+// done) -- so it is file-local, never a public concrete type.
+class WrappedCpuSurface final : public Surface {
+public:
+  WrappedCpuSurface(std::span<std::byte> bytes, int width, int height, SurfaceFormat format,
+                    std::function<void()> release)
+      : d_bytes(bytes), d_width(width), d_height(height), d_format(format),
+        d_release(std::move(release)) {}
+
+  ~WrappedCpuSurface() override {
+    if (d_release) {
+      d_release();
+    }
+  }
+
+  int width() const override { return d_width; }
+  int height() const override { return d_height; }
+  SurfaceFormat format() const override { return d_format; }
+  std::span<std::byte> cpu_bytes() override { return d_bytes; }
+  std::span<const std::byte> cpu_bytes() const override { return d_bytes; }
+
+private:
+  std::span<std::byte> d_bytes;
+  int d_width;
+  int d_height;
+  SurfaceFormat d_format;
+  std::function<void()> d_release;
+};
 
 // Resolve a device-space clip rect against a destination's bounds into the
 // half-open integer pixel box the kernels walk (doc 09 "The clip-scoped
@@ -132,12 +178,13 @@ CpuSurface::CpuSurface(int width, int height, SurfaceFormat format)
 BackendCaps CpuBackend::capabilities() const {
   // Honest current caps (doc 07/09): the reference backend serves typed CPU
   // access, imports no external handles, and offers no sync primitives. The
-  // import bits flip on when surfaces.import lands wrap-or-copy; sync arrives
-  // with GPU backends. Advertising them before the machinery exists would be
-  // exactly the dishonesty capability honesty forbids.
+  // import of CPU memory lands wrap-or-copy with surfaces.import (below); sync
+  // arrives with GPU backends. Advertising a handle type or sync it cannot honor
+  // would be exactly the dishonesty capability honesty forbids -- so only the
+  // CpuMemory import bit flips, and sync_primitives stays off.
   return BackendCaps{
       .cpu_access = true,
-      .import_handles = {},
+      .import_handles = ImportHandle::CpuMemory,
       .sync_primitives = false,
   };
 }
@@ -152,7 +199,7 @@ expected<std::unique_ptr<Surface>, SurfaceError> CpuBackend::make_surface(int wi
   // or premultiplied rgba8) is honestly unsupported -> SurfaceError, surfaced
   // as a value (doc 10), never a null handle and never an abort. A configurable
   // working space beyond these arrives with color.working_space.
-  if (format != k_working_rgba32f && format != k_working_rgba16f && format != k_fast_rgba8srgb) {
+  if (!is_storable(format)) {
     return unexpected(SurfaceError::UnsupportedFormat);
   }
   // Convert to the base handle first: expected's value ctor takes exactly
@@ -258,6 +305,63 @@ void CpuBackend::convert(Surface& dst, const Surface& src) {
       }
     });
   });
+}
+
+expected<std::unique_ptr<Surface>, SurfaceError>
+CpuBackend::import_cpu_memory(const CpuImport& import) {
+  // The reference backend imports CPU memory only when it can read the source
+  // bytes as one of the three closed working formats -- doc 09's "anything else
+  // it can read back" boundary, made precise. An unstorable source tag is an
+  // UnsupportedFormat value, never an abort, and the caller keeps its memory
+  // (release never fires, because the import did not happen).
+  if (!is_storable(import.source_format)) {
+    return unexpected(SurfaceError::UnsupportedFormat);
+  }
+
+  // A public boundary receiving EXTERNAL memory: a span inconsistent with the
+  // declared (width, height, source_format) would read out of bounds through the
+  // typed views below. Debug-assert the caller error AND defend it in release with
+  // a value -- unlike convert/composite/downsample's internal dimension mismatches,
+  // which no-op cull, an OOB read of foreign memory is not survivable that way.
+  const std::size_t expected_bytes = static_cast<std::size_t>(import.width) *
+                                     static_cast<std::size_t>(import.height) *
+                                     bytes_per_pixel(import.source_format.pixel_format);
+  assert(import.memory.size() == expected_bytes);
+  if (import.memory.size() != expected_bytes) {
+    return unexpected(SurfaceError::UnsupportedFormat);
+  }
+
+  // WRAP (doc 09 DECIDED POLICY, parking-lot triage 2026-07-16): the source is
+  // already in the target working space, so hand back a zero-copy view over the
+  // caller's bytes -- no allocation, no convert. `release` fires when this surface
+  // is destroyed, telling the caller its buffer is free to reclaim/mutate.
+  if (import.source_format == import.target_format) {
+    std::unique_ptr<Surface> wrapped = std::make_unique<WrappedCpuSurface>(
+        import.memory, import.width, import.height, import.source_format, import.release);
+    return wrapped;
+  }
+
+  // COPY (doc 09 DECIDED POLICY): a FOREIGN source tag converts at import time, so
+  // no foreign tag ever reaches the compositor (doc 09:220-230). Allocate the
+  // target-tagged surface; an unstorable target is the make_surface fault,
+  // forwarded as a value (release still unfired -- the import did not happen).
+  expected<std::unique_ptr<Surface>, SurfaceError> dst =
+      make_surface(import.width, import.height, import.target_format);
+  if (!dst.has_value()) {
+    return dst;
+  }
+  // A non-owning read-only view over the caller's bytes as the convert SOURCE.
+  // Null release: this temporary must NOT fire the caller's callback on its own
+  // destruction -- we fire it explicitly, once, after the copy is done. One
+  // `convert` transcodes source -> premultiplied linear working float -> target
+  // (doc 07:104-108), the exact reuse doc 09:40-42 names for the import edge.
+  WrappedCpuSurface source(import.memory, import.width, import.height, import.source_format,
+                           nullptr);
+  convert(**dst, source);
+  if (import.release) {
+    import.release();
+  }
+  return dst;
 }
 
 } // namespace arbc

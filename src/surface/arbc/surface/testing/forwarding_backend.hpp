@@ -66,6 +66,11 @@ public:
 
   void convert(Surface& dst, const Surface& src) override { d_inner.convert(dst, src); }
 
+  expected<std::unique_ptr<Surface>, SurfaceError>
+  import_cpu_memory(const CpuImport& import) override {
+    return d_inner.import_cpu_memory(import);
+  }
+
 protected:
   // The backend being decorated, for a subclass that overrides an operation and
   // still wants to pass it through after observing it.

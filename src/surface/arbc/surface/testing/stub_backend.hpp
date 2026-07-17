@@ -73,6 +73,15 @@ public:
   void downsample(Surface& /*dst*/, const Surface& /*src*/) override {}
 
   void convert(Surface& /*dst*/, const Surface& /*src*/) override {}
+
+  // Like `make_surface`, defaults to `UnsupportedFormat`: a stub advertises no
+  // import handles (empty `capabilities()`), so refusing is the honest report,
+  // and refusing means the caller keeps its memory -- the stub fires no
+  // `import.release`, exactly as the contract says a faulted import does not.
+  expected<std::unique_ptr<Surface>, SurfaceError>
+  import_cpu_memory(const CpuImport& /*import*/) override {
+    return unexpected(SurfaceError::UnsupportedFormat);
+  }
 };
 
 } // namespace arbc::testing
