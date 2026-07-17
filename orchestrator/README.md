@@ -22,10 +22,14 @@ that the driver owns:
    `clang-format -i` (auto-fixup), then `scripts/gate` (fast host-side
    pre-check), then replays the real per-push CI
    (`.github/workflows/ci.yml`) locally with `act` in docker containers:
-   the `lint` job, every `build-test` matrix leg except `msvc-debug` (no
-   local Windows container runtime), and the `coverage` job including its
-   diff-coverage gate (each output tee'd to
-   `logs/iter-NNNN-verify-<step>.log`). `ci.yml` is the single source of
+   the `lint` job, every Linux `build-test` matrix leg, and the `coverage`
+   job including its diff-coverage gate (each output tee'd to
+   `logs/iter-NNNN-verify-<step>.log`). The two `windows-latest` MSVC legs
+   (`msvc-debug`/`msvc-shared`) cannot be replayed by `act` on Linux, so they
+   build separately through real MSVC `cl.exe` under Wine — a purpose-built
+   image (`.github/act/msvc-wine.Dockerfile`) driving
+   `cmake/wine-msvc.toolchain.cmake` via `scripts/ci-msvc-wine` (compile+link
+   only). `ci.yml` is the single source of
    truth for what runs — the driver only selects jobs/legs, so local
    verification cannot drift from CI. On any failure it dispatches the
    `fixer` sub-agent against the failing log and loops (cap:

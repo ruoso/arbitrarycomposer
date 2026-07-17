@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Build one Windows/MSVC lane with real cl.exe/link.exe under Wine, via
+# cmake/wine-msvc.toolchain.cmake. This is what the orchestrator's local CI runs
+# in place of ci.yml's windows-latest msvc-debug/msvc-shared legs, which `act`
+# cannot replay (orchestrator/driver.py runs it inside the .github/act/
+# msvc-wine.Dockerfile image). It also runs standalone on any host that has the
+# msvc-wine toolchain, wine and ninja:
+#   ARBC_MSVC_WINE_BIN=/path/to/msvc/bin/x64 scripts/ci-msvc-wine win-shared
+#
+# Scope is BUILD (compile + link) only -- the class of failure the MSVC lanes
+# catch (C4251/WX, unqualified names, missing includes, nested-class exports,
+# LNK) is a build-time property, and running the suite under Wine is far too slow
+# for a per-iteration gate. Catch2 discovery is deferred to PRE_TEST so the build
+# does not launch every test exe under Wine (also the mode Catch2 recommends when
+# cross-compiling).
+set -euo pipefail
+
+usage() { echo "usage: $0 <win-dev|win-shared>" >&2; exit 2; }
+[[ $# -eq 1 ]] || usage
+
+lane="$1"
+# Build tree root. Defaults to build/ (in-tree, for host/dual-use runs); the
+# containerized driver points ARBC_MSVC_BUILD_ROOT at a mounted volume so nothing
+# is written into the (read-only) repo mount and the host tree stays clean.
+build_root="${ARBC_MSVC_BUILD_ROOT:-build}"
+case "$lane" in
+  win-dev)    build_dir="$build_root/msvc-wine-dev";    shared=OFF ;;
+  win-shared) build_dir="$build_root/msvc-wine-shared"; shared=ON  ;;
+  *) usage ;;
+esac
+
+# Fall back to $PWD when git refuses the tree (e.g. bind-mounted into a container
+# where the repo is owned by a different uid): docker run sets -w to the repo root.
+cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# Skip cleanly (exit 0) when the toolchain is not installed, so the local CI
+# chain does not hard-fail on a host/image without the msvc-wine setup. In the
+# .github/act/msvc-wine.Dockerfile image ARBC_MSVC_WINE_BIN and the tools are
+# always present, so there the lane always runs.
+bin="${ARBC_MSVC_WINE_BIN:-}"
+if [[ -z "$bin" || ! -x "$bin/cl" ]] || ! command -v wine >/dev/null 2>&1 \
+   || ! command -v ninja >/dev/null 2>&1; then
+  echo "ci-msvc-wine: msvc-wine toolchain not available" \
+       "(ARBC_MSVC_WINE_BIN=[${ARBC_MSVC_WINE_BIN:-unset}], wine/ninja on PATH?)" >&2
+  echo "ci-msvc-wine: SKIPPING the $lane lane." >&2
+  exit 0
+fi
+
+export PATH="$bin:$PATH"
+export WINEDEBUG="${WINEDEBUG:--all}"
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=}"
+
+# CMake caches the absolute source path, so a build dir configured on the host
+# (/home/.../repo) and one configured in the container (/work) collide when the
+# tree is shared (the container bind-mounts the repo). Wipe a stale one so
+# switching between host and container reconfigures cleanly instead of erroring.
+cache="$build_dir/CMakeCache.txt"
+if [[ -f "$cache" ]]; then
+  cached_src="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$cache")"
+  if [[ -n "$cached_src" && "$cached_src" != "$PWD" ]]; then
+    echo "ci-msvc-wine: $build_dir was configured for $cached_src, wiping for $PWD"
+    rm -rf "$build_dir"
+  fi
+fi
+
+echo "ci-msvc-wine: configure $lane (BUILD_SHARED_LIBS=$shared) via $bin"
+cmake -G Ninja -S . -B "$build_dir" \
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/wine-msvc.toolchain.cmake" \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DBUILD_TESTING=ON \
+  -DBUILD_SHARED_LIBS="$shared" \
+  -DARBC_STATIC_CATCH2=ON \
+  -DCMAKE_CATCH_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST
+
+echo "ci-msvc-wine: build $lane"
+cmake --build "$build_dir" --parallel "$(nproc)"

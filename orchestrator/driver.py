@@ -85,14 +85,16 @@ AUTO_FORMAT_STEP: tuple[str, list[str]] = (
 # real per-push CI (.github/workflows/ci.yml) locally with `act` inside
 # docker containers, so every check GitHub runs also gates each iteration
 # here. ci.yml stays the single source of truth for the steps — the lane
-# list below only selects which matrix legs to run. The `msvc-debug` leg is
-# excluded: there is no local Windows container runtime.
+# list below only selects which matrix legs to run. The `msvc-debug`/
+# `msvc-shared` legs are `runs-on: windows-latest`, which act cannot replay on
+# Linux; they build separately through Wine (see CI_MSVC_LANES below).
 ACT_RUNNER_IMAGE = "arbitrarycomposer/act-runner:latest"
 ACT_RUNNER_DOCKERFILE = REPO_ROOT / ".github" / "act" / "runner.Dockerfile"
 ACT_EVENT_FILE = STATE_DIR / "act-event.json"
 ACT_CCACHE_VOLUME = "arbitrarycomposer-act-ccache"
 
-# ci.yml `build-test` matrix legs runnable locally (all but msvc-debug).
+# ci.yml `build-test` matrix legs runnable locally via act (all but the two
+# windows-latest msvc legs, which run through Wine — see CI_MSVC_LANES).
 CI_BUILD_LANES: list[str] = [
     "gcc-debug",
     "gcc-release",
@@ -101,6 +103,56 @@ CI_BUILD_LANES: list[str] = [
     "gcc-tsan",
     "clang-rtsan",
 ]
+
+# The msvc-debug/msvc-shared legs, built locally with real MSVC cl.exe/link.exe
+# under Wine (msvc-wine) instead of GitHub's windows-latest runner. act cannot do
+# this — Windows containers do not run on a Linux docker host — so these build in a
+# purpose-built image (.github/act/msvc-wine.Dockerfile) that bakes in Wine plus the
+# actual MSVC toolchain, driven by cmake/wine-msvc.toolchain.cmake via
+# scripts/ci-msvc-wine. Compile+link only (the msvc failure class is a build-time
+# property; running the suite under Wine is too slow to gate every iteration).
+MSVC_WINE_IMAGE = "arbitrarycomposer/msvc-wine:latest"
+MSVC_WINE_DOCKERFILE = REPO_ROOT / ".github" / "act" / "msvc-wine.Dockerfile"
+# Persistent build tree for the MSVC lanes, in a named volume rather than the host
+# repo: the container runs as root, so a bind-mounted build dir would leave
+# root-owned files the host user cannot clean, and CMake's cached absolute paths
+# would collide between host and container runs. The volume keeps the build out of
+# the source tree entirely (the repo is mounted read-only) while still persisting
+# between iterations so ninja stays incremental.
+MSVC_WINE_BUILD_VOLUME = "arbitrarycomposer-msvc-wine-build"
+
+# ci.yml msvc legs -> (step name, preset arg passed to scripts/ci-msvc-wine).
+CI_MSVC_LANES: list[tuple[str, str]] = [
+    ("msvc-debug", "win-dev"),
+    ("msvc-shared", "win-shared"),
+]
+
+
+def msvc_wine_argv(preset: str) -> list[str]:
+    """argv to build one MSVC lane inside the msvc-wine image.
+
+    The repo is mounted read-only at /work; the out-of-source build tree lives in a
+    named volume at /msvc-build (ARBC_MSVC_BUILD_ROOT) so nothing is written into
+    the source tree or the host, yet the volume persists between iterations to keep
+    ninja incremental — the same isolation+incrementality the act lanes get from
+    their workspace copy + shared ccache volume. The image already exports
+    ARBC_MSVC_WINE_BIN and the Wine env the toolchain file needs."""
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{REPO_ROOT}:/work:ro",
+        "-v",
+        f"{MSVC_WINE_BUILD_VOLUME}:/msvc-build",
+        "-e",
+        "ARBC_MSVC_BUILD_ROOT=/msvc-build",
+        "-w",
+        "/work",
+        MSVC_WINE_IMAGE,
+        "scripts/ci-msvc-wine",
+        preset,
+    ]
 
 
 def act_argv(*args: str) -> list[str]:
@@ -160,6 +212,25 @@ VERIFICATION_STEPS: list[tuple[str, list[str]]] = [
     *[
         (f"ci-{lane}", act_argv("-j", "build-test", "--matrix", f"name:{lane}"))
         for lane in CI_BUILD_LANES
+    ],
+    # Ensure the msvc-wine image exists / picks up Dockerfile edits. The
+    # expensive layer (the ~2 GB MSVC toolchain download + install) is cached, so
+    # this is near-instant once built until the Dockerfile changes.
+    (
+        "ci-msvc-image",
+        [
+            "docker",
+            "build",
+            "-t",
+            MSVC_WINE_IMAGE,
+            "-f",
+            str(MSVC_WINE_DOCKERFILE),
+            str(MSVC_WINE_DOCKERFILE.parent),
+        ],
+    ),
+    *[
+        (f"ci-{name}", msvc_wine_argv(preset))
+        for name, preset in CI_MSVC_LANES
     ],
     ("ci-coverage", act_argv("-j", "coverage")),
 ]

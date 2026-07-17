@@ -126,7 +126,28 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
   GIT_TAG v3.7.1
   FIND_PACKAGE_ARGS 3)
+
+# Catch2 follows BUILD_SHARED_LIBS, so a shared build normally makes Catch2d.dll --
+# deliberately, so arbc-testing (the shipped conformance runtime) and the test exe
+# share ONE Catch2 registry across the DLL boundary at run time. ARBC_STATIC_CATCH2
+# forces Catch2 static even in a shared build; it exists ONLY for BUILD-ONLY lanes
+# that never run the suite (the Wine msvc-shared lane, scripts/ci-msvc-wine), where
+# the cross-image registry does not matter but a shared Catch2 does: under Wine the
+# Catch2 DLL links with an empty export table (Catch2Maind.dll then fails with
+# LNK2019 on Catch::Session/LeakDetector), whereas static Catch2 links cleanly and
+# still lets the test exes import arbc.dll -- which is what the shared lane checks
+# (arbc's export surface, e.g. the nested-class LNK2019s). Default OFF, so real CI
+# (gcc-shared/msvc-shared) is unchanged: there Catch2 stays a shared library.
+option(ARBC_STATIC_CATCH2
+       "Build Catch2 static even when BUILD_SHARED_LIBS is ON (build-only lanes)" OFF)
+if(ARBC_STATIC_CATCH2)
+  set(_arbc_saved_build_shared "${BUILD_SHARED_LIBS}")
+  set(BUILD_SHARED_LIBS OFF)
+endif()
 FetchContent_MakeAvailable(Catch2)
+if(ARBC_STATIC_CATCH2)
+  set(BUILD_SHARED_LIBS "${_arbc_saved_build_shared}")
+endif()
 if(catch2_SOURCE_DIR)
   list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
 elseif(Catch2_DIR)
