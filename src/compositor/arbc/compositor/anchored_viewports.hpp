@@ -132,11 +132,25 @@ ARBC_API RebaseResult rebase(const DocRoot& state, const Viewport& viewport);
 //    (`for_each_layer_in`), descending nested compositions (`find_composition`)
 //    until it reaches leaf layers, pruning sub-pixel/off-view subtrees.
 //
-// Pure: reads `state`, emits via `visit`, mutates nothing. Depth-agnostic
-// (Decision 5).
-ARBC_API void
-cull_walk(const DocRoot& state, const Viewport& viewport,
-          const std::function<void(const LayerRecord& layer, const Affine& composed)>& visit);
+// The leaf visitor receives the layer's own `ObjectId` (its DocState key,
+// otherwise unavailable off the record) alongside the record and composed
+// transform, so a consumer can match layer-keyed structural damage against the
+// walk path (`placement_damage_maps_to_device` Decision 2). `on_descend`
+// (optional, default none) fires for every composition-child layer encountered --
+// `(group_layer_id, child_composition_id, composed)` -- BEFORE the
+// visibility/opacity/sub-pixel pruning, so a group the very edit being mapped
+// hid or moved off-view is still reported and its old pixels get repainted
+// (Constraint 4); nodes strictly inside a pruned subtree stay unreported.
+// Rendering call sites ignore both extensions.
+//
+// Pure: reads `state`, emits via `visit`/`on_descend`, mutates nothing.
+// Depth-agnostic (Decision 5).
+ARBC_API void cull_walk(
+    const DocRoot& state, const Viewport& viewport,
+    const std::function<void(ObjectId layer_id, const LayerRecord& layer, const Affine& composed)>&
+        visit,
+    const std::function<void(ObjectId group_layer_id, ObjectId child_composition_id,
+                             const Affine& composed)>& on_descend = {});
 
 // The anchored frame driver: `render_frame` generalized over `viewport.anchor`.
 // Drives the surviving leaves `cull_walk` emits through the SAME per-layer path

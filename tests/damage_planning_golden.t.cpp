@@ -38,9 +38,10 @@ namespace {
 // re-render byte-for-byte (opaque source-over is a replace).
 struct Scene {
   arbc::Document document;
-  arbc::ObjectId background; // bottom: opaque, full-viewport
-  arbc::ObjectId foreground; // top: opaque, top-left tile only
-  arbc::ObjectId comp;       // the composition the frame walk is anchored at
+  arbc::ObjectId background;  // bottom: opaque, full-viewport
+  arbc::ObjectId foreground;  // top: opaque, top-left tile only
+  arbc::ObjectId front_layer; // the foreground's layer: the placement-edit target
+  arbc::ObjectId comp;        // the composition the frame walk is anchored at
 
   Scene() {
     background = document.add_content(std::make_shared<arbc::SolidContent>(
@@ -48,12 +49,21 @@ struct Scene {
     const arbc::ObjectId back_layer = document.add_layer(background, arbc::Affine::identity());
     foreground = document.add_content(std::make_shared<arbc::SolidContent>(
         arbc::Rgba{0.1F, 0.2F, 0.75F, 1.0F}, arbc::Rect{0.0, 0.0, 256.0, 256.0}));
-    const arbc::ObjectId front_layer = document.add_layer(foreground, arbc::Affine::identity());
+    front_layer = document.add_layer(foreground, arbc::Affine::identity());
     // Attach both layers (creation/bottom-to-top order) to a composition so the
     // composition-scoped frame walk draws them (doc 05:28-36).
     comp = document.add_composition(512.0, 512.0);
     document.attach_layer(comp, back_layer);
     document.attach_layer(comp, front_layer);
+  }
+};
+
+// Captures the model-flushed damage batches, so the placement golden below is
+// gated by the AUTO-EMITTED damage (claim row 29) -- nothing hand-forged.
+struct CollectSink final : arbc::DamageSink {
+  std::vector<arbc::Damage> records;
+  void flush(const std::vector<arbc::Damage>& damage) override {
+    records.insert(records.end(), damage.begin(), damage.end());
   }
 };
 
@@ -122,6 +132,71 @@ TEST_CASE("damage golden: a gated damaged-region re-render is byte-identical to 
   // Frame 2: gated re-render onto the persisted target. Only tiles intersecting
   // the dirty rect are re-planned/composited; the rest survive. Byte-identical
   // to the full re-render -- no seam, no double-blend.
+  arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
+                                 arbc::Deadline::none(), std::nullopt, nullptr, nullptr, &dirty);
+  REQUIRE(byte_identical(**reference, **target));
+}
+
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+// enforces: 02-architecture#placement-damage-maps-to-device
+TEST_CASE("damage golden: a placement-edit-gated repaint is byte-identical to a full re-render "
+          "of the edited scene") {
+  arbc::CpuBackend backend;
+  const arbc::Affine moved = arbc::Affine::translation(128.0, 64.0);
+
+  // The reference: a full render of the POST-EDIT scene (foreground already moved).
+  Scene ref_scene;
+  ref_scene.document.set_layer_transform(ref_scene.front_layer, moved);
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), ref_scene.comp};
+  const arbc::DocStatePtr ref_state = ref_scene.document.pin();
+  const auto ref_resolver = [&](arbc::ObjectId id) { return ref_scene.document.resolve(id); };
+  arbc::SurfacePool ref_pool(backend);
+  arbc::TileCache ref_cache(64u * 1024 * 1024);
+  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> reference =
+      backend.make_surface(512, 512, arbc::k_working_rgba32f);
+  REQUIRE(reference.has_value());
+  arbc::render_frame_interactive(*ref_state, ref_resolver, viewport, ref_cache, backend, ref_pool,
+                                 **reference, arbc::Deadline::none(), std::nullopt);
+
+  // The gated scene: full render at the ORIGINAL placement into the persisted
+  // target, warm cache -- then the placement edit, gated by its own auto-damage.
+  Scene scene;
+  const auto resolver = [&](arbc::ObjectId id) { return scene.document.resolve(id); };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024);
+  arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
+      backend.make_surface(512, 512, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  {
+    const arbc::DocStatePtr before = scene.document.pin();
+    arbc::render_frame_interactive(*before, resolver, viewport, cache, backend, pool, **target,
+                                   arbc::Deadline::none(), std::nullopt);
+  }
+
+  // The edit. The model flushes `Damage{front_layer, Rect::infinite(), all()}`
+  // (claim row 29); the sink captures it verbatim -- nothing is hand-forged.
+  CollectSink sink;
+  scene.document.set_damage_sink(&sink);
+  scene.document.set_layer_transform(scene.front_layer, moved);
+  scene.document.set_damage_sink(nullptr);
+  REQUIRE(sink.records.size() == 1);
+  CHECK(sink.records[0].object == scene.front_layer);
+
+  // Placement damage repaints, never invalidates: the layer-keyed record matches
+  // no TileKey.content, so the warm tiles all stay resident.
+  CHECK(arbc::invalidate_damage(cache, sink.records) == 0);
+
+  // The layer-keyed record maps to the full viewport of the displaying viewport.
+  const arbc::DocStatePtr state = scene.document.pin();
+  const std::vector<arbc::Rect> device_rects =
+      arbc::map_damage_to_device(*state, viewport, sink.records, arbc::Time::zero());
+  REQUIRE(device_rects.size() == 1);
+  CHECK(device_rects[0] == arbc::Rect{0.0, 0.0, 512.0, 512.0});
+  const arbc::DirtyRegion dirty{device_rects};
+
+  // The gated repaint re-composites the resident tiles through the new placement,
+  // byte-identical to the full re-render of the edited scene (doc 16: goldens,
+  // no tolerances).
   arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
                                  arbc::Deadline::none(), std::nullopt, nullptr, nullptr, &dirty);
   REQUIRE(byte_identical(**reference, **target));

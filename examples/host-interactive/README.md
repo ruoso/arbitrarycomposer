@@ -22,13 +22,19 @@ What it demonstrates, in order:
    affine composed onto the camera's left via `HostViewport::set_camera`;
    because it composes on the device side it stays valid whatever anchor the
    viewport has rebased the camera to.
-4. **The frame loop** — `HostViewport::step()` after each gesture, repeated
+4. **An object drag as a placement edit** (doc 01, doc 14) — the tape closes
+   with `document.set_layer_transform(...)`, dragging the panel's layer. A
+   placement edit auto-damages the layer's own id; that damage maps to the
+   full viewport of every viewport displaying the layer (doc 02), so the next
+   `step()` repaints — and it repaints without invalidating: the panel's tiles
+   stay resident and re-composite through the new transform.
+5. **The frame loop** — `HostViewport::step()` after each gesture, repeated
    while a follow-up frame is owed; the target surface persists across frames
    (doc 02) and holds the latest composed pixels at all times. The first step
    composites the bound scene even though every commit predates the binding
-   (the bootstrap frame), and each camera edit repaints on the next step —
-   the host never forges damage.
-5. **Artifact** — the final frame is converted to straight-alpha sRGB8 through
+   (the bootstrap frame), and each camera or placement edit repaints on the
+   next step — the host never forges damage.
+6. **Artifact** — the final frame is converted to straight-alpha sRGB8 through
    the library's `PixelTraits` encode and written as a PNG via
    `../common/png_writer.hpp`, so CI validates the loop's output, not just its
    exit code.
@@ -41,10 +47,15 @@ real windowing toolkit, replace the `tape` array and its `for` loop in
 
 - mouse-drag / touch-pan handler → `view.set_camera(compose(pan(dx, dy), view.camera()))`
 - wheel / pinch handler → `view.set_camera(compose(zoom_about(factor, x, y), view.camera()))`
+- object-drag handler → `document.set_layer_transform(layer, new_transform)`
 - a camera edit is damage (doc 02): the next `step()` repaints the full
   viewport at the new camera, with nothing else required of the host — and it
   repaints without invalidating, so panning back over already-rendered content
   re-plans from the tile cache
+- a placement edit is damage too (doc 01, doc 14): the model auto-emits it
+  keyed by the edited layer's own id, every viewport displaying that layer
+  repaints on its next `step()`, and — like a camera change — nothing is
+  invalidated: the moved content's tiles re-composite from the cache
 - frame tick (vsync callback, idle hook, or timer) → `view.step()`, re-arming
   the tick while `StepOutcome::schedule_follow_up` is set, then presenting the
   target surface (blit or texture upload — the pixels are CPU-readable
@@ -65,8 +76,8 @@ cmake --build build
 ```
 
 The output path is optional (defaults to `out.png` in the working directory).
-The program runs the scripted pan/zoom tape over a 512×512 scene, writes the
-final frame, and exits non-zero on any failure.
+The program runs the scripted pan/zoom-and-drag tape over a 512×512 scene,
+writes the final frame, and exits non-zero on any failure.
 
 CI configures, builds, and runs this project against a real staged install on
 every lane (the `install.consumer` CTest) and validates the emitted PNG

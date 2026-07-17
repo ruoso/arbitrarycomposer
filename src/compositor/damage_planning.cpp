@@ -92,19 +92,14 @@ std::vector<Rect> map_damage_to_device(const DocRoot& state, const Viewport& vie
     if (!(d.range.empty() || d.range.contains(now))) {
       continue;
     }
-    // Locate every visible layer that shows this content and project the damage
-    // rect through its composed local->device transform. `cull_walk` composes
-    // the anchor->device transform outward and already handles the anchored /
-    // flat cases; the visitor applies the per-leaf visibility predicates.
-    cull_walk(state, viewport, [&](const LayerRecord& layer, const Affine& composed) {
-      if (!(layer.content == d.object) || !layer.visible() || layer.opacity <= 0.0) {
-        return;
-      }
+    // One projection rule for every match kind (`placement_damage_maps_to_device`
+    // Decision 3): a non-finite rect saturates to the whole viewport rect
+    // (refinement 1a; this signature carries no resolver to tighten to
+    // `bounds()`), a finite rect maps through the matched node's composed
+    // local->device transform.
+    const auto add = [&](const Affine& composed) {
       Rect dev;
       if (!rect_is_finite(d.rect)) {
-        // Structural infinite damage: the object's device footprint clipped to
-        // the viewport -- conservatively the whole viewport rect (refinement 1a;
-        // this signature carries no resolver to tighten to `bounds()`).
         dev = device_rect;
       } else {
         dev = composed.map_rect(d.rect).intersect(device_rect);
@@ -112,7 +107,38 @@ std::vector<Rect> map_damage_to_device(const DocRoot& state, const Viewport& vie
       if (!dev.empty()) {
         device_rects.push_back(dev);
       }
-    });
+    };
+    // Match `d.object` against every ObjectId on the displayed tree's walk path
+    // (`placement_damage_maps_to_device` Decision 1): the anchor composition
+    // itself (membership damage, claim row 22)...
+    if (d.object == viewport.anchor) {
+      add(viewport.camera);
+    }
+    // ...then walk the tree. Leaf visitor: a LAYER-id match is placement damage
+    // and bypasses the visible/opacity gates -- the edit being mapped may be the
+    // very thing that hid the layer, and the old pixels still need repainting
+    // (Decision 4); a CONTENT-id match keeps the gates -- an invisible layer's
+    // content edit contributes no pixels, exactly as before. Descent hook
+    // (pre-pruning, Decision 2): a group layer's id (placement damage on the
+    // group) or a descended child composition's id (membership damage inside it)
+    // matches with the group's composed transform.
+    cull_walk(
+        state, viewport,
+        [&](ObjectId layer_id, const LayerRecord& layer, const Affine& composed) {
+          if (layer_id == d.object) {
+            add(composed);
+            return;
+          }
+          if (!(layer.content == d.object) || !layer.visible() || layer.opacity <= 0.0) {
+            return;
+          }
+          add(composed);
+        },
+        [&](ObjectId group_layer_id, ObjectId child_composition_id, const Affine& composed) {
+          if (group_layer_id == d.object || child_composition_id == d.object) {
+            add(composed);
+          }
+        });
   }
   return device_rects;
 }
@@ -123,22 +149,23 @@ std::vector<Damage> clock_advance_damage(const DocRoot& state, const ContentReso
   if (advanced.empty()) {
     return damage; // an empty advance damages nothing -- no work (doc 02:51)
   }
-  cull_walk(state, viewport, [&](const LayerRecord& layer, const Affine& /*composed*/) {
-    if (!layer.visible() || layer.opacity <= 0.0) {
-      return;
-    }
-    Content* content = resolve(layer.content);
-    if (content == nullptr) {
-      return;
-    }
-    // Static layers' cached tiles remain valid across a clock advance (doc
-    // 11:133-137; 11-time-and-video#static-tiles-survive-clock), so they emit
-    // no temporal damage; Timed/Live layers dirty their whole visible footprint.
-    if (content->stability() == Stability::Static) {
-      return;
-    }
-    damage_add(damage, Damage{layer.content, Rect::infinite(), advanced});
-  });
+  cull_walk(state, viewport,
+            [&](ObjectId /*layer_id*/, const LayerRecord& layer, const Affine& /*composed*/) {
+              if (!layer.visible() || layer.opacity <= 0.0) {
+                return;
+              }
+              Content* content = resolve(layer.content);
+              if (content == nullptr) {
+                return;
+              }
+              // Static layers' cached tiles remain valid across a clock advance (doc
+              // 11:133-137; 11-time-and-video#static-tiles-survive-clock), so they emit
+              // no temporal damage; Timed/Live layers dirty their whole visible footprint.
+              if (content->stability() == Stability::Static) {
+                return;
+              }
+              damage_add(damage, Damage{layer.content, Rect::infinite(), advanced});
+            });
   return damage;
 }
 

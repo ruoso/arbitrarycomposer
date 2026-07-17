@@ -36,10 +36,17 @@ bool subtree_culled(const Affine& composed, double canvas_w, double canvas_h,
 
 // Recursive descent from a composition node: compose each member's per-edge
 // transform on demand, prune off-view/sub-pixel nested-composition subtrees, and
-// emit leaf layers. Depth-agnostic (Decision 5).
+// emit leaf layers. Depth-agnostic (Decision 5). `on_descend` (optional) reports
+// every composition-child edge encountered -- BEFORE the visibility/opacity/
+// `subtree_culled` pruning, so a group the edit itself hid or moved off-view is
+// still reported (`placement_damage_maps_to_device` Constraint 4); nodes strictly
+// inside a pruned subtree stay unreported, which is sound: an edit inside an
+// off-view/hidden subtree changed nothing drawn, and an edit that moved/revealed
+// the subtree itself names the group layer or its composition, both reported here.
 void walk_composition(const DocRoot& state, ObjectId composition, const Affine& to_device,
                       const Rect& device_rect,
-                      const std::function<void(const LayerRecord&, const Affine&)>& visit) {
+                      const std::function<void(ObjectId, const LayerRecord&, const Affine&)>& visit,
+                      const std::function<void(ObjectId, ObjectId, const Affine&)>& on_descend) {
   state.for_each_layer_in(composition, [&](ObjectId member) {
     const LayerRecord* layer = state.find_layer(member);
     if (layer == nullptr) {
@@ -47,20 +54,25 @@ void walk_composition(const DocRoot& state, ObjectId composition, const Affine& 
     }
     const Affine composed = compose(to_device, layer->transform);
     if (const CompositionRecord* child = state.find_composition(layer->content); child != nullptr) {
-      // A nested composition: honor the group layer's visibility/opacity, then
-      // prune the whole subtree if off-view/sub-pixel, else descend into it.
+      // A nested composition: report the descent edge pre-pruning, then honor the
+      // group layer's visibility/opacity, then prune the whole subtree if
+      // off-view/sub-pixel, else descend into it.
+      if (on_descend) {
+        on_descend(member, layer->content, composed);
+      }
       if (!layer->visible() || layer->opacity <= 0.0) {
         return;
       }
       if (subtree_culled(composed, child->canvas_w, child->canvas_h, device_rect)) {
         return;
       }
-      walk_composition(state, layer->content, composed, device_rect, visit);
+      walk_composition(state, layer->content, composed, device_rect, visit, on_descend);
       return;
     }
-    // A leaf layer: emit it; the visitor applies `render_layer`'s own per-leaf
-    // predicates (visibility, bounds, zero-pixel cull).
-    visit(*layer, composed);
+    // A leaf layer: emit it with its own id (the DocState key, in hand only
+    // here); the visitor applies `render_layer`'s own per-leaf predicates
+    // (visibility, bounds, zero-pixel cull).
+    visit(member, *layer, composed);
   });
 }
 
@@ -139,7 +151,10 @@ RebaseResult rebase(const DocRoot& state, const Viewport& viewport) {
 }
 
 void cull_walk(const DocRoot& state, const Viewport& viewport,
-               const std::function<void(const LayerRecord& layer, const Affine& composed)>& visit) {
+               const std::function<void(ObjectId layer_id, const LayerRecord& layer,
+                                        const Affine& composed)>& visit,
+               const std::function<void(ObjectId group_layer_id, ObjectId child_composition_id,
+                                        const Affine& composed)>& on_descend) {
   if (viewport.anchor == k_root_anchor) {
     // No composition bound (Decision 3): the sentinel resolves no composition, so
     // `for_each_layer_in(k_root_anchor)` would yield nothing. The frame is empty --
@@ -150,7 +165,7 @@ void cull_walk(const DocRoot& state, const Viewport& viewport,
   }
   const Rect device_rect =
       Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
-  walk_composition(state, viewport.anchor, viewport.camera, device_rect, visit);
+  walk_composition(state, viewport.anchor, viewport.camera, device_rect, visit, on_descend);
 }
 
 void render_frame_anchored(const DocRoot& state, const ContentResolver& resolve,
@@ -159,9 +174,10 @@ void render_frame_anchored(const DocRoot& state, const ContentResolver& resolve,
   backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
   const Rect device_rect =
       Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
-  cull_walk(state, viewport, [&](const LayerRecord& layer, const Affine& composed) {
-    render_layer(resolve, layer, composed, device_rect, backend, pool, target);
-  });
+  cull_walk(state, viewport,
+            [&](ObjectId /*layer_id*/, const LayerRecord& layer, const Affine& composed) {
+              render_layer(resolve, layer, composed, device_rect, backend, pool, target);
+            });
 }
 
 } // namespace arbc

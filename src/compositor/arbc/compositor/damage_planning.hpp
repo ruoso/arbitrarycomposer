@@ -29,9 +29,17 @@
 // invalidates, and gates a single pass, returning plain values exactly as
 // `poll_refinements` returns a vector rather than scheduling.
 //
-// `Damage.object` is read as the *content* id throughout (the id
-// `poll_refinements` emits and the `TileKey.content` the cache is keyed by), so
-// model-emitted and refinement-emitted damage flow through one homogeneous path.
+// `Damage.object` is read against a widened domain (`runtime.
+// placement_damage_maps_to_device`): `map_damage_to_device` matches it against
+// every ObjectId on the viewport's displayed tree -- each leaf layer's *content*
+// id (the id `poll_refinements` emits and the `TileKey.content` the cache is
+// keyed by) AND the structural ids placement/membership mutators key their
+// damage with (the leaf layer's own id, each descended group layer's id, each
+// descended child composition's id, the anchor composition's id). Cache
+// invalidation (`invalidate_damage`) still reads the *content* id only:
+// `TileKey.content` is a content id, so layer-/composition-keyed structural
+// records match no tile and evict nothing -- placement damage repaints, never
+// invalidates (02-architecture#placement-change-does-not-invalidate).
 // Levelization (doc 17:56): `model::Damage` is reached through the same
 // transitive `model` visibility `render_frame_interactive` already uses for
 // `DocRoot`; `cache::invalidate_region` is part of `cache`. No new DEPENDS edge,
@@ -152,14 +160,32 @@ ARBC_API std::vector<Rect> repaint_regions(const DirtyRegion& dirty, const Viewp
 // `range.empty() || range.contains(now)`, so an edit that only affects a
 // non-displayed instant contributes nothing, while a degenerate/instant
 // `TimeRange{when, when}` (the `poll_refinements` arrival shape) is read as
-// present-frame damage, not no-time damage (Decision 3); (b) locate every
-// visible layer showing `object` and compose its local->device transform via
-// the anchor walk (`cull_walk`); (c) map the content-local `rect` to device via
-// `Affine::map_rect`, intersect with the viewport rect, and push the non-empty
-// result. Structural `Rect::infinite()` damage clips to the viewport rect (the
-// conservative full-viewport footprint; this signature carries no
-// `ContentResolver` to tighten to `bounds()`). Empty input, or all-gated /
-// all-culled, returns an empty vector -- "no damage -> no work".
+// present-frame damage, not no-time damage (Decision 3); (b) match `object`
+// against every ObjectId on the viewport's displayed tree, composing
+// local->device transforms via the anchor walk (`cull_walk`,
+// `placement_damage_maps_to_device` Decision 1):
+//
+//   - a leaf layer's *content* id -- gated on the layer being visible with
+//     opacity > 0, exactly the pre-existing content-damage path;
+//   - the leaf layer's OWN id (placement damage, claim row 29) -- bypassing the
+//     visible/opacity gates, because the edit being mapped may be the very edit
+//     that hid the layer and its old pixels still need repainting (Decision 4);
+//   - a descended group layer's id or a descended child composition's id
+//     (placement/membership damage, claim row 22), via the pre-pruning
+//     `on_descend` hook, so a group the edit hid or moved off-view still maps;
+//   - the anchor composition's id, matched against `viewport.anchor` directly
+//     (composed transform = the camera).
+//
+// A node the viewport does not display matches nothing -- per-viewport isolation
+// under the router's verbatim fan-out
+// (02-architecture#placement-damage-maps-to-device). Then (c) one projection
+// rule for every match kind (Decision 3): map the `object`-local `rect` to
+// device via the matched node's composed `Affine::map_rect`, intersect with the
+// viewport rect, and push the non-empty result. Structural `Rect::infinite()`
+// damage clips to the viewport rect (the conservative full-viewport footprint;
+// this signature carries no `ContentResolver` to tighten to `bounds()`, and the
+// pre-edit footprint is unrepresentable post-commit). Empty input, or
+// all-gated / all-culled, returns an empty vector -- "no damage -> no work".
 ARBC_API std::vector<Rect> map_damage_to_device(const DocRoot& state, const Viewport& viewport,
                                                 std::span<const Damage> damage, Time now);
 

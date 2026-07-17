@@ -5,9 +5,10 @@
 // 05:141-144 promises that "an edit deep inside a shared component invalidates every
 // place it appears, at every viewport, at the right screen rectangles".
 //
-// `map_damage_to_device` matches damage against LAYER ROOTS only
-// (`damage_planning.cpp:39`: `layer.content == d.object`), and a `$ref`'d content that
-// is ONLY an operator input is no layer. So an edit to it -- which the model publishes
+// `map_damage_to_device` matches damage against the viewport's DISPLAYED TREE -- leaf
+// layers' content ids plus the walk path's structural ids
+// (`runtime.placement_damage_maps_to_device`) -- and a `$ref`'d content that is ONLY an
+// operator input is on no walk path. So an edit to it -- which the model publishes
 // as `Damage{its own model id, ...}` (`model.cpp:1567-1579`) -- used to match nothing:
 // the frame's dirty region came back empty, the no-damage early-out fired, and the frame
 // that should have repainted the operator never happened. Stale pixels survived the

@@ -100,7 +100,9 @@ int main(int argc, char** argv) {
 
   const arbc::ObjectId panel = document.add_content(std::make_shared<arbc::SolidContent>(
       arbc::Rgba{0.5F, 0.5F, 0.5F, 0.5F}, arbc::Rect{0.0, 0.0, 256.0, 256.0}));
-  document.attach_layer(comp, document.add_layer(panel, arbc::Affine::identity()));
+  // The panel's layer id is kept: the placement gesture below drags it.
+  const arbc::ObjectId panel_layer = document.add_layer(panel, arbc::Affine::identity());
+  document.attach_layer(comp, panel_layer);
 
   // The interactive wiring (doc 01:112-121): backend, pool, tile cache, ONE
   // persistent target surface the frames render into (doc 02:83-87 -- the
@@ -161,6 +163,21 @@ int main(int argc, char** argv) {
       return 1;
     }
   }
+
+  // A PLACEMENT gesture: drag the panel by (64, 64) composition units -- what a
+  // host's object-drag handler does. A placement edit auto-damages the layer's
+  // own id (doc 01, doc 14); that damage maps to the full viewport of every
+  // viewport displaying the layer (doc 02), so the next step() repaints -- no
+  // forged damage, and no invalidation either: the panel's tiles stay resident
+  // and re-composite through the new transform. Under the tape's net (-64, -64)
+  // camera the dragged panel lands exactly on device [0, 256)^2, keeping the CI
+  // artifact hand-computable.
+  document.set_layer_transform(panel_layer, arbc::Affine::translation(64.0, 64.0));
+  if (!settle(view, renderer)) {
+    std::puts("host-interactive: the placement gesture's frame never settled");
+    return 1;
+  }
+
   std::printf("host-interactive: %llu frames issued across the tape\n",
               static_cast<unsigned long long>(view.frames_issued()));
 

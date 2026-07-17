@@ -239,11 +239,12 @@ int main() {
                                          arbc::WorkingPixel{0.0F, 0.5F, 0.0F, 0.5F});
 
   // host-interactive's gesture tape nets to a pan of (-64, -64) -- the two
-  // zooms cancel exactly -- so the half-gray panel (composition [0,256)^2)
-  // lands on device [-64,192)^2, of which [0,192)^2 is visible; the unbounded
-  // backdrop covers the rest at any camera.
+  // zooms cancel exactly -- and its closing PLACEMENT gesture drags the panel's
+  // layer by (64, 64), so the half-gray panel (composition [64,320)^2 after the
+  // drag) lands exactly on device [0,256)^2; the unbounded backdrop covers the
+  // rest at any camera.
   const bool interactive_ok = check_artifact(
-      "host_example_artifacts[interactive]", ARBC_HOST_INTERACTIVE_PNG, 512, 192,
+      "host_example_artifacts[interactive]", ARBC_HOST_INTERACTIVE_PNG, 512, 256,
       arbc::WorkingPixel{0.0F, 0.0F, 0.25F, 1.0F}, arbc::WorkingPixel{0.5F, 0.5F, 0.5F, 0.5F});
 
   return offline_ok && interactive_ok ? 0 : 1;

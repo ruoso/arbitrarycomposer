@@ -1241,3 +1241,232 @@ TEST_CASE("host_viewport: a camera edit repaints only its own viewport -- a rout
   CHECK(vp_b.frames_issued() == 1);         // delta 0: the sibling's camera did not change
   CHECK(router.deliveries() == deliveries); // nothing reached the model's damage slot
 }
+
+// --- Placement-change damage (runtime.placement_damage_maps_to_device, doc 02 §
+// "Placement and membership damage keep their model-space key") -----------------------
+
+namespace {
+
+// The Document-side two-layer scene: the second layer is the placement-edit
+// target, offset so a drag visibly re-arranges the composite.
+struct DocTwoLayerScene {
+  ObjectId layer_a;
+  ObjectId layer_b;
+};
+
+DocTwoLayerScene add_two_layers(arbc::Document& doc) {
+  const ObjectId a = doc.add_content(std::make_shared<SyncSolid>());
+  const ObjectId b = doc.add_content(std::make_shared<SyncSolid>());
+  const ObjectId comp = doc.add_composition(512.0, 512.0);
+  const ObjectId layer_a = doc.add_layer(a, Affine::identity());
+  doc.attach_layer(comp, layer_a);
+  const ObjectId layer_b = doc.add_layer(b, Affine::translation(64.0, 64.0));
+  doc.attach_layer(comp, layer_b);
+  return {layer_a, layer_b};
+}
+
+} // namespace
+
+// enforces: 02-architecture#placement-damage-maps-to-device
+TEST_CASE("host_viewport: a placement edit repaints through the shipped driver, byte-identical "
+          "to a fresh render of the edited scene") {
+  MarkBackend backend;
+  arbc::Document doc;
+  const DocTwoLayerScene scene = add_two_layers(doc);
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+  arbc::HostViewport viewport(renderer, doc, arbc::HostViewport::DocumentBinding{}, backend, pool,
+                              cache, **target, epoch_clock(), doc_config());
+
+  // The bootstrap frame composites the pre-edit scene.
+  viewport.step();
+  REQUIRE(viewport.frames_issued() == 1);
+  const std::vector<std::byte> before = snapshot(**target);
+
+  // The edit under test: the auto-emitted damage is keyed by the LAYER'S OWN id
+  // (claim row 29) -- the host forges nothing and calls no force_repaint. The
+  // hide/opacity sections exercise Constraint 4: the edit that removes the
+  // layer's pixels must still repaint them away. Selected ONCE per section,
+  // applied to both the viewport under test and the fresh oracle below.
+  void (*edit)(arbc::Document&, ObjectId) = nullptr;
+  SECTION("a transform drag") {
+    edit = [](arbc::Document& d, ObjectId layer) {
+      d.set_layer_transform(layer, Affine::translation(128.0, 128.0));
+    };
+  }
+  SECTION("a set_visible(false) edit clears the previously-drawn pixels") {
+    edit = [](arbc::Document& d, ObjectId layer) {
+      auto txn = d.transact();
+      txn.set_visible(layer, false);
+      REQUIRE(txn.commit().has_value());
+    };
+  }
+  SECTION("an opacity -> 0 edit clears the previously-drawn pixels") {
+    edit = [](arbc::Document& d, ObjectId layer) {
+      auto txn = d.transact();
+      txn.set_opacity(layer, 0.0);
+      REQUIRE(txn.commit().has_value());
+    };
+  }
+  REQUIRE(edit != nullptr);
+
+  const std::uint64_t composites_before = renderer.counters().composites();
+  edit(doc, scene.layer_b);
+  viewport.step();
+  CHECK(viewport.frames_issued() == 2);
+  // The repaint really happened: the placement-only frame composited tiles.
+  CHECK(renderer.counters().composites() > composites_before);
+
+  // The correctness bar: byte-identical to a fresh viewport bootstrapped over an
+  // identically-edited scene (for the hide/opacity edits, one where the layer
+  // contributes nothing -- so equality proves the old pixels were CLEARED).
+  arbc::Document fresh_doc;
+  const DocTwoLayerScene fresh_scene = add_two_layers(fresh_doc);
+  edit(fresh_doc, fresh_scene.layer_b);
+  arbc::SurfacePool fresh_pool(backend);
+  arbc::TileCache fresh_cache(64u * 1024 * 1024);
+  auto fresh_target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(fresh_target.has_value());
+  arbc::InteractiveRenderer fresh_renderer({}, epoch_clock());
+  arbc::HostViewport fresh(fresh_renderer, fresh_doc, arbc::HostViewport::DocumentBinding{},
+                           backend, fresh_pool, fresh_cache, **fresh_target, epoch_clock(),
+                           doc_config());
+  fresh.step();
+  REQUIRE(fresh.frames_issued() == 1);
+  const std::vector<std::byte> after = snapshot(**target);
+  CHECK(after == snapshot(**fresh_target));
+  // Not vacuously blank: the edited scene still composites the surviving layer.
+  CHECK(std::any_of(after.begin(), after.end(), [](std::byte v) { return v != std::byte{0}; }));
+  static_cast<void>(before);
+
+  // The edit was consumed by its frame: a further still step issues nothing.
+  viewport.step();
+  CHECK(viewport.frames_issued() == 2);
+  CHECK(snapshot(**target) == after);
+}
+
+// enforces: 02-architecture#placement-change-does-not-invalidate
+TEST_CASE("host_viewport: placement damage repaints without invalidating -- a moved layer "
+          "re-composites from resident tiles") {
+  MarkBackend backend;
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024); // ample: nothing is ever evicted for capacity
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  arbc::HostViewport::Config cfg;
+  cfg.viewport = Viewport{256, 256, Affine::identity()};
+  cfg.budget = k_budget;
+  arbc::HostViewport viewport(renderer, model, resolve, backend, pool, cache, **target,
+                              epoch_clock(), cfg);
+
+  // Bootstrap: the visible tiles render and land in the cache.
+  viewport.step();
+  const std::uint64_t warm = renderer.counters().requests_issued();
+  CHECK(warm > 0);
+
+  // A placement nudge that keeps the same local tile coverage in view. The
+  // layer-keyed record matches no TileKey.content (a content id), so it evicts
+  // NOTHING: the frame re-plans to cache hits and re-composites through the new
+  // transform -- a requests_issued delta of exactly 0 while the frame really
+  // composited. Never a wall-clock assertion.
+  {
+    auto txn = model.transact();
+    txn.set_transform(scene.layer, Affine::translation(4.0, 4.0));
+    REQUIRE(txn.commit().has_value());
+  }
+  const std::uint64_t composites_before = renderer.counters().composites();
+  viewport.step();
+  CHECK(viewport.frames_issued() == 2);
+  CHECK(renderer.counters().requests_issued() == warm); // delta 0: nothing was evicted
+  CHECK(renderer.counters().composites() > composites_before);
+}
+
+// enforces: 01-core-concepts#multiple-viewports-observe-one-composition
+TEST_CASE("host_viewport: a placement edit repaints only the viewports displaying the edited "
+          "node -- a router-sharing sibling on another composition maps nothing") {
+  MarkBackend backend;
+  arbc::Model model;
+
+  // Two disjoint compositions in ONE model: each viewport anchors to its own.
+  ObjectId comp_a{};
+  ObjectId comp_b{};
+  ObjectId layer_a{};
+  ObjectId content_a{};
+  ObjectId content_b{};
+  {
+    auto txn = model.transact();
+    content_a = txn.add_content(0);
+    content_b = txn.add_content(0);
+    comp_a = txn.add_composition(512.0, 512.0);
+    comp_b = txn.add_composition(512.0, 512.0);
+    layer_a = txn.add_layer(content_a, Affine::identity());
+    txn.attach_layer(comp_a, layer_a);
+    txn.attach_layer(comp_b, txn.add_layer(content_b, Affine::identity()));
+    REQUIRE(txn.commit().has_value());
+  }
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return (id == content_a || id == content_b) ? &content : nullptr;
+  };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache_a(64u * 1024 * 1024);
+  arbc::TileCache cache_b(64u * 1024 * 1024);
+  auto target_a = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  auto target_b = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target_a.has_value());
+  REQUIRE(target_b.has_value());
+  // One renderer EACH: cross-frame state is per-viewport.
+  arbc::InteractiveRenderer renderer_a({}, epoch_clock());
+  arbc::InteractiveRenderer renderer_b({}, epoch_clock());
+
+  arbc::DamageRouter router(model);
+  arbc::HostViewport::Config cfg_a;
+  cfg_a.viewport = Viewport{256, 256, Affine::identity(), comp_a};
+  cfg_a.budget = k_budget;
+  cfg_a.router = &router;
+  arbc::HostViewport::Config cfg_b = cfg_a;
+  cfg_b.viewport = Viewport{256, 256, Affine::identity(), comp_b};
+  arbc::HostViewport vp_a(renderer_a, model, resolve, backend, pool, cache_a, **target_a,
+                          epoch_clock(), cfg_a);
+  arbc::HostViewport vp_b(renderer_b, model, resolve, backend, pool, cache_b, **target_b,
+                          epoch_clock(), cfg_b);
+
+  // Both bootstrap once.
+  vp_a.step();
+  vp_b.step();
+  CHECK(vp_a.frames_issued() == 1);
+  CHECK(vp_b.frames_issued() == 1);
+  const std::vector<std::byte> b_before = snapshot(**target_b);
+
+  // A placement edit in composition A. The router fans the batch VERBATIM to both
+  // accumulators (damage_router Decision 4), so B's next step may issue a frame --
+  // but B's walk displays no node the damage names, so it maps ZERO device rects,
+  // early-outs, and neither renders nor composites nor repaints a pixel.
+  {
+    auto txn = model.transact();
+    txn.set_transform(layer_a, Affine::translation(8.0, 8.0));
+    REQUIRE(txn.commit().has_value());
+  }
+  CHECK(router.deliveries() >= 2);
+  const std::uint64_t a_composites = renderer_a.counters().composites();
+  const std::uint64_t b_requests = renderer_b.counters().requests_issued();
+  const std::uint64_t b_composites = renderer_b.counters().composites();
+  vp_a.step();
+  vp_b.step();
+  CHECK(vp_a.frames_issued() == 2);
+  CHECK(renderer_a.counters().composites() > a_composites);     // A repainted
+  CHECK(renderer_b.counters().requests_issued() == b_requests); // B did no work
+  CHECK(renderer_b.counters().composites() == b_composites);
+  CHECK(snapshot(**target_b) == b_before); // and B's pixels are untouched
+}

@@ -222,10 +222,12 @@ SubtreeScene build_subtree_scene(arbc::Model& model, const Affine& tiny_transfor
 
 std::vector<ObjectId> visited_contents(const arbc::DocRoot& state, const Viewport& vp) {
   std::vector<ObjectId> visited;
-  arbc::cull_walk(state, vp, [&](const arbc::LayerRecord& layer, const Affine& composed) {
-    (void)composed;
-    visited.push_back(layer.content);
-  });
+  arbc::cull_walk(
+      state, vp,
+      [&](ObjectId /*layer_id*/, const arbc::LayerRecord& layer, const Affine& composed) {
+        (void)composed;
+        visited.push_back(layer.content);
+      });
   return visited;
 }
 
@@ -299,13 +301,13 @@ TEST_CASE(
   std::vector<Affine> sentinel_composed;
   arbc::cull_walk(
       *state, Viewport{100, 100, camera, arbc::k_root_anchor},
-      [&](const arbc::LayerRecord&, const Affine& m) { sentinel_composed.push_back(m); });
+      [&](ObjectId, const arbc::LayerRecord&, const Affine& m) { sentinel_composed.push_back(m); });
   CHECK(sentinel_composed.empty());
 
   // Anchored at the real composition: both members are visited, camera-composed.
   std::vector<Affine> composed;
   arbc::cull_walk(*state, Viewport{100, 100, camera, comp},
-                  [&](const arbc::LayerRecord& layer, const Affine& m) {
+                  [&](ObjectId, const arbc::LayerRecord& layer, const Affine& m) {
                     composed.push_back(m);
                     CHECK(m == compose(camera, layer.transform));
                   });

@@ -311,6 +311,180 @@ TEST_CASE("map_damage_to_device gates on the displayed instant") {
   }
 }
 
+namespace {
+
+// A two-level displayed tree plus an undisplayed sibling, exposing every id the
+// walk-path match domain covers (`runtime.placement_damage_maps_to_device`):
+//
+//   anchor comp ── leaf_layer  (content = leaf_content)
+//              └── group_layer (content = child_comp)
+//                    child comp ── inner_layer (content = inner_content)
+//   other comp  ── other_layer (content = other_content)   [not displayed]
+struct WalkPathScene {
+  arbc::ObjectId anchor;
+  arbc::ObjectId leaf_layer;
+  arbc::ObjectId leaf_content;
+  arbc::ObjectId group_layer;
+  arbc::ObjectId child_comp;
+  arbc::ObjectId inner_layer;
+  arbc::ObjectId inner_content;
+  arbc::ObjectId other_comp;
+  arbc::ObjectId other_layer;
+};
+
+WalkPathScene build_walk_path_scene(arbc::Model& model) {
+  auto txn = model.transact();
+  WalkPathScene s{};
+  s.leaf_content = txn.add_content(0);
+  s.inner_content = txn.add_content(0);
+  const arbc::ObjectId other_content = txn.add_content(0);
+
+  s.anchor = txn.add_composition(512, 512);
+  s.child_comp = txn.add_composition(512, 512);
+  s.other_comp = txn.add_composition(512, 512);
+
+  s.leaf_layer = txn.add_layer(s.leaf_content, arbc::Affine::identity());
+  txn.attach_layer(s.anchor, s.leaf_layer);
+  s.group_layer = txn.add_layer(s.child_comp, arbc::Affine::identity());
+  txn.attach_layer(s.anchor, s.group_layer);
+  s.inner_layer = txn.add_layer(s.inner_content, arbc::Affine::identity());
+  txn.attach_layer(s.child_comp, s.inner_layer);
+  s.other_layer = txn.add_layer(other_content, arbc::Affine::identity());
+  txn.attach_layer(s.other_comp, s.other_layer);
+
+  REQUIRE(txn.commit().has_value());
+  return s;
+}
+
+// The shape every placement/membership mutator flushes (model.cpp: `Damage{id,
+// Rect::infinite(), TimeRange::all()}`, claim rows 22/29).
+Damage structural(arbc::ObjectId object) {
+  return Damage{object, Rect::infinite(), arbc::TimeRange::all()};
+}
+
+std::vector<Rect> map_one(const arbc::DocRoot& state, const arbc::Viewport& viewport,
+                          const Damage& d) {
+  return arbc::map_damage_to_device(state, viewport, std::span(&d, 1), arbc::Time::zero());
+}
+
+} // namespace
+
+// enforces: 02-architecture#placement-damage-maps-to-device
+// enforces: 02-architecture#damage-maps-to-device-dirty-regions
+TEST_CASE("map_damage_to_device matches structural damage against every walk-path node id") {
+  arbc::Model model;
+  const WalkPathScene s = build_walk_path_scene(model);
+  const arbc::Viewport viewport{512, 512, arbc::Affine::identity(), s.anchor};
+  const Rect full{0.0, 0.0, 512.0, 512.0};
+
+  SECTION("a leaf layer's own id (placement damage) maps to the full viewport") {
+    const arbc::DocStatePtr state = model.current();
+    const std::vector<Rect> rects = map_one(*state, viewport, structural(s.leaf_layer));
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0] == full);
+  }
+
+  SECTION("a descended group layer's id maps to the full viewport") {
+    const arbc::DocStatePtr state = model.current();
+    const std::vector<Rect> rects = map_one(*state, viewport, structural(s.group_layer));
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0] == full);
+  }
+
+  SECTION("a descended child composition's id (membership damage inside it) maps to the full "
+          "viewport") {
+    const arbc::DocStatePtr state = model.current();
+    const std::vector<Rect> rects = map_one(*state, viewport, structural(s.child_comp));
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0] == full);
+  }
+
+  SECTION("the anchor composition's id (membership damage on the anchor) maps to the full "
+          "viewport") {
+    const arbc::DocStatePtr state = model.current();
+    const std::vector<Rect> rects = map_one(*state, viewport, structural(s.anchor));
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0] == full);
+  }
+
+  SECTION("a leaf layer inside the descended child composition maps too") {
+    const arbc::DocStatePtr state = model.current();
+    const std::vector<Rect> rects = map_one(*state, viewport, structural(s.inner_layer));
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0] == full);
+  }
+
+  SECTION("a node this viewport does not display contributes nothing -- per-viewport isolation") {
+    const arbc::DocStatePtr state = model.current();
+    // Damage in the displayed tree maps to nothing on a viewport anchored elsewhere...
+    const arbc::Viewport other_viewport{512, 512, arbc::Affine::identity(), s.other_comp};
+    CHECK(map_one(*state, other_viewport, structural(s.leaf_layer)).empty());
+    CHECK(map_one(*state, other_viewport, structural(s.group_layer)).empty());
+    CHECK(map_one(*state, other_viewport, structural(s.child_comp)).empty());
+    CHECK(map_one(*state, other_viewport, structural(s.anchor)).empty());
+    // ...and the undisplayed sibling's ids map to nothing on THIS viewport.
+    CHECK(map_one(*state, viewport, structural(s.other_comp)).empty());
+    CHECK(map_one(*state, viewport, structural(s.other_layer)).empty());
+  }
+
+  SECTION("a layer-id match bypasses the visible gate -- the edit that hid the layer still "
+          "repaints; its content edit does not") {
+    {
+      auto txn = model.transact();
+      txn.set_visible(s.leaf_layer, false);
+      REQUIRE(txn.commit().has_value());
+    }
+    const arbc::DocStatePtr state = model.current();
+    const std::vector<Rect> rects = map_one(*state, viewport, structural(s.leaf_layer));
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0] == full);
+    // A CONTENT edit on the now-invisible layer keeps the gate: no pixels shown,
+    // nothing contributed -- exactly the pre-existing behavior.
+    CHECK(map_one(*state, viewport, structural(s.leaf_content)).empty());
+  }
+
+  SECTION("a layer-id match bypasses the opacity gate the same way") {
+    {
+      auto txn = model.transact();
+      txn.set_opacity(s.leaf_layer, 0.0);
+      REQUIRE(txn.commit().has_value());
+    }
+    const arbc::DocStatePtr state = model.current();
+    const std::vector<Rect> rects = map_one(*state, viewport, structural(s.leaf_layer));
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0] == full);
+    CHECK(map_one(*state, viewport, structural(s.leaf_content)).empty());
+  }
+
+  SECTION("the descent hook fires before pruning: a hidden group still matches; nodes strictly "
+          "inside its pruned subtree do not") {
+    {
+      auto txn = model.transact();
+      txn.set_visible(s.group_layer, false);
+      REQUIRE(txn.commit().has_value());
+    }
+    const arbc::DocStatePtr state = model.current();
+    // The edit that hid the group must repaint the pixels the subtree occupied.
+    REQUIRE(map_one(*state, viewport, structural(s.group_layer)).size() == 1);
+    // The child composition id is reported by the same pre-pruning hook.
+    REQUIRE(map_one(*state, viewport, structural(s.child_comp)).size() == 1);
+    // An edit STRICTLY inside the hidden subtree changed nothing that was drawn
+    // (refinement Decision 2's soundness note): unreported, correctly.
+    CHECK(map_one(*state, viewport, structural(s.inner_layer)).empty());
+  }
+
+  SECTION("a finite rect on a layer-keyed record maps through the composed transform -- one "
+          "projection rule, no dead special case") {
+    const arbc::DocStatePtr state = model.current();
+    // No producer emits this today (placement mutators flush Rect::infinite());
+    // Decision 3 pins the uniform rule regardless.
+    const Damage d{s.leaf_layer, Rect{10.0, 20.0, 110.0, 120.0}, arbc::TimeRange::all()};
+    const std::vector<Rect> rects = map_one(*state, viewport, d);
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0] == Rect{10.0, 20.0, 110.0, 120.0});
+  }
+}
+
 // enforces: 11-time-and-video#clock-advance-damages-only-moving-layers
 // enforces: 11-time-and-video#static-tiles-survive-clock
 TEST_CASE("clock_advance_damage damages only the moving layers") {

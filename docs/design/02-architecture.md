@@ -104,6 +104,13 @@ region — and that holds for a viewport bound to a document whose commits
 all predate the binding: its first step collects no damage, but it has
 never shown the scene, and it composites it.
 
+**Placement and membership damage keep their model-space key** — the edited
+layer's or composition's own id — and map to the full viewport of every
+viewport whose displayed tree contains that node, and to nothing elsewhere.
+Like a camera change, a placement change repaints and never invalidates: no
+content's pixels changed, so its tiles stay resident and re-composite
+through the new placement.
+
 **A damage-gated frame repaints a device repaint region — clearing it
 first.** Step 1's damage maps to a device **repaint region**: a set of
 **pairwise-disjoint**, integer-aligned device rects. The frame clears that
