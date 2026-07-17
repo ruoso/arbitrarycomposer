@@ -29,6 +29,35 @@ target_compile_options(
   INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/W4 /WX /permissive->
             $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic -Werror>)
 
+# MSVC dll-interface handling for the ARBC_API export macro (arbc/arbc_api.h).
+# In the STATIC build there is no DLL boundary, so the dllexport/dllimport
+# annotation is meaningless; make it inert (ARBC_STATIC -> empty) to avoid a wall
+# of C4251 "needs dll-interface" warnings that /WX would turn fatal. This rides
+# arbc_build_flags, which every component object library AND every test links, so
+# lib and test TUs agree on the (empty) annotation; installed consumers get the
+# same define from the umbrella's exported interface (arbc_finalize_library).
+if(NOT BUILD_SHARED_LIBS)
+  target_compile_definitions(arbc_build_flags INTERFACE ARBC_STATIC)
+endif()
+# In the SHARED MSVC build the export IS real, so C4251 fires legitimately -- but
+# it is the inherent "a DLL client must use the same STL layout" caveat, which
+# cannot bite here (libarbc, tests, and plugins all share one MSVC STL). Silence
+# it rather than let /WX fail the msvc-shared lane. Harmless in the static build,
+# where ARBC_STATIC already eliminated the warning at the source.
+target_compile_options(arbc_build_flags
+                       INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/wd4251>)
+
+# MSVC C4996: standard std::getenv (runtime/plugin_host.cpp) and the POSIX getpid
+# a couple of tests use are legitimate cross-platform calls; MSVC deprecates them
+# in favour of its non-standard _dupenv_s/_getpid. These two well-known escape
+# hatches opt out of that editorializing so /WX does not fail on it. Scoped to
+# arbc_build_flags (lib + tests), which is scrubbed from the exported interface,
+# so we impose neither define on downstream consumers.
+target_compile_definitions(
+  arbc_build_flags
+  INTERFACE $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS
+            _CRT_NONSTDC_NO_WARNINGS>)
+
 set(ARBC_SANITIZERS
     ""
     CACHE STRING "Comma-separated sanitizer list (e.g. address,undefined)")
@@ -104,6 +133,38 @@ elseif(Catch2_DIR)
   list(APPEND CMAKE_MODULE_PATH "${Catch2_DIR}")
 endif()
 include(Catch)
+
+# DLL search wiring for the MSVC shared lane (packaging.shared_library_build_msvc,
+# Decision D4). Under BUILD_SHARED_LIBS on Windows, libarbc is arbc.dll and there is
+# no ELF rpath: every test executable that links arbc -- and every plugin the loaders
+# LoadLibrary, whose own arbc.dll import is resolved by the DLL search order -- must
+# find arbc.dll at BOTH catch_discover_tests' POST_BUILD discovery run AND ctest run
+# time (else the exe fails to start with STATUS_DLL_NOT_FOUND, 0xc0000135). Wrapping
+# catch_discover_tests to add DL_PATHS emits exactly the per-test
+# PATH=path_list_prepend:<arbc dir> ENVIRONMENT_MODIFICATION D4 specifies (and sets
+# PATH for discovery too), keeping all 100+ call sites unchanged; the original stays
+# reachable as _catch_discover_tests.
+#
+# Defined HERE, right after include(Catch), not in tests/CMakeLists.txt: a CMake
+# function override is visible only in the defining directory and subdirectories
+# added AFTER it, so a definition in tests/ never reaches the component unit tests
+# registered by arbc_component_test() during the earlier add_subdirectory(src) --
+# which is exactly how the msvc-shared component-test exes (arbc_base_t, arbc_pool_t,
+# ...) came to run their discovery WITHOUT arbc.dll on PATH and fail. At the top
+# level the override covers src/, plugins/, testing/, and tests/ alike. Gated WIN32
+# AND BUILD_SHARED_LIBS, so every other lane -- static msvc-debug, the ELF shared
+# lanes, all Linux lanes -- is untouched.
+if(WIN32 AND BUILD_SHARED_LIBS)
+  function(catch_discover_tests _arbc_target)
+    # arbc.dll AND the Catch2 DLLs: with BUILD_SHARED_LIBS the fetched Catch2 also
+    # builds as Catch2d.dll/Catch2Maind.dll (colocated), which every Catch2 test exe
+    # imports alongside arbc.dll -- both dirs must be on the DLL search path or the
+    # exe won't even start (0xc0000135) at discovery or ctest time.
+    _catch_discover_tests("${_arbc_target}" ${ARGN}
+                          DL_PATHS "$<TARGET_FILE_DIR:arbc>"
+                                   "$<TARGET_FILE_DIR:Catch2::Catch2>")
+  endfunction()
+endif()
 
 # Google Benchmark: fetched ONLY when benchmarks are enabled (mirrors the Catch2
 # declare above, at a pinned tag). Its headers are marked SYSTEM so our

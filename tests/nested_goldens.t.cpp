@@ -197,7 +197,7 @@ public:
   expected<std::unique_ptr<Surface>, SurfaceError> make_surface(int width, int height,
                                                                 SurfaceFormat format) override {
     if (format == d_refused) {
-      return unexpected(SurfaceError::UnsupportedFormat);
+      return arbc::unexpected(SurfaceError::UnsupportedFormat);
     }
     return arbc::testing::CountingBackend::make_surface(width, height, format);
   }

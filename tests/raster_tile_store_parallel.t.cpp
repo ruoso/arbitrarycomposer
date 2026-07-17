@@ -59,7 +59,7 @@ public:
                                      std::span<const std::byte> bytes) override {
     const std::lock_guard<std::mutex> lock(d_mutex);
     if (d_fail_writes) {
-      return unexpected(AssetSinkError{AssetSinkError::Kind::WriteFailed});
+      return arbc::unexpected(AssetSinkError{AssetSinkError::Kind::WriteFailed});
     }
     const auto it = d_blobs.find(std::string(uri));
     if (it != d_blobs.end()) {

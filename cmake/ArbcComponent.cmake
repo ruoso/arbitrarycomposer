@@ -53,8 +53,9 @@ function(arbc_add_component)
   # Decision D2). PRIVATE and on EVERY object library, because libarbc's public symbols
   # are compiled here -- not in the umbrella's lone version.cpp -- so every TU that ends
   # up inside libarbc must take the export branch. A consumer/plugin never defines it and
-  # takes the import branch. Inert for the static build (ARBC_API is visibility("default")
-  # on ELF either way); the branch only diverges on a future MSVC shared build.
+  # takes the import branch. On ELF both branches are visibility("default"); on MSVC
+  # the static build makes ARBC_API inert via ARBC_STATIC (arbc_build_flags, top-level
+  # CMakeLists) so the meaningless dllexport does not emit C4251 under /WX.
   target_compile_definitions(${target} PRIVATE ARBC_BUILDING)
   foreach(dep IN LISTS ARG_DEPENDS)
     target_link_libraries(${target} PUBLIC "arbc_${dep}")
@@ -197,6 +198,15 @@ function(arbc_finalize_library)
   # The umbrella's own TUs are inside libarbc too, so they take the export
   # branch of ARBC_API like every component object library (D2).
   target_compile_definitions(arbc PRIVATE ARBC_BUILDING)
+  # Installed consumers of a STATIC libarbc never define ARBC_BUILDING and do not
+  # link arbc_build_flags (it is BUILD_INTERFACE-scrubbed from the export), so they
+  # would otherwise take the __declspec(dllimport) branch and fail to link against
+  # the archive. Export ARBC_STATIC on the umbrella's INTERFACE so a downstream
+  # target linking arbc sees the inert (empty) ARBC_API. Mirrors the STATIC_DEFINE
+  # of CMake's generate_export_header; only meaningful on MSVC (inert on ELF).
+  if(NOT BUILD_SHARED_LIBS)
+    target_compile_definitions(arbc INTERFACE ARBC_STATIC)
+  endif()
 
   # SOVERSION/VERSION off the single-source-of-truth PROJECT_VERSION
   # (packaging.shared_library_build Decision D5). Ignored for the STATIC archive
