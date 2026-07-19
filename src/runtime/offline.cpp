@@ -1,7 +1,7 @@
+#include <arbc/compositor/pull_service.hpp> // PullServiceImpl, PullConfig, direct_dispatch
 #include <arbc/runtime/offline.hpp>
-#include <arbc/compositor/pull_service.hpp>    // PullServiceImpl, PullConfig, direct_dispatch
-#include <arbc/runtime/operator_binding.hpp>   // bind_operators, register_builtin_operator_binders
-#include <arbc/runtime/pull_identity.hpp>      // build_pull_identity_map, pull_identity_of
+#include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
+#include <arbc/runtime/pull_identity.hpp>    // build_pull_identity_map, pull_identity_of
 
 #include <utility>
 

@@ -169,7 +169,8 @@ TEST_CASE("a frame renders one composition's layers: the nested child is drawn o
 
   SECTION("one-shot render_offline path") {
     NestedScene scene;
-    const auto frame = render_offline(scene.doc, Viewport{k_dim, k_dim, Affine::identity()}, backend);
+    const auto frame =
+        render_offline(scene.doc, Viewport{k_dim, k_dim, Affine::identity()}, backend);
     REQUIRE(frame.has_value());
     REQUIRE(bytes_equal(bytes_of(**frame), want));
   }
