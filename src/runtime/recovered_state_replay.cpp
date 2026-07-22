@@ -1,6 +1,5 @@
-#include <arbc/runtime/recovered_state_replay.hpp>
-
 #include <arbc/contract/registry.hpp>
+#include <arbc/runtime/recovered_state_replay.hpp>
 
 namespace arbc {
 
@@ -13,7 +12,8 @@ replay_recovered_content_state(const std::vector<Model::RecoveredContentState>& 
     // unresolvable token (an empty view) is skipped: the kind is not one this build
     // knows, so no walker can own its slab. Counted, never a hard error -- a
     // recovered document opens even holding a since-removed kind's inert remnants.
-    const std::string_view kind_id = hooks.kind_id_of ? hooks.kind_id_of(entry.kind) : std::string_view{};
+    const std::string_view kind_id =
+        hooks.kind_id_of ? hooks.kind_id_of(entry.kind) : std::string_view{};
     if (kind_id.empty()) {
       ++stats.skipped;
       continue;

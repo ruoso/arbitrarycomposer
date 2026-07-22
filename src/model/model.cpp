@@ -777,8 +777,8 @@ Model::Recovered Model::rebuild_counts(SlotIndex root_index) {
         // workspace-backed state -- every kind today -- this stays empty and the walk
         // descends nothing, byte-identical to the pre-hook behaviour.
         if (record->kind == RecordKind::Content && record->as.content.state.has_state()) {
-          out.content_state.push_back(RecoveredContentState{
-              record->id, record->as.content.kind, record->as.content.state});
+          out.content_state.push_back(
+              RecoveredContentState{record->id, record->as.content.kind, record->as.content.state});
         }
       }
       continue;

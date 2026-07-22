@@ -139,11 +139,11 @@ public:
   // (`runtime.plugin_operator_registration` Constraint 4). Both default absent
   // -- a factory-only registration stays exactly what it was: its kind
   // round-trips as a placeholder (doc 08 Principle 2) and is attach-free.
-  expected<std::monostate, RegistryError> add(std::string_view id, ContentFactory factory,
-                                              KindMetadata metadata = {},
-                                              std::optional<KindCodec> codec = std::nullopt,
-                                              std::optional<KindBinder> binder = std::nullopt,
-                                              std::optional<KindStateWalker> state_walker = std::nullopt);
+  expected<std::monostate, RegistryError>
+  add(std::string_view id, ContentFactory factory, KindMetadata metadata = {},
+      std::optional<KindCodec> codec = std::nullopt,
+      std::optional<KindBinder> binder = std::nullopt,
+      std::optional<KindStateWalker> state_walker = std::nullopt);
 
   // Look up a factory by id; nullptr if absent.
   const ContentFactory* factory(std::string_view id) const;

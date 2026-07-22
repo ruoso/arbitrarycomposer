@@ -821,7 +821,7 @@ TEST_CASE("checkpoint kill sweep: every syscall boundary recovers a consistent d
   }
 }
 
-// enforces: the model.persistent_state_walk_hook collection seam (issue #5).
+// Covers the model.persistent_state_walk_hook collection seam (issue #5).
 // The recovery walk cannot descend a kind-owned state slab (levelization: the
 // model holds only the opaque slot and cannot name the kind), so it COLLECTS every
 // reachable non-inert content StateHandle for the runtime to replay through the
@@ -872,7 +872,7 @@ TEST_CASE("recovery collects each reachable non-inert content StateHandle for re
   (void)inert;
 }
 
-// enforces: the collection seam stays byte-identical to the pre-hook walk when no
+// Covers that the collection seam stays byte-identical to the pre-hook walk when no
 // kind persists state -- every content StateHandle inert, so nothing is collected
 // and the recovered document is indistinguishable from before the hook existed.
 TEST_CASE("recovery collects nothing when every content StateHandle is inert") {
