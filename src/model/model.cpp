@@ -723,6 +723,11 @@ expected<std::unique_ptr<Model>, WorkspaceFileError> Model::open(const std::stri
     model->d_current.store(std::make_shared<const DocRoot>(
         model->d_bundle, model->d_nodes.adopt_index(root_index), recovered.max_revision + 1));
   }
+  // Hand the walk's collected non-inert content-state handles to the Model for the
+  // runtime to replay through per-kind state-slab walkers (empty until the first
+  // persistent kind lands). Written here, on the single open() writer thread,
+  // before any reader pins the recovered version.
+  model->d_recovered_content_state = recovered.content_state;
   return model;
 }
 
@@ -762,14 +767,19 @@ Model::Recovered Model::rebuild_counts(SlotIndex root_index) {
         const ObjectRecord* record = d_records.peek_index(leaf);
         out.max_id = std::max(out.max_id, record->id.value);
         out.max_revision = std::max(out.max_revision, record->revision);
-        // The walk VISITS every content record's state handle and descends nothing:
-        // v1 handles are inert (`k_state_none`) because no kind ships a persistent
-        // workspace-backed state slab yet, and content-state slabs are kind-owned in
-        // kind-owned stores whose shape the model cannot know (Decision 5). This is
-        // where a per-kind slab hook -- mirroring the writer-owned `StateRefSink`
-        // retain/release seam -- slots in when the first persistent kind lands.
-        assert((record->kind != RecordKind::Content || !record->as.content.state.has_state()) &&
-               "a persisted non-inert StateHandle needs a per-kind state-slab walk hook");
+        // The walk VISITS every content record's state handle but cannot descend a
+        // kind-owned state slab: the model holds only the opaque `slot`, and
+        // levelization forbids it naming the kind (contract depends on model, never
+        // the reverse -- Decision 5). So a non-inert handle is COLLECTED here and the
+        // runtime replays it through the per-kind Registry walker once the `Document`
+        // and its kind stores exist (`Model::recovered_content_state`, the deferred
+        // half of the `StateRefSink` retain/release mirror). While no kind persists
+        // workspace-backed state -- every kind today -- this stays empty and the walk
+        // descends nothing, byte-identical to the pre-hook behaviour.
+        if (record->kind == RecordKind::Content && record->as.content.state.has_state()) {
+          out.content_state.push_back(RecoveredContentState{
+              record->id, record->as.content.kind, record->as.content.state});
+        }
       }
       continue;
     }

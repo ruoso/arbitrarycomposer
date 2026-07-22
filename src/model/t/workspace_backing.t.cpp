@@ -821,4 +821,75 @@ TEST_CASE("checkpoint kill sweep: every syscall boundary recovers a consistent d
   }
 }
 
+// enforces: the model.persistent_state_walk_hook collection seam (issue #5).
+// The recovery walk cannot descend a kind-owned state slab (levelization: the
+// model holds only the opaque slot and cannot name the kind), so it COLLECTS every
+// reachable non-inert content StateHandle for the runtime to replay through the
+// per-kind Registry walker. Here we drive it purely at the model level -- a bare
+// non-inert StateHandle, no kind -- to pin the collection behaviour in isolation.
+TEST_CASE("recovery collects each reachable non-inert content StateHandle for replay") {
+  TempPath path;
+  arbc::ObjectId with_state;
+  arbc::ObjectId inert;
+
+  {
+    auto created = arbc::Model::create(path.str());
+    REQUIRE(created.has_value());
+    arbc::Model& model = **created;
+
+    {
+      auto txn = model.transact("two-contents");
+      with_state = txn.add_content(0xABCDu); // a kind id the record carries across reopen
+      inert = txn.add_content(0x1111u);      // stays inert -- must NOT be collected
+      REQUIRE(txn.commit().has_value());
+    }
+    {
+      auto txn = model.transact("capture");
+      txn.set_content_state(with_state, arbc::StateHandle{7}); // non-inert
+      REQUIRE(txn.commit().has_value());
+    }
+    REQUIRE(model.checkpoint().has_value());
+
+    // A live (never-reopened) model collected nothing: the seam fires only on open.
+    REQUIRE(model.recovered_content_state().empty());
+  }
+
+  TempPath recovered;
+  copy_file(path.str(), recovered.str());
+  auto reopened = arbc::Model::open(recovered.str());
+  REQUIRE(reopened.has_value());
+  arbc::Model& recovered_model = **reopened;
+
+  // Exactly the one non-inert handle is collected -- the inert content is absent --
+  // carrying its owning ObjectId, its kind id, and the persisted slot for replay.
+  const std::vector<arbc::Model::RecoveredContentState>& collected =
+      recovered_model.recovered_content_state();
+  REQUIRE(collected.size() == 1);
+  REQUIRE(collected[0].content == with_state);
+  REQUIRE(collected[0].kind == 0xABCDu);
+  REQUIRE(collected[0].state == arbc::StateHandle{7});
+  REQUIRE(collected[0].state.has_state());
+  (void)inert;
+}
+
+// enforces: the collection seam stays byte-identical to the pre-hook walk when no
+// kind persists state -- every content StateHandle inert, so nothing is collected
+// and the recovered document is indistinguishable from before the hook existed.
+TEST_CASE("recovery collects nothing when every content StateHandle is inert") {
+  TempPath path;
+  {
+    auto created = arbc::Model::create(path.str());
+    REQUIRE(created.has_value());
+    arbc::Model& model = **created;
+    build_doc(model); // contents only, no set_content_state -> all inert
+    REQUIRE(model.checkpoint().has_value());
+  }
+
+  TempPath recovered;
+  copy_file(path.str(), recovered.str());
+  auto reopened = arbc::Model::open(recovered.str());
+  REQUIRE(reopened.has_value());
+  REQUIRE((*reopened)->recovered_content_state().empty());
+}
+
 #endif // ARBC_HAS_WORKSPACE_FILES
