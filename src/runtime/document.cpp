@@ -111,7 +111,17 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
   }
 
   txn.commit();
-  d_contents.emplace(id, std::move(content));
+
+  // Publish the id->Content binding COPY-ON-WRITE (issue #10): copy the current
+  // immutable map, append the new row, and atomically swap it in. The whole-map copy is
+  // near-free -- the values are `shared_ptr` and `emplace` is rare -- and it is what lets
+  // `resolve()`/`for_each_content()` be lock-free pinned reads on the render thread. This
+  // is the SINGLE structural mutation of the table, and it runs on the writer thread
+  // alone, so a plain load/copy/store needs no CAS loop. A reader mid-walk keeps its own
+  // pinned generation; it simply does not see this new row until its next load.
+  auto next = std::make_shared<ContentBindings>(*d_contents.load());
+  next->emplace(id, std::move(content));
+  d_contents.store(std::move(next));
   return id;
 }
 
@@ -230,18 +240,27 @@ void Document::set_working_space(ObjectId composition, const SurfaceFormat& form
 DocStatePtr Document::pin() const { return d_model->current(); }
 
 Content* Document::resolve(ObjectId content) const {
-  const auto found = d_contents.find(content);
-  return found == d_contents.end() ? nullptr : found->second.get();
+  // Lock-free pinned read (issue #10): load the current published map once and look up
+  // in that immutable snapshot. A concurrent writer publishing a new map cannot tear this
+  // lookup -- the pinned `shared_ptr` keeps the snapshot alive for the call's duration.
+  const std::shared_ptr<const ContentBindings> snap = d_contents.load();
+  const auto found = snap->find(content);
+  return found == snap->end() ? nullptr : found->second.get();
 }
 
 void Document::for_each_content(const std::function<void(Content*)>& fn) const {
-  for (const auto& entry : d_contents) {
+  // Pin one published generation for the whole walk (issue #10): a content the writer
+  // appends mid-iteration lands in a NEW map the writer swaps in, leaving this snapshot
+  // untouched, so the walk never observes a rehash of the container it is iterating.
+  const std::shared_ptr<const ContentBindings> snap = d_contents.load();
+  for (const auto& entry : *snap) {
     fn(entry.second.get());
   }
 }
 
 void Document::for_each_content(const std::function<void(ObjectId, Content*)>& fn) const {
-  for (const auto& entry : d_contents) {
+  const std::shared_ptr<const ContentBindings> snap = d_contents.load();
+  for (const auto& entry : *snap) {
     fn(entry.first, entry.second.get());
   }
 }
