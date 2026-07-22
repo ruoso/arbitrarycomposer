@@ -826,6 +826,11 @@ target_link_libraries(arbc_document_workspace_checkpoint_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_document_workspace_checkpoint_t)
 
+add_executable(arbc_recovered_state_replay_t recovered_state_replay.t.cpp)
+target_link_libraries(arbc_recovered_state_replay_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_recovered_state_replay_t)
+
 # The concurrency stress (tier-6, tsan lane): a live workspace-backed Document whose
 # background housekeeping thread drains while a writer churns editable RASTER contents
 # through the router's table and readers pin. It names a concrete kind (kind_raster --

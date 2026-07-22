@@ -102,6 +102,23 @@ struct KindBinder {
   void (*detach)(Content& content) noexcept;
 };
 
+// A per-kind state-slab reachability walker (model.persistent_state_walk_hook,
+// issue #5). On a workspace fast-reopen the model's recovery walk collects every
+// reachable non-inert content `StateHandle` but cannot descend a kind-owned state
+// slab: it holds only the opaque `slot`, and levelization forbids the model naming
+// the kind. The runtime replays the collected handles here so the kind's
+// DOCUMENT-LEVEL state store rebuilds the slab refcounts a persisted handle keeps
+// reachable -- the recovery twin of the writer-owned `StateRefSink` retain/release
+// seam. `store` is the kind's own document-level state store, type-erased across
+// the registry boundary (mirroring `KindBinder`'s static-thunk idiom): the thunk,
+// defined in the kind's TU which names the concrete type, `static_cast`s it.
+// `content` is the owning object id and `handle` the persisted, non-inert handle.
+// Registered on the SAME atomic `add` as the factory, so a plugin cannot decorate
+// another kind's registration post-hoc.
+struct KindStateWalker {
+  void (*reach)(void* store, ObjectId content, StateHandle handle);
+};
+
 // id -> factory + metadata (doc 03 §Registry). Reverse-DNS kind ids are the
 // persistent contract a future serialization format references, so they are
 // part of the contract from day one even though serialization is deferred.
@@ -125,7 +142,8 @@ public:
   expected<std::monostate, RegistryError> add(std::string_view id, ContentFactory factory,
                                               KindMetadata metadata = {},
                                               std::optional<KindCodec> codec = std::nullopt,
-                                              std::optional<KindBinder> binder = std::nullopt);
+                                              std::optional<KindBinder> binder = std::nullopt,
+                                              std::optional<KindStateWalker> state_walker = std::nullopt);
 
   // Look up a factory by id; nullptr if absent.
   const ContentFactory* factory(std::string_view id) const;
@@ -139,6 +157,11 @@ public:
 
   // Look up the operator binder by id; nullptr if absent or factory-only.
   const KindBinder* binder(std::string_view id) const;
+
+  // Look up the per-kind state-slab walker by id; nullptr if the kind is absent or
+  // registered without one (every kind today -- the recovery replay skips a kind
+  // with no walker). Read lock-free post-load, exactly as `factory` (doc 03:267-270).
+  const KindStateWalker* state_walker(std::string_view id) const;
 
   // Number of registered kinds.
   std::size_t size() const noexcept { return d_entries.size(); }
@@ -156,6 +179,7 @@ private:
     KindMetadata metadata;
     std::optional<KindCodec> codec;
     std::optional<KindBinder> binder;
+    std::optional<KindStateWalker> state_walker;
   };
   const Entry* find(std::string_view id) const;
 
