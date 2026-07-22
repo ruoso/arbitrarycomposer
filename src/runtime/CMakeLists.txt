@@ -1,6 +1,7 @@
 arbc_add_component(
   NAME runtime
-  SOURCES document.cpp editable_binding.cpp document_serialize.cpp codec_solid.cpp codec_tone.cpp
+  SOURCES document.cpp editable_binding.cpp recovered_state_replay.cpp document_serialize.cpp
+          codec_solid.cpp codec_tone.cpp
           codec_fade.cpp codec_crossfade.cpp codec_nested.cpp codec_image.cpp codec_raster.cpp
           raster_tile_store.cpp tile_encode_dispatch.cpp tile_decode_dispatch.cpp asset_gc.cpp
           external_composition_loader.cpp external_asset_loader.cpp filesystem_asset_source.cpp
@@ -16,6 +17,7 @@ arbc_add_component(
           export_monitor.cpp
           plugin_host.cpp
   PUBLIC_HEADERS arbc/runtime/document.hpp arbc/runtime/editable_binding.hpp
+                 arbc/runtime/recovered_state_replay.hpp
                  arbc/runtime/document_serialize.hpp
                  arbc/runtime/external_composition_loader.hpp
                  arbc/runtime/external_asset_loader.hpp

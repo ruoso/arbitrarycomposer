@@ -305,6 +305,30 @@ public:
   // installs its `SyscallInjector` fault shim on (doc 16:74-78).
   WorkspaceFileChunkSource* workspace_source() noexcept { return d_source.get(); }
 
+  // A persisted non-inert content-state handle the recovery walk found reachable
+  // (model.persistent_state_walk_hook). The model cannot descend a kind-owned
+  // state slab -- it holds only the opaque `slot`, and levelization forbids it
+  // naming the kind (contract depends on model, never the reverse) -- so `open`
+  // COLLECTS these and the runtime replays them through the per-kind Registry
+  // walker once the `Document` and its kind stores exist. This is the deferred
+  // half of the `StateRefSink` retain/release mirror: `Model::open` runs before
+  // any Document, so the walk cannot dispatch into a live kind store inline.
+  struct RecoveredContentState {
+    ObjectId content;   // the content record that owns the handle
+    std::uint64_t kind; // the record's kind id; the runtime maps it to the string id
+    StateHandle state;  // the non-inert handle into the kind-owned state store
+  };
+
+  // The persisted non-inert content-state handles the last `open()` found
+  // reachable, for the runtime to replay through per-kind state-slab walkers.
+  // Empty for an anonymous model, a freshly created document, or a document whose
+  // kinds ship only inert state (every kind today -- the list stays empty until
+  // the first persistent workspace-backed kind lands). Read once, post-open, on
+  // the single writer thread; never mutated after `open` returns.
+  const std::vector<RecoveredContentState>& recovered_content_state() const noexcept {
+    return d_recovered_content_state;
+  }
+
   // Pin the current version; the returned handle is immutable and outlives any
   // later transaction (until the pin is dropped). Any thread.
   DocStatePtr current() const;
@@ -635,6 +659,11 @@ private:
     // carrying different content -- also reads 500. The walk already visits every
     // record to rebuild its refcount, so the max is free.
     std::uint64_t max_revision{0};
+    // Every reachable content record carrying a non-inert `StateHandle`, in walk
+    // order. The walk cannot descend a kind-owned state slab (see
+    // `recovered_content_state`), so it collects here and `open` hands the list to
+    // the Model for the runtime to replay. Empty while no kind persists state.
+    std::vector<RecoveredContentState> content_state;
   };
   Recovered rebuild_counts(SlotIndex root_index);
 
@@ -663,6 +692,12 @@ private:
 
   std::atomic<std::uint64_t> d_next_id{1};
   std::atomic<DocStatePtr> d_current;
+
+  // Persisted non-inert content-state handles the last `open()` collected, for the
+  // runtime to replay through per-kind state-slab walkers (see
+  // `recovered_content_state`). Written once at the tail of `open`, on the single
+  // writer thread, before any reader pins the recovered version; empty otherwise.
+  std::vector<RecoveredContentState> d_recovered_content_state;
 
   // Writer-owned single sinks (doc 02, doc 17:66-72): the transaction notifies
   // through these; the journal / damage-propagation consumers register above.

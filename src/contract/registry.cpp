@@ -16,17 +16,18 @@ const Registry::Entry* Registry::find(std::string_view id) const {
 expected<std::monostate, RegistryError> Registry::add(std::string_view id, ContentFactory factory,
                                                       KindMetadata metadata,
                                                       std::optional<KindCodec> codec,
-                                                      std::optional<KindBinder> binder) {
+                                                      std::optional<KindBinder> binder,
+                                                      std::optional<KindStateWalker> state_walker) {
   if (id.empty()) {
     return unexpected<RegistryError>(RegistryError::EmptyId);
   }
   if (find(id) != nullptr) {
-    // The whole entry is rejected: a duplicate add decorates nothing -- the
-    // earlier registration keeps its factory, codec and binder intact.
+    // The whole entry is rejected: a duplicate add decorates nothing -- the earlier
+    // registration keeps its factory, codec, binder and state walker intact.
     return unexpected<RegistryError>(RegistryError::DuplicateId);
   }
   d_entries.push_back(Entry{std::string(id), std::move(factory), std::move(metadata),
-                            std::move(codec), std::move(binder)});
+                            std::move(codec), std::move(binder), std::move(state_walker)});
   return std::monostate{};
 }
 
@@ -48,6 +49,11 @@ const KindCodec* Registry::codec(std::string_view id) const {
 const KindBinder* Registry::binder(std::string_view id) const {
   const Entry* entry = find(id);
   return entry != nullptr && entry->binder.has_value() ? &*entry->binder : nullptr;
+}
+
+const KindStateWalker* Registry::state_walker(std::string_view id) const {
+  const Entry* entry = find(id);
+  return entry != nullptr && entry->state_walker.has_value() ? &*entry->state_walker : nullptr;
 }
 
 std::vector<std::string_view> Registry::ids() const {
