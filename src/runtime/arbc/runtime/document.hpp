@@ -18,6 +18,7 @@
 #include <arbc/runtime/pending_external_loads.hpp> // names no JSON type
 #include <arbc/serialize/unknown_fields.hpp>       // names no JSON type (doc 08:61-63)
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -259,12 +260,18 @@ public:
 
   // Pin the current version for rendering (doc 14).
   DocStatePtr pin() const;
+  // Resolve an id to its bound `Content*` (null if unbound). A LOCK-FREE pinned read
+  // of the copy-on-write binding table (issue #10): safe to call from the render thread
+  // concurrently with the writer's `add_content`, exactly like `pin()`.
   Content* resolve(ObjectId content) const;
 
   // Visit every minted top-level content (the runtime operator binder walks these
   // plus each content's `inputs()` to reach operator input children,
-  // `operator_binding.cpp`). Read-only over the side-map; `fn` receives the borrowed
-  // `Content*` (never null). The `Content` vtable stays in `runtime`, doc 17:66-72.
+  // `operator_binding.cpp`). A LOCK-FREE pinned read of the copy-on-write binding table
+  // (issue #10) -- the render-thread walk never races the writer's `add_content`. Each
+  // call pins one published generation, so a content appended mid-walk is simply not
+  // seen this pass, never a torn container. `fn` receives the borrowed `Content*` (never
+  // null). The `Content` vtable stays in `runtime`, doc 17:66-72.
   void for_each_content(const std::function<void(Content*)>& fn) const;
 
   // The same walk with each content's `ObjectId` in hand -- the key its unknown-field
@@ -400,8 +407,26 @@ private:
   // The permanent, levelization-mandated home of the id->Content vtable binding
   // (doc 17:66-72): the versioned `ContentRecord` in `DocState` holds only the
   // opaque `{kind, StateHandle}`, so the model stays free of the `Content` vtable.
-  // Writer-thread-owned; keyed by the record's `ObjectId`; `resolve()` reads it.
-  std::unordered_map<ObjectId, std::shared_ptr<Content>> d_contents;
+  // Keyed by the record's `ObjectId`.
+  using ContentBindings = std::unordered_map<ObjectId, std::shared_ptr<Content>>;
+  // Published COPY-ON-WRITE behind an atomic so a render thread walks the bindings
+  // LOCK-FREE while the writer thread emplaces (issue #10). The table is *almost*
+  // immutable: `add_content` is the ONLY structural mutation -- it publishes a fresh
+  // whole-map copy with the new row appended -- and rows are never erased live
+  // (`remove_content` retains the row so the journal's undo `before` edge can restore
+  // it). So the ONLY thing an unsynchronized read could tear is the map CONTAINER
+  // across an `emplace`'s rehash; holding it COW behind the atomic removes that hazard
+  // without a lock, matching `pin()` -- `resolve()`/`for_each_content()` become
+  // lock-free pinned reads like the rest of the model (doc 02:327-329, "planning never
+  // takes a lock"). The values are `shared_ptr`, so the whole-map copy is near-free.
+  // WRITER-THREAD ONLY publishes (via `add_content`); ANY thread may load-and-read.
+  //
+  // Still declared here for the teardown contract above: the atomic holds the last
+  // published map, which owns every live `Content`, and is destroyed at this member's
+  // slot -- AFTER `~Model`'s final drain releases each record's state into those
+  // contents. Never null: initialized to an empty map and every publish stores non-null.
+  std::atomic<std::shared_ptr<const ContentBindings>> d_contents{
+      std::make_shared<const ContentBindings>()};
   // The document's one state-sink trio, routing each seam call to the `Editable`
   // facet of the content that owns the handle.
   EditableBinding d_binding;

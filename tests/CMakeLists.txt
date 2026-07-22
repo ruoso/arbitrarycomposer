@@ -212,6 +212,17 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_document_serialize_concurrency_t)
 
+# issue #10 content-binding concurrency stress (tier-6, tsan lane): the render-thread read
+# chain walks the copy-on-write id->Content binding table lock-free (for_each_content +
+# resolve) while the single writer thread churns add_content -- a rehash mid-walk before the
+# COW publish was a data race on the map container. Outcomes only; TSan clean.
+add_executable(arbc_document_content_binding_concurrency_t
+               document_content_binding_concurrency.t.cpp)
+target_link_libraries(
+  arbc_document_content_binding_concurrency_t
+  PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_document_content_binding_concurrency_t)
+
 # runtime.operator_codecs end-to-end byte-exact golden: builds a Document with an
 # operator graph (org.arbc.fade over a shared input + org.arbc.crossfade over that
 # shared input plus a second), asserts the canonical `.arbc` bytes byte-for-byte
