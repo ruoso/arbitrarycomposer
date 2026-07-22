@@ -40,12 +40,13 @@ TEST_CASE("the content binding table is walked lock-free while the writer emplac
   // Seed one content so the reader has a stable id to resolve from the very first pass.
   // The id is captured by value into the reader -- the two threads share only `doc`, whose
   // binding table is the thing under test, never a test-side container.
-  const ObjectId seed = doc.add_content(std::make_shared<SolidContent>(Rgba{1.0F, 0.5F, 0.25F, 1.0F}));
+  const ObjectId seed =
+      doc.add_content(std::make_shared<SolidContent>(Rgba{1.0F, 0.5F, 0.25F, 1.0F}));
   doc.attach_layer(comp, doc.add_layer(seed, Affine::identity(), 1.0));
 
   constexpr int k_iterations = 4000;
-  std::atomic<bool> torn{false};        // a visited Content* was null / unwalkable
-  std::atomic<bool> shrank{false};      // a single pass saw the table lose rows (impossible)
+  std::atomic<bool> torn{false};   // a visited Content* was null / unwalkable
+  std::atomic<bool> shrank{false}; // a single pass saw the table lose rows (impossible)
   std::atomic<bool> reader_done{false};
   std::atomic<int> last_seen{0};
 
