@@ -21,6 +21,46 @@ surface moves freely, and changelog honesty is what makes that safe
 
 _Nothing yet._
 
+## [0.2.0] - 2026-07-22
+
+Additive since 0.1.0: the per-kind state-slab walk hook lands the recovery half
+of the editable-state seam, plus a rendering-correctness fix and a lock-free
+render read path. The plugin surface stays same-toolchain and unversioned
+(the C ABI still arrives at 1.0); every 0.1.0 registration compiles unchanged.
+
+### Added
+
+- **`Registry::KindStateWalker`** — a per-kind state-slab reachability walker,
+  registered atomically with the factory and looked up lock-free via
+  `Registry::state_walker(id)`. `Registry::add()` gains a trailing defaulted
+  `std::optional<KindStateWalker>` parameter, so every existing registration
+  compiles unchanged. Mirrors `KindBinder`'s static-thunk idiom: the store is
+  type-erased across the registry boundary and the owning kind's TU casts it back.
+- **`Model::recovered_content_state()`** (and `Model::RecoveredContentState`) — on
+  a workspace fast-reopen the model's recovery walk collects each reachable
+  non-inert content `StateHandle` it cannot descend itself (owning `ObjectId`,
+  kind id, handle), for the runtime to replay. The model holds only the opaque
+  slot and, by levelization, cannot name the kind — so it collects rather than
+  descends.
+- **`arbc/runtime/recovered_state_replay.hpp`** — `replay_recovered_content_state()`
+  routes each collected handle to its owning kind's registered walker, so a
+  reopened document rebuilds the slab refcounts a persisted handle keeps reachable
+  (the recovery twin of the writer-owned `StateRefSink` retain/release seam).
+  Unresolvable kind tokens and walkerless kinds are skipped and counted, never
+  fatal; it returns `{dispatched, skipped}` as a behavioral witness.
+
+### Changed
+
+- **Render reads are lock-free** — a `Document`'s content bindings now publish
+  copy-on-write through an atomic `shared_ptr<const ContentBindings>`, so a render
+  snapshot never contends with a concurrent edit that rebinds contents.
+
+### Fixed
+
+- **`render_offline` binds operators** — nested compositions rendered through the
+  offline one-shot now have their operator graphs bound, instead of rendering
+  unbound and producing wrong output.
+
 ## [0.1.0] - 2026-07-17
 
 The surface the first tag (0.1.0) names. There is no predecessor version, so
