@@ -114,6 +114,20 @@ public:
 // `allocate`/`reserve_restored`/`finalize_restore` stay WRITER-THREAD-ONLY (a
 // debug-build assert enforces it) because arena growth -- chunk publish, column
 // publish -- is single-threaded: the writer is the only structural allocator.
+// CONTRACT: "writer-thread-only" means a SINGLE STABLE THREAD IDENTITY for the
+// store's lifetime, NOT merely externally-serialized access. The first write
+// binds that identity; it never rebinds and there is no rebind API. This is a
+// STRONGER requirement than one-writer-at-a-time because the whole lock-free
+// growth path is written against a single mutator: relaxed `d_high_water`
+// (program-order, not release), the load-check-`new`-store in
+// `SlabDirectory::publish` (atomic for readers, not between publishers), the
+// lock-step column publish, and the writer-thread checkpoint seal that reads
+// `high_water` relaxed. An external mutex only re-covers the accesses it wraps;
+// "single writer" was silently covering the rest -- e.g. a checkpoint commit on
+// one thread reading a `high_water` another thread advanced under the write
+// mutex would seal the wrong frontier. A consumer whose writes originate on two
+// threads must FUNNEL them to one dedicated writer thread (post the work as a
+// task), not take turns under a mutex.
 // The capacity ACCOUNTING it maintains along the way is a different matter: a
 // host memory panel reads it from its own thread while the writer allocates
 // (doc 15 `:186-198`), so `d_high_water`/`d_slots_capacity`/`d_bytes_reserved`
@@ -157,8 +171,9 @@ public:
   // + one drainer) reality; not tuned in this task.
   static constexpr std::size_t k_free_pool_batch = 32;
 
-  // Reserve a slot and return its index. WRITER-ONLY (arena growth is
-  // single-threaded). Pops from the writer's thread-local pool, refilling a batch
+  // Reserve a slot and return its index. WRITER-ONLY -- one stable thread
+  // identity, not serialized turns (see Threading above). Pops from the writer's
+  // thread-local pool, refilling a batch
   // from the global pool when it is empty before falling back to high-water
   // growth. Returns an error (never throws, never aborts) when the ChunkSource
   // refuses to grow or the index space is exhausted.
@@ -286,6 +301,9 @@ public:
   }
 
 private:
+  // Bind the writer identity on the first structural write and assert every later
+  // write is the same OS thread (debug only). It never rebinds -- that is the
+  // contract tripwire, not an incidental check: see the Threading contract above.
   void assert_writer_thread() noexcept;
 
   // The calling thread's local free pool for this store, created (and registered
@@ -354,6 +372,9 @@ private:
   std::atomic<std::size_t> d_refill_count{0}; // global-pool refills (lock taken)
 
 #ifndef NDEBUG
+  // Bound to the first structural writer's OS thread and never rebound (the
+  // single-identity contract; Threading above). A second thread writing -- even
+  // if externally serialized -- trips the assert by design.
   std::thread::id d_writer{};
   bool d_writer_bound{false};
 #endif

@@ -182,6 +182,24 @@ question, which is the goal:
   allocate only from pools/arenas warmed for them. The writer thread is
   the only structural allocator — which is what makes thread-local free
   pools effective: churn is concentrated where the free pool lives.
+- **Single writer means single *identity*, not serialized turns** — the
+  consumer-facing contract. Structural writes to a document
+  (`allocate`/`reserve_restored`/`finalize_restore`, and checkpoint commit)
+  must originate from *one stable OS thread* for the store's lifetime, not
+  merely from access an external mutex serializes. Debug builds bind that
+  identity on first write and assert it thereafter (`SlotStore` never
+  rebinds; there is no rebind API); release builds omit the check but the
+  contract stands. It is stronger than one-writer-at-a-time because the
+  whole lock-free growth path is *written against a single mutator* —
+  relaxed `high_water` justified by program order, `SlabDirectory::publish`'s
+  non-atomic load-check-new-store, the lock-step column publish, the
+  writer-thread checkpoint seal. A consumer mutex only re-covers the
+  accesses it wraps; "single writer" was silently covering the rest — e.g. a
+  checkpoint commit on one thread reading a `high_water` a second thread
+  advanced under the *write* mutex would seal the wrong chunk frontier. **A
+  consumer whose writes originate on two threads must funnel them to one
+  dedicated writer thread** (post the work as a task), not take turns under a
+  mutex.
 - **The drainer is not the writer, and the checkpointer is.** These are
   two separate consequences of the rule above, and both bite. *Draining*
   may run on the low-priority thread concurrently with a writer

@@ -334,8 +334,12 @@ Initially-open questions, now decided in their own docs:
   high-water, seals full chunks read-only, and compacts the durability
   quarantine, all of which the writer mutates lock-free. Checkpoint cadence
   therefore decides *when* a commit happens, never *where* — every trigger,
-  timer included, is evaluated on the writer thread. Decided in doc 15
-  (§ Version reclamation, § File-backed arenas) and doc 14 (§ Editable).
+  timer included, is evaluated on the writer thread. And "the writer thread"
+  is a *single stable identity*, not just serialized access: a consumer with
+  two threads that produce writes must funnel them to one dedicated writer
+  thread, because the lock-free growth path is written against a single
+  mutator (doc 15 § Thread rules). Decided in doc 15 (§ Version reclamation,
+  § File-backed arenas) and doc 14 (§ Editable).
 - **A frame cancels the renders it no longer wants, not the renders it could
   not wait for.** The deadline bounds *the frame*, not *the work*. It is
   enforced by the frame refusing to park past it; the cancel that follows is a

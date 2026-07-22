@@ -51,7 +51,11 @@ public:
 
   // Publish `base` as the chunk for `chunk_number`, allocating its
   // second-level table on demand. Writer-thread-only; the release stores make
-  // the table and base visible to concurrent readers.
+  // the table and base visible to concurrent READERS. Note the load-check-`new`-
+  // store is atomic for readers but NOT between publishers: two concurrent
+  // publishers into one root slot would double-`new` and lose a table. Correct
+  // only under a single publisher -- the SlotStore single-writer-identity
+  // contract (slot_store.hpp Threading) is what guarantees that.
   void publish(std::uint32_t chunk_number, Slot* base) {
     const std::uint32_t root_index = chunk_number >> table_bits;
     const std::uint32_t table_index = chunk_number & (table_size - 1);
