@@ -350,6 +350,20 @@ kinds, which is the whole point for a multi-disciplinary editor:
   handle pairs, for very fine-grained histories) are a deferred extension;
   handle pairs with structural sharing are the v1 contract because they
   are impossible to implement incorrectly in ways that corrupt history.
+- **The enable state is published; the history is not.** A UI asks "is
+  there anything to undo / redo" *every frame*, on whatever thread paints
+  the menu — and doc 15 tells a host with two writing threads to funnel
+  its writes onto one dedicated writer thread, which is precisely what
+  moves that UI thread off the writer. So the cursor and the entry count
+  are published as relaxed atomics and `can_undo()`/`can_redo()`/`depth()`/
+  `cursor()` are any-thread lock-free reads, the same shape as `pin()` and
+  the copy-on-write binding table. They need no freshness to be correct:
+  `undo()`/`redo()` re-check on the writer thread, so a stale enable costs
+  a refused no-op, never a wrong mutation. The entry *vector* stays
+  writer-owned — history **inspection** (`entry_at`, `byte_cost`) is
+  writer-thread only, because handing out a reference into a vector a
+  commit may reallocate is a different (and larger) promise: a history
+  browser would need the entry list published copy-on-write.
 
 ## The scenarios, validated
 

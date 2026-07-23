@@ -223,6 +223,16 @@ target_link_libraries(
   PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_document_content_binding_concurrency_t)
 
+# issue #15 journal enable-state lane (tier-6, tsan lane): a host's UI thread reads
+# journal().can_undo()/can_redo()/depth()/cursor() every frame while the writer thread commits
+# and navigates -- plain reads of the cursor and the entry vector before those two counts were
+# published as relaxed atomics. Outcomes only; TSan clean.
+add_executable(arbc_journal_history_reads_concurrency_t journal_history_reads_concurrency.t.cpp)
+target_link_libraries(
+  arbc_journal_history_reads_concurrency_t
+  PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_journal_history_reads_concurrency_t)
+
 # issue #13 writer-identity + damage-handoff lanes (tier-6, tsan lane): a HostViewport stepped
 # from a RENDER thread must publish nothing (the external-arrival settle is a structural write,
 # and the render thread is not the document's writer identity), and the damage it drains from
