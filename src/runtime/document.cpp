@@ -87,7 +87,7 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
   // side-map keyed by that record's id (doc 17:66-72 keeps the model free of the
   // Content vtable). resolve(id) serves it; find_content(id) carries no pointer.
   Content& live = *content;
-  auto txn = d_model->transact();
+  auto txn = begin();
   const ObjectId id = txn.add_content(kind);
 
   // Register-on-instantiate, the state-sink analogue of the damage sink the core
@@ -133,7 +133,7 @@ void Document::remove_content(ObjectId content, ObjectId composition, ObjectId l
   // layer record, and erase the content record. Because the mutations share a
   // transaction an observer sees the document with the content present or fully gone,
   // never a layer naming an erased content.
-  auto txn = d_model->transact();
+  auto txn = begin();
   txn.detach_layer(composition, layer);
   txn.remove(layer);
   txn.remove(content);
@@ -152,11 +152,56 @@ void Document::remove_content(ObjectId content, ObjectId composition, ObjectId l
   // named `runtime.removed_content_reclaim` follow-up lands, at history-trim.
 }
 
-Model::Transaction Document::transact(std::string name) {
+Model::Transaction Document::transact(std::string name) { return begin(std::move(name)); }
+
+Model::Transaction Document::begin(std::string name) {
+  // The one place a `Document` edit opens a transaction, and therefore the one place the
+  // arrival-before-edit rule lives (issue #13). Ordered BEFORE the model transaction, never
+  // inside it: the settler publishes its own revisions, and the edit that follows must be
+  // based on the version those left behind -- exactly the ordering `HostViewport::step()`
+  // uses when IT is the writer thread (settle at step 0, then pin).
+  settle_arrived_external_loads();
   return d_model->transact(std::move(name));
 }
 
+void Document::settle_arrived_external_loads() {
+  // Three ways to cost nothing, in the order they are cheapest: nobody installed a settler
+  // (every document with no viewport bound, and every programmatically-built one); a load or a
+  // settle is already in flight, so THIS call is the installer's own `add_content` re-entering
+  // (or a host edit made from inside a load, which the loader owns and must not have
+  // rearranged under it); and -- the overwhelmingly common case on a live document -- nothing
+  // has arrived, which is one relaxed atomic load.
+  if (!d_external_settle || d_settling || d_pending_loads->ready() == 0) {
+    return;
+  }
+  // Scoped, not paired by hand: a settler that throws (a codec reaching for memory it cannot
+  // get) must not leave the document permanently marked as installing, which would silently
+  // disable the auto-settle for the rest of its life.
+  struct Scope {
+    explicit Scope(bool& flag) noexcept : d_flag(flag) { d_flag = true; }
+    ~Scope() { d_flag = false; }
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+    bool& d_flag;
+  } const scope(d_settling);
+  d_auto_settled += d_external_settle();
+}
+
 void Document::drain() { d_housekeeping.drain_and_quiesce(); }
+
+void Document::set_external_load_settler(std::function<std::size_t()> settle) {
+  // Install-counted rather than last-wins (see the header): N viewports over one document each
+  // install the same derived behavior, and the first of them to be destroyed must not take the
+  // auto-settle away from the ones still running.
+  if (settle) {
+    d_external_settle = std::move(settle);
+    ++d_settler_installs;
+    return;
+  }
+  if (d_settler_installs > 0 && --d_settler_installs == 0) {
+    d_external_settle = nullptr;
+  }
+}
 
 expected<std::monostate, WorkspaceFileError> Document::checkpoint() {
   if (!d_model->workspace_backed()) {
@@ -176,63 +221,63 @@ std::uint64_t Document::background_ticks() const noexcept {
 std::uint64_t Document::flush_housekeeping() { return d_housekeeping.flush(); }
 
 ObjectId Document::add_layer(ObjectId content, const Affine& transform, double opacity) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   const ObjectId id = txn.add_layer(content, transform, opacity);
   txn.commit();
   return id;
 }
 
 void Document::set_layer_transform(ObjectId layer, const Affine& transform) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   txn.set_transform(layer, transform);
   txn.commit();
 }
 
 void Document::set_layer_span(ObjectId layer, const TimeRange& span) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   txn.set_span(layer, span);
   txn.commit();
 }
 
 void Document::set_layer_time_map(ObjectId layer, const TimeMap& time_map) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   txn.set_time_map(layer, time_map);
   txn.commit();
 }
 
 void Document::attach_layer(ObjectId composition, ObjectId layer) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   txn.attach_layer(composition, layer);
   txn.commit();
 }
 
 void Document::set_layer_gain(ObjectId layer, double gain) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   txn.set_gain(layer, gain);
   txn.commit();
 }
 
 void Document::set_layer_audible(ObjectId layer, bool audible) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   txn.set_audible(layer, audible);
   txn.commit();
 }
 
 void Document::set_working_audio_format(ObjectId composition, const AudioFormat& format) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   txn.set_working_audio_format(composition, format);
   txn.commit();
 }
 
 ObjectId Document::add_composition(double canvas_w, double canvas_h) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   const ObjectId id = txn.add_composition(canvas_w, canvas_h);
   txn.commit();
   return id;
 }
 
 void Document::set_working_space(ObjectId composition, const SurfaceFormat& format) {
-  auto txn = d_model->transact();
+  auto txn = begin();
   txn.set_working_space(composition, format);
   txn.commit();
 }

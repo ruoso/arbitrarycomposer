@@ -24,6 +24,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cassert>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -53,6 +54,12 @@ struct DocumentSerializeAccess {
   static const std::shared_ptr<PendingExternalLoads>& pending(Document& doc) {
     return doc.d_pending_loads;
   }
+  // "An install is in flight." `Document::begin()` consults it and runs no auto-settle while
+  // it is set (issue #13): a load and a settle both edit the document through its own public
+  // mutators, and having those re-enter the settler would recurse -- or, during a load, would
+  // install an arrival against a half-sunk content table whose embedding contents
+  // `arrival_damage` cannot yet see.
+  static bool& installing(Document& doc) noexcept { return doc.d_settling; }
 };
 
 namespace {
@@ -65,20 +72,32 @@ namespace {
 // provisional root) go through the ordinary transactional path and would
 // otherwise land in the document's journal as undoable edits. Detach the commit
 // sink for the reconstruction and restore it after, so a load journals nothing.
-class JournalSuspension {
+//
+// It marks the document as INSTALLING for the same span (issue #13). The two facts are one
+// fact -- "the edits about to happen are the loader's, not a host's" -- and both consumers of
+// it, the journal and the auto-settle, want exactly that span: a load or a settle journals
+// nothing and must not re-enter the settler through the `add_content` calls it is about to
+// make. Restoring `d_settling` to its ENTRY value rather than to false is what lets a settle
+// nest inside a load (a child that lands during one) without the inner scope's exit unlocking
+// the outer.
+class InstallScope {
 public:
-  explicit JournalSuspension(Document& doc) noexcept : d_doc(&doc) {
+  explicit InstallScope(Document& doc) noexcept
+      : d_doc(&doc), d_was_installing(DocumentSerializeAccess::installing(doc)) {
     DocumentSerializeAccess::model(doc).set_commit_sink(nullptr);
+    DocumentSerializeAccess::installing(doc) = true;
   }
-  ~JournalSuspension() {
+  ~InstallScope() {
+    DocumentSerializeAccess::installing(*d_doc) = d_was_installing;
     DocumentSerializeAccess::model(*d_doc).set_commit_sink(
         &DocumentSerializeAccess::journal(*d_doc));
   }
-  JournalSuspension(const JournalSuspension&) = delete;
-  JournalSuspension& operator=(const JournalSuspension&) = delete;
+  InstallScope(const InstallScope&) = delete;
+  InstallScope& operator=(const InstallScope&) = delete;
 
 private:
   Document* d_doc;
+  bool d_was_installing;
 };
 
 // Recover a live content's built-in `(kind_id, kind_version)` from its concrete type
@@ -700,7 +719,7 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
                                                     std::string base_uri, AssetSource* assets,
                                                     RasterTileStore* tiles,
                                                     TileDecodeDispatch* decode) {
-  const JournalSuspension no_journal(doc);
+  const InstallScope no_journal(doc);
   Model& into = DocumentSerializeAccess::model(doc);
 
   // `base_uri` is what a kind's relative references resolve against (doc 08 Principle 3:
@@ -761,6 +780,12 @@ expected<std::monostate, ReaderError> load_document(std::string_view bytes, Docu
 }
 
 std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Registry& registry) {
+  // The publish contract, armed (issue #13): this installs arrivals through model
+  // transactions, so it must run on the document's ONE writer identity. Debug-only, matching
+  // `SlotStore::assert_writer_thread` one level down -- and reached earlier than that one, at
+  // the entry point a host actually calls, where the message can name the rule.
+  assert(doc.on_writer_thread() &&
+         "settle_external_loads publishes: writer-thread only (doc 15 Thread rules)");
   const std::shared_ptr<PendingExternalLoads>& state = DocumentSerializeAccess::pending(doc);
 
   // An arrival is not a user edit, so it is not undoable: an undo taken right after a widget
@@ -768,7 +793,7 @@ std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Regis
   // (doc 14:263-264) -- suspend the COMMIT sink. The DAMAGE sink stays installed: the whole
   // point of the settle is that its commit flushes damage (`model.cpp`'s commit flushes the
   // damage union whether or not a commit sink is present).
-  const JournalSuspension no_journal(doc);
+  const InstallScope no_journal(doc);
 
   std::size_t installed = 0;
   // Loop to quiescence (Decision 4): a settled child may itself hold external refs, and a

@@ -327,6 +327,29 @@ current-revision entries qualify.
 - The **compositor** runs frame planning on the render thread. It reads the
   scene under a snapshot — concretely, a pinned document version (doc 14) —
   so planning never races edits and never takes a lock.
+- **The frame loop publishes only on the writer thread.** A frame *reads*;
+  when something in the loop has to *write* — today, installing an external
+  child whose bytes arrived late (doc 05) — that write is a structural
+  publish and belongs to the document's single writer identity (doc 15 §
+  Thread rules), which the render thread generally is not. The library does
+  not leave this to the host, because the call site is the library's: a
+  viewport step asks the model whether it *is* the writer. If it is (the
+  single-threaded host), it installs inline and the arrival is composited by
+  the very frame that observed it. If it is not, the step publishes nothing
+  and reports how many arrivals are waiting, and the install happens on the
+  writer thread instead — driven by the host, or, if the host ignores the
+  report entirely, immediately ahead of its next edit. The rule generalizes:
+  *a library-owned path that runs on a caller-chosen thread must ask before
+  it publishes*, because a host mutex cannot repair a second writer identity
+  after the fact.
+- **The damage handoff crosses threads, and owns its own synchronization.**
+  Damage is produced by a commit, on the writer thread, and consumed by the
+  frame loop, on the render thread — the one producer/consumer queue in an
+  otherwise snapshot-read frame. The per-viewport accumulator carries a
+  mutex for exactly that handoff (a bounded append, or a swap); it is not a
+  frame lock, and no render, plan, or pull happens inside it. Everything
+  else the frame touches is either single-owner render-thread state or
+  already any-thread by construction.
 - **Layer rendering** runs on a worker pool. Requests carry everything the
   layer needs (region, scale, deadline, target surface); layer
   implementations declare whether they are internally thread-safe or need

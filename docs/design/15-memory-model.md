@@ -200,6 +200,19 @@ question, which is the goal:
   consumer whose writes originate on two threads must funnel them to one
   dedicated writer thread** (post the work as a task), not take turns under a
   mutex.
+- **The identity is queryable, and the library obeys it too.** A debug assert
+  tells a consumer it has *already* corrupted the store; it does not let the
+  library avoid doing so. So the model binds the same identity in every
+  build — one atomic `thread::id`, written once by the first transaction,
+  never rebound — and exposes it (`Model::on_writer_thread()`,
+  `Document::on_writer_thread()`; true before any write, when the caller
+  would *become* the writer). That turns the rule into something a
+  library-owned path running on a caller-chosen thread can check: the
+  interactive frame loop asks before it installs a late-arriving external
+  child, and declines rather than becoming a second writer (doc 02 §
+  Threading model). The obligation runs both ways — a library that publishes
+  from whatever thread the host happened to call it on is violating its own
+  contract on the host's behalf, and no host-side mutex can repair it.
 - **The drainer is not the writer, and the checkpointer is.** These are
   two separate consequences of the rule above, and both bite. *Draining*
   may run on the low-priority thread concurrently with a writer

@@ -78,6 +78,7 @@ void PendingExternalLoads::complete(ObjectId child, std::string_view bytes) {
   // view is valid only for the duration of the callback (Constraint 5).
   const std::lock_guard<std::mutex> lock(d_mutex);
   d_ready.push_back(Arrival{child, std::string(bytes)});
+  d_ready_count.store(d_ready.size(), std::memory_order_relaxed);
 }
 
 bool PendingExternalLoads::take_arrival(ObjectId child, std::string& bytes) {
@@ -88,6 +89,7 @@ bool PendingExternalLoads::take_arrival(ObjectId child, std::string& bytes) {
     }
     bytes = std::move(it->bytes);
     d_ready.erase(it);
+    d_ready_count.store(d_ready.size(), std::memory_order_relaxed);
     return true;
   }
   return false;
@@ -97,6 +99,7 @@ std::vector<PendingExternalLoads::Arrival> PendingExternalLoads::take_ready() {
   const std::lock_guard<std::mutex> lock(d_mutex);
   std::vector<Arrival> out;
   out.swap(d_ready);
+  d_ready_count.store(0, std::memory_order_relaxed);
   return out;
 }
 

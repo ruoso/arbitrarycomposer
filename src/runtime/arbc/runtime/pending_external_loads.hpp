@@ -33,6 +33,7 @@
 #include <arbc/base/ids.hpp>
 #include <arbc/serialize/load_context.hpp> // AssetSource
 
+#include <atomic>
 #include <cstddef>
 #include <mutex>
 #include <string>
@@ -142,6 +143,16 @@ public:
   // Drain every arrival delivered so far (the settle step's ready queue).
   std::vector<Arrival> take_ready();
 
+  // How many arrivals are sitting in the queue, waiting for a writer-thread settle to install
+  // them. ANY THREAD, and deliberately lock-free and allocation-free: this is what a
+  // render-thread frame loop polls to learn that a settle is OWED without taking the queue's
+  // mutex on every idle frame and without publishing anything (issue #13). It shadows the
+  // queue rather than measuring it -- one relaxed counter maintained under the same mutex the
+  // queue is -- so a reader can observe it between the counter store and the queue push in
+  // either order; both are transient states of "an arrival is landing", and the next poll
+  // settles it. Never used to DECIDE what to install; the settle drains the queue itself.
+  std::size_t ready() const noexcept { return d_ready_count.load(std::memory_order_relaxed); }
+
 private:
   struct Entry {
     std::string uri;
@@ -160,6 +171,8 @@ private:
   // The one cross-thread channel.
   std::mutex d_mutex;
   std::vector<Arrival> d_ready;
+  // `d_ready.size()`, readable without the mutex (`ready()`). Maintained under it.
+  std::atomic<std::size_t> d_ready_count{0};
 };
 
 } // namespace arbc

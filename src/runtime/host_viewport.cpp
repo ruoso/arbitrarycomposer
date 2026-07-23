@@ -35,6 +35,14 @@ HostViewport::Config derive_document_config(Document& doc, HostViewport::Documen
       return arbc::settle_external_loads(doc, *bridge, *registry);
     };
   }
+  // The readiness probe travels with the settle hook (issue #13): a step that declines to
+  // publish still owes the host the count of what it declined to install, and the document
+  // answers that lock-free from any thread. Derived whenever the document can answer -- which
+  // is unconditional, unlike the settle hook's need for a bridge and a registry -- so a host
+  // that supplies a bespoke settle hook against a `Document` still gets an honest count.
+  if (!config.external_loads_ready) {
+    config.external_loads_ready = [&doc] { return doc.external_loads_ready(); };
+  }
   return config;
 }
 
@@ -47,7 +55,8 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Model& model, ContentR
       d_pool(pool), d_cache(cache), d_target(target),
       d_clock(clock ? std::move(clock) : Clock{[] { return std::chrono::steady_clock::now(); }}),
       d_budget(config.budget), d_viewport(config.viewport), d_transport(config.transport_start),
-      d_settle_loads(std::move(config.settle_external_loads)) {
+      d_settle_loads(std::move(config.settle_external_loads)),
+      d_loads_ready(std::move(config.external_loads_ready)) {
   // Subscribe to model damage for this object's lifetime (Constraint 5, RAII). Two
   // mutually exclusive attach paths (`runtime.damage_router` Constraint 4): with a
   // router supplied, register `&d_sink` with it and hold the move-only
@@ -94,6 +103,18 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Document& doc, Documen
           [&doc](ObjectId id) { return doc.resolve(id); }, backend, pool, cache, target,
           std::move(clock), derive_document_config(doc, binding, std::move(config))) {
   d_document = &doc;
+  // Hand the settle hook to the DOCUMENT as well (issue #13). `step()` runs it only when the
+  // step is itself the writer thread; this is what covers the other case, without asking the
+  // host for anything: the document runs it on the writer thread, immediately before the next
+  // edit that host makes. So a host that never reads `StepOutcome::external_loads_ready`
+  // still installs its arrivals -- at its next edit rather than at its next frame -- and the
+  // report is a latency optimization for an IDLE document, not an obligation. Cleared in the
+  // destructor; the install is counted, so N viewports over one document is not an
+  // out-of-order teardown hazard.
+  if (d_settle_loads) {
+    doc.set_external_load_settler(d_settle_loads);
+    d_settle_owner = &doc;
+  }
 }
 
 HostViewport::~HostViewport() {
@@ -102,9 +123,17 @@ HostViewport::~HostViewport() {
   if (d_router == nullptr) {
     d_model.set_damage_sink(nullptr);
   }
+  // Release the auto-settle install (issue #13): the hook captures this viewport's binding, so
+  // it must not outlive the viewport. The document decrements; the slot survives while another
+  // viewport still holds an install.
+  if (d_settle_owner != nullptr) {
+    d_settle_owner->set_external_load_settler(nullptr);
+  }
 }
 
 HostViewport::StepOutcome HostViewport::step() {
+  StepOutcome outcome;
+
   // 0. Settle any external children whose bytes arrived since the last step
   //    (`runtime.async_external_load` Decision 7). This runs BEFORE the pin and before the
   //    damage drain, and both orderings are load-bearing: the install publishes a NEW
@@ -113,8 +142,29 @@ HostViewport::StepOutcome HostViewport::step() {
   //    settles an arrival is the frame that composites it, and the placeholder is replaced
   //    live. This IS doc 02 step 1: an arrival is damage, and this is where damage is
   //    collected.
-  if (d_settle_loads) {
+  //
+  //    ...but ONLY on the document's writer thread (issue #13). The settle is the one
+  //    structural PUBLISH in an otherwise read-only, pin-based frame: it opens a model
+  //    transaction, installs the arrived child and commits. Frame planning is
+  //    render-thread-confined by design (doc 02 § Threading model), so on a host whose render
+  //    loop is not its writer thread, publishing here would give the document a SECOND writer
+  //    identity -- which doc 15 § Thread rules forbids outright, and which a host-side mutex
+  //    cannot repair (it re-covers accesses, not identity: the lock-free growth path, the
+  //    relaxed `high_water`, the writer-thread checkpoint seal are all written against one
+  //    mutator). The host cannot fix it from outside either, because this call site is the
+  //    library's.
+  //
+  //    So the viewport ASKS. Same thread as the writer -- the single-threaded host, and every
+  //    driver in this tree -- and the settle runs exactly where and when it always did,
+  //    byte-identically, with the placeholder still replaced inside the very frame that
+  //    observes the arrival. A different thread, and the step publishes nothing at all and
+  //    reports the owed install through `StepOutcome::external_loads_ready`; the host settles
+  //    on its writer thread, that commit's damage reaches `d_sink` through the ordinary
+  //    seam, and the NEXT step composites the arrival. One frame later, one writer.
+  if (d_settle_loads && d_model.on_writer_thread()) {
     d_external_loads_settled += d_settle_loads();
+  } else if (d_settle_loads && d_loads_ready) {
+    outcome.external_loads_ready = d_loads_ready();
   }
 
   // 1. Sample `composition_time` from the playhead policy (Decision 5). Audio-
@@ -140,7 +190,6 @@ HostViewport::StepOutcome HostViewport::step() {
   //    zoom_out`) walks the runtime-held path: pop the top and rebuild the camera
   //    by inverting the stored edge, restoring the original `(anchor, matrix)`.
   const DocStatePtr state = d_model.current();
-  StepOutcome outcome;
   const RebaseResult rebased = rebase(*state, d_viewport);
   outcome.need = rebased.need;
   if (rebased.event.occurred) {
