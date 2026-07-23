@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread> // the bound writer identity (doc 15 § Thread rules)
 #include <variant>
 #include <vector>
 
@@ -336,6 +337,24 @@ public:
   // Allocate a fresh, document-unique object id (doc 14 § Identity). Any thread.
   ObjectId allocate_id();
 
+  // Is the CALLING thread allowed to publish a structural write to this document?
+  // Any thread; the query the single-writer-identity contract was missing.
+  //
+  // Doc 15 § Thread rules states the contract -- "structural writes must originate from ONE
+  // stable OS thread for the store's lifetime, not merely from access an external mutex
+  // serializes" -- and `SlotStore::assert_writer_thread` binds and ASSERTS it, in debug builds
+  // only. An assert tells a consumer it already corrupted the store; it does not let the
+  // LIBRARY avoid doing so. So the model binds the same identity in EVERY build (one relaxed
+  // atomic `thread::id`, written once by the first transaction) and exposes it here, so a
+  // library-owned path that runs on a caller-chosen thread -- `HostViewport::step()`, whose
+  // frame planning is render-thread-confined by design (doc 02 § Threading model) -- can
+  // DECLINE to publish rather than become a second writer identity (issue #13).
+  //
+  // True when no identity is bound yet (no transaction has ever opened): the caller would
+  // BECOME the writer, which is exactly what a first write does. False only when this
+  // document has a writer and it is some other thread.
+  bool on_writer_thread() const noexcept;
+
   // Run deferred reclamation to quiescence. SINGLE-DRAINER, any thread: publishes
   // the reclamation context so node destructors can release their child edges,
   // then drains the cascade iteratively. THE reclaim seam -- every drainer must
@@ -631,6 +650,16 @@ private:
   // publish the empty version-0 root.
   void wire_stores();
 
+  // Bind the writer identity on the first structural write, exactly as
+  // `SlotStore::assert_writer_thread` does one level down -- but in every build, because
+  // `on_writer_thread()` is a real query and not only an assert. Idempotent after the first
+  // call; it never rebinds (there is no rebind API, per the contract). Called from the two
+  // publish paths a document has: opening a `Transaction` (every structural edit, every load,
+  // every settle) and `navigate` (undo/redo). NOT from construction or `open`: a document
+  // constructed on the main thread and edited from the UI thread has ONE writer, and it is the
+  // one that transacts.
+  void bind_writer_thread() noexcept;
+
   // The workspace-only construction tail: bind the checkpointer to the file + arena
   // and install the durability-epoch slot fence on BOTH document stores.
   void install_durability();
@@ -692,6 +721,15 @@ private:
 
   std::atomic<std::uint64_t> d_next_id{1};
   std::atomic<DocStatePtr> d_current;
+
+  // The bound writer identity (`on_writer_thread`). A default-constructed `thread::id` is the
+  // "no thread" value no running thread ever compares equal to, so it doubles as UNBOUND.
+  // Written once, by the first transaction, with a compare-exchange so a (contract-violating)
+  // race to bind still leaves exactly one winner rather than a torn id; read from any thread.
+  // Relaxed is enough: it publishes no data, it guards no other access -- it answers one
+  // question about the reader's OWN thread, and a thread's answer about itself is always
+  // correct in its own program order.
+  std::atomic<std::thread::id> d_writer{};
 
   // Persisted non-inert content-state handles the last `open()` collected, for the
   // runtime to replay through per-kind state-slab walkers (see

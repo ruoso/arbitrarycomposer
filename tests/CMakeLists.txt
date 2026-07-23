@@ -223,6 +223,16 @@ target_link_libraries(
   PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_document_content_binding_concurrency_t)
 
+# issue #13 writer-identity + damage-handoff lanes (tier-6, tsan lane): a HostViewport stepped
+# from a RENDER thread must publish nothing (the external-arrival settle is a structural write,
+# and the render thread is not the document's writer identity), and the damage it drains from
+# the writer thread's commits must cross that boundary without loss or race. Outcomes only.
+add_executable(arbc_host_viewport_writer_identity_t host_viewport_writer_identity.t.cpp)
+target_link_libraries(
+  arbc_host_viewport_writer_identity_t
+  PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_host_viewport_writer_identity_t)
+
 # runtime.operator_codecs end-to-end byte-exact golden: builds a Document with an
 # operator graph (org.arbc.fade over a shared input + org.arbc.crossfade over that
 # shared input plus a second), asserts the canonical `.arbc` bytes byte-for-byte

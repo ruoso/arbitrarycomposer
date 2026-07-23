@@ -19,7 +19,46 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`Model::on_writer_thread()` / `Document::on_writer_thread()`** — the document's
+  single writer identity, now bound in *every* build (one atomic `thread::id`, set by
+  the first transaction, never rebound) and queryable from any thread. True before any
+  write, when the caller would become the writer. Doc 15's single-writer-identity
+  contract was previously only a debug assert one level down in `SlotStore`; a host —
+  and the library itself — can now *ask* instead of finding out by corruption.
+- **`Document::external_loads_ready()`** — how many fetched external arrivals are queued
+  awaiting a writer-thread install. Lock-free, allocation-free, any-thread: the poll a
+  render loop uses to learn that a settle is owed. Beside the existing
+  `pending_external_loads()` (fetches still in flight).
+- **`HostViewport::StepOutcome::external_loads_ready`** — the same count, reported per
+  frame by a step that declined to install (see *Fixed*). Zero when the step settled.
+- **`HostViewport::Config::external_loads_ready`** — the readiness probe beside
+  `Config::settle_external_loads`, derived from a bound `Document` and overridable, for
+  a host driving a bespoke settle hook off its writer thread.
+- **`Document::set_external_load_settler()` / `Document::external_loads_auto_settled()`**
+  — the writer-thread settler a `Document`-bound `HostViewport` installs (and releases)
+  automatically, run immediately ahead of the document's next edit whenever an arrival
+  is waiting, plus its behavioral counter.
+
+### Fixed
+
+- **`HostViewport::step()` no longer publishes structural writes off the writer thread**
+  (issue #13). Frame planning is render-thread-confined by design, but step 0 ran the
+  external-arrival settle — a model transaction, an `add_content` and a commit —
+  unconditionally, so a host that edits on its UI thread and renders on another got a
+  *second* writer identity, which doc 15 forbids and no host-side mutex can repair. The
+  step now asks `Model::on_writer_thread()`: on the writer thread it settles inline
+  exactly as before (single-threaded hosts, and every driver in the tree, are
+  unaffected); off it, it publishes nothing and reports `external_loads_ready`. The
+  install then happens on the writer thread — driven by the host, or automatically ahead
+  of the host's next edit, so ignoring the report costs latency, never correctness.
+  `settle_external_loads()` is documented writer-thread-only and debug-asserts it.
+- **The `HostViewport` damage handoff is synchronized.** `DamageAccumulator::flush` runs
+  inside a commit on the writer thread while `step()` drains it on the render thread —
+  an unguarded `std::vector<Damage>` for any host rendering off-thread. It now carries a
+  mutex for that handoff alone (a bounded append or a swap; no render, plan, or pull
+  inside it), so an off-thread host needs no coarse per-frame lock of its own.
 
 ## [0.2.0] - 2026-07-22
 

@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -847,6 +848,20 @@ std::size_t Model::live_slots() const noexcept { return d_arena.total_slots_live
 
 std::size_t Model::bytes_reserved() const noexcept { return d_arena.total_bytes_reserved(); }
 
+bool Model::on_writer_thread() const noexcept {
+  const std::thread::id bound = d_writer.load(std::memory_order_relaxed);
+  return bound == std::thread::id{} || bound == std::this_thread::get_id();
+}
+
+void Model::bind_writer_thread() noexcept {
+  std::thread::id unbound{};
+  // Only the FIRST write binds; every later call finds a non-empty id and fails the exchange,
+  // leaving it untouched. `SlotStore` asserts the identity underneath (debug builds); this one
+  // records it so `on_writer_thread()` can answer in every build.
+  static_cast<void>(d_writer.compare_exchange_strong(
+      unbound, std::this_thread::get_id(), std::memory_order_relaxed, std::memory_order_relaxed));
+}
+
 Model::Transaction Model::transact(std::string name) { return Transaction(*this, std::move(name)); }
 
 expected<std::monostate, PoolError>
@@ -889,6 +904,10 @@ Model::load_baseline(const std::function<void(Transaction&)>& build) {
 
 Model::Transaction::Transaction(Model& model, std::string name)
     : d_model(&model), d_name(std::move(name)), d_status(std::monostate{}) {
+  // Opening a transaction IS the structural write (its mutations allocate slots), so this is
+  // where the document's one writer identity is bound -- ahead of the first `SlotStore`
+  // allocation the transaction will make, which asserts the same identity in debug builds.
+  model.bind_writer_thread();
   d_base = model.current(); // pin the base version: fork its root + the before-edges
   d_root = d_base->root_ref();
   d_base_revision = d_base->revision();
@@ -1714,6 +1733,11 @@ expected<std::monostate, PoolError> Model::navigate(const JournalEntry& entry, N
   // so navigation is an ordinary forward publish (doc 14:170-172). Assemble the
   // whole new root BEFORE the atomic store so an allocation failure aborts with
   // nothing observed (the partial tree drops here and cascades on the next drain).
+  //
+  // Undo/redo is the OTHER structural-write path (it path-copies through the same primitives),
+  // so it binds the writer identity too -- a document whose first mutation is a navigation is
+  // not a shape the model gets to rule out.
+  bind_writer_thread();
   const DocStatePtr base = d_current.load();
   Ref<HamtNode> root = base->root_ref(); // owning: forked, retained
   for (const ObjectEdit& oe : entry.objects) {

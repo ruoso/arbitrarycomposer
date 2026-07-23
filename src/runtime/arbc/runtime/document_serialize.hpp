@@ -248,6 +248,17 @@ load_document(std::string_view bytes, Document& doc, KindBridge& bridge, const R
 // Cheap and safe to call on a document with nothing pending: it is one queue check. Not
 // undoable -- a widget finally loading is not an edit, so an undo taken right after must not
 // revert it (doc 14:263-264).
+//
+// WRITER-THREAD ONLY (issue #13). This function PUBLISHES: it opens model transactions,
+// installs contents and commits, so it must originate from the document's one writer identity
+// -- the same thread that `transact`s, undoes and redoes -- and not merely from access some
+// host mutex serializes (doc 15 § Thread rules; a mutex re-covers accesses, not identity).
+// Debug builds assert `Document::on_writer_thread()` at entry, which a host can also ask
+// itself. A host whose render loop is a different thread does NOT call this from there:
+// `HostViewport::step()` declines to settle off the writer thread and reports the owed
+// install as `StepOutcome::external_loads_ready`, which the host pumps through here on the
+// thread it edits from. `Document::external_loads_ready()` is the same count, pollable
+// lock-free from anywhere.
 ARBC_API std::size_t settle_external_loads(Document& doc, KindBridge& bridge,
                                            const Registry& registry);
 

@@ -328,6 +328,52 @@ public:
   // non-zero. Writer-thread; a behavioral counter, not a timing (doc 16:54-62).
   std::size_t pending_external_loads() const noexcept { return d_pending_loads->pending(); }
 
+  // How many fetched-and-delivered arrivals are QUEUED, waiting for a writer-thread
+  // `settle_external_loads` to install them. ANY THREAD, lock-free, allocation-free -- the
+  // render-thread poll a host whose render loop is not its writer thread uses to learn that a
+  // settle is owed (issue #13; `HostViewport::StepOutcome::external_loads_ready` surfaces it
+  // per frame). Always zero for a host that settles on the same thread it steps, because the
+  // step drains the queue before returning.
+  //
+  // The counterpart of `pending_external_loads()`, and a strict subset of it in the ordinary
+  // case: PENDING counts fetches this document is still waiting on, READY counts the ones
+  // whose bytes have landed and whose install has not happened yet.
+  std::size_t external_loads_ready() const noexcept { return d_pending_loads->ready(); }
+
+  // Is the calling thread allowed to publish a structural write to this document -- a
+  // `transact()`, an `undo`/`redo`, a `settle_external_loads`? Any thread.
+  //
+  // Forwards to `Model::on_writer_thread()`: the document's one writer identity, bound by the
+  // first transaction (a load counts) and never rebound, per doc 15 § Thread rules. True
+  // before any write, when the caller would BECOME the writer. A host that edits on its UI
+  // thread and renders on another uses this to keep the library honest -- and the library
+  // itself uses it, in `HostViewport::step()`, to decline to publish from the render thread.
+  bool on_writer_thread() const noexcept { return d_model->on_writer_thread(); }
+
+  // Install the WRITER-THREAD external-arrival settler: what this document runs, on the writer
+  // thread, immediately before it opens any edit transaction of its own, to install whatever
+  // has arrived (issue #13). Null clears. WRITER-THREAD ONLY, single slot, install-counted --
+  // every `Document`-bound `HostViewport` installs the same behavior (the settle hook it
+  // derives from its `DocumentBinding`) and clears it on destruction, so the slot survives
+  // until the last of them is gone.
+  //
+  // This is what keeps the render thread's "N loads ready" report an OPTIMIZATION rather than
+  // an obligation. `HostViewport::step()` will not publish off the writer thread; if the host
+  // ignores `StepOutcome::external_loads_ready` entirely, the arrival still installs at the
+  // host's next edit -- which is on the writer thread, which is where it belonged. The report
+  // buys latency (an idle document, nobody editing, would otherwise sit on the placeholder),
+  // not correctness.
+  //
+  // It never fires during a load or a settle: those ARE the installer, and re-entering it from
+  // its own `add_content` would recurse. It also never fires when nothing has arrived, which
+  // is the overwhelmingly common case and costs one relaxed atomic load.
+  void set_external_load_settler(std::function<std::size_t()> settle);
+
+  // Arrivals this document installed on its own, ahead of a host edit, through the settler
+  // above -- a behavioral counter (doc 16:54-62), zero for a document nobody bound a viewport
+  // to and zero for one whose steps settle on the writer thread anyway.
+  std::uint64_t external_loads_auto_settled() const noexcept { return d_auto_settled; }
+
   // The document's editable-state multiplexer, for the behavioral counters doc 16
   // asks the editable tests to assert: `unrouted_state_calls()` (zero in any
   // correct document -- a state call that could not reach its owner would free the
@@ -366,6 +412,18 @@ private:
   // transaction-count trigger is inert on an anonymous model (nothing to commit to).
   static HousekeepingConfig policy_for(const DocumentHousekeepingConfig& config,
                                        bool workspace_backed);
+
+  // EVERY edit this document makes opens its transaction here, and none of them calls
+  // `d_model->transact()` directly -- so "install what has already arrived before you edit"
+  // (`set_external_load_settler`) has exactly one home and a mutator added later inherits it
+  // by writing the same line its neighbours write. `transact()`, the host-facing seam, is this
+  // too.
+  Model::Transaction begin(std::string name = {});
+
+  // Run the installed settler if anything has arrived. Writer-thread, re-entrancy-guarded (the
+  // settler edits this very document), and suppressed outright while a load or a settle is in
+  // flight -- see `DocumentSerializeAccess::installing`.
+  void settle_arrived_external_loads();
 
   // The post-publish hook every transaction commit rides (`Model::CommitSink` fires
   // once, on the writer, immediately after the atomic publish). It chains the two
@@ -458,6 +516,16 @@ private:
   // and no state handle, so its position here perturbs the teardown contract not at all --
   // the callbacks simply observe the queue's expiry.
   std::shared_ptr<PendingExternalLoads> d_pending_loads{std::make_shared<PendingExternalLoads>()};
+
+  // The writer-thread external-arrival settler and its bookkeeping (issue #13). All four are
+  // writer-thread-only plain values: the slot is installed and cleared under the same
+  // WRITER-THREAD ONLY rule as `set_damage_sink`, and the flags are read and written inside
+  // one `begin()` call on that same thread. They own nothing, so their position here perturbs
+  // the teardown contract not at all.
+  std::function<std::size_t()> d_external_settle;
+  std::size_t d_settler_installs{0}; // install count: the last one out clears the slot
+  bool d_settling{false};            // re-entrancy / load-in-flight suppression
+  std::uint64_t d_auto_settled{0};   // arrivals installed ahead of a host edit
 
   // The last writer-side cadence checkpoint error (see `last_checkpoint_error()`).
   std::optional<WorkspaceFileError> d_last_checkpoint_error;

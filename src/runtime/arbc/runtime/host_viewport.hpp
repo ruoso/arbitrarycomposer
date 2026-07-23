@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -49,10 +50,27 @@
 // monitors already master/follow (doc 12).
 //
 // Concurrency: single-owner value state exactly like the camera/transport
-// (`transport.hpp:25-30`). The ONLY cross-thread read is the audio master's
-// existing lock-free `playhead_snapshot()`, sampled through the injected
-// `playhead_source`; this object adds no new shared mutable state and carries no
-// new TSan obligation (Decision 5, doc 16 concurrency policy).
+// (`transport.hpp:25-30`), owned by the thread that calls `step()` -- doc 02's render
+// thread. The ONLY cross-thread read is the audio master's existing lock-free
+// `playhead_snapshot()`, sampled through the injected `playhead_source`.
+//
+// TWO seams cross the render/writer thread boundary, and both are the library's problem, not
+// the host's (issue #13). A host that edits on its UI thread and renders on another is the
+// shape doc 02 describes, and it must not need a coarse per-frame lock to use this object:
+//
+//   1. The DAMAGE HANDOFF. `DamageAccumulator::flush` is called by a commit, on the WRITER
+//      thread; `step()` drains it on the render thread. The accumulator carries its own
+//      mutex for exactly that handoff (below) -- held across a vector append and a swap,
+//      never across a render, never taken by the frame path for anything else.
+//   2. The EXTERNAL-ARRIVAL SETTLE. It is a structural PUBLISH, so `step()` runs it only
+//      when it is itself the writer thread; otherwise it reports the owed settle and the
+//      host drives it (see `Config::settle_external_loads`, `StepOutcome`).
+//
+// Everything else this object touches is either single-owner render-thread state or already
+// any-thread (`Model::current()`'s pinned read, `Document::resolve`'s published table).
+// Construction and destruction are NOT concurrency-safe against a live writer: they install
+// and clear the model's single damage-sink slot, so build and destroy viewports at wiring
+// time (or on the writer thread), as `Model::set_damage_sink`'s own contract already says.
 
 namespace arbc {
 
@@ -94,6 +112,16 @@ public:
     // embedding content into `d_sink`, which the same step then drains, so the newly-arrived
     // child is composited by the very frame that settled it.
     //
+    // ONLY when the step runs on the document's writer thread (issue #13). Frame planning is
+    // render-thread-confined by design (doc 02 § Threading model), so on a host whose render
+    // loop is a different thread from the one it edits on, calling this hook here would make
+    // the RENDER thread a second structural writer -- which doc 15 § Thread rules forbids
+    // outright ("single writer means single identity, not serialized turns"; a host mutex
+    // does not fix it). `step()` therefore asks `Model::on_writer_thread()` first: same
+    // thread, install inline exactly as before; different thread, publish NOTHING and report
+    // the owed settle through `StepOutcome::external_loads_ready`, for the host to drive on
+    // its writer thread. See `step()`.
+    //
     // A `std::function` rather than a `Document*` because the settle needs the document's
     // `KindBridge` and `Registry` too, and this object deliberately holds neither a
     // `Document` nor a codec table (it takes a `Model&` + a `ContentResolver`). Empty -- the
@@ -104,6 +132,20 @@ public:
     // the ESCAPE HATCH -- set explicitly, it wins over the derived hook, so a host with a
     // bespoke settle policy keeps one.
     std::function<std::size_t()> settle_external_loads;
+
+    // The readiness PROBE beside the settle hook above: how many arrivals are queued and
+    // waiting for a writer-thread install. Must be lock-free, allocation-free and safe from
+    // any thread -- `step()` polls it on every frame it declines to settle, and reports it as
+    // `StepOutcome::external_loads_ready`.
+    //
+    // Derived from the `Document` (as `doc.external_loads_ready()`) exactly like the settle
+    // hook, and like it, an explicitly-set probe wins. A host that supplies a BESPOKE settle
+    // hook and renders off its writer thread must supply this too -- the viewport cannot ask
+    // an opaque `std::function<std::size_t()>` "is there anything to do?" without calling it,
+    // which is the very publish being avoided. Empty probe + off-writer step => a reported
+    // zero, which is honest about what the viewport knows and is why the pair travels
+    // together.
+    std::function<std::size_t()> external_loads_ready;
   };
 
   // What one `step()` reports back to the host (Decision 3, poll-style value): the
@@ -114,6 +156,16 @@ public:
     bool schedule_follow_up{false};
     Reanchor reanchor{};
     RebaseNeed need{RebaseNeed::none};
+    // External arrivals that have LANDED but were not installed by this step, because the
+    // step did not run on the document's writer thread (issue #13). Non-zero is a request
+    // addressed to the host: "call `settle_external_loads(doc, bridge, registry)` on your
+    // writer thread". The install publishes a revision and flushes damage naming the
+    // embedding content, which reaches this viewport's sink, so the NEXT step composites the
+    // arrival -- one frame later than a single-threaded host's, and never from two writers.
+    //
+    // Always zero when the step is on the writer thread: it settled them itself, and
+    // `external_loads_settled()` counts them.
+    std::size_t external_loads_ready{0};
   };
 
   // What a `Document`-bound viewport needs BEYOND the document itself, and nothing more: the
@@ -223,6 +275,13 @@ public:
   // bootstrap frame, issues ZERO `render_frame` invocations when there is no pending
   // damage, no owed follow-up, and the scene has not moved (Constraint 7, doc
   // 01:140). Returns the poll-style outcome.
+  //
+  // RENDER-THREAD CONFINED, and it PUBLISHES NOTHING from that thread (issue #13). Everything
+  // here reads the scene under a pin (doc 02 § Threading model) with one historical
+  // exception, the external-arrival settle at step 0, which is a structural writer publish;
+  // it now runs only when this step IS the document's writer thread. Off the writer thread it
+  // is skipped and reported as `StepOutcome::external_loads_ready` for the host to drive.
+  // Call it from one thread (the render thread); the writer may commit concurrently.
   StepOutcome step();
 
   // --- Behavioral counters (doc 16:54-62; wall-clock-free) ---------------------
@@ -244,21 +303,36 @@ public:
 private:
   // The accumulator this viewport installs as the model's `DamageSink`: a commit
   // flushes its unioned damage here (once per commit, `damage.hpp:74-78`); `step`
-  // drains it into the frame plan. Single-owner, drained on the driving thread.
+  // drains it into the frame plan.
+  //
+  // This is the ONE producer/consumer queue in the viewport, and its two ends are on
+  // different threads whenever the host renders off its writer thread (issue #13): `flush`
+  // runs inside `Model::Transaction::commit()`, on the WRITER thread; `drain` runs at step 3
+  // of a frame, on the render thread. So it carries its own mutex.
+  //
+  // A mutex, not a lock-free queue: the critical section is a bounded vector append (the
+  // model already unioned the batch, `damage.hpp:74-78`) or a swap, both O(damage) with no
+  // I/O and no render inside them, and the contention is one commit against one frame. It is
+  // also NOT the coarse per-frame lock this design set out to remove -- it covers the handoff
+  // only, so the frame's actual work (planning, pulling, compositing, the lock-free
+  // copy-on-write content read) runs entirely outside it.
   class DamageAccumulator final : public DamageSink {
   public:
     void flush(const std::vector<Damage>& damage) override {
+      const std::lock_guard<std::mutex> lock(d_mutex);
       for (const Damage& d : damage) {
         damage_add(d_set, d);
       }
     }
     std::vector<Damage> drain() {
       std::vector<Damage> out;
+      const std::lock_guard<std::mutex> lock(d_mutex);
       out.swap(d_set);
       return out;
     }
 
   private:
+    mutable std::mutex d_mutex;
     std::vector<Damage> d_set;
   };
 
@@ -279,6 +353,11 @@ private:
   // frame's pull service; null => `render_frame` gets a default `FrameBinding` and behaves
   // exactly as it always has.
   const Document* d_document{nullptr};
+  // The document this viewport installed its settle hook onto (issue #13), or null on the
+  // `Model&` path and whenever no hook was derived. Non-const because the release in
+  // `~HostViewport` is a mutation; separate from `d_document` because the two answer different
+  // questions ("do I bind operators?" vs "do I owe a release?").
+  Document* d_settle_owner{nullptr};
   ContentResolver d_resolve;
   Backend& d_backend;
   SurfacePool& d_pool;
@@ -296,6 +375,7 @@ private:
       d_registration; // the RAII fan-out registration (inert when d_router null)
   std::function<Time()> d_playhead_source;     // set => audio-mastered chase; empty => free-run
   std::function<std::size_t()> d_settle_loads; // set => drive external arrivals each step
+  std::function<std::size_t()> d_loads_ready;  // the any-thread readiness probe beside it
 
   std::optional<std::chrono::steady_clock::time_point> d_prev_instant; // last free-run clock sample
 
