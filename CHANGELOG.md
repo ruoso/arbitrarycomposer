@@ -54,6 +54,22 @@ surface moves freely, and changelog honesty is what makes that safe
   install then happens on the writer thread — driven by the host, or automatically ahead
   of the host's next edit, so ignoring the report costs latency, never correctness.
   `settle_external_loads()` is documented writer-thread-only and debug-asserts it.
+- **`Journal::can_undo()` / `can_redo()` / `depth()` / `cursor()` are any-thread reads**
+  (issue #15). They were plain reads of the cursor and the entry vector while the writer
+  mutated both — `can_redo()` read `d_entries.size()` across a `push_back` that may
+  reallocate — so a host whose UI thread is not its writer thread could not ask whether
+  to enable its undo/redo affordances without a data race, and it must ask every frame.
+  The cursor and the entry count are now published as relaxed atomics (the entry vector
+  stays writer-owned), making the four accessors lock-free from any thread. The
+  published pair is never *ahead* of the history: a reader that catches one of the two
+  stores without the other is never offered an undo or redo that does not exist, only —
+  for at most a frame — denied one that does, and the writer re-checks before navigating,
+  so a stale enable costs a refused no-op and never a wrong mutation. Ironic provenance:
+  doc 15's advice for a two-writer host is to funnel writes onto one dedicated writer
+  thread, which is exactly what moves a host's UI thread off the writer and trips this.
+  History *inspection* — `entry_at()`, `byte_cost()` — stays writer-thread only and is
+  now documented as such; publishing the entry list would be a copy-on-write of the
+  history itself, which nothing needs yet.
 - **The `HostViewport` damage handoff is synchronized.** `DamageAccumulator::flush` runs
   inside a commit on the writer thread while `step()` drains it on the render thread —
   an unguarded `std::vector<Damage>` for any host rendering off-thread. It now carries a

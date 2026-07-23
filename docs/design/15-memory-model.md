@@ -213,6 +213,21 @@ question, which is the goal:
   Threading model). The obligation runs both ways — a library that publishes
   from whatever thread the host happened to call it on is violating its own
   contract on the host's behalf, and no host-side mutex can repair it.
+- **What a UI thread reads every frame is published, not pinned.** Funnelling
+  writes onto one dedicated writer thread (the rule above) is what moves a
+  host's UI thread *off* the writer — so every value the UI samples per frame
+  has to be readable from a non-writer thread. Content reads already are: a
+  pinned `DocRoot` is immutable, and the id→content binding table is published
+  copy-on-write. The **journal's enable state was the last seam that was not**
+  (issue #15) — it is a sibling of the versioned snapshot, so pinning a version
+  gives a reader content but never history. The cursor and entry count are
+  therefore published as relaxed atomics (`can_undo()`, `can_redo()`, `depth()`,
+  `cursor()` — any-thread, lock-free), while the entry vector stays writer-owned.
+  The pattern generalizes: **publish the few words a frame samples; never
+  publish a structure it would have to walk.** Relaxed suffices because the
+  writer re-checks the same values before acting, so a stale read costs a
+  refused no-op — an any-thread read that only *gates* an action needs
+  freshness only if nothing revalidates it.
 - **The drainer is not the writer, and the checkpointer is.** These are
   two separate consequences of the rule above, and both bite. *Draining*
   may run on the low-priority thread concurrently with a writer

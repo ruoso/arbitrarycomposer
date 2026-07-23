@@ -181,7 +181,10 @@ public:
   // The document-wide history (doc 14:193-195 -- one journal across all objects).
   // Core-owned: it is this document's `CommitSink`, and an editable content's
   // cost/restore sinks are registered onto it by `add_content`. `undo()`/`redo()`
-  // publish ordinary forward versions. WRITER-THREAD ONLY.
+  // publish ordinary forward versions. WRITER-THREAD ONLY -- except the published
+  // history reads `can_undo()` / `can_redo()` / `depth()` / `cursor()`, which are
+  // ANY THREAD (issue #15): a host whose UI thread is not its writer thread gates
+  // its undo/redo affordances on them every frame.
   Journal& journal() noexcept { return d_journal; }
   const Journal& journal() const noexcept { return d_journal; }
 
