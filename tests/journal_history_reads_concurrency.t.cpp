@@ -70,10 +70,10 @@ TEST_CASE("the undo/redo enable state is read from a non-writer thread while the
   const std::size_t max_depth = base_depth + k_commits;
 
   std::atomic<bool> stop{false};
-  std::atomic<bool> impossible_value{false};  // a count the writer never held
-  std::atomic<bool> depth_regressed{false};   // this lane only appends: depth never shrinks
-  std::atomic<bool> cursor_regressed{false};  // ... nor does the cursor
-  std::atomic<bool> invented_redo{false};     // a redo offered while the writer never undid
+  std::atomic<bool> impossible_value{false};   // a count the writer never held
+  std::atomic<bool> depth_regressed{false};    // this lane only appends: depth never shrinks
+  std::atomic<bool> cursor_regressed{false};   // ... nor does the cursor
+  std::atomic<bool> invented_redo{false};      // a redo offered while the writer never undid
   std::atomic<bool> undo_without_entry{false}; // can_undo() true with an empty history
   std::atomic<std::size_t> polls{0};
 

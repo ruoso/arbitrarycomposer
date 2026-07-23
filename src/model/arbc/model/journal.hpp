@@ -138,9 +138,7 @@ private:
   // first (cursor on an append, depth on a trim), so a reader that catches one
   // store alone is never offered a redo the writer would refuse (`journal.cpp`).
   void publish_cursor(std::size_t c) noexcept { d_cursor.store(c, std::memory_order_relaxed); }
-  void publish_depth() noexcept {
-    d_depth.store(d_entries.size(), std::memory_order_relaxed);
-  }
+  void publish_depth() noexcept { d_depth.store(d_entries.size(), std::memory_order_relaxed); }
 
   // Trim oldest entries from the front until within budget, never below one entry;
   // dropping an entry releases its owning edges (version GC reclaims the uniquely
@@ -158,7 +156,7 @@ private:
   std::size_t d_budget;
   StateCostFn* d_cost_fn{nullptr};
   RestoreSink* d_restore_sink{nullptr};
-  std::vector<Stored> d_entries;      // writer-owned
+  std::vector<Stored> d_entries;        // writer-owned
   std::atomic<std::size_t> d_cursor{0}; // published: applied-entry count
   std::atomic<std::size_t> d_depth{0};  // published: d_entries.size()
   std::size_t d_total_cost{0};
