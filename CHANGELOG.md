@@ -19,6 +19,21 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.3.0] - 2026-07-23
+
+Additive since 0.2.0, and all of it about one thing: a host whose UI thread is
+not its writer thread. `HostViewport::step()` no longer publishes structural
+writes off the writer thread (issue #13), which made the doc 15 single-writer
+identity queryable rather than merely asserted; the journal's undo/redo enable
+state — the last per-frame UI read that was neither pinned nor published — is now
+an any-thread lock-free read (issue #15). The new surface is what those two fixes
+need: the writer-thread predicate, the ready-arrival counts, and the automatic
+writer-thread settler. Every 0.2.0 call compiles and behaves unchanged on a
+single-threaded host; the plugin surface stays same-toolchain and unversioned
+(the C ABI still arrives at 1.0).
+
 ### Added
 
 - **`Model::on_writer_thread()` / `Document::on_writer_thread()`** — the document's
