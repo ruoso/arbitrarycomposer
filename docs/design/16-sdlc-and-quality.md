@@ -205,6 +205,18 @@ gate already settled them.
   Diagnostics are deduped by (file, line, column, check) so a header
   shared by forty TUs counts once — otherwise the number tracks the
   include graph rather than the debt.
+- **Two checks are scoped off test bodies**, in the script and nowhere
+  else: `bugprone-unchecked-optional-access` (every finding was a
+  `std::optional` used after `REQUIRE(x.has_value())` — Catch2's macro is
+  opaque to the check's dataflow, so the safe idiom reads as unchecked and
+  the only way to satisfy it is a second guard duplicating the REQUIRE)
+  and `bugprone-implicit-widening-of-multiplication-result` (test literals
+  like `8 * 8 * 4`, at magnitudes where the overflow it guards cannot
+  occur). Both stay in force for library code, which is where each of them
+  found something real. The classification is one regex with its own
+  fixtures, and the run **fails** if it ever matches all TUs or none —
+  a scoping rule that silently swallowed the library side would read as a
+  clean baseline.
 - **Naming conventions live in the linter**: `readability-identifier-naming`
   encodes case rules (types, functions, members, constants) so the style
   guide's naming section is a config block, not a document.

@@ -28,7 +28,7 @@ render_offline(const Document& document, const Viewport& viewport, Backend& back
   const ContentResolver resolve = [&document](ObjectId id) { return document.resolve(id); };
   // One-shot renders still need a live pull service: nested/operator contents pull
   // their inputs through the service injected at attach time.
-  TileCache cache(64u * 1024 * 1024);
+  TileCache cache(std::size_t{64} * 1024 * 1024);
   const auto identity_map = build_pull_identity_map(*state, resolve);
   const auto stamp_map = build_pull_stamp_map(*state, *identity_map);
   PullConfig pull_config;

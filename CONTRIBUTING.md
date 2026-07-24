@@ -76,6 +76,12 @@ CI uploads that same `tidy.log` as an artifact on every run, so triaging a failu
 does not actually require a local clang-20. After fixing findings, re-record the
 new floor with `python3 scripts/check_tidy.py --write-baseline`.
 
+Two checks are disabled for test bodies only — `bugprone-unchecked-optional-access`
+and `bugprone-implicit-widening-of-multiplication-result`, both unusable inside a
+Catch2 assertion. That scoping lives in `scripts/check_tidy.py`
+(`TEST_DISABLED_CHECKS`), not in a `.clang-tidy` per `t/` directory, so a new
+component is covered the day it exists. Both stay in force for library code.
+
 Suppressing a finding needs a reason (doc 16:188) — and mind the shape:
 `NOLINTNEXTLINE` applies to *exactly* the following line, so a reason long enough
 to wrap silently suppresses the second comment line instead of the code. Put the

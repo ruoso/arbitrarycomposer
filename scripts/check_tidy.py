@@ -74,6 +74,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "scripts" / "tidy_baseline.json"
 
+# Test TUs: every `t/` directory, the top-level `tests/` tree, and `testing/` (the
+# shipped conformance harness, which is Catch2 test bodies all the way down).
+TEST_TU = re.compile(r"(^|/)t/|^(tests|testing)/")
+
+# Two checks are unusable inside a Catch2 test body and are disabled there. The
+# rule lives HERE, in one place, rather than in twenty-one copies of a
+# `.clang-tidy` -- a new component's `t/` directory is covered the day it exists,
+# instead of the day someone remembers to copy a config into it.
+#
+#   bugprone-unchecked-optional-access -- every finding was a `std::optional` used
+#     after `REQUIRE(x.has_value())`. The macro is opaque to the check's dataflow,
+#     so the safe idiom reads as unchecked, and the only way to satisfy it is a
+#     second guard duplicating the one the REQUIRE already made. It stays ON for
+#     library code, where an unchecked access is a real defect.
+#   bugprone-implicit-widening-of-multiplication-result -- test literals
+#     (`8 * 8 * 4`, `256U * 256U * 4U`). The overflow it guards cannot occur at
+#     these magnitudes. Also ON for library code, where index math is not a
+#     literal and the guard is worth having.
+TEST_DISABLED_CHECKS = (
+    "-bugprone-unchecked-optional-access",
+    "-bugprone-implicit-widening-of-multiplication-result",
+)
+
 # `path:line:col: error|warning: message [check-name,-warnings-as-errors]`. The
 # trailing `,-warnings-as-errors` is an artifact of the profile's `WarningsAsErrors`
 # and is not part of the check's name.
@@ -107,10 +130,21 @@ def compile_db_files(build: Path) -> list[Path]:
     return sorted(files)
 
 
+def is_test_tu(path: Path) -> bool:
+    """Is this TU a test body? (Repo-relative, so `/t/` means a component's tests.)"""
+    return TEST_TU.search(str(path.relative_to(ROOT))) is not None
+
+
 def run_one(clang_tidy: str, build: Path, path: Path) -> str:
     """Analyze one TU. Returns clang-tidy's raw output (diagnostics on stdout)."""
+    command = [clang_tidy, "-p", str(build), "--quiet"]
+    # `--checks` is APPENDED to the profile's list, so a leading-minus list
+    # subtracts from it and leaves every other check in force.
+    if is_test_tu(path):
+        command.append("--checks=" + ",".join(TEST_DISABLED_CHECKS))
+    command.append(str(path))
     proc = subprocess.run(
-        [clang_tidy, "-p", str(build), "--quiet", str(path)],
+        command,
         capture_output=True,
         text=True,
         cwd=ROOT,
@@ -175,10 +209,32 @@ SELF_TEST_CASES = [
 ]
 
 
+# Which paths count as test bodies -- the classification that decides where the two
+# Catch2-hostile checks are enforced. Wrong in either direction is silent: too narrow
+# and a PR drowns in test noise, too wide and the checks stop guarding library code.
+TEST_TU_CASES = [
+    ("src/model/t/journal.t.cpp", True),
+    ("src/pool/t/refs.t.cpp", True),
+    ("tests/journal_history_reads_concurrency.t.cpp", True),
+    ("testing/contract_tests.cpp", True),
+    ("plugins/image/t/image_content.t.cpp", True),
+    ("src/model/journal.cpp", False),
+    ("src/runtime/document.cpp", False),
+    ("plugins/image/image_content.cpp", False),
+    # `testing/` only counts at the root -- a library path that merely contains the
+    # word must not be swept into the test bucket.
+    ("src/contract/testing_support.cpp", False),
+]
+
+
 def run_self_test() -> int:
     """Fixtures through the real entry point, so the exit codes are pinned."""
     checker = Path(__file__).resolve()
     failures = []
+    for name, want in TEST_TU_CASES:
+        got = is_test_tu(ROOT / name)
+        if got != want:
+            failures.append(f"is_test_tu({name}): {got}, want {want}")
     with tempfile.TemporaryDirectory() as tmp:
         baseline = Path(tmp) / "baseline.json"
         baseline.write_text(json.dumps(_BASELINE_FIXTURE))
@@ -197,7 +253,8 @@ def run_self_test() -> int:
         for failure in failures:
             print(f"  {failure}", file=sys.stderr)
         return 1
-    print(f"check_tidy: self-test OK ({len(SELF_TEST_CASES)} cases)")
+    print(f"check_tidy: self-test OK ({len(SELF_TEST_CASES)} scoring cases, "
+          f"{len(TEST_TU_CASES)} classification cases)")
     return 0
 
 
@@ -236,8 +293,19 @@ def main() -> int:
                 f"check_tidy: FAILED (no in-repo TUs in {build}/compile_commands.json -- "
                 f"this lint would pass by checking nothing)"
             )
+        tests = sum(1 for f in files if is_test_tu(f))
+        library = len(files) - tests
+        # Anti-vacuity for the split itself: if a pattern change swept every TU into
+        # the test bucket, the two checks above would be off tree-wide and the count
+        # would just quietly drop. Both buckets must be non-empty.
+        if tests == 0 or library == 0:
+            sys.exit(
+                f"check_tidy: FAILED (TEST_TU matched {tests} of {len(files)} TUs -- "
+                f"the test/library split is broken, so the checks it scopes are not "
+                f"being enforced where they should be)"
+            )
         print(f"check_tidy: analyzing {len(files)} TUs from {build}/compile_commands.json "
-              f"({args.j} at a time)", flush=True)
+              f"({library} library, {tests} test; {args.j} at a time)", flush=True)
 
         with ThreadPoolExecutor(max_workers=args.j) as pool:
             outputs = list(pool.map(lambda f: run_one(clang_tidy, build, f), files))

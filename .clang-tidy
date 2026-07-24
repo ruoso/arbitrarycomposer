@@ -11,6 +11,13 @@
 #   bugprone-easily-swappable-parameters — geometry/color APIs are
 #     inherently (x, y) / (r, g, b, a) shaped; the check is all noise here.
 #   modernize-use-trailing-return-type — style choice: leading return types.
+#
+# Two checks are additionally disabled for TEST bodies only, by
+# `scripts/check_tidy.py` (see `TEST_DISABLED_CHECKS` there for the reasons):
+# bugprone-unchecked-optional-access and
+# bugprone-implicit-widening-of-multiplication-result. Both stay in force for
+# library code. The scoping lives in the script rather than in twenty-one copies
+# of this file, one per `t/` directory.
 #   clang-analyzer-* — never part of the curated list in doc 16; it arrived via
 #     clang-tidy's default checks. It CRASHES clang-tidy 20.1.0 on
 #     src/base/rational_time.cpp (`__builtin_mul_overflow` over `__int128`,
@@ -40,6 +47,10 @@ WarningsAsErrors: '*'
 HeaderFilterRegex: '.*'
 ExcludeHeaderFilterRegex: '.*/_deps/.*'
 CheckOptions:
+  # This check is an OPTIONAL analysis, not a null-smart-pointer one. Its
+  # smart-pointer mode flagged `model->…` on a `unique_ptr` freshly constructed
+  # from `new` (src/model/model.cpp) -- unreachable, since a failed `new` throws.
+  bugprone-unchecked-optional-access.IgnoreSmartPointerDereference: true
   readability-identifier-naming.NamespaceCase: lower_case
   readability-identifier-naming.ClassCase: CamelCase
   readability-identifier-naming.StructCase: CamelCase

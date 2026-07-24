@@ -1,8 +1,6 @@
 {
-  "total": 669,
+  "total": 150,
   "checks": {
-    "bugprone-implicit-widening-of-multiplication-result": 290,
-    "bugprone-unchecked-optional-access": 229,
     "concurrency-mt-unsafe": 23,
     "readability-identifier-naming": 127
   }

@@ -1,6 +1,7 @@
 #include <arbc/base/sha256.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 
 namespace arbc {
@@ -34,7 +35,9 @@ struct State {
 // One 64-byte block (FIPS 180-4 §6.2.2).
 void compress(State& s, const std::uint8_t* block) {
   std::uint32_t w[64];
-  for (int t = 0; t < 16; ++t) {
+  // `t` is an index into `block`, so it is sized like one: `t * 4` as an `int`
+  // would widen to `ptrdiff_t` only after the multiply.
+  for (std::size_t t = 0; t < 16; ++t) {
     w[t] = (static_cast<std::uint32_t>(block[t * 4]) << 24) |
            (static_cast<std::uint32_t>(block[t * 4 + 1]) << 16) |
            (static_cast<std::uint32_t>(block[t * 4 + 2]) << 8) |

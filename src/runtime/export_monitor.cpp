@@ -44,8 +44,8 @@ public:
 // empty in a pure offline export (the audio path issues no visual pull, and the
 // prefetch-ring block fill is `audio.lookahead`'s, not this driver's), so a modest
 // budget suffices -- it is never charged.
-constexpr std::size_t k_export_tile_cache_budget = 1u * 1024 * 1024;
-constexpr std::size_t k_export_block_cache_budget = 1u * 1024 * 1024;
+constexpr std::size_t k_export_tile_cache_budget = std::size_t{1} * 1024 * 1024;
+constexpr std::size_t k_export_block_cache_budget = std::size_t{1} * 1024 * 1024;
 
 } // namespace
 
