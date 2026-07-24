@@ -1,9 +1,16 @@
 #include <arbc/model/journal.hpp>
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <utility>
 
 namespace arbc {
+
+// The any-thread enable reads promise lock-free (doc 14 § The enable state is
+// published): the published pair has to fit in one lock-free word, or `can_undo()`
+// on a UI thread would take a lock behind the host's back.
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 
 std::size_t Journal::entry_cost(const JournalEntry& e) const {
   std::size_t cost = 0;
@@ -31,30 +38,24 @@ void Journal::trim() {
   // Drop oldest entries from the front until within budget, never below one entry
   // (doc 14:173-179). Erasing a `Stored` runs `~JournalEntry`, whose `ObjectEdit`
   // Refs release -- version GC reclaims the uniquely-superseded records on drain.
-  std::size_t c = cursor();
   while (d_entries.size() > 1 && d_total_cost > d_budget) {
     d_total_cost -= d_entries.front().cost;
     d_entries.erase(d_entries.begin());
     // An applied entry left the front: the tip index shrinks with it. (Trimming
     // only runs right after an append, where the cursor is at the tip, so a front
     // pop always removes an applied entry.)
-    if (c > 0) {
-      --c;
+    if (d_cursor > 0) {
+      --d_cursor;
     }
   }
   // Publish once, after the vector has stopped moving -- an intermediate depth is
-  // never a state a reader could act on. DEPTH FIRST here (the reverse of the
-  // append path): the two stores are independent, so a reader can catch one
-  // without the other, and this order makes the caught-one state `cursor >= depth`
-  // -- `can_redo()` briefly false while a redo exists, never briefly true while
-  // none does. The published pair never INVENTS an affordance; it can only be a
-  // frame late offering one (see `publish_cursor`).
-  publish_depth();
-  publish_cursor(c);
+  // never a state a reader could act on. Both counts go out in one store, so a
+  // reader never sees a pair the writer did not hold (`journal.hpp`, `publish`).
+  publish();
 }
 
 void Journal::on_commit(JournalEntry entry) {
-  const std::size_t cursor_now = cursor();
+  const std::size_t cursor_now = d_cursor;
   const bool at_tip = cursor_now == d_entries.size();
   // Coalescing threads only at the tip: same non-zero key AND the cursor at the
   // tip entry (doc 14:86-91). A redo tail or a keyless commit breaks the run.
@@ -66,7 +67,7 @@ void Journal::on_commit(JournalEntry entry) {
     tip.cost = entry_cost(tip.entry);
     d_total_cost += tip.cost;
     // No new slot, no cursor move: the merged gesture is still one undoable step.
-    trim();
+    trim(); // ends every commit path with the publish
     return;
   }
 
@@ -82,21 +83,19 @@ void Journal::on_commit(JournalEntry entry) {
   const std::size_t cost = entry_cost(entry);
   d_entries.push_back(Stored{std::move(entry), cost});
   d_total_cost += cost;
-  // Publish the new tip before trimming (which reads the cursor back and
-  // republishes both). CURSOR FIRST here: the entry is already in the vector, so a
-  // reader catching only this store sees `cursor > depth` -- an undo it can take
-  // and no redo -- rather than the reverse, which would offer a redo that does not
-  // exist. Same rule as `trim()`: publish toward "nothing to redo" first.
-  publish_cursor(d_entries.size()); // cursor follows to the new tip
-  publish_depth();
+  d_cursor = d_entries.size(); // the cursor follows to the new tip
+  // Nothing is published between the push and the trim: `trim()` may move the pair
+  // again, and the only state a reader may act on is the settled one it publishes.
   trim();
 }
 
 bool Journal::undo() {
-  if (!can_undo()) {
+  // The writer re-checks against its OWN counts, not the published (saturating)
+  // view -- this is the check a stale reader's dispatched undo lands on.
+  if (d_cursor == 0) {
     return false;
   }
-  const std::size_t cursor_now = cursor();
+  const std::size_t cursor_now = d_cursor;
   const JournalEntry& entry = d_entries[cursor_now - 1].entry;
   // Ordinary forward publish rebinding to each edit's *before* edge; the commit
   // sink (this journal) is not re-entered -- history is never mutated.
@@ -110,15 +109,16 @@ bool Journal::undo() {
       d_restore_sink->on_restore(ce.object, ce.before);
     }
   }
-  publish_cursor(cursor_now - 1);
+  d_cursor = cursor_now - 1;
+  publish();
   return true;
 }
 
 bool Journal::redo() {
-  if (!can_redo()) {
+  if (d_cursor >= d_entries.size()) { // as `undo()`: the writer's own counts
     return false;
   }
-  const std::size_t cursor_now = cursor();
+  const std::size_t cursor_now = d_cursor;
   const JournalEntry& entry = d_entries[cursor_now].entry;
   if (!d_model->navigate(entry, Model::NavDirection::Redo)) {
     return false;
@@ -128,7 +128,8 @@ bool Journal::redo() {
       d_restore_sink->on_restore(ce.object, ce.after);
     }
   }
-  publish_cursor(cursor_now + 1);
+  d_cursor = cursor_now + 1;
+  publish();
   return true;
 }
 

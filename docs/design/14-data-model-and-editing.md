@@ -355,9 +355,14 @@ kinds, which is the whole point for a multi-disciplinary editor:
   the menu — and doc 15 tells a host with two writing threads to funnel
   its writes onto one dedicated writer thread, which is precisely what
   moves that UI thread off the writer. So the cursor and the entry count
-  are published as relaxed atomics and `can_undo()`/`can_redo()`/`depth()`/
-  `cursor()` are any-thread lock-free reads, the same shape as `pin()` and
-  the copy-on-write binding table. They need no freshness to be correct:
+  are published together, in **one** relaxed atomic word, and
+  `can_undo()`/`can_redo()`/`depth()`/`cursor()` are any-thread lock-free
+  reads, the same shape as `pin()` and the copy-on-write binding table.
+  One word because the pair must be read as a *snapshot*: a word each
+  leaves a gap between the reader's own two loads that a whole commit can
+  slip through, and `can_redo()` compares a stale cursor against a fresh
+  depth and offers a redo that never existed — no writer store order can
+  close a gap on the reading side. They need no freshness to be correct:
   `undo()`/`redo()` re-check on the writer thread, so a stale enable costs
   a refused no-op, never a wrong mutation. The entry *vector* stays
   writer-owned — history **inspection** (`entry_at`, `byte_cost`) is

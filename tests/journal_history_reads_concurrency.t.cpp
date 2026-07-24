@@ -7,8 +7,12 @@
 // for a consumer following doc 15's "funnel writes onto one dedicated writer thread" -- which
 // is exactly what moves the UI thread off the writer.
 //
-// The two values are now relaxed atomics the writer publishes after it has finished mutating
-// the entry vector. Assertions are OUTCOMES only (doc 16): the reader never observes a value
+// The two values are now ONE relaxed atomic word the writer publishes after it has finished
+// mutating the entry vector -- one word because the reader's own two loads are what a commit
+// slips between: with a word each, a reader that loads the cursor, is descheduled across a
+// whole commit, and then loads the depth reads a stale cursor beside a fresh depth, and
+// `can_redo()` offers a redo the history never held. Assertions are OUTCOMES only (doc 16):
+// the reader never observes a value
 // the writer never held, never observes an affordance the history does not offer (the
 // published pair is conservative -- it can be a frame late offering an undo/redo, never a
 // frame early), and the run is TSan-clean. Never a wall-clock assertion. Catch2 macros are
@@ -105,12 +109,12 @@ TEST_CASE("the undo/redo enable state is read from a non-writer thread while the
       last_cursor = cursor;
 
       // The writer never navigates in this lane, so there is never anything to redo. A
-      // `true` here would be the published pair inventing an affordance out of the gap
-      // between its two stores -- which the writer's store order rules out.
+      // `true` here would be the published pair inventing an affordance out of a gap
+      // between the cursor and the depth -- which one packed word leaves nowhere to open.
       if (can_redo) {
         invented_redo.store(true, std::memory_order_relaxed);
       }
-      // The cursor is published only after the entry is in the vector, so an offered undo
+      // The pair is published only after the entry is in the vector, so an offered undo
       // always has an entry behind it. `depth` is read after `can_undo` and only grows.
       if (can_undo && depth == 0) {
         undo_without_entry.store(true, std::memory_order_relaxed);

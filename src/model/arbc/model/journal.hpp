@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -54,12 +55,13 @@ public:
 // the cursor back one entry (rebinding to its *before*), `redo()` forward one
 // (rebinding to its *after*).
 //
-// The cursor and the entry count are PUBLISHED (relaxed atomics), because a host
-// whose UI thread is not its writer thread asks `can_undo()`/`can_redo()` every
-// frame to enable its undo/redo affordances (issue #15). The entry vector itself
-// is not published -- it stays writer-owned, so history INSPECTION (`entry_at`,
-// `byte_cost`) remains writer-thread only. Doc 15's other UI-per-frame reads have
-// the same shape: two words a reader can load, not a structure it must walk.
+// The cursor and the entry count are PUBLISHED (one relaxed atomic word holding
+// both), because a host whose UI thread is not its writer thread asks
+// `can_undo()`/`can_redo()` every frame to enable its undo/redo affordances
+// (issue #15). The entry vector itself is not published -- it stays writer-owned,
+// so history INSPECTION (`entry_at`, `byte_cost`) remains writer-thread only. Doc
+// 15's other UI-per-frame reads have the same shape: one word a reader can load,
+// not a structure it must walk.
 class ARBC_API Journal final : public CommitSink {
 public:
   // A large default budget: trimming is opt-in via `byte_budget` so a journal that
@@ -92,26 +94,26 @@ public:
   bool redo();
 
   // ANY THREAD, lock-free, allocation-free (issue #15): the two booleans a host's
-  // UI thread reads every frame to enable its undo/redo affordances, published as
-  // relaxed atomics the writer stores after it has finished mutating the entry
-  // vector. Relaxed is sufficient because the read never has to be FRESH to be
-  // correct: `undo()`/`redo()` re-check on the writer thread before navigating, so
-  // a stale enable can at worst leave an affordance live for one frame and cost a
-  // dispatched no-op the writer refuses -- never a wrong mutation. `can_redo()`
-  // loads the two independently, so a reader may catch one store of a pair without
-  // the other; the writer orders those two stores so the caught-one state is always
-  // the CONSERVATIVE one (`cursor >= depth`, i.e. no redo offered). So the published
-  // pair is never ahead of the history: it never offers an undo or a redo that does
-  // not exist, and can only be a frame late offering one that does.
-  bool can_undo() const noexcept { return d_cursor.load(std::memory_order_relaxed) > 0; }
+  // UI thread reads every frame to enable its undo/redo affordances, derived from
+  // ONE relaxed atomic word the writer stores after it has finished mutating the
+  // entry vector. Relaxed is sufficient because the read never has to be FRESH to
+  // be correct: `undo()`/`redo()` re-check on the writer thread before navigating,
+  // so a stale enable can at worst leave an affordance live for one frame and cost
+  // a dispatched no-op the writer refuses -- never a wrong mutation. Because the
+  // pair travels in one word, a reader that is descheduled mid-frame resumes on a
+  // pair the writer actually held, not a mix of two -- see `d_published`. So the
+  // published pair is never ahead of the history: it never offers an undo or a
+  // redo that does not exist, and can only be a frame late offering one that does.
+  bool can_undo() const noexcept { return published_cursor(load_published()) > 0; }
   bool can_redo() const noexcept {
-    return d_cursor.load(std::memory_order_relaxed) < d_depth.load(std::memory_order_relaxed);
+    const std::uint64_t published = load_published();
+    return published_cursor(published) < published_depth(published);
   }
 
   // Number of stored (undoable + redoable) entries. ANY THREAD (as above).
-  std::size_t depth() const noexcept { return d_depth.load(std::memory_order_relaxed); }
+  std::size_t depth() const noexcept { return published_depth(load_published()); }
   // Applied-entry count -- the cursor position in `[0, depth()]`. ANY THREAD.
-  std::size_t cursor() const noexcept { return d_cursor.load(std::memory_order_relaxed); }
+  std::size_t cursor() const noexcept { return published_cursor(load_published()); }
   // The accumulated byte cost the budget bounds (record sizes + content cost).
   // WRITER-THREAD ONLY -- a plain read of a writer-mutated word; it is a budget
   // diagnostic, not a per-frame UI read, so it is not published.
@@ -130,15 +132,43 @@ private:
   // handle (0 when no coster is registered).
   std::size_t entry_cost(const JournalEntry& e) const;
 
-  // Publish the writer's cursor / entry count for the any-thread readers above.
-  // The writer calls these once it has finished mutating `d_entries` -- its own
-  // reads go through `cursor()`, which is the same relaxed load (it is the only
-  // mutator, so its reads need no ordering). Call order within one mutation is
-  // load-bearing: publish whichever store moves the pair toward `cursor >= depth`
-  // first (cursor on an append, depth on a trim), so a reader that catches one
-  // store alone is never offered a redo the writer would refuse (`journal.cpp`).
-  void publish_cursor(std::size_t c) noexcept { d_cursor.store(c, std::memory_order_relaxed); }
-  void publish_depth() noexcept { d_depth.store(d_entries.size(), std::memory_order_relaxed); }
+  // Publish the writer's cursor and entry count for the any-thread readers above,
+  // as ONE store, once `d_entries` has stopped moving. The writer's own reads go
+  // to `d_cursor` / `d_entries.size()` directly -- it is the only mutator, and the
+  // published word is a UI-facing view of what it already knows.
+  //
+  // One word, not two: the pair has to be read as a SNAPSHOT. With a word each, no
+  // store order saves it -- a reader that loads the cursor, is descheduled across a
+  // whole commit, then loads the depth sees a stale cursor beside a fresh depth,
+  // and `can_redo()` invents a redo the history never offered. That gap is between
+  // the reader's two loads, so only the writer publishing both at once closes it.
+  void publish() noexcept {
+    d_published.store(pack(d_cursor, d_entries.size()), std::memory_order_relaxed);
+  }
+
+  std::uint64_t load_published() const noexcept {
+    return d_published.load(std::memory_order_relaxed);
+  }
+
+  // Depth in the high half, cursor in the low. Counts above `k_published_max` are
+  // unreachable in practice (every entry costs at least a record, so 2^32 of them
+  // is hundreds of gigabytes of history) and saturate rather than wrap: a saturated
+  // pair reads back as `cursor == depth`, which is the conservative state -- an undo
+  // offered, no redo -- and the writer never consults it (it keeps the true counts).
+  static constexpr std::uint64_t k_published_max = 0xFFFFFFFFULL;
+  static std::uint64_t pack(std::size_t cursor, std::size_t depth) noexcept {
+    const auto clamp = [](std::size_t v) {
+      return static_cast<std::uint64_t>(v) > k_published_max ? k_published_max
+                                                             : static_cast<std::uint64_t>(v);
+    };
+    return (clamp(depth) << 32U) | clamp(cursor);
+  }
+  static std::size_t published_cursor(std::uint64_t w) noexcept {
+    return static_cast<std::size_t>(w & k_published_max);
+  }
+  static std::size_t published_depth(std::uint64_t w) noexcept {
+    return static_cast<std::size_t>(w >> 32U);
+  }
 
   // Trim oldest entries from the front until within budget, never below one entry;
   // dropping an entry releases its owning edges (version GC reclaims the uniquely
@@ -156,9 +186,10 @@ private:
   std::size_t d_budget;
   StateCostFn* d_cost_fn{nullptr};
   RestoreSink* d_restore_sink{nullptr};
-  std::vector<Stored> d_entries;        // writer-owned
-  std::atomic<std::size_t> d_cursor{0}; // published: applied-entry count
-  std::atomic<std::size_t> d_depth{0};  // published: d_entries.size()
+  std::vector<Stored> d_entries; // writer-owned
+  std::size_t d_cursor{0};       // writer-owned truth: applied-entry count
+  // The any-thread view of `(d_cursor, d_entries.size())`, packed (see `publish`).
+  std::atomic<std::uint64_t> d_published{0};
   std::size_t d_total_cost{0};
 };
 

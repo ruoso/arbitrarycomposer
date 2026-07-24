@@ -19,7 +19,14 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- `Journal::can_redo()` no longer reports a redo that does not exist when read
+  from a non-writer thread. The published cursor and entry count were two
+  separate atomics, so a reader whose two loads straddled a commit compared a
+  stale cursor against a fresh depth; they are now published together in one
+  word, which readers load as a snapshot (design doc 14, § The enable state is
+  published).
 
 ## [0.3.0] - 2026-07-23
 
