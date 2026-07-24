@@ -125,6 +125,7 @@ TEST_CASE("damage_router: a moved-from Registration is inert and unregisters not
   // Move `ra`'s obligation into `moved`: the source becomes inert, the target owns
   // the single unregister obligation -- no registrant is added or lost.
   DamageRouter::Registration moved = std::move(ra);
+  // NOLINTNEXTLINE(bugprone-use-after-move): the inert source unregisters nothing, by contract
   CHECK_FALSE(ra.valid());
   CHECK(moved.valid());
   CHECK(router.registered() == 2);

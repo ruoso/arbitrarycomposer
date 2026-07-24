@@ -473,14 +473,15 @@ TEST_CASE("plugin codec failures are error values, never throws") {
                              ObjectId) -> expected<std::unique_ptr<Content>, std::string> {
         return arbc::unexpected<std::string>("unused");
       };
-      REQUIRE(registry
-                  .add(
-                      "org.arbc.ci.badcodec",
-                      [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
-                        return arbc::unexpected<std::string>("unused");
-                      },
-                      KindMetadata{"Bad Codec", "1"}, std::move(codec))
-                  .has_value());
+      // Registered in its own statement: `REQUIRE` re-expands its argument in a
+      // never-taken loop guard, so a move inside the assertion reads as a second move.
+      const expected<std::monostate, RegistryError> added = registry.add(
+          "org.arbc.ci.badcodec",
+          [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
+            return arbc::unexpected<std::string>("unused");
+          },
+          KindMetadata{"Bad Codec", "1"}, std::move(codec));
+      REQUIRE(added.has_value());
 
       KindBridge bridge;
       Document doc;
@@ -508,14 +509,15 @@ TEST_CASE("plugin codec failures are error values, never throws") {
                            ObjectId) -> expected<std::unique_ptr<Content>, std::string> {
       return arbc::unexpected<std::string>("unused");
     };
-    REQUIRE(registry
-                .add(
-                    "org.arbc.ci.okcodec",
-                    [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
-                      return arbc::unexpected<std::string>("unused");
-                    },
-                    KindMetadata{"Ok Codec", "1"}, std::move(codec))
-                .has_value());
+    // Registered in its own statement: `REQUIRE` re-expands its argument in a never-taken
+    // loop guard, so a move inside the assertion reads as a second move.
+    const expected<std::monostate, RegistryError> added = registry.add(
+        "org.arbc.ci.okcodec",
+        [](ContentConfig) -> expected<std::unique_ptr<Content>, std::string> {
+          return arbc::unexpected<std::string>("unused");
+        },
+        KindMetadata{"Ok Codec", "1"}, std::move(codec));
+    REQUIRE(added.has_value());
 
     KindBridge bridge;
     Document doc;

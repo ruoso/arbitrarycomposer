@@ -224,12 +224,14 @@ TEST_CASE("CacheHold move transfers the unpin obligation: exactly-once release, 
   {
     CacheHold<Tracked> a = store.insert(1, make(1, released), 10, PriorityClass::Visible);
     CacheHold<Tracked> b = std::move(a); // move-construct: a is now empty
+    // NOLINTNEXTLINE(bugprone-use-after-move): the emptied source carries no unpin obligation
     CHECK_FALSE(a.valid());
     CHECK(b.valid());
     CHECK(b->id == 1);
 
     CacheHold<Tracked> c;
     c = std::move(b); // move-assign: b is now empty
+    // NOLINTNEXTLINE(bugprone-use-after-move): the emptied source carries no unpin obligation
     CHECK_FALSE(b.valid());
     CHECK(c.valid());
 

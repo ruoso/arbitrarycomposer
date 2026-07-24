@@ -1,5 +1,5 @@
 {
-  "total": 766,
+  "total": 759,
   "checks": {
     "bugprone-argument-comment": 9,
     "bugprone-branch-clone": 2,
@@ -10,7 +10,6 @@
     "bugprone-suspicious-memory-comparison": 1,
     "bugprone-suspicious-stringview-data-usage": 1,
     "bugprone-unchecked-optional-access": 229,
-    "bugprone-use-after-move": 7,
     "concurrency-mt-unsafe": 23,
     "performance-enum-size": 5,
     "performance-inefficient-vector-operation": 21,

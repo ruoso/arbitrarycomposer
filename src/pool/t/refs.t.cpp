@@ -86,6 +86,7 @@ TEST_CASE("move transfers ownership without any count traffic") {
 
   arbc::Ref<Tracked> b = std::move(a); // move-construct: no bump
   REQUIRE(store.count(s) == 1);
+  // NOLINTNEXTLINE(bugprone-use-after-move): the emptied source owning no count is the contract
   REQUIRE_FALSE(static_cast<bool>(a)); // moved-from is empty
   REQUIRE(static_cast<bool>(b));
   REQUIRE(b->value == 1);
@@ -93,6 +94,7 @@ TEST_CASE("move transfers ownership without any count traffic") {
   arbc::Ref<Tracked> c;
   c = std::move(b); // move-assign: no bump
   REQUIRE(store.count(s) == 1);
+  // NOLINTNEXTLINE(bugprone-use-after-move): the emptied source owning no count is the contract
   REQUIRE_FALSE(static_cast<bool>(b));
   REQUIRE(c->value == 1);
   REQUIRE(destructions == 0); // still exactly one owner alive
