@@ -58,6 +58,24 @@ It runs, in order:
 Steps 4–8 are exactly the five checks CI's `lint` job runs, and step 3 is exactly
 what CI's matrix runs — a gate-green tree is a tree CI's `lint` job agrees with.
 
+**One per-push check is deliberately not in the gate: clang-tidy.** CI's `tidy`
+job runs the curated profile over the compile database and ratchets the finding
+count per check (`scripts/tidy_baseline.json`) — a check above its recorded count
+fails the push, below it passes with a note to re-record. It is out of the gate
+because it needs clang-20 and about a quarter of an hour; the ratchet's *scoring*
+is covered by `ctest` (`lint.tidy_ratchet.selftest`), so step 3 already catches a
+broken ratchet. To reproduce a `tidy` failure locally, with clang-20 and
+`clang-tidy` 20.1.0 installed:
+
+```bash
+CXX=clang++-20 cmake --preset dev
+python3 scripts/check_tidy.py --log tidy.log
+```
+
+CI uploads that same `tidy.log` as an artifact on every run, so triaging a failure
+does not actually require a local clang-20. After fixing findings, re-record the
+new floor with `python3 scripts/check_tidy.py --write-baseline`.
+
 Two environment knobs:
 
 | Variable | Default | Meaning |

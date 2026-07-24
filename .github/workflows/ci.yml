@@ -124,6 +124,46 @@ jobs:
       - name: test
         run: ctest --preset ${{ matrix.preset }}
 
+  # clang-tidy's curated profile (doc 16 § C++ linting) under a per-check RATCHET:
+  # the finding count may fall and may not rise. It ran nightly with
+  # `continue-on-error` until 2026-07-24, which meant it was red on every nightly
+  # from the very first one and nobody saw -- 49 findings on day one, 513 nineteen
+  # days later, all invisible behind a green run conclusion. Per-push is where new
+  # debt is actually stoppable: the PR that introduces a finding is the one that
+  # fails, instead of a nightly nobody reads three commits later.
+  tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Pinned to the clang major the compile database is written by: a different
+      # major reports a different set of checks, which the ratchet reads as debt.
+      - run: pip install clang-tidy==20.1.0
+      - name: install clang-20
+        run: |
+          if ! command -v clang++-20 >/dev/null 2>&1; then
+            wget -q https://apt.llvm.org/llvm.sh && chmod +x llvm.sh
+            sudo ./llvm.sh 20 && sudo apt-get install -y libclang-rt-20-dev
+          fi
+      - name: configure
+        run: CXX=clang++-20 cmake --preset dev
+      # Scope is the compile database, not a `git ls-files` glob: the glob this
+      # replaces missed the whole top-level `tests/` tree and linted two `bench/`
+      # TUs the `dev` preset does not configure (clang-tidy guessed their flags,
+      # could not find `benchmark/benchmark.h`, and recovery-parsed 27 bogus
+      # findings out of a file it never compiled).
+      - name: tidy
+        run: python3 scripts/check_tidy.py --log tidy.log
+      # The findings themselves, for triaging a failure without a local clang-20.
+      - name: upload findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tidy-log
+          path: tidy.log
+
   coverage:
     runs-on: ubuntu-latest
     steps:

@@ -186,6 +186,25 @@ gate already settled them.
   a one-line reason in the config — suppressions are decisions, not
   drive-by). Runs on the compile-commands database in per-push CI;
   `NOLINT` requires a reason suffix, greppable and audited nightly.
+- **The profile is enforced by a ratchet, not by a clean baseline**
+  (`scripts/check_tidy.py`, per-push job `tidy`). A finding count per
+  check is recorded in `scripts/tidy_baseline.json`; a check above its
+  recorded count fails the push, a check below it passes with a note to
+  re-record. Deliberately asymmetric — an increase is new debt and the PR
+  that adds it is the one that should fail, while failing someone for
+  *fixing* a finding (or for a libstdc++ patch bump) teaches the team to
+  ignore the lane. That is not hypothetical: this lane spent its first
+  nineteen days as a nightly job with `continue-on-error`, red on every
+  single run from the first one, growing 49 → 513 findings behind a green
+  run conclusion. **A check that is allowed to fail is a check nobody
+  reads**; the ratchet is what makes a non-zero baseline enforceable
+  today, and the lane becomes an ordinary gate the day it reaches zero.
+- Scope is **the compile database, not a source glob**: a TU that is in
+  the database is a TU that compiles, and headers are analyzed too
+  (`HeaderFilterRegex`), because much of this codebase is header-inline.
+  Diagnostics are deduped by (file, line, column, check) so a header
+  shared by forty TUs counts once — otherwise the number tracks the
+  include graph rather than the debt.
 - **Naming conventions live in the linter**: `readability-identifier-naming`
   encodes case rules (types, functions, members, constants) so the style
   guide's naming section is a config block, not a document.

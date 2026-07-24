@@ -1,11 +1,26 @@
 # Curated profile (design doc 16). Every disabled check carries a reason.
-# Runs in the nightly workflow until the baseline is clean, then per-push.
+# Runs per-push under `scripts/check_tidy.py` (ci.yml job `tidy`), which ratchets
+# the finding count per check so the baseline can only shrink; it becomes an
+# ordinary gate the day it reaches zero.
+#
+# The list opens with `-*` so the profile is exactly what is written here. Without
+# it clang-tidy folds in its own default set — which is how `clang-analyzer-*` got
+# enforced here for nineteen days without anyone choosing it (see below).
 #
 # Disabled:
 #   bugprone-easily-swappable-parameters — geometry/color APIs are
 #     inherently (x, y) / (r, g, b, a) shaped; the check is all noise here.
 #   modernize-use-trailing-return-type — style choice: leading return types.
+#   clang-analyzer-* — never part of the curated list in doc 16; it arrived via
+#     clang-tidy's default checks. It CRASHES clang-tidy 20.1.0 on
+#     src/base/rational_time.cpp (`__builtin_mul_overflow` over `__int128`,
+#     ExprEngine, exit 245), and its path-sensitive results shift with the
+#     analyzer's own version, which a per-push ratchet cannot absorb. It found 7
+#     of 513 findings when it ran — a potential leak in document_serialize.cpp
+#     and a divide-by-zero among them, worth a deliberate one-off analyzer pass
+#     rather than a lane that cannot complete.
 Checks: >
+  -*,
   bugprone-*,
   -bugprone-easily-swappable-parameters,
   performance-*,
@@ -15,6 +30,15 @@ Checks: >
   modernize-use-equals-default,
   readability-identifier-naming
 WarningsAsErrors: '*'
+# Analyze this repo's headers, not just the .cpp files that include them: a large
+# share of arbc is header-inline (accessors, the publish seams, the small-value
+# types), and clang-tidy's default -- diagnostics from the main file only -- left
+# all of it unlinted. FetchContent unpacks Catch2 and nlohmann_json under the
+# build tree, whose paths contain `/src/`, so the exclusion matches `_deps`
+# directly rather than trying to spell "not third-party" as a path shape.
+# (`scripts/check_tidy.py` dedupes, so a header shared by 40 TUs still counts once.)
+HeaderFilterRegex: '.*'
+ExcludeHeaderFilterRegex: '.*/_deps/.*'
 CheckOptions:
   readability-identifier-naming.NamespaceCase: lower_case
   readability-identifier-naming.ClassCase: CamelCase

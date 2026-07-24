@@ -1492,6 +1492,15 @@ if(Python3_FOUND)
     NAME docs.contributing.selftest
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_contributing.py"
             --self-test)
+  # Same rule for the clang-tidy ratchet (ci.yml job `tidy`). Only its SCORING is
+  # tested here -- fixtures of saved clang-tidy output through the real entry
+  # point, pinning that a rising count fails, a falling one passes, an unseen
+  # check fails, and a TU that did not compile fails. Running clang-tidy itself
+  # needs clang-20 and twelve minutes, which is the CI job's business, not a
+  # CTest's; but the asymmetric rule is logic, and logic gets a test.
+  add_test(
+    NAME lint.tidy_ratchet.selftest
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_tidy.py" --self-test)
 else()
   message(STATUS "arbc: no Python3 interpreter; docs.contributing not registered")
 endif()
