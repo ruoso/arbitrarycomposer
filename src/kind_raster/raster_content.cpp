@@ -409,13 +409,13 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
 
 StateHandle RasterStore::paint(StateHandle base, const Rect& region, const WorkingPixel& color,
                                const CoverageSampler& coverage, Rect& touched_out) {
-  TileTablePtr baseTable = resolve(base);
-  if (!baseTable) {
-    baseTable = base_table();
+  TileTablePtr base_tiles = resolve(base);
+  if (!base_tiles) {
+    base_tiles = base_table();
   }
-  const int edge = baseTable->edge();
-  const int w = baseTable->width();
-  const int h = baseTable->height();
+  const int edge = base_tiles->edge();
+  const int w = base_tiles->width();
+  const int h = base_tiles->height();
 
   // `keep` holds fresh blobs' allocate-counts until the new TileTable retains
   // them (see build()).
@@ -425,7 +425,7 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
   // that carry no count; the new TileTable ctor retains every ref, so untouched
   // (shared) tiles gain a count against the new version while fresh tiles are
   // held alive by `keep` until then.
-  std::vector<Level> levels = baseTable->levels();
+  std::vector<Level> levels = base_tiles->levels();
 
   // Level 0: replace only the tiles the region touches.
   Rect touched{};
@@ -487,9 +487,9 @@ StateHandle RasterStore::paint(StateHandle base, const Rect& region, const Worki
   if (!touched.empty()) {
     constexpr double k_dilate = static_cast<double>(k_decimate_radius);
     Rect propagate = touched;
-    for (std::size_t L = 1; L < levels.size(); ++L) {
-      const Level& child = levels[L - 1];
-      Level& up = levels[L];
+    for (std::size_t li = 1; li < levels.size(); ++li) {
+      const Level& child = levels[li - 1];
+      Level& up = levels[li];
       const Rect parent_rect{
           std::floor((propagate.x0 - k_dilate) * 0.5), std::floor((propagate.y0 - k_dilate) * 0.5),
           std::ceil((propagate.x1 + k_dilate) * 0.5), std::ceil((propagate.y1 + k_dilate) * 0.5)};

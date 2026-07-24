@@ -105,10 +105,10 @@ VersionPtr make_version(arbc::RefStore<VerNode>& store, int depth, std::uint32_t
 
 // A tick period short enough that the background thread is an active
 // low-priority drainer (it never appears in an assertion, doc 16:54-62).
-constexpr std::chrono::microseconds kActiveTick{50};
+constexpr std::chrono::microseconds k_active_tick{50};
 
 // Seed salt for the writer thread, disjoint from the small pinner salts (0..N).
-constexpr std::uint32_t kWriterSalt = 0x5A5AU;
+constexpr std::uint32_t k_writer_salt = 0x5A5AU;
 
 void run_publish_pin_stress(std::uint32_t seed_begin, std::uint32_t seed_end, int publishes,
                             int chain_depth, int pinner_count) {
@@ -181,11 +181,11 @@ void run_publish_pin_stress(std::uint32_t seed_begin, std::uint32_t seed_end, in
 
     {
       arbc::HousekeepingThreadConfig tc;
-      tc.tick_period = kActiveTick;
+      tc.tick_period = k_active_tick;
       arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
 
       go.store(true, std::memory_order_release);
-      arbc::test::Perturber wperturb(arbc::test::derive_seed(seed, kWriterSalt));
+      arbc::test::Perturber wperturb(arbc::test::derive_seed(seed, k_writer_salt));
       for (int i = 1; i <= publishes; ++i) {
         // Publish: atomic swap of the current-version handle. The store drops
         // the superseded version; its last reference (here or in a pinner)

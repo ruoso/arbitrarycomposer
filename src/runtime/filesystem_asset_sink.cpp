@@ -29,8 +29,8 @@ std::string_view strip_file_scheme(std::string_view uri) {
 // per call, so two concurrent saves of two different documents into one shared asset
 // directory never scribble on each other's partial file.
 std::filesystem::path temp_path(const std::filesystem::path& target) {
-  static std::atomic<std::uint64_t> counter{0};
-  const std::uint64_t n = counter.fetch_add(1, std::memory_order_relaxed);
+  static std::atomic<std::uint64_t> s_counter{0};
+  const std::uint64_t n = s_counter.fetch_add(1, std::memory_order_relaxed);
   const std::size_t tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
   std::string name = ".arbc-tmp-";
   name += std::to_string(tid);

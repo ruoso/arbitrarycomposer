@@ -337,8 +337,8 @@ std::size_t configured_pyramid_budget() {
 } // namespace
 
 PyramidCache& default_pyramid_cache() {
-  static PyramidCache cache(configured_pyramid_budget());
-  return cache;
+  static PyramidCache s_cache(configured_pyramid_budget());
+  return s_cache;
 }
 
 // --- TileSurface / TileStore ------------------------------------------------

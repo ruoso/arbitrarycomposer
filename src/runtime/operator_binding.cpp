@@ -31,8 +31,8 @@ namespace {
 // the driver thread before any worker dispatch and read-only on workers
 // (Constraint 8).
 std::vector<std::pair<std::string_view, OperatorBinder>>& registry() {
-  static std::vector<std::pair<std::string_view, OperatorBinder>> r;
-  return r;
+  static std::vector<std::pair<std::string_view, OperatorBinder>> s_registry;
+  return s_registry;
 }
 
 } // namespace
@@ -52,13 +52,13 @@ void register_builtin_operator_binders() {
   // Once, thread-safe: function-local-static initialization runs the registration
   // exactly once across all threads, so the registry is fully written before any
   // concurrent read and needs no further synchronization.
-  static const bool once = [] {
+  static const bool s_once = [] {
     register_fade_binder();
     register_crossfade_binder();
     register_nested_binder();
     return true;
   }();
-  (void)once;
+  (void)s_once;
 }
 
 OperatorBindingScope::OperatorBindingScope(OperatorBindingScope&& other) noexcept

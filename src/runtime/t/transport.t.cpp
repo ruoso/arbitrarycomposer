@@ -103,10 +103,10 @@ TEST_CASE("transport: advance scales real elapsed by the rate, sign-symmetric, e
   // A pathological rate that overflows the flick width faults as a value and leaves
   // the playhead untouched -- never a silent wrap.
   {
-    constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t k_max = std::numeric_limits<std::int64_t>::max();
     Transport t(Time{42});
-    t.set_rate(Rational(kMax, 1));
-    const auto out = t.advance(Time{kMax});
+    t.set_rate(Rational(k_max, 1));
+    const auto out = t.advance(Time{k_max});
     REQUIRE_FALSE(out.has_value());
     CHECK(out.error() == TimeError{TimeError::Kind::Overflow});
     CHECK(t.position() == Time{42}); // unchanged: advance is all-or-nothing

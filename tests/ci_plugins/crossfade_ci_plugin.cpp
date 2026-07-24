@@ -15,8 +15,8 @@ namespace {
 // Module-local: destroyed at image unload, after every operator borrowing these
 // inputs (runtime/plugin_host.hpp:154-155 dlcloses last).
 arbc_ci::InputOwner& module_inputs() {
-  static arbc_ci::InputOwner owner;
-  return owner;
+  static arbc_ci::InputOwner s_owner;
+  return s_owner;
 }
 
 } // namespace

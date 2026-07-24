@@ -200,13 +200,13 @@ void require_bytes(const std::vector<std::byte>& got, std::span<const unsigned c
 // FROZEN EXPECTED TABLES -- regenerate deliberately (see procedure at top).
 // ===========================================================================
 
-constexpr std::array<unsigned char, 64> kVisualMid = {
+constexpr std::array<unsigned char, 64> k_visual_mid = {
     0x00, 0x00, 0xA0, 0x3E, 0x00, 0x00, 0xA0, 0x3E, 0x00, 0x00, 0xE0, 0x3E, 0x00, 0x00, 0x80, 0x3F,
     0x00, 0x00, 0xA0, 0x3E, 0x00, 0x00, 0xA0, 0x3E, 0x00, 0x00, 0xE0, 0x3E, 0x00, 0x00, 0x80, 0x3F,
     0x00, 0x00, 0xA0, 0x3E, 0x00, 0x00, 0xA0, 0x3E, 0x00, 0x00, 0xE0, 0x3E, 0x00, 0x00, 0x80, 0x3F,
     0x00, 0x00, 0xA0, 0x3E, 0x00, 0x00, 0xA0, 0x3E, 0x00, 0x00, 0xE0, 0x3E, 0x00, 0x00, 0x80, 0x3F};
 
-constexpr std::array<unsigned char, 128> kAudioMid = {
+constexpr std::array<unsigned char, 128> k_audio_mid = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC8, 0x7C, 0x00, 0x3D, 0xC8, 0x7C, 0x00, 0x3D,
     0x80, 0x1F, 0x7B, 0x3D, 0x80, 0x1F, 0x7B, 0x3D, 0x12, 0xF4, 0xB7, 0x3D, 0x12, 0xF4, 0xB7, 0x3D,
     0x5A, 0x6B, 0xEF, 0x3D, 0x5A, 0x6B, 0xEF, 0x3D, 0xCC, 0xFA, 0x11, 0x3E, 0xCC, 0xFA, 0x11, 0x3E,
@@ -225,7 +225,7 @@ constexpr std::array<unsigned char, 128> kAudioMid = {
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 // enforces: 13-effects-as-operators#crossfade-mixes-both-facets
 TEST_CASE("org.arbc.crossfade renders a byte-exact visual dissolve golden at w == 0.5") {
-  require_bytes(render_visual_golden(), kVisualMid);
+  require_bytes(render_visual_golden(), k_visual_mid);
 }
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
@@ -233,7 +233,7 @@ TEST_CASE("org.arbc.crossfade renders a byte-exact visual dissolve golden at w =
 TEST_CASE("org.arbc.crossfade re-runs the visual dissolve golden byte-exact through the live pull "
           "service") {
   CompositorCounters counters;
-  require_bytes(render_visual_golden_live(counters), kVisualMid);
+  require_bytes(render_visual_golden_live(counters), k_visual_mid);
   // An interior w pulls both inputs cold: exactly two input renders, each flowed
   // through the service (delivery is a composite, not a render).
   CHECK(counters.requests_issued() == 2);
@@ -242,7 +242,7 @@ TEST_CASE("org.arbc.crossfade re-runs the visual dissolve golden byte-exact thro
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 // enforces: 13-effects-as-operators#crossfade-mixes-both-facets
 TEST_CASE("org.arbc.crossfade renders a byte-exact audio mix golden at w == 0.5") {
-  require_bytes(render_audio_golden(), kAudioMid);
+  require_bytes(render_audio_golden(), k_audio_mid);
 }
 
 // enforces: 13-effects-as-operators#crossfade-mixes-both-facets
@@ -305,7 +305,7 @@ void dump(const char* name, const std::vector<std::byte>& bytes) {
 } // namespace
 
 TEST_CASE("dump crossfade goldens", "[.regen]") {
-  dump("kVisualMid", render_visual_golden());
-  dump("kAudioMid", render_audio_golden());
+  dump("k_visual_mid", render_visual_golden());
+  dump("k_audio_mid", render_audio_golden());
 }
 // GCOV_EXCL_STOP

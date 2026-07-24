@@ -19,7 +19,7 @@ using arbc::TimeError;
 using arbc::TimeMap;
 using arbc::TimeRange;
 
-constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+constexpr std::int64_t k_max = std::numeric_limits<std::int64_t>::max();
 
 // ---- Tier 2: Rational canonicalization -----------------------------------
 
@@ -90,15 +90,15 @@ TEST_CASE("exact rational rate multiply and add stay reduced") {
 
 // enforces: 11-time-and-video#rational-rate-composition-is-exact
 TEST_CASE("rational composition overflow surfaces as a TimeError value, never wraps") {
-  const auto mul_ov = Rational(kMax, 1).mul(Rational(kMax, 1));
+  const auto mul_ov = Rational(k_max, 1).mul(Rational(k_max, 1));
   REQUIRE_FALSE(mul_ov.has_value());
   REQUIRE(mul_ov.error().kind == TimeError::Kind::Overflow);
 
   // Coprime denominators whose product exceeds the width also fault.
-  const auto den_ov = Rational(1, kMax).mul(Rational(1, kMax - 1));
+  const auto den_ov = Rational(1, k_max).mul(Rational(1, k_max - 1));
   REQUIRE_FALSE(den_ov.has_value());
 
-  const auto add_ov = Rational(kMax, 1).add(Rational(kMax, 1));
+  const auto add_ov = Rational(k_max, 1).add(Rational(k_max, 1));
   REQUIRE_FALSE(add_ov.has_value());
   REQUIRE(add_ov.error().kind == TimeError::Kind::Overflow);
 }
@@ -149,14 +149,14 @@ TEST_CASE("leaf rounding is nearest flick, ties to even, sign-symmetric") {
 
 TEST_CASE("evaluate faults rather than wrapping when the instant overflows the width") {
   // Composed rate INT64_MAX at parent INT64_MAX overflows the int64 flick range.
-  const ComposedTimeMap big{Rational(kMax, 1), Rational(0, 1)};
-  const auto out = big.evaluate(Time{kMax});
+  const ComposedTimeMap big{Rational(k_max, 1), Rational(0, 1)};
+  const auto out = big.evaluate(Time{k_max});
   REQUIRE_FALSE(out.has_value());
   REQUIRE(out.error().kind == TimeError::Kind::Overflow);
 
   // A large denominator forces the intermediate product past the 128-bit width.
-  const ComposedTimeMap wide{Rational(kMax, 1), Rational(1, kMax)};
-  REQUIRE_FALSE(wide.evaluate(Time{kMax}).has_value());
+  const ComposedTimeMap wide{Rational(k_max, 1), Rational(1, k_max)};
+  REQUIRE_FALSE(wide.evaluate(Time{k_max}).has_value());
 }
 
 // ---- Tier 2: half-open span culling --------------------------------------
@@ -210,18 +210,19 @@ TEST_CASE("composing an edge stack multiplies rates and rounds once at the leaf"
 
 TEST_CASE("composition faults propagate as values through every fold step") {
   // from(): the in*rate product overflows.
-  REQUIRE_FALSE(ComposedTimeMap::from(TimeMap{Time{kMax}, Rational(kMax, 1), Time{0}}).has_value());
+  REQUIRE_FALSE(
+      ComposedTimeMap::from(TimeMap{Time{k_max}, Rational(k_max, 1), Time{0}}).has_value());
   // from(): in*rate is fine but offset - in*rate overflows.
   REQUIRE_FALSE(
-      ComposedTimeMap::from(TimeMap{Time{-1}, Rational(kMax, 1), Time{kMax}}).has_value());
+      ComposedTimeMap::from(TimeMap{Time{-1}, Rational(k_max, 1), Time{k_max}}).has_value());
   // then() surfaces a faulting edge from identity.
   REQUIRE_FALSE(ComposedTimeMap::identity()
-                    .then(TimeMap{Time{kMax}, Rational(kMax, 1), Time{0}})
+                    .then(TimeMap{Time{k_max}, Rational(k_max, 1), Time{0}})
                     .has_value());
 
   // and_then(): each of the three rational ops can fault.
-  const ComposedTimeMap max_rate{Rational(kMax, 1), Rational(0, 1)};
-  const ComposedTimeMap max_off{Rational(1, 1), Rational(kMax, 1)};
+  const ComposedTimeMap max_rate{Rational(k_max, 1), Rational(0, 1)};
+  const ComposedTimeMap max_off{Rational(1, 1), Rational(k_max, 1)};
   REQUIRE_FALSE(max_rate.and_then(max_rate).has_value()); // rate * rate
   REQUIRE_FALSE(max_off.and_then(max_rate).has_value());  // rate * offset
   REQUIRE_FALSE(max_off.and_then(max_off).has_value());   // offset + offset
@@ -255,7 +256,7 @@ std::optional<RefRat> ref_reduce(i128 n, i128 d) {
   const u128 g = gcd_u(an, ad);
   an /= g;
   ad /= g;
-  const u128 lim = static_cast<u128>(kMax);
+  const u128 lim = static_cast<u128>(k_max);
   if (an > lim || ad > lim) {
     return std::nullopt;
   }
@@ -292,8 +293,8 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
 
     // Independent higher-width reference fold, mirroring compose()'s per-edge
     // reduce-and-check discipline.
-    std::optional<RefRat> A = RefRat{1, 1};
-    std::optional<RefRat> B = RefRat{0, 1};
+    std::optional<RefRat> a = RefRat{1, 1};
+    std::optional<RefRat> b = RefRat{0, 1};
     bool ref_overflow = false;
     for (const TimeMap& m : edges) {
       const RefRat am{m.rate.num(), m.rate.den()};
@@ -304,8 +305,8 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
         ref_overflow = true;
         break;
       }
-      const auto na = ref_mul(am, *A);
-      const auto sb = ref_mul(am, *B);
+      const auto na = ref_mul(am, *a);
+      const auto sb = ref_mul(am, *b);
       if (!na || !sb) {
         ref_overflow = true;
         break;
@@ -315,8 +316,8 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
         ref_overflow = true;
         break;
       }
-      A = na;
-      B = nb;
+      a = na;
+      b = nb;
     }
 
     const auto composed = ComposedTimeMap::compose(edges.data(), edges.size());
@@ -330,10 +331,10 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
 
     REQUIRE(composed.has_value());
     // Exact composed rate and offset -- no floating error, in lowest terms.
-    CHECK(static_cast<i128>(composed->a.num()) == A->n);
-    CHECK(static_cast<i128>(composed->a.den()) == A->d);
-    CHECK(static_cast<i128>(composed->b.num()) == B->n);
-    CHECK(static_cast<i128>(composed->b.den()) == B->d);
+    CHECK(static_cast<i128>(composed->a.num()) == a->n);
+    CHECK(static_cast<i128>(composed->a.den()) == a->d);
+    CHECK(static_cast<i128>(composed->b.num()) == b->n);
+    CHECK(static_cast<i128>(composed->b.den()) == b->d);
     ++compared_values;
 
     // Grouping / associativity independence: splitting the chain and combining
@@ -352,17 +353,17 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
 
     // Single leaf rounding matches the independent reference rounding.
     const std::int64_t p = parent_dist(rng);
-    i128 term = A->n * static_cast<i128>(p);
+    i128 term = a->n * static_cast<i128>(p);
     i128 nn = 0;
 #ifdef _MSC_VER
-    const bool eval_overflow = arbc::arbc_mul_overflow_i128(term, B->d, term) ||
-                               arbc::arbc_add_overflow_i128(term, B->n * A->d, nn);
+    const bool eval_overflow = arbc::arbc_mul_overflow_i128(term, b->d, term) ||
+                               arbc::arbc_add_overflow_i128(term, b->n * a->d, nn);
 #else
     const bool eval_overflow =
-        __builtin_mul_overflow(term, B->d, &term) || __builtin_add_overflow(term, B->n * A->d, &nn);
+        __builtin_mul_overflow(term, b->d, &term) || __builtin_add_overflow(term, b->n * a->d, &nn);
 #endif
     if (!eval_overflow) {
-      const i128 dd = A->d * B->d;
+      const i128 dd = a->d * b->d;
       i128 q = nn / dd;
       i128 r = nn % dd;
       if (r < 0) {
@@ -374,7 +375,7 @@ TEST_CASE("pathological rate stacks compose exactly, depth-invariantly, and faul
         q += 1;
       }
       const auto evaluated = composed->evaluate(Time{p});
-      if (q > static_cast<i128>(kMax) ||
+      if (q > static_cast<i128>(k_max) ||
           q < static_cast<i128>(std::numeric_limits<std::int64_t>::min())) {
         CHECK_FALSE(evaluated.has_value());
       } else {

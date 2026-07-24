@@ -70,7 +70,7 @@ arbc::Ref<Rec> build_chain(arbc::RefStore<Rec>& store, int depth) {
 // A tick period long enough that no automatic timeout fires during a
 // deterministic unit test: the ONLY ticks are the ones flush() pokes. It never
 // appears in an assertion (doc 16:54-62) -- it just keeps the test poke-driven.
-constexpr std::chrono::steady_clock::duration kNoTimeout = std::chrono::hours(1);
+constexpr std::chrono::steady_clock::duration k_no_timeout = std::chrono::hours(1);
 
 TEST_CASE("background tick drains the reclamation queue") {
   arbc::Arena arena;
@@ -82,7 +82,7 @@ TEST_CASE("background tick drains the reclamation queue") {
   const std::size_t baseline = arena.total_slots_live();
 
   arbc::HousekeepingThreadConfig tc;
-  tc.tick_period = kNoTimeout;
+  tc.tick_period = k_no_timeout;
   arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
   arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
 
@@ -115,7 +115,7 @@ TEST_CASE("stop wakes the parked loop, runs a final drain, and joins cleanly") {
 
     {
       arbc::HousekeepingThreadConfig tc;
-      tc.tick_period = kNoTimeout; // no timeout tick can drain first
+      tc.tick_period = k_no_timeout; // no timeout tick can drain first
       arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
       hkt.request_stop(); // stop WITHOUT a prior flush
     } // destructor joins -> the stop path's final drain_and_quiesce ran
@@ -125,7 +125,7 @@ TEST_CASE("stop wakes the parked loop, runs a final drain, and joins cleanly") {
 
   SECTION("construct and immediately destroy does not hang") {
     arbc::HousekeepingThreadConfig tc;
-    tc.tick_period = kNoTimeout;
+    tc.tick_period = k_no_timeout;
     {
       arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
     }
@@ -143,7 +143,7 @@ TEST_CASE("the writer's after_commit drains through the wrapper mutex") {
   const std::size_t baseline = arena.total_slots_live();
 
   arbc::HousekeepingThreadConfig tc;
-  tc.tick_period = kNoTimeout; // loop parked; the writer path does the draining
+  tc.tick_period = k_no_timeout; // loop parked; the writer path does the draining
   arbc::PoolHousekeepingTarget target(queue, nullptr, &arena);
   arbc::HousekeepingThread hkt(target, arbc::HousekeepingConfig{}, std::move(tc));
 
@@ -249,7 +249,7 @@ TEST_CASE("the background tick drives the tick-interval checkpoint trigger deter
   arbc::HousekeepingConfig policy;
   policy.checkpoint_tick_interval = 100;
   arbc::HousekeepingThreadConfig tc;
-  tc.tick_period = kNoTimeout; // ticks come only from flush(), never a timeout
+  tc.tick_period = k_no_timeout; // ticks come only from flush(), never a timeout
   tc.tick_source = [&tick_value] { return tick_value.load(std::memory_order_acquire); };
   arbc::PoolHousekeepingTarget target(fx.queue, &fx.ckpt, &fx.arena);
   arbc::HousekeepingThread hkt(target, policy, std::move(tc));
@@ -281,7 +281,7 @@ TEST_CASE("a background checkpoint failure is captured and surfaced, never abort
   arbc::HousekeepingConfig policy;
   policy.checkpoint_tick_interval = 100;
   arbc::HousekeepingThreadConfig tc;
-  tc.tick_period = kNoTimeout;
+  tc.tick_period = k_no_timeout;
   tc.tick_source = [&tick_value] { return tick_value.load(std::memory_order_acquire); };
   tc.on_checkpoint_error = [&callback_hits](const arbc::WorkspaceFileError&) {
     callback_hits.fetch_add(1, std::memory_order_release);

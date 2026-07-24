@@ -199,6 +199,10 @@ gate already settled them.
   run conclusion. **A check that is allowed to fail is a check nobody
   reads**; the ratchet is what makes a non-zero baseline enforceable
   today, and the lane becomes an ordinary gate the day it reaches zero.
+  It reached zero on 2026-07-24 — the baseline is `{}` and any finding
+  fails the push. The machinery stays: it is both the enforcement and the
+  way back, if a check is ever added whose backlog cannot be cleared in
+  one change.
 - Scope is **the compile database, not a source glob**: a TU that is in
   the database is a TU that compiles, and headers are analyzed too
   (`HeaderFilterRegex`), because much of this codebase is header-inline.

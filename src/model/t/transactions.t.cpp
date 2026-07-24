@@ -281,8 +281,8 @@ TEST_CASE("consecutive keyed commits each publish, and merge to one journal entr
   const arbc::CoalesceKey key = 0x9ABC;
   const std::uint64_t rev0 = model.current()->revision();
 
-  constexpr int kN = 3;
-  for (int i = 0; i < kN; ++i) {
+  constexpr int k_n = 3;
+  for (int i = 0; i < k_n; ++i) {
     auto txn = model.transact("drag");
     txn.coalesce(key);
     txn.set_transform(layer, arbc::Affine::translation(static_cast<double>(i + 1), 0.0));
@@ -292,8 +292,8 @@ TEST_CASE("consecutive keyed commits each publish, and merge to one journal entr
 
   // Each coalesced commit still publishes a distinct revision (display updates
   // per-commit); the sink saw one entry per commit.
-  REQUIRE(model.current()->revision() == rev0 + kN);
-  REQUIRE(sink.entries.size() == static_cast<std::size_t>(kN));
+  REQUIRE(model.current()->revision() == rev0 + k_n);
+  REQUIRE(sink.entries.size() == static_cast<std::size_t>(k_n));
 
   // The pure merge helper folds them into ONE entry: first-before / last-after,
   // unioned object set and damage.

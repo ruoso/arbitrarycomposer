@@ -45,9 +45,9 @@ expected<Time, TimeError> Transport::advance(Time real_elapsed) {
   }
 
   // Unbounded advance: an instant beyond the flick width faults rather than wrapping.
-  constexpr rational_i128 kMax = std::numeric_limits<std::int64_t>::max();
-  constexpr rational_i128 kMin = std::numeric_limits<std::int64_t>::min();
-  if (advanced > kMax || advanced < kMin) {
+  constexpr rational_i128 k_max = std::numeric_limits<std::int64_t>::max();
+  constexpr rational_i128 k_min = std::numeric_limits<std::int64_t>::min();
+  if (advanced > k_max || advanced < k_min) {
     return unexpected(TimeError{TimeError::Kind::Overflow}); // playhead untouched
   }
   d_playhead = Time{static_cast<std::int64_t>(advanced)};

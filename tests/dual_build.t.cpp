@@ -405,12 +405,14 @@ TEST_CASE("each in-lib kind loads as a CI module and registers exactly its own k
     const ContentFactory& factory = require_sole_registration(plugin_host, c);
 
     // Errors are values across the boundary (Constraint 5): a malformed config
-    // faults as a value, under REQUIRE_NOTHROW.
-    REQUIRE_NOTHROW([&] {
-      const arbc_ci::Made bad = factory(k_garbage_config);
-      REQUIRE_FALSE(bad.has_value());
-      REQUIRE_FALSE(bad.error().empty());
-    }());
+    // faults as a value, under REQUIRE_NOTHROW. The call is its own statement rather
+    // than a lambda wrapping the assertions too: only the FACTORY CALL is the thing
+    // that must not throw, and a Catch2 assertion nested inside another Catch2 macro's
+    // argument reports its failure through the outer macro instead of on its own terms.
+    arbc_ci::Made bad = arbc_ci::made_error("unset");
+    REQUIRE_NOTHROW(bad = factory(k_garbage_config));
+    REQUIRE_FALSE(bad.has_value());
+    REQUIRE_FALSE(bad.error().empty());
 
     // A duplicate registration of the same id is a RegistryError value, not a throw.
     const expected<std::monostate, RegistryError> duplicate =

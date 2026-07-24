@@ -174,10 +174,10 @@ TEST_CASE("derive_playback_hint scales the horizon by |rate| with one ties-to-ev
   // A pathological rate that overflows the flick width faults as a value, never
   // wraps -- matching the transport advance contract.
   {
-    constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t k_max = std::numeric_limits<std::int64_t>::max();
     Transport t;
-    t.set_rate(Rational(kMax, 1));
-    const auto h = arbc::derive_playback_hint(t, Time{kMax});
+    t.set_rate(Rational(k_max, 1));
+    const auto h = arbc::derive_playback_hint(t, Time{k_max});
     REQUIRE_FALSE(h.has_value());
     CHECK(h.error() == TimeError{TimeError::Kind::Overflow});
   }

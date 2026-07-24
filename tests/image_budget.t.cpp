@@ -64,8 +64,8 @@ std::span<const unsigned char> as_bytes(const std::string& s) {
 
 // One decoded fixture pyramid's resident bytes -- the unit every budget below is expressed in.
 std::size_t pyramid_bytes() {
-  static const std::size_t bytes = fix::decode_fixture()->resident_bytes();
-  return bytes;
+  static const std::size_t s_bytes = fix::decode_fixture()->resident_bytes();
+  return s_bytes;
 }
 
 // Admit `uri` into `cache` and drop the returned hold, leaving the cache the only owner. The

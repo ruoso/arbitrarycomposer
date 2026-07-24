@@ -1,7 +1,9 @@
 # Curated profile (design doc 16). Every disabled check carries a reason.
-# Runs per-push under `scripts/check_tidy.py` (ci.yml job `tidy`), which ratchets
-# the finding count per check so the baseline can only shrink; it becomes an
-# ordinary gate the day it reaches zero.
+# Runs per-push under `scripts/check_tidy.py` (ci.yml job `tidy`). The baseline in
+# `scripts/tidy_baseline.json` reached ZERO on 2026-07-24, so this is now an
+# ordinary gate: any finding fails the push. The ratchet machinery stays as the
+# enforcement mechanism (and as the way back, should a check ever be added whose
+# backlog cannot be cleared in one change).
 #
 # The list opens with `-*` so the profile is exactly what is written here. Without
 # it clang-tidy folds in its own default set — which is how `clang-analyzer-*` got

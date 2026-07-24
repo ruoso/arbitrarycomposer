@@ -325,8 +325,8 @@ namespace {
 class TempPath {
 public:
   TempPath() {
-    static std::atomic<int> counter{0};
-    d_path = std::string("/tmp/arbc_por_") + std::to_string(counter.fetch_add(1)) + "_" +
+    static std::atomic<int> s_counter{0};
+    d_path = std::string("/tmp/arbc_por_") + std::to_string(s_counter.fetch_add(1)) + "_" +
              std::to_string(static_cast<long long>(::getpid())) + ".arbcws";
   }
   ~TempPath() { std::remove(d_path.c_str()); }

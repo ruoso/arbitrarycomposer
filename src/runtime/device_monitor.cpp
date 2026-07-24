@@ -15,12 +15,12 @@ namespace {
 // state (`transport.hpp:26-30`, D2), so the ownership registry is a monitor-layer
 // concern. Non-RT: touched only at monitor construction/destruction.
 std::mutex& registry_mutex() {
-  static std::mutex m;
-  return m;
+  static std::mutex s_mutex;
+  return s_mutex;
 }
 std::unordered_set<const Transport*>& registered_transports() {
-  static std::unordered_set<const Transport*> s;
-  return s;
+  static std::unordered_set<const Transport*> s_transports;
+  return s_transports;
 }
 
 int rate_sign(Rational rate) {

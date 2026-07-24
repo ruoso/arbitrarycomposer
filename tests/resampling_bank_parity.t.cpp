@@ -49,17 +49,17 @@ arbc::WorkingPixel src_pixel(int x, int y) {
 
 // enforces: 07-color-and-pixel-formats#shared-resampling-bank-parity
 TEST_CASE("a compositor rung is byte-identical to a kind_raster mip through the shared bank") {
-  constexpr int kW = 8;
-  constexpr int kH = 8;
-  constexpr int kRW = kW / 2;
-  constexpr int kRH = kH / 2;
+  constexpr int k_w = 8;
+  constexpr int k_h = 8;
+  constexpr int k_rw = k_w / 2;
+  constexpr int k_rh = k_h / 2;
 
   // The one shared source, row-major rgba32f floats.
-  std::vector<float> src_floats(static_cast<std::size_t>(kW) * static_cast<std::size_t>(kH) * 4);
-  for (int y = 0; y < kH; ++y) {
-    for (int x = 0; x < kW; ++x) {
+  std::vector<float> src_floats(static_cast<std::size_t>(k_w) * static_cast<std::size_t>(k_h) * 4);
+  for (int y = 0; y < k_h; ++y) {
+    for (int x = 0; x < k_w; ++x) {
       const arbc::WorkingPixel p = src_pixel(x, y);
-      const std::size_t at = (static_cast<std::size_t>(y) * kW + static_cast<std::size_t>(x)) * 4;
+      const std::size_t at = (static_cast<std::size_t>(y) * k_w + static_cast<std::size_t>(x)) * 4;
       for (std::size_t k = 0; k < 4; ++k) {
         src_floats[at + k] = p[k];
       }
@@ -68,43 +68,43 @@ TEST_CASE("a compositor rung is byte-identical to a kind_raster mip through the 
 
   // Backend side: CpuBackend::downsample over the 8x8 surface (zero-border fetch).
   arbc::CpuBackend backend;
-  arbc::CpuSurface src(kW, kH, arbc::k_working_rgba32f);
+  arbc::CpuSurface src(k_w, k_h, arbc::k_working_rgba32f);
   {
     const std::span<float> px = src.span<PixelFormat::Rgba32fLinearPremul>();
     for (std::size_t i = 0; i < src_floats.size(); ++i) {
       px[i] = src_floats[i];
     }
   }
-  arbc::CpuSurface dst(kRW, kRH, arbc::k_working_rgba32f);
+  arbc::CpuSurface dst(k_rw, k_rh, arbc::k_working_rgba32f);
   backend.downsample(dst, src);
   const std::span<const float> rung = std::as_const(dst).span<PixelFormat::Rgba32fLinearPremul>();
 
   // Kind side: kind_raster's level-1 mip from the identical floats (clamp-to-edge
-  // fetch). One tile per level (edge == kW), so level 1 is the 4x4 rung.
+  // fetch). One tile per level (edge == k_w), so level 1 is the 4x4 rung.
   arbc::DecodedImage image;
-  image.width = kW;
-  image.height = kH;
+  image.width = k_w;
+  image.height = k_h;
   image.format = arbc::k_working_rgba32f;
   image.bytes.resize(src_floats.size() * sizeof(float));
   std::memcpy(image.bytes.data(), src_floats.data(), image.bytes.size());
-  const arbc::RasterContent content(image, /*tile_edge=*/kW);
+  const arbc::RasterContent content(image, /*tile_edge=*/k_w);
   const std::vector<float> mip = content.store().base_table()->level_pixels(1);
   REQUIRE(mip.size() == rung.size());
 
   // Compare only interior rung pixels whose 6-tap support stays in range on both
-  // axes: 2x-2 >= 0 and 2x+3 <= kW-1 -> x in {1, 2} for kW == 8. There the
+  // axes: 2x-2 >= 0 and 2x+3 <= k_w-1 -> x in {1, 2} for k_w == 8. There the
   // zero-border and clamp-to-edge fetches read the identical in-range taps, so the
   // one shared bank yields byte-identical bytes.
   bool compared_interior = false;
-  for (int y = 0; y < kRH; ++y) {
-    for (int x = 0; x < kRW; ++x) {
+  for (int y = 0; y < k_rh; ++y) {
+    for (int x = 0; x < k_rw; ++x) {
       const bool interior =
-          (2 * x - 2 >= 0) && (2 * x + 3 <= kW - 1) && (2 * y - 2 >= 0) && (2 * y + 3 <= kH - 1);
+          (2 * x - 2 >= 0) && (2 * x + 3 <= k_w - 1) && (2 * y - 2 >= 0) && (2 * y + 3 <= k_h - 1);
       if (!interior) {
         continue;
       }
       compared_interior = true;
-      const std::size_t at = (static_cast<std::size_t>(y) * kRW + static_cast<std::size_t>(x)) * 4;
+      const std::size_t at = (static_cast<std::size_t>(y) * k_rw + static_cast<std::size_t>(x)) * 4;
       for (std::size_t k = 0; k < 4; ++k) {
         CAPTURE(x, y, k);
         REQUIRE(rung[at + k] == mip[at + k]);

@@ -52,9 +52,9 @@ expected<Rational, TimeError> Rational::from_i128(rational_i128 num, rational_i1
   const rational_u128 g = gcd_u128(an, ad); // ad != 0 so g >= 1
   an /= g;
   ad /= g;
-  constexpr rational_u128 kMaxMag =
+  constexpr rational_u128 k_max_mag =
       static_cast<rational_u128>(std::numeric_limits<std::int64_t>::max());
-  if (an > kMaxMag || ad > kMaxMag) {
+  if (an > k_max_mag || ad > k_max_mag) {
     return unexpected(overflow());
   }
   const std::int64_t rn = negative ? -static_cast<std::int64_t>(an) : static_cast<std::int64_t>(an);
@@ -169,9 +169,9 @@ expected<Time, TimeError> ComposedTimeMap::evaluate(Time parent_time) const {
     q += 1;
   }
 
-  constexpr rational_i128 kMax = std::numeric_limits<std::int64_t>::max();
-  constexpr rational_i128 kMinV = std::numeric_limits<std::int64_t>::min();
-  if (q > kMax || q < kMinV) {
+  constexpr rational_i128 k_max = std::numeric_limits<std::int64_t>::max();
+  constexpr rational_i128 k_min_v = std::numeric_limits<std::int64_t>::min();
+  if (q > k_max || q < k_min_v) {
     return unexpected(overflow());
   }
   return Time{static_cast<std::int64_t>(q)};

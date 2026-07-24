@@ -86,7 +86,7 @@ std::vector<std::byte> to_bytes(std::span<const std::byte> s) { return {s.begin(
 // The MANUALLY-attached reference: render the fade DIRECTLY through a live
 // PullServiceImpl (the golden computation, tests/fade_goldens.t.cpp
 // render_visual_golden_live, which fade_goldens pins byte-exact to the frozen
-// kVisualHalf table). The driver render must reproduce these bytes exactly
+// k_visual_half table). The driver render must reproduce these bytes exactly
 // (Constraint 6: binding changes WHO calls attach, never WHAT fade computes).
 std::vector<std::byte> render_visual_reference() {
   CpuBackend backend;
@@ -112,7 +112,7 @@ std::vector<std::byte> render_visual_reference() {
 }
 
 // The manually-attached audio reference (tests/fade_goldens.t.cpp
-// render_audio_golden_live, pinned byte-exact to kAudioRamp).
+// render_audio_golden_live, pinned byte-exact to k_audio_ramp).
 std::vector<std::byte> render_audio_reference() {
   CpuBackend backend;
   ToneContent tone{440, 0.5F};

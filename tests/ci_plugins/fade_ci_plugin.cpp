@@ -24,8 +24,8 @@ namespace {
 // image's DSO handle, so it runs during `dlclose` -- after every operator the host
 // built from this factory has already been destroyed.
 arbc_ci::InputOwner& module_inputs() {
-  static arbc_ci::InputOwner owner;
-  return owner;
+  static arbc_ci::InputOwner s_owner;
+  return s_owner;
 }
 
 } // namespace

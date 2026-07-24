@@ -95,37 +95,37 @@ template <PixelFormat F> void wr(arbc::Surface& s, int idx, const arbc::WorkingP
 // --- fixed representative inputs (no RNG, no clock; committed constants) -----
 
 // Fill: one valid premultiplied (rgb <= a) non-opaque working color.
-constexpr arbc::WorkingPixel kFillColor{0.1F, 0.2F, 0.3F, 0.5F};
+constexpr arbc::WorkingPixel k_fill_color{0.1F, 0.2F, 0.3F, 0.5F};
 
 // Source-over integer-aligned: half-alpha src over an opaque background, so the
 // nearest-tap blend `out = s + (1 - a_s) d` is genuinely exercised (not a copy).
-constexpr std::array<arbc::WorkingPixel, 4> kSoDst{{{0.5F, 0.1F, 0.1F, 1.0F},
-                                                    {0.1F, 0.5F, 0.1F, 1.0F},
-                                                    {0.1F, 0.1F, 0.5F, 1.0F},
-                                                    {0.4F, 0.4F, 0.1F, 1.0F}}};
-constexpr std::array<arbc::WorkingPixel, 4> kSoSrc{{{0.15F, 0.30F, 0.10F, 0.5F},
-                                                    {0.20F, 0.10F, 0.25F, 0.5F},
-                                                    {0.05F, 0.20F, 0.30F, 0.5F},
-                                                    {0.25F, 0.10F, 0.15F, 0.5F}}};
+constexpr std::array<arbc::WorkingPixel, 4> k_so_dst{{{0.5F, 0.1F, 0.1F, 1.0F},
+                                                      {0.1F, 0.5F, 0.1F, 1.0F},
+                                                      {0.1F, 0.1F, 0.5F, 1.0F},
+                                                      {0.4F, 0.4F, 0.1F, 1.0F}}};
+constexpr std::array<arbc::WorkingPixel, 4> k_so_src{{{0.15F, 0.30F, 0.10F, 0.5F},
+                                                      {0.20F, 0.10F, 0.25F, 0.5F},
+                                                      {0.05F, 0.20F, 0.30F, 0.5F},
+                                                      {0.25F, 0.10F, 0.15F, 0.5F}}};
 
 // Source-over fractional: an opaque red x-ramp on a 2x2 source, half-texel
 // shifted, so an interior destination pixel is the two-tap bilinear mean and an
 // edge pixel falls off toward the transparent border.
-constexpr std::array<arbc::WorkingPixel, 4> kRamp{{{0.0F, 0.0F, 0.0F, 1.0F},
-                                                   {1.0F, 0.0F, 0.0F, 1.0F},
-                                                   {0.0F, 0.0F, 0.0F, 1.0F},
-                                                   {1.0F, 0.0F, 0.0F, 1.0F}}};
+constexpr std::array<arbc::WorkingPixel, 4> k_ramp{{{0.0F, 0.0F, 0.0F, 1.0F},
+                                                    {1.0F, 0.0F, 0.0F, 1.0F},
+                                                    {0.0F, 0.0F, 0.0F, 1.0F},
+                                                    {1.0F, 0.0F, 0.0F, 1.0F}}};
 
 // Downsample: four distinct opaque colors, so the 2:1 box mean is non-trivial.
-constexpr std::array<arbc::WorkingPixel, 4> kDown{{{0.1F, 0.2F, 0.3F, 1.0F},
-                                                   {0.5F, 0.6F, 0.7F, 1.0F},
-                                                   {0.9F, 0.1F, 0.2F, 1.0F},
-                                                   {0.3F, 0.4F, 0.5F, 1.0F}}};
+constexpr std::array<arbc::WorkingPixel, 4> k_down{{{0.1F, 0.2F, 0.3F, 1.0F},
+                                                    {0.5F, 0.6F, 0.7F, 1.0F},
+                                                    {0.9F, 0.1F, 0.2F, 1.0F},
+                                                    {0.3F, 0.4F, 0.5F, 1.0F}}};
 
 // Convert: one opaque and one non-opaque (straight->premultiplied) sample, so
 // every directed pair exercises a distinct src-decode/dst-encode combination.
-constexpr arbc::WorkingPixel kConvA{0.20F, 0.40F, 0.60F, 1.0F};
-constexpr arbc::WorkingPixel kConvB{0.30F, 0.15F, 0.05F, 0.6F};
+constexpr arbc::WorkingPixel k_conv_a{0.20F, 0.40F, 0.60F, 1.0F};
+constexpr arbc::WorkingPixel k_conv_b{0.30F, 0.15F, 0.05F, 0.6F};
 
 // --- kernel output builders (the real shipped kernels / CpuBackend path) -----
 
@@ -134,7 +134,7 @@ template <PixelFormat F> std::vector<std::byte> fill_bytes(arbc::SurfaceFormat f
   // The whole-surface clip: the box that makes the one fill kernel the unclipped
   // `Backend::clear` (doc 09), so this golden's bytes are the shipped clear path.
   arbc::fill_kernel<F>(arbc::TypedSpan<F>{dst.span<F>()}, /*dst_width=*/2,
-                       arbc::PixelBox{0, 0, 2, 1}, kFillColor);
+                       arbc::PixelBox{0, 0, 2, 1}, k_fill_color);
   return bytes_of(dst);
 }
 
@@ -143,8 +143,8 @@ template <PixelFormat F> std::vector<std::byte> src_over_integer_bytes(arbc::Sur
   arbc::CpuSurface src(2, 2, fmt);
   arbc::CpuSurface dst(2, 2, fmt);
   for (int i = 0; i < 4; ++i) {
-    wr<F>(src, i, kSoSrc[static_cast<std::size_t>(i)]);
-    wr<F>(dst, i, kSoDst[static_cast<std::size_t>(i)]);
+    wr<F>(src, i, k_so_src[static_cast<std::size_t>(i)]);
+    wr<F>(dst, i, k_so_dst[static_cast<std::size_t>(i)]);
   }
   backend.composite(dst, src, arbc::Affine::identity(), 1.0);
   return bytes_of(dst);
@@ -154,7 +154,7 @@ template <PixelFormat F> std::vector<std::byte> src_over_fractional_bytes(arbc::
   arbc::CpuBackend backend;
   arbc::CpuSurface src(2, 2, fmt);
   for (int i = 0; i < 4; ++i) {
-    wr<F>(src, i, kRamp[static_cast<std::size_t>(i)]);
+    wr<F>(src, i, k_ramp[static_cast<std::size_t>(i)]);
   }
   arbc::CpuSurface dst(2, 2, fmt); // fresh: transparent zero
   backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0);
@@ -165,7 +165,7 @@ template <PixelFormat F> std::vector<std::byte> downsample_bytes(arbc::SurfaceFo
   arbc::CpuBackend backend;
   arbc::CpuSurface src(2, 2, fmt);
   for (int i = 0; i < 4; ++i) {
-    wr<F>(src, i, kDown[static_cast<std::size_t>(i)]);
+    wr<F>(src, i, k_down[static_cast<std::size_t>(i)]);
   }
   arbc::CpuSurface dst(1, 1, fmt);
   backend.downsample(dst, src);
@@ -180,26 +180,26 @@ template <PixelFormat F> std::vector<std::byte> downsample_bytes(arbc::SurfaceFo
 // 2). They are deliberately NOT the shipped kernels -- they are the retired math,
 // kept alive only as the thing the swap must move away from.
 
-// The box 2:1 mean of kDown into a 1x1 rung -- the filter downsample_kernel used
+// The box 2:1 mean of k_down into a 1x1 rung -- the filter downsample_kernel used
 // before the Lanczos-3 half-band swap.
 template <PixelFormat F> std::vector<std::byte> box_downsample_bytes(arbc::SurfaceFormat fmt) {
   arbc::CpuSurface dst(1, 1, fmt);
   arbc::WorkingPixel m{};
   for (std::size_t k = 0; k < 4; ++k) {
-    m[k] = (kDown[0][k] + kDown[1][k] + kDown[2][k] + kDown[3][k]) * 0.25F;
+    m[k] = (k_down[0][k] + k_down[1][k] + k_down[2][k] + k_down[3][k]) * 0.25F;
   }
   arbc::PixelTraits<F>::encode(m, dst.span<F>().data());
   return bytes_of(dst);
 }
 
-// The 4-tap bilinear composite tap over kRamp at translation(0.5,0) onto a fresh
+// The 4-tap bilinear composite tap over k_ramp at translation(0.5,0) onto a fresh
 // transparent destination -- the filter source_over_kernel used before the
 // Catmull-Rom swap, replicated exactly (same texel-center convention, same
 // zero-border 2x2 cull, same premultiplied-linear source-over onto d = 0).
 template <PixelFormat F> std::vector<std::byte> bilinear_fractional_bytes(arbc::SurfaceFormat fmt) {
   arbc::CpuSurface src(2, 2, fmt);
   for (int i = 0; i < 4; ++i) {
-    wr<F>(src, i, kRamp[static_cast<std::size_t>(i)]);
+    wr<F>(src, i, k_ramp[static_cast<std::size_t>(i)]);
   }
   arbc::CpuSurface dst(2, 2, fmt);
   const std::span<const typename arbc::PixelTraits<F>::Storage> src_span =
@@ -246,8 +246,8 @@ template <PixelFormat F> std::vector<std::byte> bilinear_fractional_bytes(arbc::
 template <PixelFormat SrcF, PixelFormat DstF>
 std::vector<std::byte> convert_bytes(arbc::SurfaceFormat src_fmt, arbc::SurfaceFormat dst_fmt) {
   arbc::CpuSurface src(2, 1, src_fmt);
-  wr<SrcF>(src, 0, kConvA);
-  wr<SrcF>(src, 1, kConvB);
+  wr<SrcF>(src, 0, k_conv_a);
+  wr<SrcF>(src, 1, k_conv_b);
   arbc::CpuSurface dst(2, 1, dst_fmt);
   arbc::convert_kernel<SrcF, DstF>(std::as_const(src).span<SrcF>(),
                                    arbc::TypedSpan<DstF>{dst.span<DstF>()}, 2);
@@ -264,8 +264,8 @@ std::vector<std::byte> backend_convert_bytes(arbc::SurfaceFormat src_fmt,
                                              arbc::SurfaceFormat dst_fmt) {
   arbc::CpuBackend backend;
   arbc::CpuSurface src(2, 1, src_fmt);
-  wr<SrcF>(src, 0, kConvA);
-  wr<SrcF>(src, 1, kConvB);
+  wr<SrcF>(src, 0, k_conv_a);
+  wr<SrcF>(src, 1, k_conv_b);
   // Pre-dirty the destination: `convert` REPLACES every destination pixel, so a
   // partial write must not be able to hide behind a zero-initialized buffer.
   arbc::CpuSurface dst(2, 1, dst_fmt);
@@ -296,8 +296,8 @@ std::pair<std::vector<std::byte>, std::vector<std::byte>>
 identity_convert_bytes(arbc::SurfaceFormat fmt) {
   arbc::CpuBackend backend;
   arbc::CpuSurface src(2, 1, fmt);
-  wr<F>(src, 0, kConvA);
-  wr<F>(src, 1, kConvB);
+  wr<F>(src, 0, k_conv_a);
+  wr<F>(src, 1, k_conv_b);
   arbc::CpuSurface dst(2, 1, fmt);
   backend.clear(dst, 0.9F, 0.1F, 0.7F, 1.0F);
   backend.convert(dst, src);
@@ -308,87 +308,91 @@ identity_convert_bytes(arbc::SurfaceFormat fmt) {
 // FROZEN EXPECTED TABLES -- regenerate deliberately (see procedure at top).
 // ===========================================================================
 
-// fill_kernel, 2x1 tile of kFillColor, per format.
-constexpr std::array<unsigned char, 32> kFillExp32{
+// fill_kernel, 2x1 tile of k_fill_color, per format.
+constexpr std::array<unsigned char, 32> k_fill_exp32{
     {0xCD, 0xCC, 0xCC, 0x3D, 0xCD, 0xCC, 0x4C, 0x3E, 0x9A, 0x99, 0x99,
      0x3E, 0x00, 0x00, 0x00, 0x3F, 0xCD, 0xCC, 0xCC, 0x3D, 0xCD, 0xCC,
      0x4C, 0x3E, 0x9A, 0x99, 0x99, 0x3E, 0x00, 0x00, 0x00, 0x3F}};
-constexpr std::array<unsigned char, 16> kFillExp16{{0x66, 0x2E, 0x66, 0x32, 0xCD, 0x34, 0x00, 0x38,
-                                                    0x66, 0x2E, 0x66, 0x32, 0xCD, 0x34, 0x00,
-                                                    0x38}};
-constexpr std::array<unsigned char, 8> kFillExp8{{0x7C, 0xAA, 0xCB, 0x80, 0x7C, 0xAA, 0xCB, 0x80}};
+constexpr std::array<unsigned char, 16> k_fill_exp16{{0x66, 0x2E, 0x66, 0x32, 0xCD, 0x34, 0x00,
+                                                      0x38, 0x66, 0x2E, 0x66, 0x32, 0xCD, 0x34,
+                                                      0x00, 0x38}};
+constexpr std::array<unsigned char, 8> k_fill_exp8{
+    {0x7C, 0xAA, 0xCB, 0x80, 0x7C, 0xAA, 0xCB, 0x80}};
 
 // source_over_kernel integer-aligned (identity), 2x2, per format.
-constexpr std::array<unsigned char, 64> kSoIntExp32{
+constexpr std::array<unsigned char, 64> k_so_int_exp32{
     {0xCD, 0xCC, 0xCC, 0x3E, 0x34, 0x33, 0xB3, 0x3E, 0x9A, 0x99, 0x19, 0x3E, 0x00,
      0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3E, 0x33, 0x33, 0xB3, 0x3E, 0x9A, 0x99,
      0x99, 0x3E, 0x00, 0x00, 0x80, 0x3F, 0xCD, 0xCC, 0xCC, 0x3D, 0x00, 0x00, 0x80,
      0x3E, 0xCD, 0xCC, 0x0C, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x66, 0x66, 0xE6, 0x3E,
      0x9A, 0x99, 0x99, 0x3E, 0xCD, 0xCC, 0x4C, 0x3E, 0x00, 0x00, 0x80, 0x3F}};
-constexpr std::array<unsigned char, 32> kSoIntExp16{
+constexpr std::array<unsigned char, 32> k_so_int_exp16{
     {0x66, 0x36, 0x9A, 0x35, 0xCC, 0x30, 0x00, 0x3C, 0x00, 0x34, 0x9A,
      0x35, 0xCD, 0x34, 0x00, 0x3C, 0x66, 0x2E, 0x00, 0x34, 0x66, 0x38,
      0x00, 0x3C, 0x33, 0x37, 0xCC, 0x34, 0x66, 0x32, 0x00, 0x3C}};
-constexpr std::array<unsigned char, 16> kSoIntExp8{{0xAA, 0xA0, 0x6C, 0xFF, 0x89, 0xA0, 0x95, 0xFF,
-                                                    0x59, 0x89, 0xC4, 0xFF, 0xB3, 0x95, 0x7C,
-                                                    0xFF}};
+constexpr std::array<unsigned char, 16> k_so_int_exp8{{0xAA, 0xA0, 0x6C, 0xFF, 0x89, 0xA0, 0x95,
+                                                       0xFF, 0x59, 0x89, 0xC4, 0xFF, 0xB3, 0x95,
+                                                       0x7C, 0xFF}};
 
 // source_over_kernel fractional Catmull-Rom (translation 0.5,0), 2x2, per format.
-constexpr std::array<unsigned char, 64> kSoFracExp32{
+constexpr std::array<unsigned char, 64> k_so_frac_exp32{
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
      0x00, 0x00, 0x3F, 0x00, 0x00, 0x10, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
      0x00, 0x00, 0x00, 0x00, 0x90, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x10, 0x3F,
      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0x3F}};
-constexpr std::array<unsigned char, 32> kSoFracExp16{
+constexpr std::array<unsigned char, 32> k_so_frac_exp16{
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x80, 0x38, 0x00,
      0x00, 0x00, 0x00, 0x80, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
      0x00, 0x38, 0x80, 0x38, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3C}};
-constexpr std::array<unsigned char, 16> kSoFracExp8{{0x00, 0x00, 0x00, 0x80, 0xBC, 0x00, 0x00, 0xFF,
-                                                     0x00, 0x00, 0x00, 0x80, 0xBC, 0x00, 0x00,
-                                                     0xFF}};
+constexpr std::array<unsigned char, 16> k_so_frac_exp8{{0x00, 0x00, 0x00, 0x80, 0xBC, 0x00, 0x00,
+                                                        0xFF, 0x00, 0x00, 0x00, 0x80, 0xBC, 0x00,
+                                                        0x00, 0xFF}};
 
 // downsample_kernel (Lanczos-3 half-band) 2x2 -> 1x1, per format.
-constexpr std::array<unsigned char, 16> kDownExp32{{0x4D, 0x42, 0x2C, 0x3F, 0x8C, 0xD1, 0xF8, 0x3E,
-                                                    0x66, 0xB0, 0x22, 0x3F, 0x1D, 0x66, 0xBF,
-                                                    0x3F}};
-constexpr std::array<unsigned char, 8> kDownExp16{{0x62, 0x39, 0xC6, 0x37, 0x16, 0x39, 0xFB, 0x3D}};
-constexpr std::array<unsigned char, 4> kDownExp8{{0xB3, 0x9A, 0xAF, 0xFF}};
+constexpr std::array<unsigned char, 16> k_down_exp32{{0x4D, 0x42, 0x2C, 0x3F, 0x8C, 0xD1, 0xF8,
+                                                      0x3E, 0x66, 0xB0, 0x22, 0x3F, 0x1D, 0x66,
+                                                      0xBF, 0x3F}};
+constexpr std::array<unsigned char, 8> k_down_exp16{
+    {0x62, 0x39, 0xC6, 0x37, 0x16, 0x39, 0xFB, 0x3D}};
+constexpr std::array<unsigned char, 4> k_down_exp8{{0xB3, 0x9A, 0xAF, 0xFF}};
 
 // convert_kernel, 2 px, the six directed format pairs (output in DstF).
-constexpr std::array<unsigned char, 16> kConv_32_16{{0x66, 0x32, 0x66, 0x36, 0xCD, 0x38, 0x00, 0x3C,
-                                                     0xCD, 0x34, 0xCD, 0x30, 0x66, 0x2A, 0xCD,
-                                                     0x38}};
-constexpr std::array<unsigned char, 8> kConv_32_8{{0x7C, 0xAA, 0xCB, 0xFF, 0xBC, 0x89, 0x52, 0x99}};
-constexpr std::array<unsigned char, 32> kConv_16_32{
+constexpr std::array<unsigned char, 16> k_conv_32_16{{0x66, 0x32, 0x66, 0x36, 0xCD, 0x38, 0x00,
+                                                      0x3C, 0xCD, 0x34, 0xCD, 0x30, 0x66, 0x2A,
+                                                      0xCD, 0x38}};
+constexpr std::array<unsigned char, 8> k_conv_32_8{
+    {0x7C, 0xAA, 0xCB, 0xFF, 0xBC, 0x89, 0x52, 0x99}};
+constexpr std::array<unsigned char, 32> k_conv_16_32{
     {0x00, 0xC0, 0x4C, 0x3E, 0x00, 0xC0, 0xCC, 0x3E, 0x00, 0xA0, 0x19,
      0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0xA0, 0x99, 0x3E, 0x00, 0xA0,
      0x19, 0x3E, 0x00, 0xC0, 0x4C, 0x3D, 0x00, 0xA0, 0x19, 0x3F}};
-constexpr std::array<unsigned char, 8> kConv_16_8{{0x7C, 0xAA, 0xCB, 0xFF, 0xBC, 0x89, 0x51, 0x99}};
-constexpr std::array<unsigned char, 32> kConv_8_32{
+constexpr std::array<unsigned char, 8> k_conv_16_8{
+    {0x7C, 0xAA, 0xCB, 0xFF, 0xBC, 0x89, 0x51, 0x99}};
+constexpr std::array<unsigned char, 32> k_conv_8_32{
     {0xC2, 0x64, 0x4E, 0x3E, 0x0B, 0xD0, 0xCD, 0x3E, 0x39, 0xE2, 0x18,
      0x3F, 0x00, 0x00, 0x80, 0x3F, 0x9D, 0x7C, 0x9A, 0x3E, 0x83, 0xB2,
      0x19, 0x3E, 0xED, 0x5C, 0x4F, 0x3D, 0x9A, 0x99, 0x19, 0x3F}};
-constexpr std::array<unsigned char, 16> kConv_8_16{{0x73, 0x32, 0x6F, 0x36, 0xC7, 0x38, 0x00, 0x3C,
-                                                    0xD4, 0x34, 0xCE, 0x30, 0x7B, 0x2A, 0xCD,
-                                                    0x38}};
+constexpr std::array<unsigned char, 16> k_conv_8_16{{0x73, 0x32, 0x6F, 0x36, 0xC7, 0x38, 0x00, 0x3C,
+                                                     0xD4, 0x34, 0xCE, 0x30, 0x7B, 0x2A, 0xCD,
+                                                     0x38}};
 
 // Codec reference vectors (exact bit patterns / codes).
-constexpr std::array<std::uint32_t, 4> kSrgb8ToLinear{
+constexpr std::array<std::uint32_t, 4> k_srgb8_to_linear{
     {0x0, 0x399F22B4, 0x3E5D0A8B, 0x3F800000}}; // codes 0,1,128,255
-constexpr std::array<unsigned char, 4> kLinearToSrgb8{
+constexpr std::array<unsigned char, 4> k_linear_to_srgb8{
     {0x0, 0x8, 0xBC, 0xFF}}; // inputs 0.0,0.0025,0.5,1.0
-constexpr std::array<unsigned char, 3> kUnorm8Encode{{0x0, 0x80, 0xFF}}; // inputs 0.0,0.5,1.0
-constexpr std::array<std::uint32_t, 3> kUnorm8Decode{
+constexpr std::array<unsigned char, 3> k_unorm8_encode{{0x0, 0x80, 0xFF}}; // inputs 0.0,0.5,1.0
+constexpr std::array<std::uint32_t, 3> k_unorm8_decode{
     {0x0, 0x3F008081, 0x3F800000}}; // codes 0,128,255
 // halves 0x0000,0x8000(-0),0x3800(0.5),0x3C00(1.0),0x0001(subnormal),0x7C00(inf)
-constexpr std::array<std::uint32_t, 6> kF16ToFloat{
+constexpr std::array<std::uint32_t, 6> k_f16_to_float{
     {0x0, 0x80000000, 0x3F000000, 0x3F800000, 0x33800000, 0x7F800000}};
 // values +0,-0,0.5,1.0,2^-24 subnormal,inf
-constexpr std::array<std::uint16_t, 6> kF16FromFloat{{0x0, 0x8000, 0x3800, 0x3C00, 0x1, 0x7C00}};
-constexpr std::array<std::uint32_t, 4> kPremultiply{
+constexpr std::array<std::uint16_t, 6> k_f16_from_float{{0x0, 0x8000, 0x3800, 0x3C00, 0x1, 0x7C00}};
+constexpr std::array<std::uint32_t, 4> k_premultiply{
     {0x3EF5C290, 0x3E75C290, 0x3DF5C290, 0x3F19999A}}; // straight {0.8,0.4,0.2,0.6}
-constexpr std::array<std::uint32_t, 4> kUnpremultiply{
+constexpr std::array<std::uint32_t, 4> k_unpremultiply{
     {0x3F4CCCCC, 0x3ECCCCCC, 0x3E4CCCCC, 0x3F19999A}}; // premul  {0.48,0.24,0.12,0.6}
 
 // ===========================================================================
@@ -396,10 +400,10 @@ constexpr std::array<std::uint32_t, 4> kUnpremultiply{
 // ===========================================================================
 
 // Codec input landmarks (shared by the golden and the regen dump).
-constexpr arbc::WorkingPixel kPremulStraight{0.8F, 0.4F, 0.2F, 0.6F};
-constexpr arbc::WorkingPixel kUnpremulIn{0.48F, 0.24F, 0.12F, 0.6F};
-const float kInf = std::numeric_limits<float>::infinity();
-constexpr float kSubnormal = 5.9604644775390625e-08F; // 2^-24, smallest f16 subnormal
+constexpr arbc::WorkingPixel k_premul_straight{0.8F, 0.4F, 0.2F, 0.6F};
+constexpr arbc::WorkingPixel k_unpremul_in{0.48F, 0.24F, 0.12F, 0.6F};
+const float k_inf = std::numeric_limits<float>::infinity();
+constexpr float k_subnormal = 5.9604644775390625e-08F; // 2^-24, smallest f16 subnormal
 
 } // namespace
 
@@ -407,40 +411,43 @@ constexpr float kSubnormal = 5.9604644775390625e-08F; // 2^-24, smallest f16 sub
 
 // enforces: 07-color-and-pixel-formats#kernels-byte-exact-per-format
 TEST_CASE("fill_kernel is byte-exact per format") {
-  require_bytes(fill_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f), kFillExp32);
-  require_bytes(fill_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f), kFillExp16);
-  require_bytes(fill_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb), kFillExp8);
+  require_bytes(fill_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f),
+                k_fill_exp32);
+  require_bytes(fill_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f),
+                k_fill_exp16);
+  require_bytes(fill_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb), k_fill_exp8);
 }
 
 // enforces: 07-color-and-pixel-formats#premultiplied-source-over
 // enforces: 07-color-and-pixel-formats#blending-in-linear-working-space
 TEST_CASE("source_over_kernel integer-aligned blend is byte-exact per format") {
   require_bytes(src_over_integer_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f),
-                kSoIntExp32);
+                k_so_int_exp32);
   require_bytes(src_over_integer_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f),
-                kSoIntExp16);
-  require_bytes(src_over_integer_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb), kSoIntExp8);
+                k_so_int_exp16);
+  require_bytes(src_over_integer_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb),
+                k_so_int_exp8);
 }
 
 // enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
 TEST_CASE("source_over_kernel fractional Catmull-Rom tap is byte-exact per format") {
   require_bytes(
       src_over_fractional_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f),
-      kSoFracExp32);
+      k_so_frac_exp32);
   require_bytes(
       src_over_fractional_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f),
-      kSoFracExp16);
+      k_so_frac_exp16);
   require_bytes(src_over_fractional_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb),
-                kSoFracExp8);
+                k_so_frac_exp8);
 }
 
 // enforces: 07-color-and-pixel-formats#resampling-in-linear-premultiplied-space
 TEST_CASE("downsample_kernel 2:1 Lanczos-3 half-band is byte-exact per format") {
   require_bytes(downsample_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f),
-                kDownExp32);
+                k_down_exp32);
   require_bytes(downsample_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f),
-                kDownExp16);
-  require_bytes(downsample_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb), kDownExp8);
+                k_down_exp16);
+  require_bytes(downsample_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb), k_down_exp8);
 }
 
 // The goldens above moved because the FILTER changed, not because the frozen table
@@ -503,22 +510,22 @@ TEST_CASE("the Catmull-Rom composite tap clamps negative-lobe ringing to non-neg
 TEST_CASE("convert_kernel is byte-exact for every directed format pair") {
   require_bytes(convert_bytes<PixelFormat::Rgba32fLinearPremul, PixelFormat::Rgba16fLinearPremul>(
                     arbc::k_working_rgba32f, arbc::k_working_rgba16f),
-                kConv_32_16);
+                k_conv_32_16);
   require_bytes(convert_bytes<PixelFormat::Rgba32fLinearPremul, PixelFormat::Rgba8Srgb>(
                     arbc::k_working_rgba32f, arbc::k_fast_rgba8srgb),
-                kConv_32_8);
+                k_conv_32_8);
   require_bytes(convert_bytes<PixelFormat::Rgba16fLinearPremul, PixelFormat::Rgba32fLinearPremul>(
                     arbc::k_working_rgba16f, arbc::k_working_rgba32f),
-                kConv_16_32);
+                k_conv_16_32);
   require_bytes(convert_bytes<PixelFormat::Rgba16fLinearPremul, PixelFormat::Rgba8Srgb>(
                     arbc::k_working_rgba16f, arbc::k_fast_rgba8srgb),
-                kConv_16_8);
+                k_conv_16_8);
   require_bytes(convert_bytes<PixelFormat::Rgba8Srgb, PixelFormat::Rgba32fLinearPremul>(
                     arbc::k_fast_rgba8srgb, arbc::k_working_rgba32f),
-                kConv_8_32);
+                k_conv_8_32);
   require_bytes(convert_bytes<PixelFormat::Rgba8Srgb, PixelFormat::Rgba16fLinearPremul>(
                     arbc::k_fast_rgba8srgb, arbc::k_working_rgba16f),
-                kConv_8_16);
+                k_conv_8_16);
 }
 
 // The L2 seam over the same six directed pairs, asserted against the SAME frozen
@@ -531,23 +538,23 @@ TEST_CASE("Backend::convert is byte-exact for every directed cross-format pair")
   require_bytes(
       backend_convert_bytes<PixelFormat::Rgba32fLinearPremul, PixelFormat::Rgba16fLinearPremul>(
           arbc::k_working_rgba32f, arbc::k_working_rgba16f),
-      kConv_32_16);
+      k_conv_32_16);
   require_bytes(backend_convert_bytes<PixelFormat::Rgba32fLinearPremul, PixelFormat::Rgba8Srgb>(
                     arbc::k_working_rgba32f, arbc::k_fast_rgba8srgb),
-                kConv_32_8);
+                k_conv_32_8);
   require_bytes(
       backend_convert_bytes<PixelFormat::Rgba16fLinearPremul, PixelFormat::Rgba32fLinearPremul>(
           arbc::k_working_rgba16f, arbc::k_working_rgba32f),
-      kConv_16_32);
+      k_conv_16_32);
   require_bytes(backend_convert_bytes<PixelFormat::Rgba16fLinearPremul, PixelFormat::Rgba8Srgb>(
                     arbc::k_working_rgba16f, arbc::k_fast_rgba8srgb),
-                kConv_16_8);
+                k_conv_16_8);
   require_bytes(backend_convert_bytes<PixelFormat::Rgba8Srgb, PixelFormat::Rgba32fLinearPremul>(
                     arbc::k_fast_rgba8srgb, arbc::k_working_rgba32f),
-                kConv_8_32);
+                k_conv_8_32);
   require_bytes(backend_convert_bytes<PixelFormat::Rgba8Srgb, PixelFormat::Rgba16fLinearPremul>(
                     arbc::k_fast_rgba8srgb, arbc::k_working_rgba16f),
-                kConv_8_16);
+                k_conv_8_16);
 }
 
 // enforces: 09-surfaces-and-backends#convert-is-same-geometry-replace
@@ -590,8 +597,8 @@ TEST_CASE("Backend::convert with equal tags is an exact copy, never a re-encode"
 TEST_CASE("convert culls a dimension mismatch rather than resampling") {
   arbc::CpuBackend backend;
   arbc::CpuSurface src(2, 1, arbc::k_working_rgba32f);
-  wr<PixelFormat::Rgba32fLinearPremul>(src, 0, kConvA);
-  wr<PixelFormat::Rgba32fLinearPremul>(src, 1, kConvB);
+  wr<PixelFormat::Rgba32fLinearPremul>(src, 0, k_conv_a);
+  wr<PixelFormat::Rgba32fLinearPremul>(src, 1, k_conv_b);
 
   arbc::CpuSurface dst(1, 1, arbc::k_working_rgba16f);
   backend.clear(dst, 0.9F, 0.1F, 0.7F, 1.0F);
@@ -619,22 +626,22 @@ TEST_CASE("sRGB / unorm8 codecs pin their absolute curve values") {
   const std::array<std::uint8_t, 4> srgb_codes{0, 1, 128, 255};
   for (std::size_t i = 0; i < srgb_codes.size(); ++i) {
     CAPTURE(i);
-    REQUIRE(f32_bits(arbc::srgb8_to_linear(srgb_codes[i])) == kSrgb8ToLinear[i]);
+    REQUIRE(f32_bits(arbc::srgb8_to_linear(srgb_codes[i])) == k_srgb8_to_linear[i]);
   }
   const std::array<float, 4> srgb_lin{0.0F, 0.0025F, 0.5F, 1.0F};
   for (std::size_t i = 0; i < srgb_lin.size(); ++i) {
     CAPTURE(i);
-    REQUIRE(arbc::linear_to_srgb8(srgb_lin[i]) == kLinearToSrgb8[i]);
+    REQUIRE(arbc::linear_to_srgb8(srgb_lin[i]) == k_linear_to_srgb8[i]);
   }
   const std::array<float, 3> unorm_vals{0.0F, 0.5F, 1.0F};
   for (std::size_t i = 0; i < unorm_vals.size(); ++i) {
     CAPTURE(i);
-    REQUIRE(arbc::unorm8_encode(unorm_vals[i]) == kUnorm8Encode[i]);
+    REQUIRE(arbc::unorm8_encode(unorm_vals[i]) == k_unorm8_encode[i]);
   }
   const std::array<std::uint8_t, 3> unorm_codes{0, 128, 255};
   for (std::size_t i = 0; i < unorm_codes.size(); ++i) {
     CAPTURE(i);
-    REQUIRE(f32_bits(arbc::unorm8_decode(unorm_codes[i])) == kUnorm8Decode[i]);
+    REQUIRE(f32_bits(arbc::unorm8_decode(unorm_codes[i])) == k_unorm8_decode[i]);
   }
 }
 
@@ -643,23 +650,23 @@ TEST_CASE("software f16 codec pins its absolute bytes at the IEEE landmarks") {
   const std::array<std::uint16_t, 6> halves{0x0000U, 0x8000U, 0x3800U, 0x3C00U, 0x0001U, 0x7C00U};
   for (std::size_t i = 0; i < halves.size(); ++i) {
     CAPTURE(i);
-    REQUIRE(f32_bits(arbc::f16_to_float(halves[i])) == kF16ToFloat[i]);
+    REQUIRE(f32_bits(arbc::f16_to_float(halves[i])) == k_f16_to_float[i]);
   }
-  const std::array<float, 6> vals{0.0F, -0.0F, 0.5F, 1.0F, kSubnormal, kInf};
+  const std::array<float, 6> vals{0.0F, -0.0F, 0.5F, 1.0F, k_subnormal, k_inf};
   for (std::size_t i = 0; i < vals.size(); ++i) {
     CAPTURE(i);
-    REQUIRE(arbc::f16_from_float(vals[i]) == kF16FromFloat[i]);
+    REQUIRE(arbc::f16_from_float(vals[i]) == k_f16_from_float[i]);
   }
 }
 
 // enforces: 07-color-and-pixel-formats#premultiplied-source-over
 TEST_CASE("premultiply / unpremultiply pin their absolute bytes at alpha != {0,1}") {
-  const arbc::WorkingPixel pm = arbc::premultiply(kPremulStraight);
-  const arbc::WorkingPixel um = arbc::unpremultiply(kUnpremulIn);
+  const arbc::WorkingPixel pm = arbc::premultiply(k_premul_straight);
+  const arbc::WorkingPixel um = arbc::unpremultiply(k_unpremul_in);
   for (std::size_t k = 0; k < 4; ++k) {
     CAPTURE(k);
-    REQUIRE(f32_bits(pm[k]) == kPremultiply[k]);
-    REQUIRE(f32_bits(um[k]) == kUnpremultiply[k]);
+    REQUIRE(f32_bits(pm[k]) == k_premultiply[k]);
+    REQUIRE(f32_bits(um[k]) == k_unpremultiply[k]);
   }
 }
 
@@ -691,48 +698,48 @@ template <typename T> void dump_ints(const char* name, const char* type, std::sp
 } // namespace
 
 TEST_CASE("regenerate frozen kernel/codec tables", "[.regen]") {
-  dump_bytes("kFillExp32", 0,
+  dump_bytes("k_fill_exp32", 0,
              fill_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f));
-  dump_bytes("kFillExp16", 0,
+  dump_bytes("k_fill_exp16", 0,
              fill_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f));
-  dump_bytes("kFillExp8", 0, fill_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb));
+  dump_bytes("k_fill_exp8", 0, fill_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb));
 
-  dump_bytes("kSoIntExp32", 0,
+  dump_bytes("k_so_int_exp32", 0,
              src_over_integer_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f));
-  dump_bytes("kSoIntExp16", 0,
+  dump_bytes("k_so_int_exp16", 0,
              src_over_integer_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f));
-  dump_bytes("kSoIntExp8", 0,
+  dump_bytes("k_so_int_exp8", 0,
              src_over_integer_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb));
 
-  dump_bytes("kSoFracExp32", 0,
+  dump_bytes("k_so_frac_exp32", 0,
              src_over_fractional_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f));
-  dump_bytes("kSoFracExp16", 0,
+  dump_bytes("k_so_frac_exp16", 0,
              src_over_fractional_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f));
-  dump_bytes("kSoFracExp8", 0,
+  dump_bytes("k_so_frac_exp8", 0,
              src_over_fractional_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb));
 
-  dump_bytes("kDownExp32", 0,
+  dump_bytes("k_down_exp32", 0,
              downsample_bytes<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f));
-  dump_bytes("kDownExp16", 0,
+  dump_bytes("k_down_exp16", 0,
              downsample_bytes<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f));
-  dump_bytes("kDownExp8", 0, downsample_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb));
+  dump_bytes("k_down_exp8", 0, downsample_bytes<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb));
 
-  dump_bytes("kConv_32_16", 0,
+  dump_bytes("k_conv_32_16", 0,
              convert_bytes<PixelFormat::Rgba32fLinearPremul, PixelFormat::Rgba16fLinearPremul>(
                  arbc::k_working_rgba32f, arbc::k_working_rgba16f));
-  dump_bytes("kConv_32_8", 0,
+  dump_bytes("k_conv_32_8", 0,
              convert_bytes<PixelFormat::Rgba32fLinearPremul, PixelFormat::Rgba8Srgb>(
                  arbc::k_working_rgba32f, arbc::k_fast_rgba8srgb));
-  dump_bytes("kConv_16_32", 0,
+  dump_bytes("k_conv_16_32", 0,
              convert_bytes<PixelFormat::Rgba16fLinearPremul, PixelFormat::Rgba32fLinearPremul>(
                  arbc::k_working_rgba16f, arbc::k_working_rgba32f));
-  dump_bytes("kConv_16_8", 0,
+  dump_bytes("k_conv_16_8", 0,
              convert_bytes<PixelFormat::Rgba16fLinearPremul, PixelFormat::Rgba8Srgb>(
                  arbc::k_working_rgba16f, arbc::k_fast_rgba8srgb));
-  dump_bytes("kConv_8_32", 0,
+  dump_bytes("k_conv_8_32", 0,
              convert_bytes<PixelFormat::Rgba8Srgb, PixelFormat::Rgba32fLinearPremul>(
                  arbc::k_fast_rgba8srgb, arbc::k_working_rgba32f));
-  dump_bytes("kConv_8_16", 0,
+  dump_bytes("k_conv_8_16", 0,
              convert_bytes<PixelFormat::Rgba8Srgb, PixelFormat::Rgba16fLinearPremul>(
                  arbc::k_fast_rgba8srgb, arbc::k_working_rgba16f));
 
@@ -741,52 +748,52 @@ TEST_CASE("regenerate frozen kernel/codec tables", "[.regen]") {
   for (std::size_t i = 0; i < 4; ++i) {
     srgb_lin[i] = f32_bits(arbc::srgb8_to_linear(srgb_codes[i]));
   }
-  dump_ints<std::uint32_t>("kSrgb8ToLinear", "std::uint32_t", srgb_lin);
+  dump_ints<std::uint32_t>("k_srgb8_to_linear", "std::uint32_t", srgb_lin);
 
   const std::array<float, 4> lin_in{0.0F, 0.0025F, 0.5F, 1.0F};
   std::array<unsigned char, 4> lin_to_srgb{};
   for (std::size_t i = 0; i < 4; ++i) {
     lin_to_srgb[i] = arbc::linear_to_srgb8(lin_in[i]);
   }
-  dump_ints<unsigned char>("kLinearToSrgb8", "unsigned char", lin_to_srgb);
+  dump_ints<unsigned char>("k_linear_to_srgb8", "unsigned char", lin_to_srgb);
 
   const std::array<float, 3> unorm_vals{0.0F, 0.5F, 1.0F};
   std::array<unsigned char, 3> unorm_enc{};
   for (std::size_t i = 0; i < 3; ++i) {
     unorm_enc[i] = arbc::unorm8_encode(unorm_vals[i]);
   }
-  dump_ints<unsigned char>("kUnorm8Encode", "unsigned char", unorm_enc);
+  dump_ints<unsigned char>("k_unorm8_encode", "unsigned char", unorm_enc);
 
   const std::array<std::uint8_t, 3> unorm_codes{0, 128, 255};
   std::array<std::uint32_t, 3> unorm_dec{};
   for (std::size_t i = 0; i < 3; ++i) {
     unorm_dec[i] = f32_bits(arbc::unorm8_decode(unorm_codes[i]));
   }
-  dump_ints<std::uint32_t>("kUnorm8Decode", "std::uint32_t", unorm_dec);
+  dump_ints<std::uint32_t>("k_unorm8_decode", "std::uint32_t", unorm_dec);
 
   const std::array<std::uint16_t, 6> halves{0x0000U, 0x8000U, 0x3800U, 0x3C00U, 0x0001U, 0x7C00U};
   std::array<std::uint32_t, 6> f16_to{};
   for (std::size_t i = 0; i < 6; ++i) {
     f16_to[i] = f32_bits(arbc::f16_to_float(halves[i]));
   }
-  dump_ints<std::uint32_t>("kF16ToFloat", "std::uint32_t", f16_to);
+  dump_ints<std::uint32_t>("k_f16_to_float", "std::uint32_t", f16_to);
 
-  const std::array<float, 6> f16_vals{0.0F, -0.0F, 0.5F, 1.0F, kSubnormal, kInf};
+  const std::array<float, 6> f16_vals{0.0F, -0.0F, 0.5F, 1.0F, k_subnormal, k_inf};
   std::array<std::uint16_t, 6> f16_from{};
   for (std::size_t i = 0; i < 6; ++i) {
     f16_from[i] = arbc::f16_from_float(f16_vals[i]);
   }
-  dump_ints<std::uint16_t>("kF16FromFloat", "std::uint16_t", f16_from);
+  dump_ints<std::uint16_t>("k_f16_from_float", "std::uint16_t", f16_from);
 
-  const arbc::WorkingPixel pm = arbc::premultiply(kPremulStraight);
-  const arbc::WorkingPixel um = arbc::unpremultiply(kUnpremulIn);
+  const arbc::WorkingPixel pm = arbc::premultiply(k_premul_straight);
+  const arbc::WorkingPixel um = arbc::unpremultiply(k_unpremul_in);
   std::array<std::uint32_t, 4> pm_bits{};
   std::array<std::uint32_t, 4> um_bits{};
   for (std::size_t k = 0; k < 4; ++k) {
     pm_bits[k] = f32_bits(pm[k]);
     um_bits[k] = f32_bits(um[k]);
   }
-  dump_ints<std::uint32_t>("kPremultiply", "std::uint32_t", pm_bits);
-  dump_ints<std::uint32_t>("kUnpremultiply", "std::uint32_t", um_bits);
+  dump_ints<std::uint32_t>("k_premultiply", "std::uint32_t", pm_bits);
+  dump_ints<std::uint32_t>("k_unpremultiply", "std::uint32_t", um_bits);
 }
 // GCOV_EXCL_STOP

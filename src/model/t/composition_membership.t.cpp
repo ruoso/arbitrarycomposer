@@ -95,8 +95,8 @@ TEST_CASE("attach at index, detach, and reorder produce the intended bottom-to-t
 // enforces: 14-data-model-and-editing#membership-spills-past-inline-cap
 TEST_CASE("membership spills past the inline cap and round-trips losslessly across it") {
   arbc::Model model;
-  constexpr int kN = 21;
-  const std::vector<arbc::ObjectId> l = seed_layers(model, kN);
+  constexpr int k_n = 21;
+  const std::vector<arbc::ObjectId> l = seed_layers(model, k_n);
   arbc::ObjectId comp;
   {
     auto txn = model.transact();
@@ -155,7 +155,7 @@ TEST_CASE("membership spills past the inline cap and round-trips losslessly acro
   REQUIRE(head_after == head_before); // untouched head chunk shared, not deep-copied
   // Growth is O(touched chunks + path depth), not O(members): far below the 21
   // members it now holds.
-  REQUIRE(model.live_slots() - live_before < static_cast<std::size_t>(kN));
+  REQUIRE(model.live_slots() - live_before < static_cast<std::size_t>(k_n));
 
   // Migrate back down across the cap: detach the spilled tail to return to inline.
   {
@@ -369,8 +369,8 @@ TEST_CASE("concurrent pin/traverse of composition membership against a mutating 
   NoopDamageSink dsink;
   model.set_damage_sink(&dsink);
 
-  constexpr int kBase = 8; // exactly the inline cap
-  const std::vector<arbc::ObjectId> l = seed_layers(model, kBase + 1);
+  constexpr int k_base = 8; // exactly the inline cap
+  const std::vector<arbc::ObjectId> l = seed_layers(model, k_base + 1);
   std::vector<std::uint64_t> known;
   known.reserve(l.size());
   for (const arbc::ObjectId id : l) {
@@ -380,7 +380,7 @@ TEST_CASE("concurrent pin/traverse of composition membership against a mutating 
   {
     auto txn = model.transact();
     comp = txn.add_composition(100.0, 100.0);
-    for (int i = 0; i < kBase; ++i) {
+    for (int i = 0; i < k_base; ++i) {
       txn.attach_layer(comp, l[i]);
     }
     REQUIRE(txn.commit().has_value());
@@ -407,8 +407,8 @@ TEST_CASE("concurrent pin/traverse of composition membership against a mutating 
     while (!stop.load(std::memory_order_acquire)) {
       const arbc::DocStatePtr pinned = model.current();
       std::vector<arbc::ObjectId> seen = order_of(pinned, comp);
-      if (seen.size() < static_cast<std::size_t>(kBase) ||
-          seen.size() > static_cast<std::size_t>(kBase) + 1) {
+      if (seen.size() < static_cast<std::size_t>(k_base) ||
+          seen.size() > static_cast<std::size_t>(k_base) + 1) {
         bad.store(true, std::memory_order_relaxed);
       }
       for (const arbc::ObjectId id : seen) {
@@ -423,19 +423,19 @@ TEST_CASE("concurrent pin/traverse of composition membership against a mutating 
   for (int i = 0; i < writer_iterations; ++i) {
     {
       auto txn = model.transact("cross");
-      txn.attach_layer(comp, l[kBase]); // 9th member -> spill migration
+      txn.attach_layer(comp, l[k_base]); // 9th member -> spill migration
       REQUIRE(txn.commit().has_value());
     }
     model.drain();
     {
       auto txn = model.transact("reorder");
-      txn.reorder_layer(comp, 0, kBase); // move within the spilled order
+      txn.reorder_layer(comp, 0, k_base); // move within the spilled order
       REQUIRE(txn.commit().has_value());
     }
     model.drain();
     {
       auto txn = model.transact("collapse");
-      txn.detach_layer(comp, l[kBase]); // back to inline
+      txn.detach_layer(comp, l[k_base]); // back to inline
       REQUIRE(txn.commit().has_value());
     }
     model.drain();
@@ -444,7 +444,7 @@ TEST_CASE("concurrent pin/traverse of composition membership against a mutating 
   reader.join();
 
   REQUIRE_FALSE(bad.load());
-  REQUIRE(order_of(model.current(), comp).size() == static_cast<std::size_t>(kBase));
+  REQUIRE(order_of(model.current(), comp).size() == static_cast<std::size_t>(k_base));
 }
 
 } // namespace

@@ -1,6 +1,4 @@
 {
-  "total": 127,
-  "checks": {
-    "readability-identifier-naming": 127
-  }
+  "total": 0,
+  "checks": {}
 }

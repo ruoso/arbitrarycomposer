@@ -76,11 +76,11 @@ using arbc::WorkingPixel;
 // low-priority drainer for the whole run -- which is the point: the drain must be
 // happening concurrently with the writer's binds, or the race window never opens. It
 // never appears in an assertion (doc 16:54-62).
-constexpr std::chrono::microseconds kActiveTick{50};
+constexpr std::chrono::microseconds k_active_tick{50};
 
-constexpr int kWriterRounds = 200;  // contents added, painted, and removed
-constexpr int kPinnerCount = 2;     // render surrogates
-constexpr int kCheckpointEvery = 8; // writer-side checkpoint cadence
+constexpr int k_writer_rounds = 200;  // contents added, painted, and removed
+constexpr int k_pinner_count = 2;     // render surrogates
+constexpr int k_checkpoint_every = 8; // writer-side checkpoint cadence
 
 const WorkingPixel k_red{1.0F, 0.0F, 0.0F, 1.0F};
 
@@ -145,8 +145,8 @@ TEST_CASE("stress: a live workspace-backed Document drains in the background whi
   TempPath path;
 
   DocumentHousekeepingConfig config;
-  config.thread.tick_period = kActiveTick;                   // an active background drainer
-  config.checkpoint_every_n_transactions = kCheckpointEvery; // a WRITER-side trigger
+  config.thread.tick_period = k_active_tick;                   // an active background drainer
+  config.checkpoint_every_n_transactions = k_checkpoint_every; // a WRITER-side trigger
 
   auto made = Document::create(path.str(), config);
   REQUIRE(made.has_value());
@@ -169,8 +169,8 @@ TEST_CASE("stress: a live workspace-backed Document drains in the background whi
   // exactly as a render worker does. They touch neither the router nor the sinks -- and
   // if either were reachable from here, TSan would say so.
   std::vector<std::thread> pinners;
-  pinners.reserve(kPinnerCount);
-  for (int t = 0; t < kPinnerCount; ++t) {
+  pinners.reserve(k_pinner_count);
+  for (int t = 0; t < k_pinner_count; ++t) {
     pinners.emplace_back([&] {
       while (!go.load(std::memory_order_acquire)) {
       }
@@ -197,7 +197,7 @@ TEST_CASE("stress: a live workspace-backed Document drains in the background whi
   // background drainer will release), and lay down a layer. The background thread is
   // draining throughout -- and its releases route through the table this loop is
   // mutating.
-  for (int i = 0; i < kWriterRounds; ++i) {
+  for (int i = 0; i < k_writer_rounds; ++i) {
     const auto raster = std::make_shared<RasterContent>(white_4x4(), /*tile_edge=*/2);
     const ObjectId cid = doc->add_content(raster, /*kind=*/1);
 
@@ -239,7 +239,7 @@ TEST_CASE("stress: a live workspace-backed Document drains in the background whi
   // the every-Nth-transaction cadence plus the one explicit request. The background
   // thread's thousands of ticks advanced the DRAIN counter and nothing else -- there is
   // no tick-interval trigger on a `Document` to advance anything more.
-  const std::uint64_t cadence_commits = stats.transactions_seen / kCheckpointEvery;
+  const std::uint64_t cadence_commits = stats.transactions_seen / k_checkpoint_every;
   CHECK(stats.checkpoints_committed == cadence_commits + 1); // + the explicit request
   CHECK(ckpt.commit_count() == stats.checkpoints_committed);
   CHECK(stats.checkpoints_skipped_clean == 0); // the only skip-capable trigger is the
@@ -264,8 +264,8 @@ TEST_CASE("stress: every raster's versions are released exactly once when the Do
   TempPath path;
 
   DocumentHousekeepingConfig config;
-  config.thread.tick_period = kActiveTick;
-  config.checkpoint_every_n_transactions = kCheckpointEvery;
+  config.thread.tick_period = k_active_tick;
+  config.checkpoint_every_n_transactions = k_checkpoint_every;
 
   // The rasters OUTLIVE the document, so their stores' version refcounts survive to be
   // read after the final teardown drain has run.
@@ -290,7 +290,7 @@ TEST_CASE("stress: every raster's versions are released exactly once when the Do
       }
     });
 
-    for (int i = 0; i < kWriterRounds; ++i) {
+    for (int i = 0; i < k_writer_rounds; ++i) {
       const auto raster = std::make_shared<RasterContent>(white_4x4(), /*tile_edge=*/2);
       const ObjectId cid = doc->add_content(raster, /*kind=*/1);
       {

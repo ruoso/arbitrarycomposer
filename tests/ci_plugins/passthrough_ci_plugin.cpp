@@ -50,8 +50,8 @@ constexpr const char* k_kind_id = "org.arbc.ci.passthrough";
 constexpr arbc::Rgba k_input_color{0.50F, 0.25F, 0.125F, 1.0F};
 
 arbc_ci::InputOwner& module_inputs() {
-  static arbc_ci::InputOwner owner;
-  return owner;
+  static arbc_ci::InputOwner s_owner;
+  return s_owner;
 }
 
 // The module-local operator kind. One input, one opaque `note` param (round-trip

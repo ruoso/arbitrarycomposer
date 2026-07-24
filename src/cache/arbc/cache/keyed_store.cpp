@@ -9,12 +9,12 @@ namespace detail {
 // place; adding a class (doc 11's temporal ring, owned by `cache.prefetch`) is
 // a one-line change here plus the enum.
 const std::array<PriorityClass, k_priority_class_count>& cache_eviction_order() {
-  static const std::array<PriorityClass, k_priority_class_count> order = {
+  static const std::array<PriorityClass, k_priority_class_count> s_order = {
       PriorityClass::Speculative, PriorityClass::Recent,  PriorityClass::Temporal,
       PriorityClass::Adjacent,    PriorityClass::Visible,
   };
   static_assert(k_priority_class_count == 5, "eviction order must list every PriorityClass");
-  return order;
+  return s_order;
 }
 
 } // namespace detail

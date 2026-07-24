@@ -92,7 +92,7 @@ id_map(const std::unordered_map<const Content*, ObjectId>& ids) {
 }
 
 // The manually-attached audio reference (tests/crossfade_goldens.t.cpp
-// render_audio_golden, pinned byte-exact to kAudioMid) re-run through a live
+// render_audio_golden, pinned byte-exact to k_audio_mid) re-run through a live
 // PullServiceImpl: two distinct tones crossfaded at w == 0.5.
 std::vector<std::byte> render_audio_reference() {
   CpuBackend backend;

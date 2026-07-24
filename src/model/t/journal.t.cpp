@@ -220,8 +220,8 @@ TEST_CASE("a coalesced gesture collapses to one entry and undoes as one; each co
 
   const std::uint64_t rev0 = model.current()->revision();
   const arbc::CoalesceKey key = 0x1234;
-  constexpr int kN = 4;
-  for (int i = 0; i < kN; ++i) {
+  constexpr int k_n = 4;
+  for (int i = 0; i < k_n; ++i) {
     auto txn = model.transact("drag");
     txn.coalesce(key);
     txn.set_transform(layer, arbc::Affine::translation(static_cast<double>(i + 1), 0.0));
@@ -230,7 +230,7 @@ TEST_CASE("a coalesced gesture collapses to one entry and undoes as one; each co
   }
 
   // Each keyed commit published its own revision (display updated per-commit)...
-  REQUIRE(model.current()->revision() == rev0 + kN);
+  REQUIRE(model.current()->revision() == rev0 + k_n);
   // ...but the whole gesture is ONE undoable entry on top of the seed.
   REQUIRE(journal.depth() == 2);
   REQUIRE(journal.cursor() == 2);

@@ -155,11 +155,11 @@ void composite_in_box(Surface& dst, const Surface& src, const Affine& src_to_dst
   // body is monomorphized on the shared format. src is read through the same
   // compile-time format, so the source-over math runs in linear working floats.
   visit_surface(dst, [&](auto dst_typed) {
-    constexpr PixelFormat F = decltype(dst_typed)::format;
-    const std::span<const typename PixelTraits<F>::Storage> src_span = src.span<F>();
+    constexpr PixelFormat k_f = decltype(dst_typed)::format;
+    const std::span<const typename PixelTraits<k_f>::Storage> src_span = src.span<k_f>();
     assert(!dst_typed.data.empty() && !src_span.empty());
-    source_over_kernel<F>(dst_typed, dst.width(), src_span, src.width(), src.height(), *dst_to_src,
-                          static_cast<float>(opacity), box);
+    source_over_kernel<k_f>(dst_typed, dst.width(), src_span, src.width(), src.height(),
+                            *dst_to_src, static_cast<float>(opacity), box);
   });
 }
 
@@ -252,10 +252,11 @@ void CpuBackend::downsample(Surface& dst, const Surface& src) {
   // Lanczos-3 half-band decimation in decoded premultiplied linear working
   // floats (the shared arbc::media bank -- byte-identical to a kind's mip).
   visit_surface(dst, [&](auto dst_typed) {
-    constexpr PixelFormat F = decltype(dst_typed)::format;
-    const std::span<const typename PixelTraits<F>::Storage> src_span = src.span<F>();
+    constexpr PixelFormat k_f = decltype(dst_typed)::format;
+    const std::span<const typename PixelTraits<k_f>::Storage> src_span = src.span<k_f>();
     assert(!dst_typed.data.empty() && !src_span.empty());
-    downsample_kernel<F>(dst_typed, dst.width(), dst.height(), src_span, src.width(), src.height());
+    downsample_kernel<k_f>(dst_typed, dst.width(), dst.height(), src_span, src.width(),
+                           src.height());
   });
 }
 
@@ -277,15 +278,15 @@ void CpuBackend::convert(Surface& dst, const Surface& src) {
   const std::size_t pixel_count =
       static_cast<std::size_t>(dst.width()) * static_cast<std::size_t>(dst.height());
   visit_surface(dst, [&](auto dst_typed) {
-    // [[maybe_unused]]: DstF is odr-used only inside the nested visit_pixel_format
+    // [[maybe_unused]]: k_dst_f is odr-used only inside the nested visit_pixel_format
     // lambda, and only in compile-time contexts (the `if constexpr` condition and as
     // a convert_kernel template argument). MSVC then reports C4189 "initialized but
     // not referenced" for the outer lambda's scope (a false positive /WX would make
     // fatal); GCC/Clang do not warn and the attribute is inert there.
-    [[maybe_unused]] constexpr PixelFormat DstF = decltype(dst_typed)::format;
+    [[maybe_unused]] constexpr PixelFormat k_dst_f = decltype(dst_typed)::format;
     visit_pixel_format(src.format().pixel_format, [&](auto src_tag) {
-      constexpr PixelFormat SrcF = decltype(src_tag)::format;
-      if constexpr (SrcF == DstF) {
+      constexpr PixelFormat k_src_f = decltype(src_tag)::format;
+      if constexpr (k_src_f == k_dst_f) {
         // The diagonal of the pair dispatch is an EXACT byte copy, decisively not
         // a decode/encode round-trip. Routing it through convert_kernel<F, F>
         // would decode to the linear working space and re-encode -- byte-identical
@@ -304,9 +305,10 @@ void CpuBackend::convert(Surface& dst, const Surface& src) {
         assert(in.size() == out.size());
         std::memcpy(out.data(), in.data(), out.size());
       } else {
-        const std::span<const typename PixelTraits<SrcF>::Storage> src_span = src.span<SrcF>();
+        const std::span<const typename PixelTraits<k_src_f>::Storage> src_span =
+            src.span<k_src_f>();
         assert(!dst_typed.data.empty() && !src_span.empty());
-        convert_kernel<SrcF, DstF>(src_span, dst_typed, pixel_count);
+        convert_kernel<k_src_f, k_dst_f>(src_span, dst_typed, pixel_count);
       }
     });
   });

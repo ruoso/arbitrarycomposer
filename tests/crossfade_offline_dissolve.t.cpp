@@ -87,7 +87,7 @@ void require_equal(const std::vector<std::byte>& got, const std::vector<std::byt
 // The MANUALLY-attached visual reference: render the crossfade DIRECTLY through a
 // live PullServiceImpl with the two inputs mapped to DISTINCT ids (the correct
 // dissolve, tests/crossfade_goldens.t.cpp render_visual_golden_live, pinned byte-exact
-// to kVisualMid at the interior; the endpoint w==0/w==1 pass-through pins byte-exact to
+// to k_visual_mid at the interior; the endpoint w==0/w==1 pass-through pins byte-exact to
 // input 0 / input 1 there). The driver render must reproduce these bytes exactly once
 // the driver's own `id_of` gives the children distinct ids too -- so this reference is
 // the oracle for both the interior dissolve and the endpoint short-circuit.

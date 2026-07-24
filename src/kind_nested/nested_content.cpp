@@ -33,8 +33,8 @@ namespace {
 // `render`/`render_audio`, the heavy paths and the only ones that block on a pull, never
 // take it.
 std::recursive_mutex& memo_mutex() {
-  static std::recursive_mutex mutex;
-  return mutex;
+  static std::recursive_mutex s_mutex;
+  return s_mutex;
 }
 
 // Map a child-local audio extent back into parent time through a layer's time

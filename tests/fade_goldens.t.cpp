@@ -229,13 +229,13 @@ std::vector<std::byte> render_audio_golden_live(CompositorCounters& counters) {
 // FROZEN EXPECTED TABLES -- regenerate deliberately (see procedure at top).
 // ===========================================================================
 
-constexpr std::array<unsigned char, 64> kVisualHalf = {
+constexpr std::array<unsigned char, 64> k_visual_half = {
     0x00, 0x00, 0x80, 0x3E, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x80, 0x3D, 0x00, 0x00, 0x00, 0x3F,
     0x00, 0x00, 0x80, 0x3E, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x80, 0x3D, 0x00, 0x00, 0x00, 0x3F,
     0x00, 0x00, 0x80, 0x3E, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x80, 0x3D, 0x00, 0x00, 0x00, 0x3F,
     0x00, 0x00, 0x80, 0x3E, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x80, 0x3D, 0x00, 0x00, 0x00, 0x3F};
 
-constexpr std::array<unsigned char, 128> kAudioRamp = {
+constexpr std::array<unsigned char, 128> k_audio_ramp = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xE9, 0x6E, 0x13, 0x3B, 0xE9, 0x6E, 0x13, 0x3B,
     0x09, 0xAE, 0x10, 0x3C, 0x09, 0xAE, 0x10, 0x3C, 0xCE, 0xAA, 0x9F, 0x3C, 0xCE, 0xAA, 0x9F, 0x3C,
     0x48, 0x2C, 0x0B, 0x3D, 0x48, 0x2C, 0x0B, 0x3D, 0xD2, 0x27, 0x55, 0x3D, 0xD2, 0x27, 0x55, 0x3D,
@@ -253,19 +253,19 @@ constexpr std::array<unsigned char, 128> kAudioRamp = {
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 TEST_CASE("org.arbc.fade renders a byte-exact visual golden at a partial envelope") {
-  require_bytes(render_visual_golden(), kVisualHalf);
+  require_bytes(render_visual_golden(), k_visual_half);
 }
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 TEST_CASE("org.arbc.fade renders a byte-exact audio golden under a per-frame ramp") {
-  require_bytes(render_audio_golden(), kAudioRamp);
+  require_bytes(render_audio_golden(), k_audio_ramp);
 }
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 // enforces: 13-effects-as-operators#operator-pulls-only-via-pull-service
 TEST_CASE("org.arbc.fade re-runs the visual golden byte-exact through the live pull service") {
   CompositorCounters counters;
-  require_bytes(render_visual_golden_live(counters), kVisualHalf);
+  require_bytes(render_visual_golden_live(counters), k_visual_half);
   // Cold input: the fade provoked exactly one input render, and it flowed through
   // the service (delivery is a composite, not a second render).
   CHECK(counters.requests_issued() == 1);
@@ -275,7 +275,7 @@ TEST_CASE("org.arbc.fade re-runs the visual golden byte-exact through the live p
 // enforces: 13-effects-as-operators#operator-pulls-only-via-pull-service
 TEST_CASE("org.arbc.fade re-runs the audio golden byte-exact through the live pull service") {
   CompositorCounters counters;
-  require_bytes(render_audio_golden_live(counters), kAudioRamp);
+  require_bytes(render_audio_golden_live(counters), k_audio_ramp);
   CHECK(counters.audio_dispatches() == 1);
 }
 
@@ -361,7 +361,7 @@ void dump(const char* name, const std::vector<std::byte>& bytes) {
 } // namespace
 
 TEST_CASE("dump fade goldens", "[.regen]") {
-  dump("kVisualHalf", render_visual_golden());
-  dump("kAudioRamp", render_audio_golden());
+  dump("k_visual_half", render_visual_golden());
+  dump("k_audio_ramp", render_audio_golden());
 }
 // GCOV_EXCL_STOP

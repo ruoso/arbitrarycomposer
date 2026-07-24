@@ -315,15 +315,15 @@ TEST_CASE("behavioral counters: N placement mutations -> one flush, one record p
   model.set_damage_sink(&dsink);
 
   arbc::ObjectId comp;
-  arbc::ObjectId layerA;
-  arbc::ObjectId layerB;
+  arbc::ObjectId layer_a;
+  arbc::ObjectId layer_b;
   {
     auto txn = model.transact();
     comp = txn.add_composition(100.0, 100.0);
-    layerA = txn.add_layer(k_dummy_content, arbc::Affine::identity());
-    layerB = txn.add_layer(k_dummy_content, arbc::Affine::identity());
-    txn.attach_layer(comp, layerA);
-    txn.attach_layer(comp, layerB);
+    layer_a = txn.add_layer(k_dummy_content, arbc::Affine::identity());
+    layer_b = txn.add_layer(k_dummy_content, arbc::Affine::identity());
+    txn.attach_layer(comp, layer_a);
+    txn.attach_layer(comp, layer_b);
     REQUIRE(txn.commit().has_value());
   }
   const std::uint64_t rev = model.current()->revision();
@@ -332,8 +332,8 @@ TEST_CASE("behavioral counters: N placement mutations -> one flush, one record p
   // One commit touching three distinct objects (transform, opacity, order).
   {
     auto txn = model.transact("batch");
-    txn.set_transform(layerA, arbc::Affine::translation(1.0, 0.0));
-    txn.set_opacity(layerB, 0.25);
+    txn.set_transform(layer_a, arbc::Affine::translation(1.0, 0.0));
+    txn.set_opacity(layer_b, 0.25);
     txn.reorder_layer(comp, 0, 1);
     REQUIRE(txn.commit().has_value());
   }
@@ -350,7 +350,7 @@ TEST_CASE("behavioral counters: N placement mutations -> one flush, one record p
   const std::uint64_t rev_after = model.current()->revision();
   {
     auto txn = model.transact("discarded");
-    txn.set_opacity(layerA, 0.9);
+    txn.set_opacity(layer_a, 0.9);
     txn.abort();
   }
   REQUIRE(dsink.calls == flushes_after);             // zero flushes on abort

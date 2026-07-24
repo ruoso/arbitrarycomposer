@@ -58,13 +58,15 @@ void compress(State& s, const std::uint8_t* block) {
   std::uint32_t g = s.h[6];
   std::uint32_t h = s.h[7];
 
+  // `big_s0`/`big_s1` are FIPS 180-4's uppercase Sigma functions -- a different pair
+  // from the lowercase sigmas the message schedule above spells `s0`/`s1`.
   for (int t = 0; t < 64; ++t) {
-    const std::uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+    const std::uint32_t big_s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
     const std::uint32_t ch = (e & f) ^ (~e & g);
-    const std::uint32_t t1 = h + S1 + ch + k_round[t] + w[t];
-    const std::uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+    const std::uint32_t t1 = h + big_s1 + ch + k_round[t] + w[t];
+    const std::uint32_t big_s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
     const std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-    const std::uint32_t t2 = S0 + maj;
+    const std::uint32_t t2 = big_s0 + maj;
     h = g;
     g = f;
     f = e;

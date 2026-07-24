@@ -299,7 +299,7 @@ void require_bytes(const std::vector<std::byte>& got, std::span<const unsigned c
 // ===========================================================================
 // FROZEN EXPECTED GOLDENS -- regenerate deliberately (see procedure at top).
 // ===========================================================================
-constexpr std::array<unsigned char, 256> kDecimated{
+constexpr std::array<unsigned char, 256> k_decimated{
     {0xD4, 0xB9, 0x04, 0x3F, 0xD4, 0x9B, 0x1E, 0x3D, 0xD4, 0xB9, 0x84, 0x3E, 0x00, 0x00, 0x80,
      0x3F, 0x00, 0x00, 0x00, 0x3F, 0xA8, 0x37, 0x2D, 0x3E, 0x00, 0x00, 0x80, 0x3E, 0x00, 0x00,
      0x80, 0x3F, 0x00, 0x00, 0x00, 0x3F, 0xD4, 0x9B, 0x96, 0x3E, 0x00, 0x00, 0x80, 0x3E, 0x00,
@@ -318,7 +318,7 @@ constexpr std::array<unsigned char, 256> kDecimated{
      0x00, 0x00, 0x3F, 0x2C, 0x64, 0xF9, 0x3E, 0x00, 0x00, 0x80, 0x3E, 0x00, 0x00, 0x80, 0x3F,
      0xD4, 0xB9, 0x04, 0x3F, 0x43, 0x16, 0x1E, 0x3F, 0xD4, 0xB9, 0x84, 0x3E, 0x00, 0x00, 0x80,
      0x3F}};
-constexpr std::array<unsigned char, 256> kMagnified2x{
+constexpr std::array<unsigned char, 256> k_magnified2x{
     {0x00, 0x44, 0x53, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x44, 0xD3, 0x3E, 0x00, 0x00, 0x80,
      0x3F, 0x00, 0xEC, 0x27, 0x3F, 0x00, 0x00, 0x14, 0x3C, 0x00, 0xEC, 0xA7, 0x3E, 0x00, 0x00,
      0x80, 0x3F, 0x00, 0xC8, 0x94, 0x3E, 0x00, 0x00, 0x31, 0x3D, 0x00, 0xC8, 0x14, 0x3E, 0x00,
@@ -346,8 +346,8 @@ constexpr std::array<unsigned char, 256> kMagnified2x{
 // enforces: 07-color-and-pixel-formats#resampling-uses-higher-order-filters
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 TEST_CASE("the image filter bank pins byte-exact output for a fixed field") {
-  require_bytes(as_bytes(decimated_rung()), kDecimated);
-  require_bytes(as_bytes(magnified_2x()), kMagnified2x);
+  require_bytes(as_bytes(decimated_rung()), k_decimated);
+  require_bytes(as_bytes(magnified_2x()), k_magnified2x);
 }
 
 // --- regeneration dump (hidden; excluded from coverage) ---------------------
@@ -389,7 +389,7 @@ void dump_coefficients() {
 
 TEST_CASE("dump image resampler coefficients and goldens", "[.regen]") {
   dump_coefficients();
-  dump_bytes("kDecimated", as_bytes(decimated_rung()));
-  dump_bytes("kMagnified2x", as_bytes(magnified_2x()));
+  dump_bytes("k_decimated", as_bytes(decimated_rung()));
+  dump_bytes("k_magnified2x", as_bytes(magnified_2x()));
 }
 // GCOV_EXCL_STOP

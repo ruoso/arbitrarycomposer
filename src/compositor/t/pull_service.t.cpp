@@ -1235,7 +1235,7 @@ TEST_CASE("pull_service: a divergent identity cycle through pull selects the pla
   GraphContent op_a({}, std::size_t{0}); // identity -> input 0
   GraphContent op_b({}, std::size_t{0});
   op_a.set_inputs({&op_b});
-  op_b.set_inputs({&op_a}); // opA identity -> opB identity -> opA ...
+  op_b.set_inputs({&op_a}); // op_a identity -> op_b identity -> op_a ...
   const std::unordered_map<const Content*, arbc::ObjectId> ids{{&op_a, arbc::ObjectId{1}},
                                                                {&op_b, arbc::ObjectId{2}}};
   GraphDiagnostics diag;

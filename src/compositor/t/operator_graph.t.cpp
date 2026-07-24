@@ -349,20 +349,20 @@ TEST_CASE("operator_graph: the recursion budget bounds a divergent identity cycl
   }
 
   SECTION("a divergent identity cycle exceeds the budget: placeholder + one diagnostic") {
-    GraphContent opA({}, std::size_t{0});
-    GraphContent opB({}, std::size_t{0});
-    opA.set_inputs({&opB});
-    opB.set_inputs({&opA}); // opA identity -> opB identity -> opA ...
+    GraphContent op_a({}, std::size_t{0});
+    GraphContent op_b({}, std::size_t{0});
+    op_a.set_inputs({&op_b});
+    op_b.set_inputs({&op_a}); // op_a identity -> op_b identity -> op_a ...
     GraphDiagnostics diag;
     const IdentityResolution res =
-        arbc::resolve_identity(&opA, request, GraphBudget{/*max_depth=*/4}, &diag);
+        arbc::resolve_identity(&op_a, request, GraphBudget{/*max_depth=*/4}, &diag);
     CHECK(res.terminal == nullptr); // renders the placeholder
     CHECK(res.budget_exceeded);
     REQUIRE(diag.entries.size() == 1U); // exactly one diagnostic
     REQUIRE_FALSE(diag.entries[0].path.empty());
     // The diagnostic names the offending content at the end of the recorded path.
     CHECK(diag.entries[0].content == diag.entries[0].path.back());
-    CHECK((diag.entries[0].content == &opA || diag.entries[0].content == &opB));
+    CHECK((diag.entries[0].content == &op_a || diag.entries[0].content == &op_b));
   }
 
   SECTION("a broken identity index is not a budget failure -- render the node itself") {

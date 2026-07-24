@@ -53,18 +53,18 @@ using arbc::DocumentHousekeepingConfig;
 
 // An ACTIVE background drainer for the whole run, so the poll contends with the
 // housekeeping thread's mutex as well as with the writer. Never asserted on (doc 16:54-62).
-constexpr std::chrono::microseconds kActiveTick{50};
+constexpr std::chrono::microseconds k_active_tick{50};
 
 // Enough compositions that the model arena mints data chunks well past the first --
 // the writes to `d_bytes_reserved`/`d_slots_capacity` only happen on a chunk mint, so a
 // run that grows only one chunk would give the poller nothing to race with. The
 // `CHECK(final > initial)` below is what holds this number honest.
-constexpr int kWriterRounds = 3000;
+constexpr int k_writer_rounds = 3000;
 
 // Size classes the big-block writer walks up: 4 KiB, 8 KiB, ... Each is a store minted
 // mid-run through `Arena::store_for` -- i.e. one `std::map` insert under a live poller.
-constexpr int kSizeClasses = 8;
-constexpr int kBlobsPerClass = 4;
+constexpr int k_size_classes = 8;
+constexpr int k_blobs_per_class = 4;
 
 } // namespace
 
@@ -72,7 +72,7 @@ constexpr int kBlobsPerClass = 4;
 // the writer grows the model arena.
 TEST_CASE("stress: a host polls Document::memory_stats() while the writer grows the arena") {
   DocumentHousekeepingConfig config;
-  config.thread.tick_period = kActiveTick;
+  config.thread.tick_period = k_active_tick;
   Document doc(config);
 
   std::atomic<bool> stop{false};
@@ -111,7 +111,7 @@ TEST_CASE("stress: a host polls Document::memory_stats() while the writer grows 
 
   // The writer (this thread). Each composition commits its own version: a record that stays
   // live plus a HAMT path copy, so the arena's high-water climbs and mints chunk after chunk.
-  for (int i = 0; i < kWriterRounds; ++i) {
+  for (int i = 0; i < k_writer_rounds; ++i) {
     doc.add_composition(8.0, 8.0);
   }
 
@@ -172,9 +172,9 @@ TEST_CASE("stress: a host polls arena aggregates while the writer mints new size
   // The writer (this thread): walk UP the size classes, so each outer round mints a store the
   // poller's walk has never seen, and each blob within a class grows that store's chunks.
   std::vector<arbc::BlockRef> held;
-  for (int c = 0; c < kSizeClasses; ++c) {
+  for (int c = 0; c < k_size_classes; ++c) {
     const std::size_t size = BigBlockPool::k_page << c;
-    for (int b = 0; b < kBlobsPerClass; ++b) {
+    for (int b = 0; b < k_blobs_per_class; ++b) {
       auto blob = pool.allocate(size);
       REQUIRE(blob.has_value());
       held.push_back(std::move(*blob)); // keep them live: reserved bytes stay monotonic
@@ -189,7 +189,7 @@ TEST_CASE("stress: a host polls arena aggregates while the writer mints new size
 
   // Every size class minted exactly one store, and the poller's concurrent walks never
   // dropped or double-counted one.
-  CHECK(arena.store_count() == static_cast<std::size_t>(kSizeClasses));
+  CHECK(arena.store_count() == static_cast<std::size_t>(k_size_classes));
   CHECK(final_bytes == arena.total_bytes_reserved());
-  CHECK(arena.total_slots_live() == static_cast<std::size_t>(kSizeClasses * kBlobsPerClass));
+  CHECK(arena.total_slots_live() == static_cast<std::size_t>(k_size_classes * k_blobs_per_class));
 }

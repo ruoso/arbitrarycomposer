@@ -37,11 +37,11 @@ using arbc_test::FakeEditable;
 // deterministic test: the only background ticks are the ones `flush_housekeeping()`
 // pokes. It never appears in an assertion (doc 16:54-62) -- it just makes the
 // document's drains attributable to one site at a time.
-constexpr std::chrono::steady_clock::duration kNoTimeout = std::chrono::hours(1);
+constexpr std::chrono::steady_clock::duration k_no_timeout = std::chrono::hours(1);
 
 DocumentHousekeepingConfig poke_driven() {
   DocumentHousekeepingConfig config;
-  config.thread.tick_period = kNoTimeout;
+  config.thread.tick_period = k_no_timeout;
   return config;
 }
 

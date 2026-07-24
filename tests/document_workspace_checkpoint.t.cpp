@@ -46,7 +46,7 @@ using arbc::ObjectId;
 // It never appears in an assertion (doc 16:54-62). It also sharpens Decision 2 --
 // a `Document` exposes no tick-interval checkpoint trigger at all, so even a BUSY loop
 // could not be hiding a commit here; parking it merely removes the noise.
-constexpr std::chrono::steady_clock::duration kNoTimeout = std::chrono::hours(1);
+constexpr std::chrono::steady_clock::duration k_no_timeout = std::chrono::hours(1);
 
 #if ARBC_HAS_WORKSPACE_FILES
 
@@ -89,7 +89,7 @@ private:
 
 DocumentHousekeepingConfig cadence(std::uint64_t every_n) {
   DocumentHousekeepingConfig config;
-  config.thread.tick_period = kNoTimeout;
+  config.thread.tick_period = k_no_timeout;
   config.checkpoint_every_n_transactions = every_n;
   return config;
 }
