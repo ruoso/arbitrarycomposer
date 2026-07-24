@@ -252,7 +252,7 @@ void WorkerPool::submit_inline(RenderTask task) {
   std::optional<RenderTask> current;
   current.emplace(std::move(task));
   for (;;) {
-    run_task(std::move(*current), serialize);
+    run_task(*current, serialize);
     current.reset();
     if (!serialize) {
       break;
@@ -284,7 +284,7 @@ void WorkerPool::submit_work(WorkTask task) {
   }
 
   if (d_config.worker_count == 0) {
-    submit_work_inline(std::move(task));
+    submit_work_inline(task);
     return;
   }
 
@@ -295,9 +295,9 @@ void WorkerPool::submit_work(WorkTask task) {
   d_work_cv.notify_one();
 }
 
-void WorkerPool::submit_work_inline(WorkTask task) { run_work_task(std::move(task)); }
+void WorkerPool::submit_work_inline(const WorkTask& task) { run_work_task(task); }
 
-void WorkerPool::run_work_task(WorkTask task) {
+void WorkerPool::run_work_task(const WorkTask& task) {
   // Run the pure job, then settle the caller's completion. Unlike a render, there is no
   // off-thread settle path: a work job is synchronous by construction, so it always
   // settles here. Errors are values inside the job's own caller-owned buffer -- the job
@@ -320,7 +320,7 @@ void WorkerPool::run_work_task(WorkTask task) {
   d_drain_cv.notify_all();
 }
 
-void WorkerPool::run_task(RenderTask task, bool serialize) {
+void WorkerPool::run_task(const RenderTask& task, bool serialize) {
   Content* const content = task.content;
   if (serialize) {
     std::lock_guard<std::mutex> lock(d_mutex);
@@ -385,7 +385,7 @@ void WorkerPool::run() {
         WorkTask work = std::move(d_work_ready.front());
         d_work_ready.pop_front();
         lock.unlock();
-        run_work_task(std::move(work)); // no gate, no per-content bookkeeping
+        run_work_task(work); // no gate, no per-content bookkeeping
         continue;
       }
       task.emplace(std::move(d_ready.front()));
@@ -394,7 +394,7 @@ void WorkerPool::run() {
 
     Content* const content = task->content;
     const bool serialize = d_config.serialize_predicate(content);
-    run_task(std::move(*task), serialize);
+    run_task(*task, serialize);
     task.reset();
 
     if (serialize) {

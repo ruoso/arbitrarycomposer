@@ -382,8 +382,8 @@ ImageContent::ImageContent(std::string authored_uri, PyramidPtr pyramid)
   }
 }
 
-ImageContent::ImageContent(std::string authored_uri, std::string resolved_uri, PyramidPtr pyramid,
-                           PyramidCache& cache)
+ImageContent::ImageContent(std::string authored_uri, std::string resolved_uri,
+                           const PyramidPtr& pyramid, PyramidCache& cache)
     : d_uri(std::move(authored_uri)), d_resolved(std::move(resolved_uri)), d_cache(&cache),
       d_tiles(std::make_shared<TileStore>()) {
   // KEYED: `pyramid` is what the caller's `resolve()` just admitted, and the content reads its
@@ -598,8 +598,8 @@ expected<std::unique_ptr<Content>, std::string> make_image_content(ContentConfig
   const std::span<const unsigned char> encoded(reinterpret_cast<const unsigned char*>(bytes.data()),
                                                bytes.size());
   PyramidPtr pyramid = default_pyramid_cache().resolve(resolved, encoded);
-  return std::unique_ptr<Content>(std::make_unique<ImageContent>(
-      std::string(authored), std::string(resolved), std::move(pyramid)));
+  return std::unique_ptr<Content>(
+      std::make_unique<ImageContent>(std::string(authored), std::string(resolved), pyramid));
 }
 
 } // namespace arbc::image

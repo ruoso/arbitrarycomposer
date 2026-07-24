@@ -242,6 +242,7 @@ TEST_CASE("concurrent pin/unpin churns the count from many threads without corru
   std::atomic<bool> bad{false};
 
   std::vector<std::thread> threads;
+  threads.reserve(thread_count);
   for (int t = 0; t < thread_count; ++t) {
     threads.emplace_back([&] {
       while (!go.load(std::memory_order_acquire)) {

@@ -305,6 +305,7 @@ TEST_CASE("concurrent: writer allocates/fills while a thread releases and reader
   });
 
   std::vector<std::thread> readers;
+  readers.reserve(4);
   for (int t = 0; t < 4; ++t) {
     readers.emplace_back([&] {
       while (!go.load(std::memory_order_acquire)) {

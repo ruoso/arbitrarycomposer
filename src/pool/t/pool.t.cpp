@@ -208,6 +208,7 @@ TEST_CASE("readers resolve indices concurrently with writer growth") {
   std::atomic<bool> mismatch{false};
 
   std::vector<std::thread> readers;
+  readers.reserve(4);
   for (int r = 0; r < 4; ++r) {
     readers.emplace_back([&] {
       while (!go.load(std::memory_order_acquire)) {

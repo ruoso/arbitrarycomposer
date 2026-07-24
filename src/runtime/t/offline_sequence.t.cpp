@@ -336,7 +336,8 @@ TEST_CASE("an offline export coalesces sub-native-grid instants onto one cached 
 
   int frames = 0;
   renderer.render_sequence(
-      times, [&](Time, arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> f) {
+      times,
+      [&](Time, const arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError>& f) {
         REQUIRE(f.has_value());
         ++frames;
       });

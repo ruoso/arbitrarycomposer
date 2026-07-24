@@ -114,7 +114,7 @@ public:
 class ARBC_API SaveContext {
 public:
   SaveContext() = default;
-  explicit SaveContext(std::string base_uri);
+  explicit SaveContext(const std::string& base_uri);
 
   // The document's own URI: what every relative asset reference resolves against.
   const std::string& base_uri() const noexcept { return d_base_uri; }

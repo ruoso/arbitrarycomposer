@@ -264,8 +264,8 @@ struct Scene {
   Registry registry;
   std::shared_ptr<RasterContent> raster;
 
-  Scene(DecodedImage image, int edge) {
-    raster = std::make_shared<RasterContent>(std::move(image), edge);
+  Scene(const DecodedImage& image, int edge) {
+    raster = std::make_shared<RasterContent>(image, edge);
     const ObjectId comp = doc.add_composition(64.0, 64.0);
     const ObjectId content = doc.add_content(raster, bridge.intern(RasterContent::kind_id, "1"));
     doc.attach_layer(comp, doc.add_layer(content, Affine::identity(), 1.0));

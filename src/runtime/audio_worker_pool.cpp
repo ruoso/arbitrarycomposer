@@ -100,7 +100,7 @@ void AudioWorkerPool::submit_inline(AudioTask task) {
   std::optional<AudioTask> current;
   current.emplace(std::move(task));
   for (;;) {
-    run_task(std::move(*current), serialize);
+    run_task(*current, serialize);
     current.reset();
     if (!serialize) {
       break;
@@ -119,7 +119,7 @@ void AudioWorkerPool::submit_inline(AudioTask task) {
   }
 }
 
-void AudioWorkerPool::run_task(AudioTask task, bool serialize) {
+void AudioWorkerPool::run_task(const AudioTask& task, bool serialize) {
   Content* const content = task.content;
   if (serialize) {
     std::lock_guard<std::mutex> lock(d_mutex);
@@ -165,7 +165,7 @@ void AudioWorkerPool::run() {
 
     Content* const content = task->content;
     const bool serialize = d_config.serialize_predicate(content);
-    run_task(std::move(*task), serialize);
+    run_task(*task, serialize);
     task.reset();
 
     if (serialize) {

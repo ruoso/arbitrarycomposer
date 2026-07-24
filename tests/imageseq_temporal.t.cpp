@@ -191,6 +191,7 @@ TEST_CASE("imageseq: a negative-rate layer time_map plays the fixtures in revers
   Scene forward_scene;
   TileCache forward_cache(64u * 1024 * 1024);
   std::vector<std::vector<float>> forward;
+  forward.reserve(fix::k_frame_count);
   for (int f = 0; f < fix::k_frame_count; ++f) {
     forward.push_back(pixels_at(forward_scene, forward_cache, instant(f)));
   }

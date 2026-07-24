@@ -253,7 +253,8 @@ struct DispatchRecorder {
   double last_scale{0.0};
   arbc::Time last_time{};
 
-  void run(Content* content, const RenderRequest& request, std::shared_ptr<RenderCompletion> done) {
+  void run(Content* content, const RenderRequest& request,
+           const std::shared_ptr<RenderCompletion>& done) {
     ++calls;
     last_content = content;
     last_snapshot = request.snapshot;
@@ -274,9 +275,7 @@ struct DispatchRecorder {
 // Build a `RenderDispatch` over a shared recorder (so the test reads it back).
 arbc::RenderDispatch recording_dispatch(const std::shared_ptr<DispatchRecorder>& rec) {
   return [rec](Content* content, const RenderRequest& request,
-               std::shared_ptr<RenderCompletion> done) {
-    rec->run(content, request, std::move(done));
-  };
+               const std::shared_ptr<RenderCompletion>& done) { rec->run(content, request, done); };
 }
 
 // The shipped leaf-only dispatch rule (`02-architecture#worker-dispatch-is-leaf-only`,
@@ -287,7 +286,7 @@ arbc::RenderDispatch recording_dispatch(const std::shared_ptr<DispatchRecorder>&
 // operators included), and it is the only regime the refinement wave exists in.
 arbc::RenderDispatch leaf_only_dispatch(const std::shared_ptr<DispatchRecorder>& rec) {
   return [rec](Content* content, const RenderRequest& request,
-               std::shared_ptr<RenderCompletion> done) {
+               const std::shared_ptr<RenderCompletion>& done) {
     ++rec->calls;
     if (!content->inputs().empty()) {
       const std::optional<RenderResult> result = content->render(request, done);
@@ -1368,7 +1367,8 @@ struct AudioDispatchRecorder {
   arbc::Exactness last_exactness{arbc::Exactness::BestEffort};
   StateHandle last_snapshot{};
 
-  void run(Content* content, const AudioRequest& request, std::shared_ptr<AudioCompletion> done) {
+  void run(Content* content, const AudioRequest& request,
+           const std::shared_ptr<AudioCompletion>& done) {
     ++calls;
     last_input = content;
     last_rate = request.sample_rate;
@@ -1379,10 +1379,8 @@ struct AudioDispatchRecorder {
 };
 
 AudioDispatch recording_audio_dispatch(const std::shared_ptr<AudioDispatchRecorder>& rec) {
-  return
-      [rec](Content* content, const AudioRequest& request, std::shared_ptr<AudioCompletion> done) {
-        rec->run(content, request, std::move(done));
-      };
+  return [rec](Content* content, const AudioRequest& request,
+               const std::shared_ptr<AudioCompletion>& done) { rec->run(content, request, done); };
 }
 
 // A leaf whose audio facet either settles INLINE (returns an AudioResult) or defers
@@ -1625,7 +1623,7 @@ TEST_CASE("pull_audio bounds a self-dispatching audio cycle by the shared recurs
   // the same backstop `pull` uses one dimension over.
   PullServiceImpl* svc = nullptr;
   AudioDispatch recursive = [&svc](Content* content, const AudioRequest& request,
-                                   std::shared_ptr<AudioCompletion> done) {
+                                   const std::shared_ptr<AudioCompletion>& done) {
     auto inner = std::make_shared<AudioCompletion>();
     svc->pull_audio(content, request, inner);
     const auto settled = inner->take();

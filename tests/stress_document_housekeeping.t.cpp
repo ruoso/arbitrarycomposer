@@ -169,6 +169,7 @@ TEST_CASE("stress: a live workspace-backed Document drains in the background whi
   // exactly as a render worker does. They touch neither the router nor the sinks -- and
   // if either were reachable from here, TSan would say so.
   std::vector<std::thread> pinners;
+  pinners.reserve(kPinnerCount);
   for (int t = 0; t < kPinnerCount; ++t) {
     pinners.emplace_back([&] {
       while (!go.load(std::memory_order_acquire)) {

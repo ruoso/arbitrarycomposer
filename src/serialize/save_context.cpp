@@ -27,7 +27,7 @@ std::optional<PixelFormat> storage_format_from_token(std::string_view token) {
   return std::nullopt;
 }
 
-SaveContext::SaveContext(std::string base_uri) : d_base_uri(normalize_uri(base_uri)) {}
+SaveContext::SaveContext(const std::string& base_uri) : d_base_uri(normalize_uri(base_uri)) {}
 
 expected<bool, AssetSinkError> SaveContext::store_asset(std::string_view relative_uri,
                                                         std::span<const std::byte> bytes) {

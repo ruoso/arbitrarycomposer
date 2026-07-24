@@ -129,8 +129,8 @@ struct Scene {
   ObjectId comp;
   ObjectId content;
 
-  Scene(DecodedImage image, int edge) {
-    raster = std::make_shared<RasterContent>(std::move(image), edge);
+  Scene(const DecodedImage& image, int edge) {
+    raster = std::make_shared<RasterContent>(image, edge);
     comp = doc.add_composition(64.0, 64.0);
     content = doc.add_content(raster, bridge.intern(RasterContent::kind_id, "1"));
     doc.attach_layer(comp, doc.add_layer(content, Affine::identity(), 1.0));

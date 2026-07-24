@@ -116,7 +116,9 @@ std::string image_doc(const std::string& source) {
 // below loads with pixels and the only thing under test is what the cache does with them.
 class InlineAssetSource final : public AssetSource {
 public:
-  void put(std::string uri, std::string bytes) { d_files.insert_or_assign(uri, std::move(bytes)); }
+  void put(std::string uri, std::string bytes) {
+    d_files.insert_or_assign(std::move(uri), std::move(bytes));
+  }
 
   void request(std::string_view resolved_uri,
                std::function<void(std::string_view)> on_ready) override {

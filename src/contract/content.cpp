@@ -22,7 +22,14 @@ std::optional<std::size_t> Content::identity(const RenderRequest& /*request*/) c
 // `PullServiceImpl::pull_audio` (doc 17:56), the sole concrete `PullService`;
 // the L4 mix engine (`arbc::audio-engine`) drives that concrete service through
 // this seam rather than subclassing it (an L4-peer edge doc 17:41 forbids).
+//
+// `done` stays BY VALUE: the by-value handle is the seam's ownership transfer
+// (`content.hpp:745`) -- an implementation may keep the completion live past the
+// call and settle it off-thread, which is the whole async path. This body only
+// happens to settle inline; narrowing the interface to a reference for it would
+// re-shape the declaration every implementation inherits.
 void PullService::pull_audio(ContentRef /*input*/, const AudioRequest& /*request*/,
+                             // NOLINTNEXTLINE(performance-unnecessary-value-param): seam contract
                              std::shared_ptr<AudioCompletion> done) {
   done->fail(RenderError::ResourceUnavailable);
 }

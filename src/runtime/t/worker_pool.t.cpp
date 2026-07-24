@@ -504,6 +504,7 @@ TEST_CASE("stress: producers submit interleaved thread-safe and serialized work"
 
   std::atomic<bool> go{false};
   std::vector<std::thread> producers;
+  producers.reserve(producer_count);
   for (int p = 0; p < producer_count; ++p) {
     producers.emplace_back([&, p] {
       while (!go.load(std::memory_order_acquire)) {
@@ -662,6 +663,7 @@ TEST_CASE("drain_owner waits out one owner's started renders, purges its queued 
     const std::shared_ptr<arbc::RenderCompletion> a_queued = submit(&quick, &owner_a);
     constexpr int k_b_queued = 3;
     std::vector<std::shared_ptr<arbc::RenderCompletion>> b_dones;
+    b_dones.reserve(k_b_queued);
     for (int i = 0; i < k_b_queued; ++i) {
       b_dones.push_back(submit(&quick, &owner_b));
     }

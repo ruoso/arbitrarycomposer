@@ -293,11 +293,11 @@ private:
     std::deque<RenderTask> parked;
   };
 
-  void run();                                     // worker loop (started per thread)
-  void run_task(RenderTask task, bool serialize); // render + settle + counters
-  void submit_inline(RenderTask task);            // worker_count == 0 executor
-  void run_work_task(WorkTask task);              // generic-lane job + settle + counters
-  void submit_work_inline(WorkTask task);         // worker_count == 0 work executor
+  void run();                                            // worker loop (started per thread)
+  void run_task(const RenderTask& task, bool serialize); // render + settle + counters
+  void submit_inline(RenderTask task);                   // worker_count == 0 executor
+  void run_work_task(const WorkTask& task);              // generic-lane job + settle + counters
+  void submit_work_inline(const WorkTask& task);         // worker_count == 0 work executor
 
   // --- owner bookkeeping (all called with `d_mutex` held) ---
   // A task is OUTSTANDING from the moment `submit` admits it until its `run_task`

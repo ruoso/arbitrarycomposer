@@ -36,6 +36,7 @@ std::vector<arbc::ObjectId> order_of(const arbc::DocStatePtr& doc, arbc::ObjectI
 // Create `n` free-floating layers, returning their ids (committed + drained).
 std::vector<arbc::ObjectId> seed_layers(arbc::Model& model, int n) {
   std::vector<arbc::ObjectId> ids;
+  ids.reserve(static_cast<std::size_t>(n));
   auto txn = model.transact("seed");
   for (int i = 0; i < n; ++i) {
     ids.push_back(txn.add_layer(arbc::ObjectId{0xC0FFEE}, arbc::Affine::identity()));
@@ -371,6 +372,7 @@ TEST_CASE("concurrent pin/traverse of composition membership against a mutating 
   constexpr int kBase = 8; // exactly the inline cap
   const std::vector<arbc::ObjectId> l = seed_layers(model, kBase + 1);
   std::vector<std::uint64_t> known;
+  known.reserve(l.size());
   for (const arbc::ObjectId id : l) {
     known.push_back(id.value);
   }

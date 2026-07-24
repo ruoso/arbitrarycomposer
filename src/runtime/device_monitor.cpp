@@ -36,7 +36,7 @@ int rate_sign(Rational rate) {
 } // namespace
 
 DeviceMonitor::DeviceMonitor(Transport& transport, LookaheadPump& pump, DeviceSink& sink,
-                             DeviceMonitorConfig config)
+                             const DeviceMonitorConfig& config)
     : d_transport(transport), d_pump(pump), d_sink(sink), d_config(config),
       d_device(sink.format()) {
   d_working_channels = channel_count(config.working_layout);

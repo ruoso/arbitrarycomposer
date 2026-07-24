@@ -60,7 +60,8 @@ expected<Ref<HamtNode>, PoolError> make_leaf(StoreBundle& sb, std::uint64_t key,
 // branch edge. Untouched siblings are shared by `SlotRef` identity -- structural
 // sharing (14-data-model-and-editing#commit-shares-untouched-structure).
 expected<Ref<HamtNode>, PoolError> branch_with_child(StoreBundle& sb, const HamtNode* base,
-                                                     std::uint32_t digit, Ref<HamtNode> new_child) {
+                                                     std::uint32_t digit,
+                                                     const Ref<HamtNode>& new_child) {
   expected<Ref<HamtNode>, PoolError> node = sb.nodes->create();
   if (!node) {
     return node;
@@ -110,14 +111,13 @@ expected<Ref<HamtNode>, PoolError> split(StoreBundle& sb, SlotRef<HamtNode> exis
     if (!inner) {
       return inner;
     }
-    return branch_with_child(sb, nullptr, ed, std::move(*inner));
+    return branch_with_child(sb, nullptr, ed, *inner);
   }
   expected<Ref<HamtNode>, PoolError> new_leaf = make_leaf(sb, new_key, record);
   if (!new_leaf) {
     return new_leaf;
   }
-  expected<Ref<HamtNode>, PoolError> branch =
-      branch_with_child(sb, nullptr, nd, std::move(*new_leaf));
+  expected<Ref<HamtNode>, PoolError> branch = branch_with_child(sb, nullptr, nd, *new_leaf);
   if (!branch) {
     return branch;
   }
@@ -148,13 +148,13 @@ expected<Ref<HamtNode>, PoolError> insert_rec(StoreBundle& sb, SlotRef<HamtNode>
     if (!new_child) {
       return new_child;
     }
-    return branch_with_child(sb, node, digit, std::move(*new_child));
+    return branch_with_child(sb, node, digit, *new_child);
   }
   expected<Ref<HamtNode>, PoolError> new_leaf = make_leaf(sb, key, record);
   if (!new_leaf) {
     return new_leaf;
   }
-  return branch_with_child(sb, node, digit, std::move(*new_leaf));
+  return branch_with_child(sb, node, digit, *new_leaf);
 }
 
 // Collect every (key, record-edge) leaf binding reachable from `node_slot`.
@@ -237,7 +237,7 @@ expected<Ref<HamtNode>, PoolError> erase_rec(StoreBundle& sb, SlotRef<HamtNode> 
     return child;
   }
   if (*child) {
-    return branch_with_child(sb, node, digit, std::move(*child)); // path-copy replace
+    return branch_with_child(sb, node, digit, *child); // path-copy replace
   }
   // The child emptied: drop its edge, collapsing where possible.
   const std::uint32_t new_bitmap = node->bitmap & ~bit;

@@ -95,6 +95,7 @@ TEST_CASE("raster render workers read a frozen snapshot while the editor keeps p
   std::atomic<bool> bad{false};
 
   std::vector<std::thread> readers;
+  readers.reserve(k_readers);
   for (int r = 0; r < k_readers; ++r) {
     readers.emplace_back([&] {
       while (!go.load(std::memory_order_acquire)) {

@@ -74,6 +74,7 @@ TEST_CASE("imageseq renders serialize through the per-content queue race-free") 
   std::atomic<bool> go{false};
   std::vector<std::thread> producers;
   constexpr int k_producers = 4;
+  producers.reserve(k_producers);
   for (int p = 0; p < k_producers; ++p) {
     producers.emplace_back([&, p] {
       while (!go.load(std::memory_order_acquire)) {

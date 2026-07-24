@@ -136,7 +136,7 @@ TEST_CASE("pull_audio: concurrent same/distinct-key pulls settle race-free, each
   // so the block cache is touched only on the issuing thread here.
   std::vector<std::function<void()>> jobs;
   AudioDispatch dispatch = [&jobs](Content* content, const AudioRequest& request,
-                                   std::shared_ptr<AudioCompletion> done) {
+                                   const std::shared_ptr<AudioCompletion>& done) {
     jobs.emplace_back([content, request, done]() {
       AudioFacet* af = content != nullptr ? content->audio() : nullptr;
       if (af == nullptr) {

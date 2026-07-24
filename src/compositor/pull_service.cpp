@@ -23,20 +23,21 @@ RenderDispatch direct_dispatch() {
   // fill: drive `render` inline and fold a returned-inline result through `done`.
   // A `nullopt` return leaves `done` live for a later off-thread settle (the
   // async path), so the caller detects inline-vs-async via `done->settled()`.
-  return
-      [](Content* content, const RenderRequest& request, std::shared_ptr<RenderCompletion> done) {
-        const std::optional<RenderResult> inline_result = content->render(request, done);
-        if (inline_result.has_value()) {
-          done->complete(*inline_result);
-        }
-      };
+  return [](Content* content, const RenderRequest& request,
+            const std::shared_ptr<RenderCompletion>& done) {
+    const std::optional<RenderResult> inline_result = content->render(request, done);
+    if (inline_result.has_value()) {
+      done->complete(*inline_result);
+    }
+  };
 }
 
 AudioDispatch direct_audio_dispatch() {
   // The audio twin of `direct_dispatch`: drive `render_audio` inline and fold a
   // returned-inline result through `done`; a content with no audio facet fails
   // once, a `nullopt` return leaves `done` live for a later off-thread settle.
-  return [](Content* content, const AudioRequest& request, std::shared_ptr<AudioCompletion> done) {
+  return [](Content* content, const AudioRequest& request,
+            const std::shared_ptr<AudioCompletion>& done) {
     AudioFacet* facet = content != nullptr ? content->audio() : nullptr;
     if (facet == nullptr) {
       done->fail(RenderError::ResourceUnavailable);

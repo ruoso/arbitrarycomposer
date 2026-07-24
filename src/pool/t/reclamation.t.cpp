@@ -274,6 +274,7 @@ TEST_CASE("multiple producers enqueue concurrently while the writer drains") {
   std::atomic<int> done{0};
 
   std::vector<std::thread> producers;
+  producers.reserve(producer_count);
   for (int p = 0; p < producer_count; ++p) {
     producers.emplace_back([&, p] {
       while (!go.load(std::memory_order_acquire)) {

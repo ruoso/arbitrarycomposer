@@ -910,6 +910,7 @@ TEST_CASE("TSan litmus: readers resolve while the writer grows and commits two s
   constexpr std::uint32_t k_total = 600; // spans several chunks in both stores
 
   std::vector<std::thread> readers;
+  readers.reserve(3);
   for (int t = 0; t < 3; ++t) {
     readers.emplace_back([&] {
       while (!done.load(std::memory_order_acquire)) {

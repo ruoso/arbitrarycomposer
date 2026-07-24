@@ -87,7 +87,7 @@ TEST_CASE("a compositor rung is byte-identical to a kind_raster mip through the 
   image.format = arbc::k_working_rgba32f;
   image.bytes.resize(src_floats.size() * sizeof(float));
   std::memcpy(image.bytes.data(), src_floats.data(), image.bytes.size());
-  const arbc::RasterContent content(std::move(image), /*tile_edge=*/kW);
+  const arbc::RasterContent content(image, /*tile_edge=*/kW);
   const std::vector<float> mip = content.store().base_table()->level_pixels(1);
   REQUIRE(mip.size() == rung.size());
 

@@ -110,6 +110,7 @@ TEST_CASE("imageseq renders each native frame byte-identically forward and rever
 
   // (a) On-grid instants: each native frame is a distinct, byte-exact image.
   std::vector<std::vector<float>> forward;
+  forward.reserve(fix::k_frame_count);
   for (int f = 0; f < fix::k_frame_count; ++f) {
     forward.push_back(provided_pixels(render_at(*content, backend, instant(f))));
   }

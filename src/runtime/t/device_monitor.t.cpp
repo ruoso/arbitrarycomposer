@@ -1317,24 +1317,24 @@ TEST_CASE("the RT drain-realign counter fires once per rebase and never on a pla
   // A plain advance (no seek/rate) publishes no realign request: the counter stays put.
   const SeekDrainResult plain =
       drive_seek_realign(doc, scene.comp, scene.resolver(), scene.id_of(), rate, rate, block_frames,
-                         /*worker_count=*/0, horizon_blocks, /*pre=*/{50}, std::nullopt,
-                         std::nullopt, /*post=*/{32, 32});
+                         /*worker_count=*/0, horizon_blocks, /*pre_chunks=*/{50}, std::nullopt,
+                         std::nullopt, /*post_chunks=*/{32, 32});
   REQUIRE(plain.drain_realigns == 0);
 
   // One seek + flush_master + fills consumes exactly one realign; the resident reprimed
   // window means the realigned cursor finds prepared blocks (zero extra underruns).
   const SeekDrainResult sought = drive_seek_realign(
       doc, scene.comp, scene.resolver(), scene.id_of(), rate, rate, block_frames,
-      /*worker_count=*/0, horizon_blocks, /*pre=*/{50}, std::optional<Time>{Time{5 * span}},
-      std::nullopt, /*post=*/{32, 32, 32, 32});
+      /*worker_count=*/0, horizon_blocks, /*pre_chunks=*/{50}, std::optional<Time>{Time{5 * span}},
+      std::nullopt, /*post_chunks=*/{32, 32, 32, 32});
   REQUIRE(sought.drain_realigns == 1);
   REQUIRE(sought.underruns_delta == 0);
 
   // A set_rate rebase also realigns exactly once.
   const SeekDrainResult rated =
       drive_seek_realign(doc, scene.comp, scene.resolver(), scene.id_of(), rate, rate, block_frames,
-                         /*worker_count=*/0, horizon_blocks, /*pre=*/{50}, std::nullopt,
-                         std::optional<Rational>{Rational{2, 1}}, /*post=*/{32, 32, 32, 32});
+                         /*worker_count=*/0, horizon_blocks, /*pre_chunks=*/{50}, std::nullopt,
+                         std::optional<Rational>{Rational{2, 1}}, /*post_chunks=*/{32, 32, 32, 32});
   REQUIRE(rated.drain_realigns == 1);
 }
 
@@ -1593,7 +1593,7 @@ TEST_CASE("camera follow counters: still camera re-seeds once, a change once mor
     still.push_back({std::nullopt, block_chunks(1, k_block_frames)});
   }
   const SpatialDriveResult r_still =
-      drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, /*workers=*/0,
+      drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, /*worker_count=*/0,
                     /*horizon_blocks=*/8, seed_for(Affine::identity()), /*use_camera=*/true,
                     /*start_block=*/0, still);
   REQUIRE(r_still.listener_reseeds == 1); // only the initial seed
@@ -1602,7 +1602,7 @@ TEST_CASE("camera follow counters: still camera re-seeds once, a change once mor
 
   // One change mid-run: exactly one additional re-seed, still no drain realign.
   const SpatialDriveResult r_change =
-      drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, /*workers=*/0,
+      drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, /*worker_count=*/0,
                     /*horizon_blocks=*/8, seed_for(Affine::identity()), /*use_camera=*/true,
                     /*start_block=*/0,
                     {{cam, block_chunks(1, k_block_frames)},
@@ -1614,7 +1614,7 @@ TEST_CASE("camera follow counters: still camera re-seeds once, a change once mor
 
   // No camera_source: never re-seeds, even with a Spatial static seed.
   const SpatialDriveResult r_none =
-      drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, /*workers=*/0,
+      drive_spatial(doc, scene.comp, resolve, id_of, k_rate, k_block_frames, /*worker_count=*/0,
                     /*horizon_blocks=*/8, seed_for(cam), /*use_camera=*/false,
                     /*start_block=*/0, {{std::nullopt, block_chunks(3, k_block_frames)}});
   REQUIRE(r_none.listener_reseeds == 0);

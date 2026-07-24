@@ -1,12 +1,9 @@
 {
-  "total": 718,
+  "total": 669,
   "checks": {
-    "bugprone-argument-comment": 9,
     "bugprone-implicit-widening-of-multiplication-result": 290,
     "bugprone-unchecked-optional-access": 229,
     "concurrency-mt-unsafe": 23,
-    "performance-inefficient-vector-operation": 21,
-    "performance-unnecessary-value-param": 19,
     "readability-identifier-naming": 127
   }
 }

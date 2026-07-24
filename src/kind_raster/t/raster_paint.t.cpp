@@ -81,6 +81,7 @@ std::vector<std::vector<std::byte>> rebuilt_levels(const TileTable& painted, int
   RasterContent rebuilt(img, edge);
   const TileTablePtr t = rebuilt.store().base_table();
   std::vector<std::vector<std::byte>> out;
+  out.reserve(t->level_count());
   for (std::size_t l = 0; l < t->level_count(); ++l) {
     out.push_back(bytes_of_floats(t->level_pixels(l)));
   }

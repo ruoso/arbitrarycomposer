@@ -13,6 +13,7 @@ namespace {
 // content) on a fresh model; return the layer ids.
 std::vector<arbc::ObjectId> build_layers(arbc::Model& model, int count) {
   std::vector<arbc::ObjectId> ids;
+  ids.reserve(static_cast<std::size_t>(count));
   auto txn = model.transact();
   const arbc::ObjectId content{0xC0FFEE};
   for (int i = 0; i < count; ++i) {

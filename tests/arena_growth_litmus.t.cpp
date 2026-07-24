@@ -61,6 +61,7 @@ void run_arena_growth_litmus(std::uint32_t seed_begin, std::uint32_t seed_end, i
     std::atomic<bool> mismatch{false};
 
     std::vector<std::thread> readers;
+    readers.reserve(static_cast<std::size_t>(reader_count));
     for (int r = 0; r < reader_count; ++r) {
       readers.emplace_back([&, r] {
         arbc::test::Perturber perturb(arbc::test::derive_seed(seed, static_cast<std::uint32_t>(r)));

@@ -98,7 +98,7 @@ public:
   // Throws `std::logic_error` if `transport` already has a device monitor, and
   // `std::invalid_argument` on a degenerate config (zero working rate / block).
   DeviceMonitor(Transport& transport, LookaheadPump& pump, DeviceSink& sink,
-                DeviceMonitorConfig config);
+                const DeviceMonitorConfig& config);
   ~DeviceMonitor();
 
   DeviceMonitor(const DeviceMonitor&) = delete;

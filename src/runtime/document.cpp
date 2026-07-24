@@ -21,13 +21,14 @@ HousekeepingConfig Document::policy_for(const DocumentHousekeepingConfig& config
   return policy;
 }
 
-Document::Document(DocumentHousekeepingConfig housekeeping)
-    : Document(std::make_unique<Model>(), std::move(housekeeping)) {}
+Document::Document(const DocumentHousekeepingConfig& housekeeping)
+    : Document(std::make_unique<Model>(), housekeeping) {}
 
-Document::Document(std::unique_ptr<Model> model, DocumentHousekeepingConfig housekeeping)
-    // `housekeeping.thread` is COPIED, not moved: two arguments of one call have
-    // unspecified evaluation order, and a move would leave `policy_for` reading a
-    // moved-from struct if it happened to run second.
+Document::Document(std::unique_ptr<Model> model, const DocumentHousekeepingConfig& housekeeping)
+    // The config is BORROWED and `housekeeping.thread` COPIED out of it, never
+    // moved: two arguments of one call have unspecified evaluation order, and a
+    // move would leave `policy_for` reading a moved-from struct if it happened to
+    // run second.
     : d_model(std::move(model)),
       d_housekeeping(d_hk_target, policy_for(housekeeping, d_model->workspace_backed()),
                      housekeeping.thread) {
@@ -48,21 +49,21 @@ Document::Document(std::unique_ptr<Model> model, DocumentHousekeepingConfig hous
 Document::~Document() = default;
 
 expected<std::unique_ptr<Document>, WorkspaceFileError>
-Document::create(const std::string& path, DocumentHousekeepingConfig housekeeping) {
+Document::create(const std::string& path, const DocumentHousekeepingConfig& housekeeping) {
   expected<std::unique_ptr<Model>, WorkspaceFileError> model = Model::create(path);
   if (!model) {
     return unexpected(model.error());
   }
-  return std::unique_ptr<Document>(new Document(std::move(*model), std::move(housekeeping)));
+  return std::unique_ptr<Document>(new Document(std::move(*model), housekeeping));
 }
 
 expected<std::unique_ptr<Document>, WorkspaceFileError>
-Document::open(const std::string& path, DocumentHousekeepingConfig housekeeping) {
+Document::open(const std::string& path, const DocumentHousekeepingConfig& housekeeping) {
   expected<std::unique_ptr<Model>, WorkspaceFileError> model = Model::open(path);
   if (!model) {
     return unexpected(model.error());
   }
-  return std::unique_ptr<Document>(new Document(std::move(*model), std::move(housekeeping)));
+  return std::unique_ptr<Document>(new Document(std::move(*model), housekeeping));
 }
 
 void Document::CommitRelay::on_commit(JournalEntry entry) {

@@ -106,7 +106,7 @@ private:
   };
 
   void run();
-  void run_task(AudioTask task, bool serialize);
+  void run_task(const AudioTask& task, bool serialize);
   void submit_inline(AudioTask task);
 
   AudioWorkerPoolConfig d_config;

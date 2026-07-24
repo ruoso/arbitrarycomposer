@@ -293,7 +293,7 @@ private:
 // (or base) version's immutable tiles.
 class ARBC_API RasterContent final : public Content, public Editable {
 public:
-  explicit RasterContent(DecodedImage image, int tile_edge = k_default_tile_edge);
+  explicit RasterContent(const DecodedImage& image, int tile_edge = k_default_tile_edge);
 
   // The tilewise construction path (`TileFill`), and the one a load takes. A static
   // factory because it is FALLIBLE and a constructor is not: a fill that declines

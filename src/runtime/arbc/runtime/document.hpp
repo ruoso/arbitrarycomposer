@@ -67,7 +67,7 @@ public:
   // The ANONYMOUS document (doc 15:158-160): process memory, no file, no
   // checkpointer. Its housekeeper is drain-only -- every checkpoint trigger is inert
   // and `checkpoint()` answers `Unsupported`.
-  explicit Document(DocumentHousekeepingConfig housekeeping = {});
+  explicit Document(const DocumentHousekeepingConfig& housekeeping = {});
   ~Document();
 
   Document(const Document&) = delete;
@@ -80,9 +80,9 @@ public:
   // back as a `WorkspaceFileError` value, never a throw (doc 10). The returned document
   // is checkpointable: `checkpoint()` commits, and the transaction-count cadence fires.
   static expected<std::unique_ptr<Document>, WorkspaceFileError>
-  create(const std::string& path, DocumentHousekeepingConfig housekeeping = {});
+  create(const std::string& path, const DocumentHousekeepingConfig& housekeeping = {});
   static expected<std::unique_ptr<Document>, WorkspaceFileError>
-  open(const std::string& path, DocumentHousekeepingConfig housekeeping = {});
+  open(const std::string& path, const DocumentHousekeepingConfig& housekeeping = {});
 
   // Mint a versioned content object: commits a `Transaction::add_content(kind)`,
   // publishing a `ContentRecord` (opaque `kind` id + inert `StateHandle`) into a
@@ -407,7 +407,7 @@ private:
   // The two file-backed factories construct through this; a workspace `Document` is
   // not default-constructible, because a file open can fail and a constructor cannot
   // return a value (the shape `Model::create`/`open` already established).
-  Document(std::unique_ptr<Model> model, DocumentHousekeepingConfig housekeeping);
+  Document(std::unique_ptr<Model> model, const DocumentHousekeepingConfig& housekeeping);
 
   // Translate the document-level knobs into the policy object, enforcing the two
   // invariants a `Document` may never violate: the tick-interval checkpoint trigger

@@ -121,6 +121,7 @@ void run_reclamation_stress(std::uint32_t seed_begin, std::uint32_t seed_end, in
     std::atomic<int> done{0};
 
     std::vector<std::thread> producers;
+    producers.reserve(static_cast<std::size_t>(producer_count));
     for (int p = 0; p < producer_count; ++p) {
       producers.emplace_back([&, p] {
         arbc::test::Perturber perturb(arbc::test::derive_seed(seed, static_cast<std::uint32_t>(p)));

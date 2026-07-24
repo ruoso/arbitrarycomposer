@@ -136,6 +136,7 @@ void run_publish_pin_stress(std::uint32_t seed_begin, std::uint32_t seed_end, in
     std::atomic<bool> bad{false};
 
     std::vector<std::thread> pinners;
+    pinners.reserve(static_cast<std::size_t>(pinner_count));
     for (int t = 0; t < pinner_count; ++t) {
       pinners.emplace_back([&, t] {
         arbc::test::Perturber perturb(arbc::test::derive_seed(seed, static_cast<std::uint32_t>(t)));

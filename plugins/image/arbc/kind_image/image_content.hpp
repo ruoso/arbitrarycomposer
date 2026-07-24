@@ -363,7 +363,7 @@ public:
   // therefore keeps owning its pixels strongly and un-evictably (Constraint 6). Correct for a
   // test, and for any caller that will never defer.
   ImageContent(std::string authored_uri, PyramidPtr pyramid);
-  ImageContent(std::string authored_uri, std::string resolved_uri, PyramidPtr pyramid,
+  ImageContent(std::string authored_uri, std::string resolved_uri, const PyramidPtr& pyramid,
                PyramidCache& cache = default_pyramid_cache());
 
   // --- Content (description) ---
