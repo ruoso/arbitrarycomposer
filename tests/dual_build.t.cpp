@@ -71,11 +71,19 @@ constexpr std::int64_t k_fps = Time::flicks_per_second;
 constexpr const char* k_garbage_config = "!! not a config !!";
 
 // The platform ARBC_PLUGIN_PATH directory-list separator, mirroring the loader's.
+//
+// `ARBC_PLUGIN_PATH` IS the input the scan case tests, and the loader samples it at each
+// `scan_plugin_path()` call, so there is no explicit-path API to drive the case through
+// instead. Both mutations run on the Catch2 main thread of a suite that starts no thread
+// (the fixture's pull service is inline, by design), so nothing reads the environment
+// while it changes.
 #if defined(_WIN32)
 void set_plugin_path(const char* value) { ::_putenv_s("ARBC_PLUGIN_PATH", value); }
 void unset_plugin_path() { ::_putenv_s("ARBC_PLUGIN_PATH", ""); }
 #else
+// NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded suite; the env is the input under test
 void set_plugin_path(const char* value) { ::setenv("ARBC_PLUGIN_PATH", value, 1); }
+// NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded suite; the env is the input under test
 void unset_plugin_path() { ::unsetenv("ARBC_PLUGIN_PATH"); }
 #endif
 
@@ -84,6 +92,7 @@ void unset_plugin_path() { ::unsetenv("ARBC_PLUGIN_PATH"); }
 class ScopedPluginPath {
 public:
   ScopedPluginPath() {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded save/restore of the tested input
     const char* prior = std::getenv("ARBC_PLUGIN_PATH");
     if (prior != nullptr) {
       d_had = true;

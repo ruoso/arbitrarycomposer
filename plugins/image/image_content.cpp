@@ -311,6 +311,13 @@ std::size_t configured_pyramid_budget() {
 #pragma warning(push)
 #pragma warning(disable : 4996)
 #endif
+  // Sampled ONCE per process: the only caller is `default_pyramid_cache()`'s function-local
+  // static, so this runs inside that static's (thread-safe) initialization and never again. A host
+  // therefore sets the override before the first pyramid decode and nothing re-reads it -- later
+  // re-budgeting is `set_byte_budget`'s job (Decision 8). `getenv` is only MT-Safe against a
+  // stable environment (`getenv(3)`: "MT-Safe env"); a host still calling `setenv` while the first
+  // decode initializes the cache is racing itself, and there is no earlier point to read from.
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, during the cache's static init
   const char* env = std::getenv("ARBC_IMAGE_PYRAMID_BUDGET_BYTES");
 #ifdef _MSC_VER
 #pragma warning(pop)

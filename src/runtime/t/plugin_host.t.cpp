@@ -44,10 +44,18 @@ ContentFactory stub_factory() {
 // Portable ARBC_PLUGIN_PATH mutation: `_putenv_s` on Windows, `setenv`/`unsetenv` on
 // POSIX. Both loader suites share this shape so they compile and run on the msvc-debug
 // lane. `_putenv_s(name, "")` removes the variable, matching `unsetenv` semantics.
+//
+// The environment IS the input under test here -- `ARBC_PLUGIN_PATH` and the XDG/AppData
+// variables are the loader's only configuration channel, and the loader samples them at
+// each call, so there is no explicit-path API to drive these cases through instead. Every
+// mutation below runs on the Catch2 main thread in a suite that starts no thread at all
+// (no `Document`, no worker pool), so nothing can be reading the environment while it
+// changes; the same env-mutation helpers must not be copied into a suite that does.
 void set_plugin_path(const char* value) {
 #if defined(_WIN32)
   ::_putenv_s("ARBC_PLUGIN_PATH", value);
 #else
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded suite; the env is the input under test
   ::setenv("ARBC_PLUGIN_PATH", value, 1);
 #endif
 }
@@ -55,6 +63,7 @@ void unset_plugin_path() {
 #if defined(_WIN32)
   ::_putenv_s("ARBC_PLUGIN_PATH", "");
 #else
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded suite; the env is the input under test
   ::unsetenv("ARBC_PLUGIN_PATH");
 #endif
 }
@@ -64,6 +73,7 @@ void unset_plugin_path() {
 class ScopedPluginPath {
 public:
   ScopedPluginPath() {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded save/restore of the tested input
     const char* prior = std::getenv("ARBC_PLUGIN_PATH");
     if (prior != nullptr) {
       d_had = true;
@@ -86,11 +96,12 @@ private:
 // Portable mutation of an arbitrary environment variable -- the ARBC_PLUGIN_PATH
 // helpers above generalized to the default-directory env inputs (XDG_DATA_HOME,
 // XDG_DATA_DIRS, HOME, LOCALAPPDATA). `_putenv_s(name, "")` removes the variable,
-// matching `unsetenv` semantics.
+// matching `unsetenv` semantics. Single-threaded-suite rationale as above.
 void set_env_var(const char* name, const char* value) {
 #if defined(_WIN32)
   ::_putenv_s(name, value);
 #else
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded suite; the env is the input under test
   ::setenv(name, value, 1);
 #endif
 }
@@ -98,6 +109,7 @@ void unset_env_var(const char* name) {
 #if defined(_WIN32)
   ::_putenv_s(name, "");
 #else
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded suite; the env is the input under test
   ::unsetenv(name);
 #endif
 }
@@ -107,6 +119,7 @@ void unset_env_var(const char* name) {
 class ScopedEnvVar {
 public:
   explicit ScopedEnvVar(const char* name) : d_name(name) {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): single-threaded save/restore of the tested input
     const char* prior = std::getenv(name);
     if (prior != nullptr) {
       d_had = true;

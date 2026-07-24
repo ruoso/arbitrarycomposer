@@ -1,7 +1,6 @@
 {
-  "total": 150,
+  "total": 127,
   "checks": {
-    "concurrency-mt-unsafe": 23,
     "readability-identifier-naming": 127
   }
 }

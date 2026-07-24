@@ -105,11 +105,24 @@ bool is_dir_separator(char c) {
 // Read-only environment lookup (Decision 5: no shell APIs, no platform-paths
 // library). MSVC deprecates getenv in favour of _dupenv_s; suppress the warning
 // since getenv is both correct and portable here.
+//
+// Every env read the loader does funnels through here, and each one is sampled at
+// the CALL that needs it, not cached at first use: the header's contract for
+// `scan_plugin_path`/`scan_standard_paths`/`default_plugin_directories` is that the
+// walk order is a pure function of the environment as it stands when the host asks,
+// which is what lets one process scan twice under two different `ARBC_PLUGIN_PATH`
+// values. `getenv` is only MT-Safe against a stable environment (`getenv(3)`:
+// "MT-Safe env"), so a host that mutates the environment concurrently with a scan
+// races with the loader's read -- an embedder-side ordering obligation, not
+// something the loader can cache its way out of without changing WHEN configuration
+// is sampled. Each returned pointer is consumed (copied into an owned string)
+// before the next loader step.
 const char* read_env(const char* name) {
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4996)
 #endif
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): the environment is sampled per call by contract
   return std::getenv(name);
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -242,17 +255,25 @@ OpenResult open_and_resolve(const std::string& path) {
   result.fn = reinterpret_cast<RegisterFn>(symbol);
   return result;
 #else
+  // `dlerror` is the dl API's ONLY error channel -- there is no `dlerror_r` to move to, and the
+  // clear-then-call-then-read sequence below IS its documented use. glibc keeps the message per
+  // thread (`dlerror(3)`: MT-Safe), and each message is copied into `result.diagnostic` before
+  // any further dl call, so no returned buffer outlives the read that consumes it.
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): dl's only error channel; no _r variant exists
   ::dlerror(); // clear any stale error state
   void* handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (handle == nullptr) {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): dl's only error channel; copied before the next call
     const char* err = ::dlerror();
     result.diagnostic = err != nullptr ? err : "";
     return result; // opened == false, CannotOpen
   }
   result.opened = true;
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): dl's only error channel; no _r variant exists
   ::dlerror();
   void* symbol = ::dlsym(handle, k_entry_point);
   if (symbol == nullptr) {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): dl's only error channel; copied before the next call
     const char* err = ::dlerror();
     result.diagnostic = err != nullptr ? err : "";
     ::dlclose(handle); // nothing registered from this image; unmap it now
@@ -392,6 +413,12 @@ void PluginHost::scan_directory(const std::string& directory, PluginScanReport& 
   if (handle == nullptr) {
     return;
   }
+  // `readdir`'s race is on the directory STREAM (`readdir(3)`: MT-Unsafe race:dirstream), and
+  // this stream is opened, walked and closed inside this call -- no other thread can name it, so
+  // concurrent scans walk disjoint streams, which glibc documents as safe. The thread-safe-looking
+  // alternative, `readdir_r`, is deprecated (and unsound for long names), so there is nothing to
+  // move to; `entry->d_name` is copied into `candidates` before the next iteration advances it.
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): the DIR stream is private to this call
   for (const dirent* entry = ::readdir(handle); entry != nullptr; entry = ::readdir(handle)) {
     const std::string_view name(entry->d_name);
     if (has_suffix(name, k_shared_lib_suffix)) {
