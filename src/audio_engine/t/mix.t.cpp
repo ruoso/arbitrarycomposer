@@ -153,7 +153,7 @@ public:
 // deferral) so the mixer shows the silent placeholder.
 class CountingAudioPull final : public PullService {
 public:
-  enum class Mode { Inline, Miss };
+  enum class Mode : std::uint8_t { Inline, Miss };
   explicit CountingAudioPull(Mode mode = Mode::Inline) : d_mode(mode) {}
   void pull(ContentRef, const RenderRequest&, std::shared_ptr<RenderCompletion> done) override {
     done->fail(RenderError::ContentFailed);

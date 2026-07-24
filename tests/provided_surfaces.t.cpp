@@ -37,8 +37,7 @@ class ProvidingContent final : public arbc::Content {
 public:
   ProvidingContent(arbc::Backend& fb_backend, arbc::Rgba color, std::optional<arbc::Rect> bounds,
                    bool transient)
-      : d_fb_backend(fb_backend), d_color(color), d_bounds(std::move(bounds)),
-        d_transient(transient) {}
+      : d_fb_backend(fb_backend), d_color(color), d_bounds(bounds), d_transient(transient) {}
 
   std::optional<arbc::Rect> bounds() const override { return d_bounds; }
   // Static so a warm second frame is a deterministic cache hit (the independence

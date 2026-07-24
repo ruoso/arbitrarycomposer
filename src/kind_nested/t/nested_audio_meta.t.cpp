@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -126,7 +127,7 @@ private:
 // silent placeholder for the layer.
 class RoutingAudioPull final : public PullService {
 public:
-  enum class Mode { Inline, Miss };
+  enum class Mode : std::uint8_t { Inline, Miss };
   explicit RoutingAudioPull(Mode mode = Mode::Inline) : d_mode(mode) {}
   void pull(ContentRef, const RenderRequest&, std::shared_ptr<RenderCompletion> done) override {
     done->fail(RenderError::ContentFailed);

@@ -83,7 +83,7 @@ TimeRange block_window() {
 // bits.
 class ScriptedPull final : public PullService {
 public:
-  enum class Mode { Inline, Defer, Fail };
+  enum class Mode : std::uint8_t { Inline, Defer, Fail };
 
   void script(const Content* input, Mode mode) { d_modes[input] = mode; }
   void degrade(const Content* input, AudioResult result) { d_degraded[input] = result; }

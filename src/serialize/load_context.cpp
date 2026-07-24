@@ -86,14 +86,14 @@ std::string resolve_uri(std::string_view base_uri, std::string_view reference) {
 }
 
 ResolvedRef LoadContext::resolve(std::string_view reference) {
-  const std::string uri = arbc::resolve_uri(d_base_uri, reference);
+  std::string uri = arbc::resolve_uri(d_base_uri, reference); // non-const: the map key consumes it
   const auto it = d_by_uri.find(uri);
   if (it != d_by_uri.end()) {
     return ResolvedRef{it->second}; // dedup: same resolved identity
   }
   const std::size_t index = d_resolved.size();
   d_resolved.push_back(uri);
-  d_by_uri.emplace(std::move(uri), index);
+  d_by_uri.emplace(std::move(uri), index); // last use: the key takes the string, not a copy
   return ResolvedRef{index};
 }
 

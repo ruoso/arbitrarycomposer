@@ -56,7 +56,7 @@ void LookaheadPump::notify_transport_change() noexcept {
 void LookaheadPump::set_spatial(std::optional<Spatialization> spatial) {
   {
     std::lock_guard<std::mutex> lock(d_mutex);
-    d_pending_spatial = std::move(spatial);
+    d_pending_spatial = spatial;
     d_spatial_pending = true;
     d_poke = true;
   }
@@ -184,7 +184,7 @@ void LookaheadPump::tick_once() {
     // before it calls `notify_transport_change`, so `transport_changed` is set on the
     // same tick and the reprime below re-warms under the new listener.
     if (d_spatial_pending) {
-      d_ring.set_spatial(std::move(d_pending_spatial));
+      d_ring.set_spatial(d_pending_spatial);
       d_pending_spatial.reset();
       d_spatial_pending = false;
     }

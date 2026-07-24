@@ -83,7 +83,7 @@ void LookaheadRing::set_spatial(std::optional<Spatialization> spatial) {
   // Stage the new listener seed the next `prime`/`reprime` reads. Called on the pump
   // thread under the pump's `d_mutex`, serialized with every ring read, so no worker
   // observes a torn seed (audio.spatial_camera_follow, Decision D5).
-  d_config.spatial = std::move(spatial);
+  d_config.spatial = spatial;
   // A listener change invalidates the whole prepared ring (every slot carries the old
   // listener's content), unlike a seek's window-shift retention: retire all live slots
   // so the following reprime re-mixes them under the new listener. The generation bump

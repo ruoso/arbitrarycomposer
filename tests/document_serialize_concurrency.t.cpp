@@ -74,7 +74,7 @@ TEST_CASE("a captured snapshot serializes off-thread while the writer thread mut
   const arbc::expected<std::string, arbc::SerializeError> reference =
       arbc::serialize_snapshot(snap, codecs);
   REQUIRE(reference.has_value());
-  const std::string expected_bytes = *reference;
+  const std::string& expected_bytes = *reference;
 
   constexpr int k_iterations = 2000;
   std::atomic<bool> serialize_error{false};
@@ -160,7 +160,7 @@ TEST_CASE("a snapshot's COPIED unknown-field stash emits off-thread against ongo
   const arbc::expected<std::string, arbc::SerializeError> reference =
       arbc::serialize_snapshot(snap, codecs);
   REQUIRE(reference.has_value());
-  const std::string expected_bytes = *reference;
+  const std::string& expected_bytes = *reference;
   // The reference genuinely carries every tier's unknowns -- otherwise the byte-equality
   // below would be vacuous.
   REQUIRE(expected_bytes.find("\"generator\": \"acme/2.1\"") != std::string::npos);
@@ -268,7 +268,7 @@ TEST_CASE("a MULTI-COMPOSITION snapshot emits off-thread against ongoing edits")
   const arbc::expected<std::string, arbc::SerializeError> reference =
       arbc::serialize_snapshot(snap, codecs);
   REQUIRE(reference.has_value());
-  const std::string expected_bytes = *reference;
+  const std::string& expected_bytes = *reference;
   CHECK(expected_bytes.find("\"compositions\"") != std::string::npos);
   CHECK(expected_bytes.find("\"composition\": \"1\"") != std::string::npos);
 
@@ -350,7 +350,7 @@ TEST_CASE("saving a nesting document races a live binding scope on another threa
   const arbc::expected<std::string, arbc::SerializeError> reference =
       arbc::save_document(doc, bridge);
   REQUIRE(reference.has_value());
-  const std::string expected_bytes = *reference;
+  const std::string& expected_bytes = *reference;
   REQUIRE(expected_bytes.find("\"composition\": \"1\"") != std::string::npos);
 
   // The document is FROZEN for the length of the lane -- no `add_content`/`attach` churn. The
@@ -478,7 +478,7 @@ TEST_CASE("saving an EXTERNALLY-loaded nesting document races a live binding sco
   const arbc::expected<std::string, arbc::SerializeError> reference =
       arbc::save_document(doc, bridge);
   REQUIRE(reference.has_value());
-  const std::string expected_bytes = *reference;
+  const std::string& expected_bytes = *reference;
   REQUIRE(expected_bytes.find(R"("ref": "child.arbc")") != std::string::npos);
   REQUIRE(expected_bytes.find("\"compositions\"") == std::string::npos);
 
@@ -624,7 +624,7 @@ TEST_CASE("N deferring sources fire on_ready from N threads while the writer set
   const arbc::expected<std::string, arbc::SerializeError> reference =
       arbc::save_document(doc, bridge);
   REQUIRE(reference.has_value());
-  const std::string expected_bytes = *reference;
+  const std::string& expected_bytes = *reference;
 
   // Fire the N callbacks from N threads, straight into the completion queue, while the writer
   // thread settles / saves in a loop. This is the race the queue exists to make safe.
@@ -846,7 +846,7 @@ TEST_CASE("an autosave races a live INTERACTIVE frame loop's binding, benignly")
   const arbc::expected<std::string, arbc::SerializeError> reference =
       arbc::save_document(doc, bridge);
   REQUIRE(reference.has_value());
-  const std::string expected_bytes = *reference;
+  const std::string& expected_bytes = *reference;
   REQUIRE(expected_bytes.find("\"composition\": \"1\"") != std::string::npos);
 
   std::atomic<bool> stop{false};

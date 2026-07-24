@@ -1172,11 +1172,16 @@ WorkspaceFileChunkSource::protect_data(bool read_only) noexcept {
 expected<std::monostate, WorkspaceFileError>
 WorkspaceFileChunkSource::protect_range(void* addr, std::size_t size, bool read_only) noexcept {
 #ifndef NDEBUG
+  // `mprotect` wants a page-aligned base. Take it by walking the ORIGINAL pointer back
+  // by its in-page offset, not by rebuilding an address out of an integer: the offset is
+  // all the alignment arithmetic needs, and the pointer keeps the mapping's provenance.
   const auto raw = reinterpret_cast<std::uintptr_t>(addr);
-  const std::uintptr_t page_base = raw & ~(static_cast<std::uintptr_t>(d_page) - 1);
-  const std::size_t len = align_up((raw - page_base) + size, d_page);
+  const auto page_offset =
+      static_cast<std::size_t>(raw & (static_cast<std::uintptr_t>(d_page) - 1));
+  void* const page_base = static_cast<std::byte*>(addr) - page_offset;
+  const std::size_t len = align_up(page_offset + size, d_page);
   const int prot = read_only ? k_prot_read : k_prot_readwrite;
-  if (io_mprotect(reinterpret_cast<void*>(page_base), len, prot) != 0) {
+  if (io_mprotect(page_base, len, prot) != 0) {
     d_last_error = sys_error(WorkspaceFileErrc::HeaderIoFailed);
     return unexpected(d_last_error);
   }

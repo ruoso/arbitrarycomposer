@@ -1,15 +1,11 @@
 {
-  "total": 746,
+  "total": 718,
   "checks": {
     "bugprone-argument-comment": 9,
     "bugprone-implicit-widening-of-multiplication-result": 290,
     "bugprone-unchecked-optional-access": 229,
     "concurrency-mt-unsafe": 23,
-    "performance-enum-size": 5,
     "performance-inefficient-vector-operation": 21,
-    "performance-move-const-arg": 11,
-    "performance-no-int-to-ptr": 1,
-    "performance-unnecessary-copy-initialization": 11,
     "performance-unnecessary-value-param": 19,
     "readability-identifier-naming": 127
   }

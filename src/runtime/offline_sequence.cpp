@@ -51,7 +51,7 @@ std::vector<Time> frame_times_over(const TimeRange& range, const Rational& outpu
 
 SequenceRenderer::SequenceRenderer(const Document& document, Viewport viewport, Backend& backend,
                                    WorkerPoolConfig pool_config, std::size_t cache_budget_bytes)
-    : d_document(document), d_viewport(std::move(viewport)), d_backend(backend),
+    : d_document(document), d_viewport(viewport), d_backend(backend),
       // Pin ONCE for the whole export (Decision 2): this snapshot outlives every
       // frame and every later commit, so the sequence is revision-consistent.
       d_pinned(document.pin()), d_surfaces(backend), d_cache(cache_budget_bytes),

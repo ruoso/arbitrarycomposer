@@ -2,12 +2,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
 #include <string>
 #include <utility>
 
 namespace {
 
-enum class Err { Boom, Other };
+enum class Err : std::uint8_t { Boom, Other };
 
 TEST_CASE("expected holds a value") {
   arbc::expected<int, Err> e = 42;

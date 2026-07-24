@@ -706,7 +706,7 @@ TEST_CASE("a tile retained across a deadline expiry is joined, not re-dispatched
 
 namespace {
 
-enum class SceneKind { LeafHeavy, OperatorHeavy, NestedDeep };
+enum class SceneKind : std::uint8_t { LeafHeavy, OperatorHeavy, NestedDeep };
 
 const char* scene_name(SceneKind kind) {
   switch (kind) {

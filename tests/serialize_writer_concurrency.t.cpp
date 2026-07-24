@@ -40,7 +40,7 @@ TEST_CASE("serialize_document races a committing writer with no data race on the
   const auto pin = model.current();
   const auto expected = arbc::serialize_document(*pin);
   REQUIRE(expected);
-  const std::string expected_bytes = *expected;
+  const std::string& expected_bytes = *expected;
 
   constexpr int k_iterations = 2000;
   std::atomic<bool> serialize_error{false};

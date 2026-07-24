@@ -39,8 +39,7 @@ namespace {
 // driver calls `render` only inside `if (tile.is_miss)`).
 class AsyncSolidContent : public arbc::Content {
 public:
-  AsyncSolidContent(arbc::Rgba color, std::optional<arbc::Rect> bounds)
-      : d_solid(color, std::move(bounds)) {}
+  AsyncSolidContent(arbc::Rgba color, std::optional<arbc::Rect> bounds) : d_solid(color, bounds) {}
 
   std::optional<arbc::Rect> bounds() const override { return d_solid.bounds(); }
   arbc::Stability stability() const override { return d_solid.stability(); }

@@ -56,6 +56,9 @@ TEST_CASE("copy and copy-assign bump the count; the default sink reclaims on the
   {
     arbc::Ref<Tracked> a = *store.create(5, &destructions);
     idx = a.index();
+    // The copy IS the subject here: that constructing one bumps the count is what this
+    // asserts, and a reference would bump nothing.
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization): the copy is the assertion
     arbc::Ref<Tracked> b = a; // copy -> count 2
     REQUIRE(store.count(a.slot()) == 2);
     arbc::Ref<Tracked> c;
@@ -342,6 +345,9 @@ TEST_CASE("pin/unpin traffic never faults with the data pages mprotected read-on
       REQUIRE(pinned.has_value());
       const volatile std::uint64_t observed = **pinned; // read a read-only data page
       (void)observed;
+      // The copy IS the subject here: its count traffic must land in the anonymous table,
+      // never on the PROT_READ data page.
+      // NOLINTNEXTLINE(performance-unnecessary-copy-initialization): the copy is the probe
       arbc::Ref<std::uint64_t> copy = *pinned; // more pin traffic
       (void)copy;
     }

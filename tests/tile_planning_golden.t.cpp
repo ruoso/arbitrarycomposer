@@ -32,8 +32,7 @@ namespace {
 // so a warm-cache second frame's render count is directly observable.
 class CountingContent : public arbc::Content {
 public:
-  CountingContent(arbc::Rgba color, std::optional<arbc::Rect> bounds)
-      : d_solid(color, std::move(bounds)) {}
+  CountingContent(arbc::Rgba color, std::optional<arbc::Rect> bounds) : d_solid(color, bounds) {}
 
   std::optional<arbc::Rect> bounds() const override { return d_solid.bounds(); }
   arbc::Stability stability() const override { return d_solid.stability(); }

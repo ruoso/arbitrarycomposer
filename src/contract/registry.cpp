@@ -27,7 +27,7 @@ expected<std::monostate, RegistryError> Registry::add(std::string_view id, Conte
     return unexpected<RegistryError>(RegistryError::DuplicateId);
   }
   d_entries.push_back(Entry{std::string(id), std::move(factory), std::move(metadata),
-                            std::move(codec), std::move(binder), std::move(state_walker)});
+                            std::move(codec), binder, state_walker});
   return std::monostate{};
 }
 

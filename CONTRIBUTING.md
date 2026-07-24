@@ -76,6 +76,19 @@ CI uploads that same `tidy.log` as an artifact on every run, so triaging a failu
 does not actually require a local clang-20. After fixing findings, re-record the
 new floor with `python3 scripts/check_tidy.py --write-baseline`.
 
+Suppressing a finding needs a reason (doc 16:188) — and mind the shape:
+`NOLINTNEXTLINE` applies to *exactly* the following line, so a reason long enough
+to wrap silently suppresses the second comment line instead of the code. Put the
+explanation in ordinary comment lines above, and keep the `NOLINTNEXTLINE`
+one line, immediately over the code:
+
+```cpp
+// The copy IS the subject here: that constructing one bumps the count is what
+// this asserts, and a reference would bump nothing.
+// NOLINTNEXTLINE(performance-unnecessary-copy-initialization): the copy is the assertion
+arbc::Ref<Tracked> b = a;
+```
+
 Two environment knobs:
 
 | Variable | Default | Meaning |

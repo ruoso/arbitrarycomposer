@@ -3,12 +3,11 @@
 #include <arbc/surface/typed_span.hpp>
 
 #include <cstddef>
-#include <utility>
 
 namespace arbc {
 
 SolidContent::SolidContent(Rgba premultiplied_color, std::optional<Rect> bounds)
-    : d_color(premultiplied_color), d_bounds(std::move(bounds)) {}
+    : d_color(premultiplied_color), d_bounds(bounds) {}
 
 std::optional<Rect> SolidContent::bounds() const { return d_bounds; }
 

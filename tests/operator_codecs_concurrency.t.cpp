@@ -71,7 +71,7 @@ TEST_CASE("a captured operator-graph snapshot serializes off-thread while the wr
   const arbc::expected<std::string, arbc::SerializeError> reference =
       arbc::serialize_snapshot(snap, codecs);
   REQUIRE(reference.has_value());
-  const std::string expected_bytes = *reference;
+  const std::string& expected_bytes = *reference;
 
   constexpr int k_iterations = 2000;
   std::atomic<bool> serialize_error{false};
