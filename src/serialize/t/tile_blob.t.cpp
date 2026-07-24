@@ -185,7 +185,8 @@ TEST_CASE("a tile blob verifies against its name; a corrupt one fails as a value
         TileBlobError{TileBlobError::Kind::HashMismatch});
 
   // A TRUNCATED file.
-  std::vector<std::byte> truncated(frame->begin(), frame->begin() + frame->size() / 2);
+  std::vector<std::byte> truncated(frame->begin(),
+                                   frame->begin() + static_cast<std::ptrdiff_t>(frame->size() / 2));
   CHECK(decode_tile_blob(truncated, name, storage, k_samples).error() ==
         TileBlobError{TileBlobError::Kind::CorruptFrame});
 

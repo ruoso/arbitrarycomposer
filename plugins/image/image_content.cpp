@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <string>
@@ -317,10 +318,9 @@ std::size_t configured_pyramid_budget() {
   if (env == nullptr || env[0] == '\0') {
     return k_default_pyramid_budget;
   }
-  const std::string_view text(env);
   std::size_t budget = 0;
-  const char* const end = text.data() + text.size();
-  const std::from_chars_result parsed = std::from_chars(text.data(), end, budget);
+  const char* const end = env + std::strlen(env);
+  const std::from_chars_result parsed = std::from_chars(env, end, budget);
   if (parsed.ec != std::errc{} || parsed.ptr != end) {
     return k_default_pyramid_budget; // a malformed override is not a reason to fail a load
   }

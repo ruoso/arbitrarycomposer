@@ -96,9 +96,7 @@ TEST_CASE("the content binding table is walked lock-free while the writer emplac
   CHECK_FALSE(torn.load());
   CHECK_FALSE(shrank.load());
   // The writer added k_iterations contents on top of the seed; the table is the union.
-  CHECK(static_cast<std::size_t>(k_iterations + 1) == [&] {
-    std::size_t n = 0;
-    doc.for_each_content([&](Content*) { ++n; });
-    return n;
-  }());
+  std::size_t contents = 0;
+  doc.for_each_content([&](Content*) { ++contents; });
+  CHECK(static_cast<std::size_t>(k_iterations + 1) == contents);
 }

@@ -304,7 +304,7 @@ TEST_CASE("disk-full growth surfaces an error, never an abort") {
   arbc::WorkspaceFileChunkSource& ws = **source;
 
   constexpr std::size_t chunk = 64 * 1024;
-  const off_t header_bytes = file_size(path.str());
+  const off_t header_bytes = static_cast<off_t>(file_size(path.str()));
 
   struct rlimit small = old_limit;
   small.rlim_cur = static_cast<rlim_t>(header_bytes) + chunk + 4096; // room for one chunk

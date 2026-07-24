@@ -198,8 +198,11 @@ void Document::set_external_load_settler(std::function<std::size_t()> settle) {
     ++d_settler_installs;
     return;
   }
-  if (d_settler_installs > 0 && --d_settler_installs == 0) {
-    d_external_settle = nullptr;
+  if (d_settler_installs > 0) {
+    --d_settler_installs;
+    if (d_settler_installs == 0) {
+      d_external_settle = nullptr;
+    }
   }
 }
 

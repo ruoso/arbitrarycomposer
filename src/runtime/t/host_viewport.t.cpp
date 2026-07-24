@@ -153,7 +153,7 @@ std::vector<ObjectId> build_chain(arbc::Model& model, int levels) {
   const ObjectId leaf_layer = txn.add_layer(leaf, Affine::identity());
   txn.attach_layer(comps[static_cast<std::size_t>(levels)], leaf_layer);
   for (int i = 0; i < levels; ++i) {
-    const ObjectId l = txn.add_layer(comps[static_cast<std::size_t>(i + 1)], level_edge());
+    const ObjectId l = txn.add_layer(comps[static_cast<std::size_t>(i) + 1], level_edge());
     txn.attach_layer(comps[static_cast<std::size_t>(i)], l);
   }
   REQUIRE(txn.commit().has_value());

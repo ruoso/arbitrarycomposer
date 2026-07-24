@@ -144,6 +144,7 @@ std::span<const float> pixel_at(const std::vector<float>& px, int x, int y) {
 }
 
 bool pixels_equal(std::span<const float> a, std::span<const float> b) {
+  // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison): byte-exactness is the assertion here
   return std::memcmp(a.data(), b.data(), 4 * sizeof(float)) == 0;
 }
 

@@ -1,14 +1,8 @@
 {
-  "total": 759,
+  "total": 746,
   "checks": {
     "bugprone-argument-comment": 9,
-    "bugprone-branch-clone": 2,
     "bugprone-implicit-widening-of-multiplication-result": 290,
-    "bugprone-inc-dec-in-conditions": 2,
-    "bugprone-misplaced-widening-cast": 5,
-    "bugprone-narrowing-conversions": 2,
-    "bugprone-suspicious-memory-comparison": 1,
-    "bugprone-suspicious-stringview-data-usage": 1,
     "bugprone-unchecked-optional-access": 229,
     "concurrency-mt-unsafe": 23,
     "performance-enum-size": 5,

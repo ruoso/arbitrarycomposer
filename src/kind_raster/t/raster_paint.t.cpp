@@ -275,7 +275,8 @@ TEST_CASE("a raster paint's mip recompute is byte-identical to a full rebuild") 
     const Level& a0 = after->level(0);
     for (int ty = 0; ty < b0.tiles_y; ++ty) {
       for (int tx = 0; tx < b0.tiles_x; ++tx) {
-        const auto i = static_cast<std::size_t>(ty * b0.tiles_x + tx);
+        const std::size_t i = static_cast<std::size_t>(ty) * static_cast<std::size_t>(b0.tiles_x) +
+                              static_cast<std::size_t>(tx);
         const Rect tile{static_cast<double>(tx * k_grid_edge),
                         static_cast<double>(ty * k_grid_edge),
                         static_cast<double>((tx + 1) * k_grid_edge),

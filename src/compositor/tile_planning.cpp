@@ -842,6 +842,11 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                                 layer.opacity, clips, counters, device_bounds_ptr);
         }
         break;
+      // Composites exactly as the `Stale` arm below does -- same paint, same degraded count --
+      // but the two are different rungs of doc 02's ladder (inexact-but-current here, prior
+      // revision there) with different guarantees, and `plan_layer` picks between them; fusing
+      // the arms would fuse the two rationales.
+      // NOLINTNEXTLINE(bugprone-branch-clone): distinct display sources, deliberately parallel
       case TileSource::Transient:
         // A degraded display: the tile's OWN resident-but-inexact entry -- an
         // operator's transient placeholder -- shown while the final render is still

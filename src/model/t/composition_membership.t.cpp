@@ -406,7 +406,7 @@ TEST_CASE("concurrent pin/traverse of composition membership against a mutating 
       const arbc::DocStatePtr pinned = model.current();
       std::vector<arbc::ObjectId> seen = order_of(pinned, comp);
       if (seen.size() < static_cast<std::size_t>(kBase) ||
-          seen.size() > static_cast<std::size_t>(kBase + 1)) {
+          seen.size() > static_cast<std::size_t>(kBase) + 1) {
         bad.store(true, std::memory_order_relaxed);
       }
       for (const arbc::ObjectId id : seen) {

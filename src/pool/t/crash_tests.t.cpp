@@ -296,9 +296,11 @@ public:
     if (kind == arbc::WorkspaceSyscall::Msync || kind == arbc::WorkspaceSyscall::RootFlip) {
       const long idx = d_point++;
       d_pending_after = false;
-      if (d_before_header && kind == arbc::WorkspaceSyscall::Msync && file_offset == 0) {
-        capture();
-      } else if (idx == d_target && !d_after) {
+      // Either arming mode captures here -- the header-phase arm (any point index) and the
+      // index arm in its `before` phase; the two are mutually exclusive by construction, so
+      // the disjunction is just "an armed point fired".
+      if ((d_before_header && kind == arbc::WorkspaceSyscall::Msync && file_offset == 0) ||
+          (idx == d_target && !d_after)) {
         capture();
       } else if (idx == d_target && d_after) {
         d_pending_after = true;
