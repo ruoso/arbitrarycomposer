@@ -11,6 +11,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "tiled_render.hpp"
+
 #include <array>
 #include <cstring>
 #include <memory>
@@ -144,7 +146,7 @@ TEST_CASE("inline composite from a provided surface equals the same content fill
 
 // enforces: 09-surfaces-and-backends#content-provided-surface-honored
 // enforces: 09-surfaces-and-backends#provided-surface-released-after-consume
-TEST_CASE("inline provided path allocates no copy and releases the surface within the frame") {
+TEST_CASE("a non-transient provided surface is copied, and released within the frame") {
   arbc::CpuBackend fb_backend;
   auto providing =
       std::make_shared<ProvidingContent>(fb_backend, k_red, k_unit, /*transient=*/false);
@@ -166,21 +168,25 @@ TEST_CASE("inline provided path allocates no copy and releases the surface withi
   REQUIRE(target.has_value());
   arbc::SurfacePool pool(backend);
 
-  // Warm the pool so the per-layer temp is recycled on the measured frame; then
-  // any compositor make_surface would be a COPY of the provided surface.
-  render_frame(*state, resolve, viewport, backend, pool, **target);
+  // ZERO-COPY ADOPTION WAS ABANDONED (`compositor.render_path_unification`; doc 09).
+  // This case used to assert `make_surface_calls == 0` on a warm second frame -- the
+  // retired UNTILED driver composited a non-transient provided surface DIRECTLY from the
+  // content's own memory, the inline-path win doc 09:122-124 described. The tiled driver
+  // always COPIES it into the cache-owned tile surface instead (`tile_planning.cpp`,
+  // "never adopts, v1"), and with the untiled path gone there is no zero-copy consumer
+  // left. What doc 09 asks of the surface is unchanged and is what this now pins: the
+  // provided pixels are HONORED, and the release callback fires within the frame that
+  // consumed them, so the compositor holds no reference to content memory across frames.
+  arbc::TileCache cache(64U * 1024 * 1024);
+  arbc::testing::render_once_exact(*state, resolve, viewport, cache, backend, pool, **target);
   REQUIRE(providing->renders() == 1);
-  REQUIRE(providing->releases() == 1); // released within the first frame already
+  CHECK(providing->releases() == 1); // released within the frame that consumed it
 
-  backend.make_surface_calls = 0;
-  render_frame(*state, resolve, viewport, backend, pool, **target);
-  // Zero-copy inline composite (doc 09:122-124): the temp recycles and the
-  // provided surface is composited directly -- no copy allocation at all.
-  CHECK(backend.make_surface_calls == 0);
-  // The provided surface's release callback fired within the frame: provides and
-  // releases stay balanced, so the compositor holds no reference across frames.
-  CHECK(providing->releases() == providing->renders());
-  CHECK(providing->releases() == 2);
+  // A second frame over the warm cache renders nothing at all: the tile is resident, so
+  // the content is not asked again and its surface is neither provided nor released.
+  arbc::testing::render_once_exact(*state, resolve, viewport, cache, backend, pool, **target);
+  CHECK(providing->renders() == 1);
+  CHECK(providing->releases() == providing->renders()); // balanced: no reference retained
 }
 
 // enforces: 09-surfaces-and-backends#transient-provided-copied-not-cached

@@ -1,4 +1,5 @@
 #include <arbc/backend_cpu/cpu_backend.hpp>
+#include <arbc/cache/keyed_store.hpp>
 #include <arbc/compositor/compositor.hpp>
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/media/surface_format.hpp>
@@ -6,6 +7,8 @@
 #include <arbc/surface/testing/counting_backend.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+
+#include "tiled_render.hpp"
 
 #include <memory>
 #include <utility>
@@ -48,25 +51,48 @@ TEST_CASE("a persistent pool reuses temps within and across frames") {
   const arbc::DocStatePtr state = document.pin();
   const auto resolve = [&document](arbc::ObjectId id) { return document.resolve(id); };
 
-  // The frame target is allocated once, up front; reset the counter so only
-  // per-layer temp allocations are measured.
   arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
       backend.make_surface(viewport.width, viewport.height, arbc::k_working_rgba32f);
   REQUIRE(target.has_value());
 
-  arbc::SurfacePool pool(backend); // persistent across both frames
+  arbc::SurfacePool pool(backend);
+
+  // --- the claim, on the pool itself -------------------------------------------
+  //
+  // Asserted DIRECTLY rather than inferred from a frame's allocation count, because the
+  // tiled driver renders each miss straight into the cache-owned surface it will insert
+  // and reaches `SurfacePool` only from `compose_coarser` (`tile_planning.cpp:156`), the
+  // coarser-rung rescale. A frame over a cold cache therefore exercises the CACHE's
+  // allocation path, not the pool's, and counting `make_surface` across frames cannot
+  // tell the two apart. (The retired untiled driver did acquire a per-layer temp for
+  // every layer, which is what this test used to measure.)
+  backend.make_surface_calls = 0;
+  {
+    const auto first = pool.acquire(64, 64, arbc::k_working_rgba32f);
+    REQUIRE(first.has_value());
+    CHECK(backend.make_surface_calls == 1); // cold: the backend allocates
+  } // released back to the free list here
+  {
+    const auto again = pool.acquire(64, 64, arbc::k_working_rgba32f);
+    REQUIRE(again.has_value());
+    CHECK(backend.make_surface_calls == 1); // SAME (size, format): recycled, not reallocated
+    const auto other = pool.acquire(32, 64, arbc::k_working_rgba32f);
+    REQUIRE(other.has_value());
+    CHECK(backend.make_surface_calls == 2); // a DISTINCT key: one allocation, once
+  }
+
+  // --- and what the driver itself owes: a warm frame allocates nothing ----------
+  arbc::TileCache warm(64U * 1024 * 1024);
+  backend.make_surface_calls = 0;
+  arbc::testing::render_once_exact(*state, resolve, viewport, warm, backend, pool, **target);
+  const std::size_t cold_frame = backend.make_surface_calls;
+  INFO("cold frame allocations: " << cold_frame);
+  REQUIRE(cold_frame > 0); // a cold cache must allocate its tile surfaces
 
   backend.make_surface_calls = 0;
-  render_frame(*state, resolve, viewport, backend, pool, **target);
-  // Within-frame recycle: three layers, two distinct temp sizes -> exactly two
-  // allocations. The two 4x4 temps share one surface (the first releases before
-  // the second acquires), so it is not three.
-  REQUIRE(backend.make_surface_calls == 2);
-
-  render_frame(*state, resolve, viewport, backend, pool, **target);
-  // Cross-frame recycle: the identical scene reuses every temp from the free
-  // list -- zero additional allocations.
-  REQUIRE(backend.make_surface_calls == 2);
+  arbc::testing::render_once_exact(*state, resolve, viewport, warm, backend, pool, **target);
+  CHECK(backend.make_surface_calls ==
+        0); // every tile resident: nothing rendered, nothing allocated
 }
 
 } // namespace

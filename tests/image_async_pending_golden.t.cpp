@@ -36,6 +36,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "support/image_fixtures.hpp"
+#include "tiled_render.hpp"
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
@@ -185,7 +186,8 @@ std::vector<float> composed_frame(Document& doc) {
   REQUIRE(target.has_value());
   SurfacePool pool(backend);
   const Viewport viewport{k_dim, k_dim, Affine::identity(), root_composition_of(doc)};
-  render_frame(*pin, resolve, viewport, backend, pool, **target);
+  arbc::testing::render_once_exact(*pin, resolve, viewport, cache, backend, pool, **target,
+                                   &service);
   scope.release();
   const std::span<const float> px = (*target)->span<PixelFormat::Rgba32fLinearPremul>();
   return {px.begin(), px.end()};

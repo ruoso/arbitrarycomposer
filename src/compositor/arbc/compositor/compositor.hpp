@@ -39,16 +39,12 @@ struct Viewport {
 // binding lives in runtime (doc 17), keeping the compositor free of it.
 using ContentResolver = std::function<Content*(ObjectId)>;
 
-// One frame under the offline discipline (doc 02): exact, synchronous,
-// bottom-to-top. The tile cache, culling refinements, deadlines, and
-// progressive refinement land with the interactive renderer.
-//
-// Per-layer temp targets are acquired from `pool` (doc 09): a caller-owned
-// SurfacePool so a looping renderer can reuse temps across frames with no
-// per-frame allocator churn. The pool composes over `backend`.
-ARBC_API void render_frame(const DocRoot& state, const ContentResolver& resolve,
-                           const Viewport& viewport, Backend& backend, SurfacePool& pool,
-                           Surface& target);
+// (The untiled `render_frame` that stood here is GONE --
+// `compositor.render_path_unification`. There is now ONE render path,
+// `render_frame_interactive`, which the interactive loop, the sequence exporter and
+// `render_offline` all drive; the only axis separating them is `Exactness`. The retired
+// one had fallen behind on scale quantization, composition time, content state and async
+// content -- see doc 02 and doc 09.)
 
 // Render one layer whose composed local->device transform is `composed` into
 // `target`, applying the pull contract's exact cull/compose/region/sub-pixel

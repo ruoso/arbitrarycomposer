@@ -38,6 +38,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "support/root_anchor.hpp"
+#include "tiled_render.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -191,7 +192,8 @@ std::vector<std::byte> render_root(Document& doc, int dim) {
   // root, so anchor explicitly at the document's root composition
   // (compositor.root_composition_frame_walk).
   const Viewport viewport{dim, dim, Affine::identity(), arbc::test::root_composition_of(*pin)};
-  arbc::render_frame(*pin, resolve, viewport, backend, pool, **target);
+  arbc::testing::render_once_exact(*pin, resolve, viewport, cache, backend, pool, **target,
+                                   &service);
 
   std::vector<std::byte> out = bytes_of(**target);
   scope.release();

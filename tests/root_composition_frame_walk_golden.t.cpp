@@ -20,6 +20,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "tiled_render.hpp"
+
 #include <chrono>
 #include <cstddef>
 #include <cstring>
@@ -185,8 +187,10 @@ TEST_CASE("a frame renders one composition's layers: the nested child is drawn o
     REQUIRE(target.has_value());
     // Anchor at the root composition R: the offline flat compositor draws R's two
     // direct members (op + the nested layer), and the nested layer owns the child.
-    render_frame(*pin, scene.resolver(), Viewport{k_dim, k_dim, Affine::identity(), scene.root},
-                 backend, pool, **target);
+    TileCache cache(64U * 1024 * 1024);
+    arbc::testing::render_once_exact(*pin, scene.resolver(),
+                                     Viewport{k_dim, k_dim, Affine::identity(), scene.root}, cache,
+                                     backend, pool, **target);
     REQUIRE(bytes_equal(bytes_of(**target), want));
     scene.nested->detach();
   }

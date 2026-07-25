@@ -19,6 +19,32 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+### Changed
+
+- **There is now ONE render path.** `render_offline` renders through
+  `render_frame_interactive` — the same tiled driver the interactive loop and the
+  sequence exporter already ran — and the untiled `arbc::render_frame` free
+  function is **removed**. The only axis that separates the drivers is
+  `Exactness`: `BestEffort` trades fidelity for frame rate, `Exact` (with
+  `Deadline::none()`) takes as long as it needs. The retired path had quietly
+  fallen behind on four axes its own comments admitted — it asked for the raw
+  composed scale rather than a ladder rung, hard-coded `Time::zero()` (so no span
+  culling), passed an inert `StateHandle{}` (so no content state), and dropped any
+  layer whose content answered asynchronously. `render_layer` is unaffected
+  (`anchored_viewports` still uses it). A still export now also composites
+  slightly differently where the two paths disagreed: the retired driver sized its
+  temp to exactly the content, so a minification's outer resampling tap fell on
+  that surface's transparent border and rang the value up (design docs 02/09).
+
+- **Zero-copy adoption of a content-provided surface is abandoned.** It existed
+  only on the untiled path, which composited directly from content memory
+  (doc 09:122-124). The tiled driver renders each miss straight into the
+  cache-owned surface it will insert and always copies a provided surface into it,
+  so with the untiled path gone there is no zero-copy consumer left. Provided
+  surfaces are otherwise unchanged: their pixels are honored, and the release
+  callback still fires within the frame that consumed them, so the compositor
+  holds no reference to content memory across frames.
+
 ### Fixed
 
 - `org.arbc.raster` and `org.arbc.image` now render at the **requested scale**

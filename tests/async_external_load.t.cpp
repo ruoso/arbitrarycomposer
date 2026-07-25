@@ -41,6 +41,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "tiled_render.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -235,7 +237,8 @@ void render_root(Document& doc, int dim) {
   REQUIRE(target.has_value());
   SurfacePool pool(backend);
   const Viewport viewport{dim, dim, Affine::identity()};
-  arbc::render_frame(*pin, resolve, viewport, backend, pool, **target);
+  arbc::testing::render_once_exact(*pin, resolve, viewport, cache, backend, pool, **target,
+                                   &service);
   scope.release();
 }
 

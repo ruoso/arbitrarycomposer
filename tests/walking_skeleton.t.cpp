@@ -23,28 +23,31 @@ std::array<float, 4> pixel(const arbc::Surface& surface, int x, int y) {
   return {data[at], data[at + 1], data[at + 2], data[at + 3]};
 }
 
-// The green layer (premultiplied {0,0.5,0,0.5}) is rendered into an 8x8 temp at
-// its max device scale (8), then composited with temp_to_dst = scaling(1, 0.5) --
-// a 2:1 MINIFICATION in y through the composite tap. So device row y samples temp
-// rows 2y-1 .. 2y+2 at Catmull-Rom phase 0.5 (x stays integer-phase, exact). At an
-// interior row all four taps are green and the weights sum to 1, so the value is
-// the flat 0.5; at the green region's top (y=0) and bottom (y=3) edges one outer
-// tap lands on the zero border, dropping a negative-weight lobe, so the
-// premultiplied value rings UP to 0.5 * (w1 + w2 + w3) = 0.53125 (color.resample_
-// filter_quality's Catmull-Rom tap; the incumbent bilinear read a flat 0.5 here).
-// The result is clamped non-negative (no effect at these positive rows). The red
-// layer maps to device [2,6)^2 by an integer translation, so its tap is
-// integer-phase (weights (0,1,0,0)) and stays byte-exact.
+// The green layer's composited premultiplied value, per device row it covers.
+//
+// Rows 1-3 are the FLAT {0, 0.5, 0, 0.5} the geometry calls for: a uniformly
+// half-transparent rect, minified 2:1 in y, whose four Catmull-Rom taps all land on
+// green and whose weights sum to 1.
+//
+// Row 0 rings UP to `0.5 * (w1 + w2 + w3) == 0.53125`, because its outer tap falls on
+// the source surface's ZERO BORDER and drops a negative-weight lobe. That is the same
+// zero-border mechanism (`kernels.hpp:66-68`) that makes compositor-side MAGNIFICATION
+// unusable, showing up here on a plain minification.
+//
+// It is asymmetric -- row 0 rings and row 3 does not -- and the asymmetry is the tile
+// grid: the content's local origin coincides with tile (0,0)'s local origin, so the
+// tap at the TOP edge reaches past the tile surface's first row, while the bottom edge
+// sits deep inside a 256px-tall surface with real green above and below it. A content
+// edge that lands ON a tile boundary rings; one that lands mid-tile does not.
+//
+// The retired UNTILED driver rang at BOTH edges: it sized its temp to exactly the
+// content's device footprint (8x8 here), so both the top and the bottom tap hit the
+// border. Moving to the tiled driver fixed row 3 and left row 0 as it was.
+//
+// The red layer was never affected: it maps to device [2,6)^2 by an integer
+// translation, so its tap is integer-phase (weights (0,1,0,0)) and byte-exact.
 std::array<float, 4> green_src_row(int y) {
-  const std::array<float, 4> w = arbc::catmull_rom_weights(0.5F);
-  float s = 0.0F;
-  const int j0 = 2 * y; // floor(2y + 0.5)
-  for (int t = 0; t < 4; ++t) {
-    const int row = j0 - 1 + t;                              // Catmull-Rom taps 2y-1..2y+2
-    const float cover = (row >= 0 && row < 8) ? 1.0F : 0.0F; // temp is 8 rows of green
-    s += w[static_cast<std::size_t>(t)] * cover;
-  }
-  const float g = std::max(0.0F, 0.5F * s); // premul green & alpha both scale by 0.5
+  const float g = (y == 0) ? 0.53125F : 0.5F;
   return {0.0F, g, 0.0F, g};
 }
 
@@ -87,8 +90,7 @@ TEST_CASE("walking skeleton: solid layers compose to exact pixels") {
       }
       if (in_green) {
         // Source-over on premultiplied alpha: out = s + (1 - a_s) * d, with the
-        // resampled green source (flat 0.5 interior, ringing to 0.53125 at the
-        // green region's top/bottom edges -- see green_src_row).
+        // green source per-row (flat 0.5, ringing at row 0 only -- see above).
         const std::array<float, 4> src = green_src_row(y);
         for (std::size_t k = 0; k < 4; ++k) {
           expected[k] = src[k] + (1.0F - src[3]) * expected[k];

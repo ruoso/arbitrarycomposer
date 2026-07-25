@@ -100,30 +100,4 @@ void render_layer(const ContentResolver& resolve, const LayerRecord& layer, cons
   });
 }
 
-void render_frame(const DocRoot& state, const ContentResolver& resolve, const Viewport& viewport,
-                  Backend& backend, SurfacePool& pool, Surface& target) {
-  backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
-
-  const Rect device_rect =
-      Rect::from_size(static_cast<double>(viewport.width), static_cast<double>(viewport.height));
-
-  // Bottom-to-top over the ANCHORED composition's direct members (doc 05:28-36):
-  // a frame renders exactly one composition's layers, never the document-global
-  // leaf set, so a nested child's members are reached only through the enclosing
-  // layer's content and are never also drawn here. An invalid `anchor`
-  // (`k_root_anchor`) resolves to no composition, so `for_each_layer_in` no-ops
-  // and the frame is empty -- the driver sources the root id (doc 05, Decision
-  // 2/3). Compose the camera with each layer's per-edge transform on demand (doc
-  // 04) and hand the layer to the shared per-layer body; `render_layer` culls the
-  // current layer by returning early.
-  state.for_each_layer_in(viewport.anchor, [&](ObjectId layer_id) {
-    const LayerRecord* layer = state.find_layer(layer_id);
-    if (layer == nullptr) {
-      return;
-    }
-    const Affine composed = compose(viewport.camera, layer->transform);
-    render_layer(resolve, *layer, composed, device_rect, backend, pool, target);
-  });
-}
-
 } // namespace arbc

@@ -41,6 +41,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "support/root_anchor.hpp"
+#include "tiled_render.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -236,9 +237,10 @@ std::vector<std::byte> render_reference(Document& doc, const AttachAll& attach,
   SurfacePool pool(backend);
   const auto target = backend.make_surface(k_dim, k_dim, pin->working_space());
   REQUIRE(target.has_value());
-  render_frame(*pin, resolve,
-               Viewport{k_dim, k_dim, Affine::identity(), arbc::test::root_composition_of(*pin)},
-               backend, pool, **target);
+  arbc::testing::render_once_exact(
+      *pin, resolve,
+      Viewport{k_dim, k_dim, Affine::identity(), arbc::test::root_composition_of(*pin)}, cache,
+      backend, pool, **target, &service);
   std::vector<std::byte> bytes = to_bytes((**target).cpu_bytes());
   detach(); // leave the reference scene's contents clean
   return bytes;
