@@ -86,7 +86,11 @@ RenderRequest four_tile_request(Surface& target) {
 // enforces: 02-architecture#async-arrival-emits-damage
 TEST_CASE("pull_service async: many concurrent worker pulls settle race-free into the cache") {
   constexpr int k_pulls = 64;
-  constexpr std::size_t k_tile_bytes = 256u * 256u * 16u; // rgba32f 256^2
+  // rgba32f over the tile SURFACE, which is the cell plus an apron per side
+  // (`compositor.tile_apron`), not the cell alone -- `tile_byte_cost` measures the
+  // surface the cache actually holds.
+  constexpr std::size_t k_tile_bytes =
+      static_cast<std::size_t>(arbc::k_tile_surface_size) * arbc::k_tile_surface_size * 16u;
 
   CpuBackend backend;
   WorkerPoolConfig pool_config;
@@ -166,7 +170,11 @@ TEST_CASE(
     "pull_service async: a multi-tile pull mixing resident hits and async misses reaps every "
     "covering tile race-free; a caller cancel frees no live surface, and a re-pull composes") {
   constexpr int k_pulls = 32;
-  constexpr std::size_t k_tile_bytes = 256u * 256u * 16u; // rgba32f 256^2
+  // rgba32f over the tile SURFACE, which is the cell plus an apron per side
+  // (`compositor.tile_apron`), not the cell alone -- `tile_byte_cost` measures the
+  // surface the cache actually holds.
+  constexpr std::size_t k_tile_bytes =
+      static_cast<std::size_t>(arbc::k_tile_surface_size) * arbc::k_tile_surface_size * 16u;
 
   CpuBackend backend;
   WorkerPoolConfig pool_config;
@@ -207,8 +215,11 @@ TEST_CASE(
   for (int i = 0; i < k_pulls; ++i) {
     const ObjectId id{static_cast<std::uint32_t>(i + 1)};
     for (const TileCoord coord : {TileCoord{0, 0}, TileCoord{1, 1}}) {
-      expected<std::unique_ptr<Surface>, SurfaceError> s =
-          backend.make_surface(256, 256, k_working_rgba32f);
+      // The tile SURFACE, apron included (`compositor.tile_apron`): a seeded tile
+      // must have the geometry a rendered one would, or delivery reads its window
+      // out of place and the resident-byte accounting below counts two shapes.
+      expected<std::unique_ptr<Surface>, SurfaceError> s = backend.make_surface(
+          arbc::k_tile_surface_size, arbc::k_tile_surface_size, k_working_rgba32f);
       REQUIRE(s.has_value());
       const std::size_t bytes = tile_byte_cost(**s);
       const TileKey key{id, 1, ScaleRung{0}, coord, std::nullopt};
@@ -286,7 +297,11 @@ TEST_CASE(
 TEST_CASE("pull_service async: a caller cancel mid-flight frees no live surface; the render still "
           "reaps race-free into the cache") {
   constexpr int k_pulls = 64;
-  constexpr std::size_t k_tile_bytes = 256u * 256u * 16u; // rgba32f 256^2
+  // rgba32f over the tile SURFACE, which is the cell plus an apron per side
+  // (`compositor.tile_apron`), not the cell alone -- `tile_byte_cost` measures the
+  // surface the cache actually holds.
+  constexpr std::size_t k_tile_bytes =
+      static_cast<std::size_t>(arbc::k_tile_surface_size) * arbc::k_tile_surface_size * 16u;
 
   CpuBackend backend;
   WorkerPoolConfig pool_config;

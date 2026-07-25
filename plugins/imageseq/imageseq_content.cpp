@@ -204,6 +204,14 @@ std::optional<RenderResult> ImageSeqContent::render(const RenderRequest& request
   result.provided.emplace(
       *frame, [frame]() { /* retained until last release */ },
       /*transient=*/false);
+  // The decoded frame's pixel (0, 0) is the SEQUENCE's local origin, not the
+  // request region's: this is the content's own native frame handed back whole,
+  // not a surface rendered for this request. Requests do not start at the local
+  // origin in general -- a tile away from it never did, and since
+  // `compositor.tile_apron` even the origin tile starts one apron earlier -- so
+  // saying where the pixels belong is what keeps the zero-copy path placing them
+  // correctly instead of relying on the two origins coinciding.
+  result.provided_origin = Vec2{0.0, 0.0};
   return result;
 }
 

@@ -406,7 +406,11 @@ constexpr auto k_budget = std::chrono::milliseconds(16);
 // below (the cache exposes no direct priority-class query, so class is inferred
 // from which entry a budget overflow evicts first -- the store's victim-first
 // class order, matching the refinement/prime unit tests).
-constexpr std::size_t k_tile_bytes = static_cast<std::size_t>(256) * 256 * 16;
+// rgba32f over the tile SURFACE -- the cell plus an apron per side
+// (`compositor.tile_apron`) -- since that is the surface `tile_byte_cost` measures
+// and the cache accounts.
+constexpr std::size_t k_tile_bytes =
+    static_cast<std::size_t>(arbc::k_tile_surface_size) * arbc::k_tile_surface_size * 16;
 
 // A rung-0, Static (achieved_time-free) tile key at `coord`.
 TileKey tile_key(arbc::ObjectId content, std::uint64_t revision, TileCoord coord,

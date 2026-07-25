@@ -75,18 +75,41 @@
    defers composites, which is why deferring changes no pixels.
 5. **Composite.** Draw tiles bottom-to-top onto the target surface with each
    layer's composed transform and opacity. Tiles rendered at a ladder rung
-   are resampled by the ≤1-octave remainder during this pass. A tile is a
-   whole cache cell, so a layer whose content declares finite `bounds()`
-   (doc 03) may own a tile whose cell extends past that extent; **every
-   composite of such a layer is clipped to the content's bounds mapped into
-   device space** (via the same backend clip primitive as the repaint-region
-   clip, doc 09 § Backend contract), so the overhang of a sub-tile bounded
-   content does not paint beyond its declared extent. The device-space bound
-   is rounded *out* to whole pixels, so the clip never removes a pixel the
-   content legitimately covers; for an axis-aligned placement it is exact,
-   and for a rotated or sheared placement it is the conservative device AABB
-   of the transformed extent. A layer with unbounded content (`bounds()` is
-   `nullopt`) is composited unclipped, byte-for-byte as before.
+   are resampled by the ≤1-octave remainder during this pass.
+
+   **A tile is rendered over its cell plus an apron, and paints only its
+   cell.** The apron is a fixed margin of device pixels (see doc 09 §
+   Backend contract) carrying the neighbouring tiles' own content: renders
+   are deterministic, so the apron holds bit-identical pixels to the
+   neighbour that owns them. The composite then paints through a
+   **source-space window equal to the tile's cell** — a destination pixel is
+   painted only if its sample position falls inside the cell, while the
+   resampling tap still reads freely into the apron. Adjacent cells abut
+   exactly in source space and the placement is invertible, so every device
+   pixel is painted by exactly one tile, for any transform including
+   rotation and shear.
+
+   Both halves are load-bearing. Without the apron the resampling tap lands
+   on the tile surface's own transparent border, so at any fractional phase
+   two abutting tiles each paint the boundary pixel at partial weight and
+   source-over of two halves is not one — an opaque fill grows a translucent
+   grid at every tile boundary. Without the window the apron itself paints,
+   and neighbouring tiles double-blend their overlap.
+
+   **A layer whose content declares finite `bounds()` (doc 03) has each of
+   its rendered tiles zeroed outside that extent** before the tile is cached
+   or composited. Content is not required to clip itself and a whole-cell
+   request asks for more than the extent, so this is where "bounded content
+   paints nothing past its bounds" becomes true. Enforcing it in the tile's
+   *pixels* rather than by clipping the *composite* is what makes the extent
+   edge antialiased: the tap falls off across the boundary exactly as it
+   does for a temp sized to the content's own region, which is what makes a
+   nested composition render identically to compositing its child's layers
+   flat (doc 05 § Rendering is recursion). A composite-time clip could only
+   ever produce a whole-pixel edge. For a rotated or sheared placement the
+   zeroed area is the conservative AABB of the transformed extent. A layer
+   with unbounded content (`bounds()` is `nullopt`) is not touched: it has no
+   extent, and its apron is real content everywhere.
 6. **Refine.** Async results that arrive later produce damage for their
    region, scheduling a follow-up frame. Zooming therefore shows
    progressively sharper content rather than blocking.

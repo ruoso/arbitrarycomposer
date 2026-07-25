@@ -100,16 +100,32 @@ inline WorkingPixel fetch_texel(std::span<const typename PixelTraits<F>::Storage
 // the clip-restricted subset of what the unclipped one would. The whole-surface
 // clip IS the unclipped `Backend::composite`, so this is the one composite
 // kernel, not two.
+//
+// `window` is the SOURCE-space paint window (`compositor.tile_apron`): a pixel is
+// painted only if its sample position `q` lands inside it, half-open, in the same
+// source pixel coordinates the tap indexes. Note where the test sits -- AFTER `q`
+// is computed and BEFORE the tap: the window narrows what is painted, never what
+// is sampled, so the 4x4 footprint still reaches past the window into a tile's
+// apron and reads real colour there. `Rect::infinite()` is the unwindowed case
+// (`composite` / `composite_clipped`), where the test can never fail, so this
+// stays the one composite kernel.
 template <PixelFormat F>
 void source_over_kernel(TypedSpan<F> dst, int dst_width,
                         std::span<const typename PixelTraits<F>::Storage> src, int src_width,
                         int src_height, const Affine& dst_to_src, float opacity,
-                        const PixelBox& clip) {
+                        const PixelBox& clip, const Rect& window) {
   using Traits = PixelTraits<F>;
   const std::size_t stride = Traits::channels;
   for (int y = clip.y0; y < clip.y1; ++y) {
     for (int x = clip.x0; x < clip.x1; ++x) {
       const Vec2 q = dst_to_src.apply({x + 0.5, y + 0.5});
+      // Half-open in source pixel space, so two windows abutting on a shared edge
+      // partition the destination exactly: the pixel sampling that edge belongs to
+      // the window on its >= side, and to no other. That is what makes every device
+      // pixel painted by exactly ONE tile under any invertible affine.
+      if (!(q.x >= window.x0 && q.x < window.x1 && q.y >= window.y0 && q.y < window.y1)) {
+        continue;
+      }
       const double sx = q.x - 0.5;
       const double sy = q.y - 0.5;
       const int i0 = static_cast<int>(std::floor(sx));

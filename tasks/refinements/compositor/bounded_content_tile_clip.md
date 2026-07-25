@@ -350,3 +350,29 @@ architectural choice — same weight as `disjoint_dirty_repaint`'s doc-02 clause
 - Edited `tests/CMakeLists.txt`: wired `bounded_content_tile_clip_golden` test target linking `arbc` + `CpuBackend`.
 - Edited `tests/claims/registry.tsv`: registered new claim `02-architecture#tile-composite-clipped-to-content-bounds`; golden enforces it plus re-asserts `03-layer-plugin-interface#render-within-declared-bounds` and `09-surfaces-and-backends#clip-scoped-ops-honor-the-clip`.
 - Edited `docs/design/02-architecture.md`: added doc-02 step-5 clause (Decision 4) — every composite of a layer with finite `bounds()` is clipped to those bounds mapped (rounded out) into device space; unbounded content composited unclipped.
+
+## Superseded — 2026-07-25
+
+The composite-time device-bounds clip this task landed was **retired** by
+`compositor.tile_apron`, which enforces the same extent in the tile's own pixels
+instead (zeroing the tile outside `bounds()` before it is cached or composited).
+
+The change is a strict improvement on the one cost this task knowingly accepted.
+Constraint 2 — *"a coverage gap is a worse defect than a bounded bleed"* — forced the
+device bound to be rounded **out** to whole pixels, which meant a half-covered edge
+pixel painted at full strength: a hard edge, plus up to one device pixel of
+un-attenuated bleed. Zeroing the tile lets the composite's own resampling tap fall off
+across the extent boundary, so the edge carries its coverage and the bleed is gone
+outright. Constraint 2 is honored rather than reversed: the apron work's
+`tile_block_window` is what guarantees no coverage gap now that there is no bleed to
+trade against.
+
+Everything else this task decided stands. Decision 2 (enforcement belongs in the
+compositor, not in `SolidContent`) is unchanged and in fact strengthened — the
+compositor now enforces the extent in the pixels it owns rather than in the
+destination's. Decision 3 (a rotated extent clips to its conservative AABB) carries
+over verbatim to the zeroed region.
+
+The defect that motivated the task — a sub-tile bounded content bleeding across its
+declared extent — remains fixed, and `tests/bounded_content_tile_clip_golden.t.cpp`
+still guards it byte-for-byte against the offline oracle.

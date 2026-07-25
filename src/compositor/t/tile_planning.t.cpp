@@ -206,10 +206,26 @@ public:
     ++composite_clipped_calls;
     clips.push_back(device_clip);
   }
+  void composite_windowed(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/,
+                          const arbc::Affine& /*m*/, double /*opacity*/,
+                          const arbc::Rect& device_clip, const arbc::Rect& src_window) override {
+    ++composite_windowed_calls;
+    clips.push_back(device_clip);
+    windows.push_back(src_window);
+  }
+  void clear_rect(arbc::Surface& dst, const arbc::Rect& device_rect, float /*r*/, float /*g*/,
+                  float /*b*/, float /*a*/) override {
+    cleared.push_back(device_rect);
+    cleared_on.push_back(&dst);
+  }
 
   int composite_calls = 0;
   int composite_clipped_calls = 0;
+  int composite_windowed_calls = 0;
   std::vector<arbc::Rect> clips;
+  std::vector<arbc::Rect> windows;
+  std::vector<arbc::Rect> cleared;
+  std::vector<const arbc::Surface*> cleared_on;
 };
 
 // Commit a one-layer, one-composition scene and return the content id (its comp
@@ -331,8 +347,10 @@ TEST_CASE("plan_layer: an empty cache marks every tile a miss owing a deadline r
     CHECK(tile.display_source == TileSource::Placeholder);
     CHECK_FALSE(tile.hold.valid());
 
-    // A miss materializes into exactly the tile's footprint at rung_scale, a
-    // BestEffort request stamped with the frame deadline and pinned snapshot.
+    // A miss materializes into exactly the tile's RENDER footprint at rung_scale --
+    // the cell plus an apron per side (`compositor.tile_apron` Rule 1), which is the
+    // geometry of the surface the render fills -- as a BestEffort request stamped
+    // with the frame deadline and pinned snapshot.
     const arbc::RenderRequest request{
         tile.local_rect, arbc::rung_scale(plan.rung), plan.time,    plan.snapshot,
         target,          arbc::Exactness::BestEffort, plan.deadline};
@@ -340,7 +358,7 @@ TEST_CASE("plan_layer: an empty cache marks every tile a miss owing a deadline r
     CHECK(request.deadline == deadline);
     CHECK(request.snapshot == snapshot);
     CHECK(request.scale == arbc::rung_scale(sel.rung));
-    CHECK(request.region == arbc::tile_local_rect(sel.rung, tile.coord));
+    CHECK(request.region == arbc::tile_render_rect(sel.rung, tile.coord));
   }
 }
 
@@ -586,11 +604,12 @@ TEST_CASE("render_frame_interactive: the surfaced plan equals the composited pla
   CHECK(std::memcmp(bytes_a.data(), bytes_b.data(), bytes_a.size_bytes()) == 0);
 }
 
-// --- Composite-time clip to content bounds (bounded_content_tile_clip) ---------
+// --- The tile apron and the tile-side extent enforcement (compositor.tile_apron) --
 
-// enforces: 02-architecture#tile-composite-clipped-to-content-bounds
-TEST_CASE("render_frame_interactive: a sub-tile bounded layer composites clipped to its device "
-          "bounds, counter-neutral") {
+// enforces: 02-architecture#bounded-content-extent-zeroed-in-tile
+// enforces: 02-architecture#tile-paints-its-cell-samples-its-apron
+TEST_CASE("render_frame_interactive: a sub-tile bounded layer is zeroed outside its extent in the "
+          "tile, and paints through the cell window, counter-neutral") {
   arbc::Model model;
   arbc::ObjectId comp{};
   const arbc::ObjectId content_id = make_single_layer(model, comp, 256, 256);
@@ -610,22 +629,47 @@ TEST_CASE("render_frame_interactive: a sub-tile bounded layer composites clipped
   arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
                                  arbc::Deadline::none(), std::nullopt, nullptr, &counters);
 
-  // region = viewport ∩ bounds = {0,0,64,64} -> one rung-0 tile, composited ONCE
-  // through composite_clipped (never the plain composite), clipped to the device
-  // bound (identity transform -> {0,0,64,64} rounded out to itself).
+  // region = viewport ∩ bounds = {0,0,64,64} -> one rung-0 tile, painted ONCE through
+  // `composite_windowed` (never the plain or merely-clipped composite). The window is
+  // the block window of a one-tile block: the WHOLE surface, since a lone tile has no
+  // neighbour on any side to collide with and its apron is where the extent's
+  // antialiased falloff lands.
   CHECK(backend.composite_calls == 0);
-  CHECK(backend.composite_clipped_calls == 1);
-  REQUIRE(backend.clips.size() == 1);
-  CHECK(backend.clips[0] == arbc::Rect{0.0, 0.0, 64.0, 64.0});
+  CHECK(backend.composite_clipped_calls == 0);
+  CHECK(backend.composite_windowed_calls == 1);
+  REQUIRE(backend.windows.size() == 1);
+  const double edge = static_cast<double>(arbc::k_tile_surface_size);
+  CHECK(backend.windows[0] == arbc::Rect{0.0, 0.0, edge, edge});
+
+  // The extent is enforced in the TILE, not by the composite's device clip: the tile
+  // surface covers local [-apron, 256 + apron) and the content covers [0, 64), so the
+  // bands outside it are cleared to transparent -- in surface pixels, everything below
+  // y = apron, above y = apron + 64, left of x = apron and right of x = apron + 64.
+  const double lo = static_cast<double>(arbc::k_tile_apron);
+  const double hi = lo + 64.0;
+  const std::vector<arbc::Rect> expected{
+      arbc::Rect{0.0, 0.0, edge, lo},  // above the extent
+      arbc::Rect{0.0, hi, edge, edge}, // below it
+      arbc::Rect{0.0, lo, lo, hi},     // left of it
+      arbc::Rect{hi, lo, edge, hi},    // right of it
+  };
+  std::vector<arbc::Rect> tile_clears;
+  for (std::size_t at = 0; at < backend.cleared.size(); ++at) {
+    if (backend.cleared_on[at] != target->get()) {
+      tile_clears.push_back(backend.cleared[at]);
+    }
+  }
+  CHECK(tile_clears == expected);
+
   // Counter-neutral: one composite and one render request per planned tile, exactly
-  // as the unclipped path -- the clip changes pixels, not counts.
+  // as before -- the apron and the zeroing change pixels, not counts.
   CHECK(counters.composites() == 1);
   CHECK(counters.requests_issued() == 1);
 }
 
-// enforces: 02-architecture#tile-composite-clipped-to-content-bounds
-TEST_CASE(
-    "render_frame_interactive: a gated sub-tile bounded composite clips to repaint ∩ bounds") {
+// enforces: 02-architecture#tile-paints-its-cell-samples-its-apron
+TEST_CASE("render_frame_interactive: a gated bounded composite carries the repaint rect alone, the "
+          "extent having already been enforced in the tile") {
   arbc::Model model;
   arbc::ObjectId comp{};
   const arbc::ObjectId content_id = make_single_layer(model, comp, 256, 256);
@@ -647,13 +691,16 @@ TEST_CASE(
   arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
                                  arbc::Deadline::none(), std::nullopt);
   backend.clips.clear();
+  backend.windows.clear();
   backend.composite_calls = 0;
-  backend.composite_clipped_calls = 0;
+  backend.composite_windowed_calls = 0;
 
-  // A gated pass over a rect narrower than the bounds in x: repaint_rect =
-  // {0,0,32,256}, device_bounds = {0,0,64,64}, so the effective clip is their
-  // intersection {0,0,32,64}. The tile is warm (Fresh), so it re-composites with
-  // no render.
+  // A gated pass over a rect narrower than the extent in x. The device clip is now the
+  // repaint rect ALONE -- {0,0,32,256} -- where it used to be that rect intersected
+  // with the extent's rounded-out device bound. The extent is not expressed here at
+  // all any more: the cached tile is already zero outside it, so intersecting would
+  // only truncate the falloff the zeroing produces. The tile is warm (Fresh), so it
+  // re-composites with no render.
   arbc::DirtyRegion dirty;
   dirty.device_rects.push_back(arbc::Rect{0.0, 0.0, 32.0, 256.0});
   arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
@@ -661,16 +708,16 @@ TEST_CASE(
 
   CHECK(backend.composite_calls == 0);
   REQUIRE(backend.clips.size() == 1);
-  CHECK(backend.clips[0] == arbc::Rect{0.0, 0.0, 32.0, 64.0});
+  CHECK(backend.clips[0] == arbc::Rect{0.0, 0.0, 32.0, 256.0});
 }
 
-// enforces: 02-architecture#tile-composite-clipped-to-content-bounds
-TEST_CASE("render_frame_interactive: an unbounded layer composites through the plain composite") {
+// enforces: 02-architecture#bounded-content-extent-zeroed-in-tile
+TEST_CASE("render_frame_interactive: an unbounded layer's tile is never zeroed") {
   arbc::Model model;
   arbc::ObjectId comp{};
   const arbc::ObjectId content_id = make_single_layer(model, comp, 256, 256);
   const arbc::DocStatePtr state = model.current();
-  BoundedSolid content{std::nullopt}; // unbounded: no device bound to clip to
+  BoundedSolid content{std::nullopt}; // unbounded: no extent to enforce
   const auto resolver = [&](arbc::ObjectId id) -> arbc::Content* {
     return id == content_id ? &content : nullptr;
   };
@@ -684,8 +731,14 @@ TEST_CASE("render_frame_interactive: an unbounded layer composites through the p
   arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
                                  arbc::Deadline::none(), std::nullopt);
 
-  // Unbounded content -> region is the whole 256 viewport -> one rung-0 tile,
-  // composited through the plain (unclipped) composite: byte-identical to before.
+  // Unbounded content -> region is the whole 256 viewport -> one rung-0 tile, painted
+  // through the windowed composite like every other tile. What distinguishes it is
+  // that its tile is NEVER cleared: there is no declared extent to enforce, so the
+  // apron is real content on every side.
   CHECK(backend.composite_clipped_calls == 0);
-  CHECK(backend.composite_calls == 1);
+  CHECK(backend.composite_calls == 0);
+  CHECK(backend.composite_windowed_calls == 1);
+  for (const arbc::Surface* on : backend.cleared_on) {
+    CHECK(on == target->get());
+  }
 }

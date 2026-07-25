@@ -24,6 +24,14 @@
 // extent. The oracle is the OFFLINE path (`render_offline`,
 // `compositor.cpp:28-34`), which already sizes its temp to `region ∩ bounds` and
 // so never bleeds: the fix makes the tiled path's pixels match it byte-for-byte.
+//
+// The MECHANISM behind that equality changed with `compositor.tile_apron`: the
+// extent is now enforced by zeroing each rendered tile outside `bounds()`, rather
+// than by clipping the composite to the extent's rounded-out device bound. The
+// claim these cases enforce moved with it. What they assert did not -- bounded
+// content still paints nothing past its extent, and still matches the offline
+// path byte-for-byte -- which is exactly why they are worth keeping across the
+// change: they pin the OUTCOME, not the implementation that produced it.
 // This file qualifies everything with `arbc::` (no `using namespace`), matching
 // `tests/tile_planning_golden.t.cpp`, the sibling tiled==whole oracle.
 
@@ -71,7 +79,7 @@ render_tiled(arbc::Document& document, const arbc::Viewport& viewport, arbc::Cpu
 
 } // namespace
 
-// enforces: 02-architecture#tile-composite-clipped-to-content-bounds
+// enforces: 02-architecture#bounded-content-extent-zeroed-in-tile
 // enforces: 03-layer-plugin-interface#render-within-declared-bounds
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 TEST_CASE("bounded clip golden: a sub-tile bounded solid does not paint past its declared extent") {
@@ -100,7 +108,7 @@ TEST_CASE("bounded clip golden: a sub-tile bounded solid does not paint past its
   REQUIRE(byte_identical(**whole, **tiled));
 }
 
-// enforces: 02-architecture#tile-composite-clipped-to-content-bounds
+// enforces: 02-architecture#bounded-content-extent-zeroed-in-tile
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 TEST_CASE("bounded clip golden: a bounded solid straddling a tile boundary is clipped in both "
           "cells") {
@@ -125,7 +133,7 @@ TEST_CASE("bounded clip golden: a bounded solid straddling a tile boundary is cl
   REQUIRE(byte_identical(**whole, **tiled));
 }
 
-// enforces: 02-architecture#tile-composite-clipped-to-content-bounds
+// enforces: 02-architecture#bounded-content-extent-zeroed-in-tile
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 TEST_CASE("bounded clip golden: gated repaint of sub-tile bounds does not bleed") {
   arbc::Document document;

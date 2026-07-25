@@ -116,17 +116,45 @@ void settle_placeholder_audio(const std::shared_ptr<AudioCompletion>& done) {
 // one `Backend::composite`, no dispatched render and no cache write
 // (Constraints 2, 3) -- exactly the region/scale-honoring copy doc 09 mandates
 // for a provided surface, in reverse (cache tile -> `target`).
+// The source-space paint window for one delivered tile of a covering BLOCK
+// (`compositor.tile_apron` Rule 2/6). Interior tiles paint their cell, so abutting
+// tiles partition the target exactly and neither reads its own transparent border.
+// The block's OUTERMOST tiles extend their window out to the whole surface on their
+// outer sides, because there is no neighbour there to paint that strip and the
+// target's own margin -- the caller's region reaches into it -- must still be
+// filled. A block of one is therefore a plain whole-surface copy, which is exactly
+// what an operator pulling its own tile's render rect should get.
+Rect delivery_window(TileCoord coord, TileCoord first, TileCoord last) {
+  const double lo = static_cast<double>(k_tile_apron);
+  const double hi = static_cast<double>(k_tile_apron + k_tile_size);
+  const double edge = static_cast<double>(k_tile_surface_size);
+  return Rect{(coord.col == first.col) ? 0.0 : lo, (coord.row == first.row) ? 0.0 : lo,
+              (coord.col == last.col) ? edge : hi, (coord.row == last.row) ? edge : hi};
+}
+
 void deliver_tile(Backend& backend, const Surface& tile, TileCoord coord, double rung_px,
-                  const RenderRequest& request) {
+                  const RenderRequest& request, const Rect& window) {
+  // The tile's RENDER rect (cell origin backed off by the apron), which is what its
+  // surface actually covers -- `tile_render_rect` expressed in `rung_px` directly,
+  // since delivery is handed the scale rather than the rung.
   const double cell = static_cast<double>(k_tile_size) / rung_px;
-  const double local_x0 = static_cast<double>(coord.col) * cell;
-  const double local_y0 = static_cast<double>(coord.row) * cell;
+  const double apron = static_cast<double>(k_tile_apron) / rung_px;
+  const double local_x0 = static_cast<double>(coord.col) * cell - apron;
+  const double local_y0 = static_cast<double>(coord.row) * cell - apron;
   const Affine local_from_tile = compose(Affine::translation(local_x0, local_y0),
                                          Affine::scaling(1.0 / rung_px, 1.0 / rung_px));
   const Affine target_from_local =
       compose(Affine::scaling(request.scale, request.scale),
               Affine::translation(-request.region.x0, -request.region.y0));
-  backend.composite(request.target, tile, compose(target_from_local, local_from_tile), 1.0);
+  // Windowed on the tile's CELL (`compositor.tile_apron` Rule 2), which is what
+  // makes this comment's "each covering tile holds its own disjoint slice and
+  // delivers seam-free" claim TRUE. It was not: the tile surface's transparent
+  // border sat inside the tap's reach, so at any fractional phase two abutting
+  // tiles each painted the boundary pixel at partial weight and source-over of two
+  // halves is 0.75, not 1.0. The apron puts real neighbour colour where the border
+  // was; the window keeps each tile painting only what it owns.
+  backend.composite_windowed(request.target, tile, compose(target_from_local, local_from_tile), 1.0,
+                             Rect::infinite(), window);
 }
 
 } // namespace
@@ -155,6 +183,12 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
   }
 
   const bool op = is_operator(input);
+
+  // The input's declared local extent, enforced in every tile this pull renders
+  // (`compositor.tile_apron` Rule 3) and carried onto an async record so the drain
+  // enforces it too. Read once per pull: `bounds()` is metadata, not a per-tile
+  // query. `nullopt` is unbounded content (doc 01:68-77) -- nothing to enforce.
+  const std::optional<Rect> input_bounds = input->bounds();
 
   // Operator identity short-circuit (doc 13:59-65,128): a pass-through operator
   // (a fade at envelope == 1) serves the terminal input's cached tiles directly
@@ -197,7 +231,14 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
 
   const RungSelection selection = select_rung(request.scale);
   const double rung_px = rung_scale(selection.rung);
-  const std::vector<TileCoord> coords = tiles_covering(selection.rung, request.region);
+  // Covered by RENDER rects, not cells (`compositor.tile_apron`). The region an
+  // operator asks its inputs for is its own tile's render rect -- cell plus apron --
+  // and the input's tile at the SAME coord holds exactly that. Covering by cells
+  // would name that tile plus a neighbour on each side in each axis, so every
+  // operator tile would drive nine input renders instead of one.
+  const std::vector<TileCoord> coords = tiles_covering_render(selection.rung, request.region);
+  const TileCoord first_coord = coords.empty() ? TileCoord{} : coords.front();
+  const TileCoord last_coord = coords.empty() ? TileCoord{} : coords.back();
 
   const Stability stability = input->stability();
   const Time key_time = input->quantize_time(request.time).value_or(request.time);
@@ -246,7 +287,8 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
     // dispatches NO render: a warm tile contributes zero work (Constraint 2/3).
     if (std::optional<CacheHold<TileValue>> hit = d_cache.lookup(key);
         hit.has_value() && hit->get().meta.exact && hit->get().meta.achieved_scale == rung_px) {
-      deliver_tile(d_backend, *hit->get().surface, coord, rung_px, request);
+      deliver_tile(d_backend, *hit->get().surface, coord, rung_px, request,
+                   delivery_window(coord, first_coord, last_coord));
       region_exact = region_exact && hit->get().meta.exact;
       continue;
     }
@@ -301,7 +343,8 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
     if (operator_wave_pending(d_config.pending, key)) {
       if (std::optional<CacheHold<TileValue>> transient = d_cache.lookup(key);
           transient.has_value() && transient->get().meta.achieved_scale == rung_px) {
-        deliver_tile(d_backend, *transient->get().surface, coord, rung_px, request);
+        deliver_tile(d_backend, *transient->get().surface, coord, rung_px, request,
+                     delivery_window(coord, first_coord, last_coord));
         if (d_config.counters != nullptr) {
           d_config.counters->note_render_coalesced();
         }
@@ -324,7 +367,7 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
     // per-tile allocation failure fails the WHOLE region to the placeholder
     // (Constraint 2): a partially filled region is not a correct operator input.
     arbc::expected<std::unique_ptr<Surface>, SurfaceError> owned =
-        d_backend.make_surface(k_tile_size, k_tile_size, request.target.format());
+        d_backend.make_surface(k_tile_surface_size, k_tile_surface_size, request.target.format());
     if (!owned.has_value()) {
       settle_placeholder(done);
       return;
@@ -345,7 +388,7 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
     // carried verbatim (doc 05:96-100, `pull-inherits-snapshot-and-deadline`):
     // neither reset nor recomputed, no per-pull sub-budget; only the target and the
     // per-tile region/scale differ.
-    const Rect tile_region = tile_local_rect(selection.rung, coord);
+    const Rect tile_region = tile_render_rect(selection.rung, coord);
     const RenderRequest render_request{tile_region,      rung_px,      request.time,
                                        request.snapshot, tile_surface, request.exactness,
                                        request.deadline};
@@ -391,16 +434,25 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
         // copy is exact) and release it -- the cache never learns the surface was
         // provided (doc 09:109-112,328-340). Absent, the content filled
         // `tile_surface` and there is nothing to copy.
+        const Affine placement = provided_placement(result, tile_region, result.achieved_scale);
         consume_render_result(result, tile_surface, [&](const Surface& src) {
           if (&src != &tile_surface) {
-            d_backend.composite(tile_surface, src, Affine::identity(), 1.0);
+            d_backend.composite(tile_surface, src, placement, 1.0);
           }
         });
         // Deliver the freshly-rendered tile into the caller's `request.target`
         // (`pull-delivers-to-caller-target`): the synchronous-miss analog of the
         // hit delivery above. One composite into this tile's disjoint sub-rect; the
         // render was already dispatched (Constraint 2).
-        deliver_tile(d_backend, tile_surface, coord, rung_px, request);
+        // Enforce the extent BEFORE delivery and before the insert, so the pixels
+        // the caller receives and the pixels the cache keeps are the same ones --
+        // and the same ones `render_frame_interactive` would have produced for this
+        // tile (`compositor.tile_apron` Rule 3).
+        if (input_bounds.has_value()) {
+          clear_tile_outside_bounds(d_backend, tile_surface, tile_region, rung_px, *input_bounds);
+        }
+        deliver_tile(d_backend, tile_surface, coord, rung_px, request,
+                     delivery_window(coord, first_coord, last_coord));
         const std::size_t bytes = tile_byte_cost(tile_surface);
         d_cache.insert(key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
                        bytes, PriorityClass::Visible);
@@ -437,8 +489,13 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
       // below leaves the whole region unsettled and the operator degrades this
       // frame; each async tile re-drives independently.
       const std::size_t bytes = tile_byte_cost(tile_surface);
-      d_config.pending->tiles.push_back(PendingTile{key, request.region, id, stability, bytes,
-                                                    std::move(*owned), std::move(inner)});
+      // `tile_region`, not `request.region`: the record's `local_rect` is the
+      // geometry of the surface travelling with it, and the drain now reads it to
+      // enforce the extent on arrival (`compositor.tile_apron` Rule 3). Storing the
+      // whole pull region here -- which nothing read while the field was inert --
+      // would zero the wrong band of the wrong rectangle.
+      d_config.pending->tiles.push_back(PendingTile{key, tile_region, id, stability, input_bounds,
+                                                    bytes, std::move(*owned), std::move(inner)});
       d_unmet.push_back(key);
       any_async = true;
     } else {

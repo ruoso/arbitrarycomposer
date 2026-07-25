@@ -70,6 +70,12 @@ public:
     composite(dst, src, src_to_dst, opacity);
   }
 
+  void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
+                          double opacity, const Rect& /*device_clip*/,
+                          const Rect& /*src_window*/) override {
+    composite(dst, src, src_to_dst, opacity);
+  }
+
   void downsample(Surface& /*dst*/, const Surface& /*src*/) override {}
 
   void convert(Surface& /*dst*/, const Surface& /*src*/) override {}

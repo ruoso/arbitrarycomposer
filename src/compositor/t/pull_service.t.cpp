@@ -417,7 +417,9 @@ TEST_CASE(
     // nor recomputed), and the region/scale/time are the request's.
     CHECK(rec->last_snapshot == snapshot);
     CHECK(rec->last_deadline == deadline);
-    CHECK(rec->last_region == arbc::Rect::from_size(256.0, 256.0));
+    // The tile's RENDER rect -- cell plus an apron per side (`compositor.tile_apron`)
+    // -- which is the geometry of the surface the dispatched render fills.
+    CHECK(rec->last_region == arbc::tile_render_rect(arbc::ScaleRung{0}, arbc::TileCoord{0, 0}));
     CHECK(rec->last_scale == 1.0);
     CHECK(rec->last_time == arbc::Time::zero());
     // The result tile is inserted under the input's identity; done is settled.
@@ -472,8 +474,10 @@ TEST_CASE("pull_service: a warm hit delivers the resident tile's pixels into the
 
     // Delivery composited the resident tile into the caller's target: for a
     // `from_size(256,256)` region at scale 1.0 over rung-0 tile (0,0) the
-    // tile->target affine is the identity, src is the resident tile, dst the
-    // caller's target, opacity 1.0 -- exactly one composite, no new cache tile.
+    // tile->target affine is a pure translation by MINUS the apron -- the tile
+    // surface's pixel (0,0) covers local `-k_tile_apron`, not local 0
+    // (`compositor.tile_apron` Rule 1) -- src is the resident tile, dst the caller's
+    // target, opacity 1.0: exactly one composite, no new cache tile.
     CHECK(backend.composites == 1);
     CHECK(backend.last.dst == static_cast<const arbc::Surface*>(&caller_target));
     CHECK(backend.last.src == tile_ptr);
@@ -483,8 +487,8 @@ TEST_CASE("pull_service: a warm hit delivers the resident tile's pixels into the
     CHECK(m.b == 0.0);
     CHECK(m.c == 0.0);
     CHECK(m.d == 1.0);
-    CHECK(m.tx == 0.0);
-    CHECK(m.ty == 0.0);
+    CHECK(m.tx == -static_cast<double>(arbc::k_tile_apron));
+    CHECK(m.ty == -static_cast<double>(arbc::k_tile_apron));
     for (const std::byte b : caller_target.cpu_bytes()) {
       CHECK(std::to_integer<unsigned>(b) == 252u); // opacity-1.0 mark folded in
     }
@@ -493,8 +497,9 @@ TEST_CASE("pull_service: a warm hit delivers the resident tile's pixels into the
   SECTION("an off-origin sub-tile region honors the request origin (not a raw blit)") {
     // A 128x128 region offset to local (40,24), still covered by the single rung-0
     // tile (0,0). Delivery must map the tile into `target` under the request's
-    // region origin -- a `translate(-40,-24)` -- proving it does NOT assume the
-    // target and the tile share an origin (Constraint 1).
+    // region origin -- `translate(-40,-24)` less the apron, since the tile surface
+    // starts one apron before its cell -- proving it does NOT assume the target and
+    // the tile share an origin (Constraint 1).
     const arbc::RenderRequest req{arbc::Rect{40.0, 24.0, 168.0, 152.0},
                                   1.0,
                                   arbc::Time::zero(),
@@ -512,8 +517,8 @@ TEST_CASE("pull_service: a warm hit delivers the resident tile's pixels into the
     const arbc::Affine m = backend.last.affine;
     CHECK(m.a == 1.0);
     CHECK(m.d == 1.0);
-    CHECK(m.tx == -40.0);
-    CHECK(m.ty == -24.0);
+    CHECK(m.tx == -40.0 - static_cast<double>(arbc::k_tile_apron));
+    CHECK(m.ty == -24.0 - static_cast<double>(arbc::k_tile_apron));
   }
 }
 
@@ -560,8 +565,8 @@ TEST_CASE("pull_service: a synchronous miss delivers the freshly-rendered tile i
   CHECK(m.b == 0.0);
   CHECK(m.c == 0.0);
   CHECK(m.d == 1.0);
-  CHECK(m.tx == 0.0);
-  CHECK(m.ty == 0.0);
+  CHECK(m.tx == -static_cast<double>(arbc::k_tile_apron));
+  CHECK(m.ty == -static_cast<double>(arbc::k_tile_apron));
   for (const std::byte b : caller_target.cpu_bytes()) {
     CHECK(std::to_integer<unsigned>(b) == 252u);
   }
@@ -611,11 +616,20 @@ TEST_CASE("pull_service: a pull over a 2x2-tile region fills the caller's target
     std::sort(out.begin(), out.end());
     return out;
   };
+  // Each cell origin, less the apron: a tile surface's pixel (0,0) covers local
+  // `cell origin - k_tile_apron` (`compositor.tile_apron` Rule 1).
+  const double apron = static_cast<double>(arbc::k_tile_apron);
   const std::vector<std::pair<double, double>> expected_translations{
-      {0.0, 0.0}, {0.0, 256.0}, {256.0, 0.0}, {256.0, 256.0}};
+      {-apron, -apron},
+      {-apron, 256.0 - apron},
+      {256.0 - apron, -apron},
+      {256.0 - apron, 256.0 - apron}};
 
   auto seed = [&](const TileKey& key) {
-    auto surf = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+    // The tile SURFACE, apron included -- the geometry a rendered tile has, which is
+    // what delivery's affine and window assume.
+    auto surf = backend.make_surface(arbc::k_tile_surface_size, arbc::k_tile_surface_size,
+                                     arbc::k_working_rgba32f);
     REQUIRE(surf.has_value());
     const std::size_t bytes = arbc::tile_byte_cost(**surf);
     cache.insert(key, TileValue{std::move(*surf), {1.0, true}}, bytes,

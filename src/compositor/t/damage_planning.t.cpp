@@ -766,7 +766,26 @@ TEST_CASE("repaint_regions falls back to the bbox over the rect-count cap") {
 // enforces: 02-architecture#interactive-still-scene-schedules-no-frame
 TEST_CASE("a disjoint repaint set skips the undamaged gap (counter-backed)") {
   MarkBackend mark;
-  arbc::testing::CountingBackend backend(mark); // tallies the clip-scoped ops
+  // Tallies the clip-scoped ops, but the counts below are about the FRAME TARGET's
+  // clears -- "one clear_rect per repaint rect". `clear_rect` also serves a second,
+  // unrelated purpose now: zeroing a rendered tile outside its content's declared
+  // extent (`compositor.tile_apron` Rule 3), on the tile surface. Those are a
+  // different destination and a different claim, so they are counted apart rather
+  // than folded into a number that would then mean neither thing.
+  class TargetClearCounter final : public arbc::testing::CountingBackend {
+  public:
+    using arbc::testing::CountingBackend::CountingBackend;
+    void clear_rect(arbc::Surface& dst, const arbc::Rect& device_rect, float r, float g, float b,
+                    float a) override {
+      if (&dst == target) {
+        ++target_clear_rects;
+      }
+      arbc::testing::CountingBackend::clear_rect(dst, device_rect, r, g, b, a);
+    }
+    const arbc::Surface* target{nullptr};
+    int target_clear_rects{0};
+  };
+  TargetClearCounter backend(mark);
   StubContent content(Stability::Static);
   arbc::Model model;
   arbc::ObjectId comp{};
@@ -785,9 +804,11 @@ TEST_CASE("a disjoint repaint set skips the undamaged gap (counter-backed)") {
   auto drive = [&](TileCache& cache, const DirtyRegion* dirty, CompositorCounters& counters,
                    std::vector<arbc::LayerTilePlan>* plans = nullptr) {
     backend.reset();
+    backend.target_clear_rects = 0;
     arbc::expected<std::unique_ptr<arbc::Surface>, arbc::SurfaceError> target =
         backend.make_surface(512, 512, arbc::k_working_rgba32f);
     REQUIRE(target.has_value());
+    backend.target = target->get();
     arbc::render_frame_interactive(*state, resolver, viewport, cache, backend, pool, **target,
                                    arbc::Deadline::none(), std::nullopt, nullptr, &counters, dirty,
                                    arbc::Time::zero(), plans);
@@ -802,7 +823,7 @@ TEST_CASE("a disjoint repaint set skips the undamaged gap (counter-backed)") {
     TileCache split_cache(64u * 1024 * 1024);
     CompositorCounters split;
     drive(split_cache, &dirty, split);
-    const int split_clears = backend.clear_rect_calls;
+    const int split_clears = backend.target_clear_rects;
 
     // The same damage forced through the bounding box: a one-rect `DirtyRegion` holding
     // exactly `repaint_region`'s box normalizes to itself, so this frame IS the pre-task
@@ -812,7 +833,7 @@ TEST_CASE("a disjoint repaint set skips the undamaged gap (counter-backed)") {
     TileCache box_cache(64u * 1024 * 1024);
     CompositorCounters box;
     drive(box_cache, &boxed, box);
-    const int box_clears = backend.clear_rect_calls;
+    const int box_clears = backend.target_clear_rects;
 
     CHECK(split.composites() == 2);               // the two corner tiles, nothing between
     CHECK(box.composites() == k_tiles_covered);   // every tile of the 2x2 grid
@@ -843,7 +864,7 @@ TEST_CASE("a disjoint repaint set skips the undamaged gap (counter-backed)") {
     // dispatch, so the duplicate plan never reaches a dispatch site to be suppressed.
     // (The guard is still the backstop for a tile two LAYERS want in one frame.)
     CHECK(counters.requests_suppressed() == 0);
-    CHECK(backend.clear_rect_calls == 2);
+    CHECK(backend.target_clear_rects == 2);
     // Per-rect planning naturally produces N plans for one layer. They are merged, so
     // `visible_plans` keeps its contract: one entry per planned layer, in composite
     // order -- not one per (layer, rect) (`compositor.expose_visible_plan`).

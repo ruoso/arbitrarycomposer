@@ -77,9 +77,10 @@ bool tile_in_flight(const RefinementQueue* queue, const TileKey& key) noexcept {
     // Keyed on the `TileKey` alone -- the full five-field equality, so a revision
     // bump, a rung change, a different coord or a different achieved_time is a
     // DIFFERENT tile and is dispatched. `PendingTile::local_rect` is deliberately
-    // not consulted: the two record sites disagree about it (the driver stores the
-    // tile cell, `pull` stores the whole pull region) and nothing reads it --
-    // `poll_refinements` derives its damage rect from the key.
+    // not consulted: it is the geometry of the surface travelling with the record
+    // (both sites now store the tile's render rect, since `poll_refinements` reads
+    // it to enforce the content's extent on arrival), not part of the tile's
+    // identity -- and the damage rect is derived from the key, not from it.
     if (!(pending.key == key)) {
       continue;
     }
@@ -249,11 +250,24 @@ std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
       // there is nothing to copy. `backend` is non-null on the production drain
       // (`runtime.interactive`); a null backend only reaches here in a test with no
       // provided surface, so the copy branch is never taken without one.
+      const Affine placement =
+          provided_placement(result, pending.local_rect, result.achieved_scale);
       consume_render_result(result, *pending.surface, [&](const Surface& src) {
         if (&src != pending.surface.get() && backend != nullptr) {
-          backend->composite(*pending.surface, src, Affine::identity(), 1.0);
+          backend->composite(*pending.surface, src, placement, 1.0);
         }
       });
+      // Enforce the content's declared extent in the arriving tile's pixels before
+      // it becomes a cache entry (`compositor.tile_apron` Rule 3), exactly as the
+      // two inline insert sites do. A tile is rendered over its cell PLUS an apron
+      // and content is not required to self-clip, so without this an async arrival
+      // would cache colour past `bounds()` that the synchronous path never caches --
+      // and the same tile would then composite differently depending on whether its
+      // render happened to answer inline.
+      if (pending.bounds.has_value() && backend != nullptr) {
+        clear_tile_outside_bounds(*backend, *pending.surface, pending.local_rect,
+                                  rung_scale(pending.key.rung), *pending.bounds);
+      }
       // The arrival is placed under its exact request key so a follow-up frame at
       // the same revision plans it Fresh (doc 02:100-104 pin), then dropped from
       // the queue by simply not retaining it.

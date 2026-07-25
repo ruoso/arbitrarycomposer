@@ -52,6 +52,7 @@
 #include <arbc/surface/surface_pool.hpp>
 #include <arbc/surface/testing/stub_backend.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -101,17 +102,50 @@ public:
   }
 
   void clear(Surface& surface, float r, float g, float b, float a) override {
+    clear_rect(
+        surface,
+        Rect{0.0, 0.0, static_cast<double>(surface.width()), static_cast<double>(surface.height())},
+        r, g, b, a);
+  }
+
+  // Modelled, not delegated to the whole-surface `clear` the way `StubBackend`'s
+  // default does. This double models PIXELS, and the compositor now uses `clear_rect`
+  // to clear a tile's COMPLEMENT -- the four bands outside a content's declared extent
+  // (`compositor.tile_apron` Rule 3) -- where ignoring the rect does not over-clear a
+  // little, it erases the whole tile and every scene renders transparent.
+  void clear_rect(Surface& surface, const Rect& device_rect, float r, float g, float b,
+                  float a) override {
     const std::span<float> px = surface.span<PixelFormat::Rgba32fLinearPremul>();
-    for (std::size_t i = 0; i + 3 < px.size(); i += 4) {
-      px[i + 0] = r;
-      px[i + 1] = g;
-      px[i + 2] = b;
-      px[i + 3] = a;
+    const int x0 = std::max(0, static_cast<int>(std::floor(device_rect.x0)));
+    const int y0 = std::max(0, static_cast<int>(std::floor(device_rect.y0)));
+    const int x1 = std::min(surface.width(), static_cast<int>(std::ceil(device_rect.x1)));
+    const int y1 = std::min(surface.height(), static_cast<int>(std::ceil(device_rect.y1)));
+    for (int y = y0; y < y1; ++y) {
+      for (int x = x0; x < x1; ++x) {
+        const std::size_t i =
+            (static_cast<std::size_t>(y) * static_cast<std::size_t>(surface.width()) +
+             static_cast<std::size_t>(x)) *
+            4;
+        px[i + 0] = r;
+        px[i + 1] = g;
+        px[i + 2] = b;
+        px[i + 3] = a;
+      }
     }
   }
 
   void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
                  double opacity) override {
+    composite_windowed(dst, src, src_to_dst, opacity, Rect::infinite(), Rect::infinite());
+  }
+
+  // The source-space paint window is modelled for the same reason `clear_rect` is: the
+  // compositor paints every tile through it (`compositor.tile_apron` Rule 2), and a
+  // double that ignored it would let each tile paint its neighbours' aprons too --
+  // double-blending every tile boundary in the benchmark's own pixels.
+  void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
+                          double opacity, const Rect& /*device_clip*/,
+                          const Rect& window) override {
     const std::optional<Affine> inv = src_to_dst.inverse();
     if (!inv.has_value()) {
       return; // a degenerate placement contributes nothing (doc 04:116-117)
@@ -127,6 +161,9 @@ public:
     for (int y = 0; y < dst.height(); ++y) {
       for (int x = 0; x < dst.width(); ++x) {
         const Vec2 p = inv->apply(Vec2{static_cast<double>(x) + 0.5, static_cast<double>(y) + 0.5});
+        if (!(p.x >= window.x0 && p.x < window.x1 && p.y >= window.y0 && p.y < window.y1)) {
+          continue;
+        }
         const auto sx = static_cast<int>(std::floor(p.x));
         const auto sy = static_cast<int>(std::floor(p.y));
         if (sx < 0 || sy < 0 || sx >= sw || sy >= sh) {

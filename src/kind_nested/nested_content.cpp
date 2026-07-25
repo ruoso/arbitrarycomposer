@@ -1,5 +1,6 @@
 #include <arbc/kind_nested/nested_content.hpp>
 #include <arbc/media/audio_resampler.hpp>
+#include <arbc/media/image_resampler.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -56,6 +57,41 @@ std::optional<TimeRange> map_child_extent_to_parent(const TimeMap& tm, const Tim
     return std::nullopt;
   }
   return TimeRange{Time{std::min(a->flicks, b->flicks)}, Time{std::max(a->flicks, b->flicks)}};
+}
+
+// How far, in DEVICE pixels, the composite's resampling tap reaches past the pixel
+// it is filling: the Catmull-Rom bicubic's 4x4 footprint spans `i0 +
+// k_magnify_first_tap .. i0 + k_magnify_first_tap + k_magnify_taps - 1`
+// (`image_resampler.hpp:129-133`), two texels past the base texel. The same
+// quantity the compositor names `k_composite_tap_reach`; nested cannot reach that
+// header (L5 kinds see `contract`, not `compositor`), so it derives it from the
+// shared filter bank both paths already agree on.
+inline constexpr int k_composite_tap_reach = k_magnify_taps + k_magnify_first_tap - 1;
+
+// Grow a child layer's render region by one resampling tap reach, but only as far
+// as the content actually EXTENDS (`compositor.tile_apron` Rule 7).
+//
+// A child layer's region is `inv(device_rect) INTERSECT bounds`, and the two clips
+// want opposite treatment at the temp's border. Where the VIEWPORT narrowed it, a
+// transparent border is ringing -- the content continues past the edge and the tap
+// must read it, so that side grows. Where the content's own BOUNDS narrowed it, a
+// transparent border is correct antialiased falloff -- the content genuinely ends
+// there, and the flat walk produces exactly the same falloff by zeroing its tile
+// outside `bounds()` -- so that side must NOT grow.
+//
+// Clamping the grown rect back to `bounds` says both at once: a side already at the
+// extent is clamped straight back to where it was, a side the viewport cut is left
+// grown (the extent reaches past it by construction, or the viewport would not have
+// been the binding clip). It also keeps the temp from ever covering pixels outside
+// the extent, so nested needs no zeroing pass -- and, decisively, it keeps the
+// region from straddling a tile boundary it did not straddle before: nested pulls
+// through the `PullService`, which covers the requested region with WHOLE TILES, so
+// growing an already-cell-aligned region by two device pixels turns one covering
+// tile into four and quadruples the renders behind it.
+Rect grow_within_bounds(const Rect& region, double scale, const std::optional<Rect>& bounds) {
+  const double reach = k_composite_tap_reach / scale;
+  const Rect grown{region.x0 - reach, region.y0 - reach, region.x1 + reach, region.y1 + reach};
+  return bounds.has_value() ? grown.intersect(*bounds) : grown;
 }
 
 } // namespace
@@ -351,8 +387,9 @@ bool NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   }
 
   Rect region = inv->map_rect(device_rect);
-  if (const std::optional<Rect> b = content->bounds(); b.has_value()) {
-    region = region.intersect(*b);
+  const std::optional<Rect> local_bounds = content->bounds();
+  if (local_bounds.has_value()) {
+    region = region.intersect(*local_bounds);
   }
   if (region.empty()) {
     return true;
@@ -370,13 +407,26 @@ bool NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   if (!(scale > 0.0) || !std::isfinite(scale)) {
     return true;
   }
-  const int temp_width = static_cast<int>(std::ceil(region.width() * scale));
-  const int temp_height = static_cast<int>(std::ceil(region.height() * scale));
-  if (temp_width <= 0 || temp_height <= 0) {
+  const int footprint_width = static_cast<int>(std::ceil(region.width() * scale));
+  const int footprint_height = static_cast<int>(std::ceil(region.height() * scale));
+  if (footprint_width <= 0 || footprint_height <= 0) {
     // Sub-pixel cull (doc 04) -- also the guaranteed termination of a <1x Droste
     // cycle, which bottoms out here after finitely many turns (doc 05:61-65).
+    // Measured on the UNGROWN footprint deliberately: the growth below is a
+    // constant, so a grown measure would never reach zero and the cycle would lose
+    // its floor.
     return true;
   }
+
+  // Render one tap reach past the region wherever the content continues past it, so
+  // the composite's outer tap reads real colour instead of this temp's transparent
+  // border (`grow_within_bounds` above). The growth is a whole number of DEVICE
+  // pixels converted to local units, so the temp's pixel grid keeps exactly the phase
+  // it had -- the grown temp is the ungrown one with more content around it, never a
+  // resampled shift of it.
+  const Rect grown = grow_within_bounds(region, scale, local_bounds);
+  const int temp_width = static_cast<int>(std::ceil(grown.width() * scale));
+  const int temp_height = static_cast<int>(std::ceil(grown.height() * scale));
 
   expected<std::unique_ptr<Surface>, SurfaceError> temp_result =
       backend.make_surface(temp_width, temp_height, target.format());
@@ -408,7 +458,7 @@ bool NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   // sub-budgeted per level. Only region/scale/target and now the retimed `time` are
   // the layer's own.
   const RenderRequest sub{
-      region, scale, *local_time, request.snapshot, temp, request.exactness, request.deadline};
+      grown, scale, *local_time, request.snapshot, temp, request.exactness, request.deadline};
 
   // Reuse the injected PullService, never `content->render` (doc 13:69-71): cache
   // lookup, worker dispatch, snapshot/deadline inheritance, aggregate revision,
@@ -437,10 +487,11 @@ bool NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   }
   const RenderResult result = **settled;
 
-  // temp pixel (i, j) covers local (region origin + (i, j) / achieved): map temp
-  // space through content-local space to device space (mirrors render_layer).
+  // temp pixel (i, j) covers local (GROWN region origin + (i, j) / achieved): map
+  // temp space through content-local space to device space (mirrors the flat walk's
+  // `surface_to_device`).
   const Affine temp_to_dst = compose(
-      composed, compose(Affine::translation(region.x0, region.y0),
+      composed, compose(Affine::translation(grown.x0, grown.y0),
                         Affine::scaling(1.0 / result.achieved_scale, 1.0 / result.achieved_scale)));
   backend.composite(target, temp, temp_to_dst, layer.opacity);
 

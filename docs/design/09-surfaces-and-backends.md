@@ -56,6 +56,27 @@ kernel per operation, not two. This is a scissor rect: it is the shape a GPU
 backend's command list wants, and it keeps the "core never loops over
 pixels" rule intact — the core computes the region, the backend honors it.
 
+**The source-space paint window.** Compositing comes in a third form,
+`composite_windowed(dst, src, src_to_dst, opacity, device_clip, src_window)`,
+which carries the destination clip above *and* a half-open rect in the
+**source's own pixel space**. A destination pixel is painted only if its
+sample position falls inside that window; the resampling tap still reads the
+whole of `src`. The window narrows what is *painted*, never what is
+*sampled*, and `composite_clipped` is this operation with an infinite one.
+
+It exists because a tiled compositor needs both at once: a tile's tap must
+reach past the tile's edge (or it lands on the surface's transparent border
+and every tile boundary rings — doc 02 step 5), while each destination pixel
+must still be painted exactly once (or overlapping paints double-blend). A
+destination-space scissor cannot express that. Tiles are axis-aligned in
+*local* space, so under rotation or shear adjacent tiles' device footprints
+are overlapping quads and no rect partition of the destination exists — a
+clip rounded out double-blends a band, one rounded in opens a gap. The
+*sample position*, though, lands in exactly one tile's cell for any
+invertible affine, so the partition is exact in source space and nowhere
+else. On a GPU this is a per-fragment discard against a uniform rect, not a
+new pass.
+
 - **CPU reference backend (v1):** surfaces are memory buffers; kernels are
   the doc-07 templated loops; everything supports typed access; import is
   wrap-or-copy of caller memory. Exists for correctness, tests, and hosts
@@ -164,10 +185,22 @@ struct RenderResult {
   double achieved_scale;
   bool   exact;
   std::optional<SurfaceRef> provided;  // instead of the request's target
+  std::optional<Vec2> provided_origin; // where its pixel (0,0) sits, in local space
   // provided != target implies: compositor composites/caches from
   // `provided`; the request's target is returned to the pool untouched.
 };
 ```
+
+- **Placement:** `provided_origin` names the content-local point the provided
+  surface's pixel `(0, 0)` covers. Absent — the default — it is the request
+  `region`'s own origin, i.e. the surface answers the request in place. The
+  two are not always the same point: content that provides a surface it did
+  *not* render for this request, such as a decoder handing back its native
+  frame (the motivating case above), provides pixels whose origin is a
+  property of the content rather than of the request, and the compositor
+  cannot otherwise know where to put them. Stating the origin is what makes
+  the zero-copy path correct for any request region rather than for the one
+  request whose origin happens to coincide.
 
 - A content-provided surface must carry compatible tags or be convertible;
   the backend converts at composite time if needed (doc 07 rules apply —

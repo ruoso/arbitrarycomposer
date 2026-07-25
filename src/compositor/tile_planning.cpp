@@ -5,6 +5,7 @@
 #include <arbc/compositor/refinement.hpp>
 #include <arbc/compositor/tile_planning.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -47,16 +48,6 @@ std::int32_t floor_div(std::int32_t numerator, std::int32_t divisor) {
     --quotient;
   }
   return quotient;
-}
-
-// Round a device-space rect OUT to whole pixels: floor the min corner, ceil the
-// max (the `floor/floor/ceil/ceil` convention of damage_planning.cpp:39-40). A
-// clip rounded out never removes a pixel the content legitimately covers -- a
-// coverage gap is a worse defect than a bounded bleed (bounded_content_tile_clip
-// Constraint 2). Axis-aligned integer bounds round to themselves (exact); a
-// rotated/sheared extent yields a conservative AABB (Decision 3).
-Rect round_out(const Rect& rect) {
-  return Rect{std::floor(rect.x0), std::floor(rect.y0), std::ceil(rect.x1), std::ceil(rect.y1)};
 }
 
 // Map a tile surface (whose pixel (i, j) covers `local_rect.origin + (i, j) /
@@ -102,30 +93,38 @@ std::uint64_t coord_key(TileCoord coord) {
 // (Decision 4). At one clip -- every un-gated frame, every single-rect gated frame --
 // it is one bump, exactly as before.
 //
-// `device_bounds`, when non-null, is the content's finite `bounds()` mapped
-// (rounded out) into device space (`bounded_content_tile_clip`): the composite
-// is clipped to it so a whole-cell tile extending past the declared extent paints
-// no pixel beyond it, matching the offline path (compositor.cpp:28-34). It
-// composes with the repaint-region clip by intersection -- a subset of the
-// disjoint repaint rect, so each pixel is still painted once (Constraint 5). A
-// null entry (the un-gated path) with finite bounds routes to `composite_clipped`
-// carrying just the device bound; a null entry with `nullptr` bounds (unbounded
-// content) stays on the plain unclipped `composite`, byte-identical to before
-// (Constraint 4). The counter bump stays once per clip entry -- counter-neutral,
-// since a planned tile overlaps its clip by construction (Constraint 3).
+// Every composite here is a WINDOWED one (`compositor.tile_apron` Rule 2): the
+// source is a tile surface carrying an apron of its neighbours' content, and
+// `k_tile_cell_window` restricts the paint to the tile's own cell while leaving
+// the resampling tap free to reach into that apron. Adjacent cells abut exactly in
+// source space, so the windows partition the destination -- every device pixel is
+// painted by exactly one tile, which is what the un-windowed composite could not
+// do: two neighbours each painted the boundary pixel at partial weight against
+// their own transparent borders, and source-over of two halves is 0.75, not 1.0.
+//
+// The destination clip and the source window answer different questions -- "which
+// pixels may this frame touch?" versus "which pixels does this tile own?" -- so
+// they are threaded together, never fused. `Rect::infinite()` is the
+// no-destination-clip case, which is exactly how `composite_clipped` is defined
+// against `composite`, so this is one call, not three.
+//
+// This is where the retired `device_bounds` clip used to be
+// (`bounded_content_tile_clip`). A bounded content's extent is now enforced in the
+// tile's own pixels by `clear_tile_outside_bounds`, which antialiases the edge
+// instead of hard-clipping it to whole device pixels -- strictly better, and
+// incompatible with keeping both: the round-out clip is 1 device pixel wider than
+// the extent while the falloff reaches `k_composite_tap_reach` (2), so it would
+// truncate exactly the antialiasing it was replaced by.
+//
+// The counter bump stays once per clip entry -- counter-neutral, since a planned
+// tile overlaps its clip by construction (Constraint 3).
 void composite_onto_target(Backend& backend, Surface& target, const Surface& src,
                            const Affine& src_to_dst, double opacity,
                            std::span<const Rect* const> clips, CompositorCounters* counters,
-                           const Rect* device_bounds) {
+                           const Rect& window) {
   for (const Rect* clip : clips) {
-    if (clip != nullptr) {
-      const Rect clipped = (device_bounds != nullptr) ? clip->intersect(*device_bounds) : *clip;
-      backend.composite_clipped(target, src, src_to_dst, opacity, clipped);
-    } else if (device_bounds != nullptr) {
-      backend.composite_clipped(target, src, src_to_dst, opacity, *device_bounds);
-    } else {
-      backend.composite(target, src, src_to_dst, opacity);
-    }
+    backend.composite_windowed(target, src, src_to_dst, opacity,
+                               (clip != nullptr) ? *clip : Rect::infinite(), window);
     if (counters != nullptr) {
       counters->note_composite();
     }
@@ -143,17 +142,20 @@ void composite_onto_target(Backend& backend, Surface& target, const Surface& src
 void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
                        const PlannedTile& tile, const Affine& local_to_device, ScaleRung rung,
                        double opacity, CompositorCounters* counters,
-                       std::span<const Rect* const> clips, const Rect* device_bounds) {
+                       std::span<const Rect* const> clips, const Rect& window) {
   const double rung_px = rung_scale(rung);
   const int octave = rung.index - tile.source_rung.index;
   const std::int32_t factor = std::int32_t{1} << octave;
   const TileCoord coarser_coord{floor_div(tile.coord.col, factor),
                                 floor_div(tile.coord.row, factor)};
-  const Rect coarser_rect = tile_local_rect(tile.source_rung, coarser_coord);
+  // The coarser SURFACE's geometry, apron included -- `k_tile_apron` is sized so
+  // this fill reads real colour rather than the coarser surface's border for every
+  // octave gap (the `a * (1 - 2^-k) >= 2` derivation on the constant).
+  const Rect coarser_rect = tile_render_rect(tile.source_rung, coarser_coord);
   const double coarser_px = rung_scale(tile.source_rung);
 
   expected<PooledSurface, SurfaceError> temp =
-      pool.acquire(k_tile_size, k_tile_size, target.format());
+      pool.acquire(k_tile_surface_size, k_tile_surface_size, target.format());
   if (!temp.has_value()) {
     return; // cannot upscale this fallback this pass: leave transparent
   }
@@ -175,7 +177,7 @@ void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
 
   composite_onto_target(backend, target, temp_surface,
                         surface_to_device(local_to_device, tile.local_rect, rung_px), opacity,
-                        clips, counters, device_bounds);
+                        clips, counters, window);
 }
 
 } // namespace
@@ -213,6 +215,63 @@ Rect tile_local_rect(ScaleRung rung, TileCoord coord) {
   return Rect{x0, y0, x0 + cell, y0 + cell};
 }
 
+std::vector<TileCoord> tiles_covering_render(ScaleRung rung, const Rect& local_region) {
+  if (local_region.empty()) {
+    return {};
+  }
+  // Shrinking by the apron before covering by cells is exactly "cover by render
+  // rects": the cells covering the shrunk region span at least it, and growing each
+  // of them by the apron therefore spans at least the original. A region narrower
+  // than two aprons shrinks to nothing -- it is smaller than any tile's apron, so
+  // the cell containing its centre holds it whole.
+  const double apron = static_cast<double>(k_tile_apron) / rung_scale(rung);
+  const Rect shrunk{local_region.x0 + apron, local_region.y0 + apron, local_region.x1 - apron,
+                    local_region.y1 - apron};
+  if (!shrunk.empty()) {
+    return tiles_covering(rung, shrunk);
+  }
+  const double cx = 0.5 * (local_region.x0 + local_region.x1);
+  const double cy = 0.5 * (local_region.y0 + local_region.y1);
+  return tiles_covering(rung,
+                        Rect{cx, cy, std::nextafter(cx, cx + 1.0), std::nextafter(cy, cy + 1.0)});
+}
+
+Rect tile_render_rect(ScaleRung rung, TileCoord coord) {
+  const Rect cell = tile_local_rect(rung, coord);
+  const double apron = static_cast<double>(k_tile_apron) / rung_scale(rung);
+  return Rect{cell.x0 - apron, cell.y0 - apron, cell.x1 + apron, cell.y1 + apron};
+}
+
+void clear_tile_outside_bounds(Backend& backend, Surface& surface, const Rect& local_rect,
+                               double rung_px, const Rect& bounds) {
+  // The extent in the tile surface's own pixel coordinates. Four bands rather than
+  // one rect because the operation is "clear the complement": `clear_rect` scopes
+  // to a rect, and the complement of a rect inside a rect is exactly a top band, a
+  // bottom band, and two side bands between them. Bands that fall outside the
+  // surface clip to nothing (`clear_rect` intersects with the destination), so a
+  // tile lying wholly inside the extent clears nothing and a tile lying wholly
+  // outside it clears everything, with no case analysis here.
+  const double w = static_cast<double>(surface.width());
+  const double h = static_cast<double>(surface.height());
+  const double x0 = (bounds.x0 - local_rect.x0) * rung_px;
+  const double y0 = (bounds.y0 - local_rect.y0) * rung_px;
+  const double x1 = (bounds.x1 - local_rect.x0) * rung_px;
+  const double y1 = (bounds.y1 - local_rect.y0) * rung_px;
+  const auto clear_band = [&](const Rect& band) {
+    // Skipped when empty rather than handed to the backend to no-op on: a tile lying
+    // wholly inside the extent -- the overwhelming majority of tiles of any content
+    // larger than one cell -- then issues NO backend call at all, so the extent
+    // enforcement is free where there is no extent edge to enforce.
+    if (!band.empty()) {
+      backend.clear_rect(surface, band, 0.0F, 0.0F, 0.0F, 0.0F);
+    }
+  };
+  clear_band(Rect{0.0, 0.0, w, y0});
+  clear_band(Rect{0.0, y1, w, h});
+  clear_band(Rect{0.0, y0, x0, y1});
+  clear_band(Rect{x1, y0, w, y1});
+}
+
 LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revision,
                          std::optional<std::uint64_t> prior_revision,
                          const RungSelection& selection, const Rect& local_region,
@@ -246,7 +305,12 @@ LayerTilePlan plan_layer(TileCache& cache, ObjectId content, std::uint64_t revis
   for (const TileCoord coord : tiles_covering(selection.rung, local_region)) {
     PlannedTile tile;
     tile.coord = coord;
-    tile.local_rect = tile_local_rect(selection.rung, coord);
+    // The RENDER rect, not the cell: this is the region the tile's `RenderRequest`
+    // covers and the geometry of its `k_tile_surface_size` surface
+    // (`compositor.tile_apron` Rule 1). The cell remains the tile's identity --
+    // `coord`, `key`, and the arrival damage `poll_refinements` emits all still
+    // speak in cells.
+    tile.local_rect = tile_render_rect(selection.rung, coord);
     tile.key = TileKey{content, revision, selection.rung, coord, achieved_time};
     tile.klass = PriorityClass::Visible;
     tile.source_rung = selection.rung;
@@ -466,19 +530,17 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       return; // degenerate placement: cull (doc 04)
     }
     Rect region = inv->map_rect(device_rect);
-    // The content's finite `bounds()`, mapped (rounded out) into device space,
-    // is the composite-time clip that keeps a sub-tile bounded content from
-    // painting its whole-cell overhang (`bounded_content_tile_clip`). It is
-    // computed once per layer, from the SAME `bounds()` that culls `region`
-    // below, and threaded to every composite call. `nullopt` (unbounded content,
-    // doc 01:68-77) leaves the pointer null and every composite unclipped --
-    // byte-identical to before (Constraint 4).
-    std::optional<Rect> device_bounds;
-    if (const std::optional<Rect> bounds = content->bounds(); bounds.has_value()) {
-      region = region.intersect(*bounds);
-      device_bounds = round_out(composed.map_rect(*bounds));
+    // The content's finite `bounds()` in LOCAL space, kept for the tile-side
+    // extent enforcement (`compositor.tile_apron` Rule 3): each rendered tile has
+    // everything outside it zeroed, so the extent edge antialiases instead of being
+    // hard-clipped at composite time. This replaces `bounded_content_tile_clip`'s
+    // device-space round-out clip, which could only ever produce a whole-pixel edge
+    // and a <=1px bleed. `nullopt` (unbounded content, doc 01:68-77) enforces
+    // nothing: there is no extent, and the apron is real content everywhere.
+    const std::optional<Rect> local_bounds = content->bounds();
+    if (local_bounds.has_value()) {
+      region = region.intersect(*local_bounds);
     }
-    const Rect* const device_bounds_ptr = device_bounds.has_value() ? &*device_bounds : nullptr;
     if (region.empty()) {
       return;
     }
@@ -595,9 +657,27 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       return;
     }
 
+    // The planned block's coord extents, for the per-tile source window
+    // (`tile_block_window`). Taken over the MERGED plan, so a tile is treated as a
+    // block edge only when no other planned tile of this layer lies beyond it in that
+    // axis -- which is exactly when opening its window outward can collide with
+    // nothing. A plan that is not a solid rectangle (the damage-gated path merges
+    // per-rect plans) is still safe: the min/max are global, so a tile that is not at
+    // the extreme keeps its cell window, and an unplanned gap between two rects is
+    // territory this frame is not repainting anyway.
+    TileCoord block_first = plan.tiles.front().coord;
+    TileCoord block_last = block_first;
+    for (const PlannedTile& tile : plan.tiles) {
+      block_first.col = std::min(block_first.col, tile.coord.col);
+      block_first.row = std::min(block_first.row, tile.coord.row);
+      block_last.col = std::max(block_last.col, tile.coord.col);
+      block_last.row = std::max(block_last.row, tile.coord.row);
+    }
+
     for (std::size_t at = 0; at < plan.tiles.size(); ++at) {
       PlannedTile& tile = plan.tiles[at];
       const std::span<const Rect* const> clips{tile_clips[at]};
+      const Rect window = tile_block_window(tile.coord, block_first, block_last);
       // Doc 02 step 3/4: a miss is checked against the PENDING SET as well as the
       // cache. A tile whose render is already in flight -- this frame dispatched it
       // for another layer, or an operator's pull did -- is absent from the cache and
@@ -648,7 +728,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
       // becomes its own fresh display source.
       if (tile.is_miss && !in_flight && !wave_pending) {
         expected<std::unique_ptr<Surface>, SurfaceError> owned =
-            backend.make_surface(k_tile_size, k_tile_size, target.format());
+            backend.make_surface(k_tile_surface_size, k_tile_surface_size, target.format());
         if (owned.has_value()) {
           Surface& tile_surface = **owned;
           backend.clear(tile_surface, 0.0F, 0.0F, 0.0F, 0.0F);
@@ -752,11 +832,25 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                 // cleared to transparent above, so a source-over copy yields exactly
                 // the provided pixels. Absent, the content already filled
                 // `tile_surface` and there is nothing to copy.
+                const Affine placement =
+                    provided_placement(result, tile.local_rect, result.achieved_scale);
                 consume_render_result(result, tile_surface, [&](const Surface& src) {
                   if (&src != &tile_surface) {
-                    backend.composite(tile_surface, src, Affine::identity(), 1.0);
+                    backend.composite(tile_surface, src, placement, 1.0);
                   }
                 });
+                // Enforce the declared extent IN THE TILE (`compositor.tile_apron`
+                // Rule 3), before the surface becomes a cache entry, so every later
+                // reader -- this frame's composite, a `Stale` display, a `Coarser`
+                // upscale -- sees the same enforced pixels. Content is not required
+                // to self-clip and a whole-cell request asks it for more than its
+                // extent, so this is where "bounded content paints nothing past its
+                // bounds" actually becomes true; and because it is zeroed rather than
+                // clipped away at composite time, the tap falls off across the edge.
+                if (local_bounds.has_value()) {
+                  clear_tile_outside_bounds(backend, tile_surface, tile.local_rect, rung_px,
+                                            *local_bounds);
+                }
                 const std::size_t bytes = tile_byte_cost(tile_surface);
                 tile.hold = cache.insert(
                     tile.key, TileValue{std::move(*owned), {result.achieved_scale, result.exact}},
@@ -784,8 +878,8 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
               // exactly as before.
               const std::size_t bytes = tile_byte_cost(tile_surface);
               pending->tiles.push_back(PendingTile{tile.key, tile.local_rect, layer.content,
-                                                   content->stability(), bytes, std::move(*owned),
-                                                   std::move(done)});
+                                                   content->stability(), local_bounds, bytes,
+                                                   std::move(*owned), std::move(done)});
             }
           } else if (identity_terminal != nullptr && pulls != nullptr) {
             // Identity delivery (runtime.operator_identity_offline_delivery): the
@@ -814,10 +908,18 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                 // planned coarser/stale fallback hold and mark the tile Fresh so
                 // the composite switch below is a no-op (`tile.hold` invalid):
                 // this direct composite is the sole paint, so the frame is not
-                // counted degraded (offline no-degrade guarantee).
+                // counted degraded (offline no-degrade guarantee). The delivered
+                // pixels get the same extent enforcement a rendered tile gets
+                // (`compositor.tile_apron` Rule 3) -- the operator's declared bounds,
+                // not the terminal's, since this surface stands in for the operator's
+                // own tile.
+                if (local_bounds.has_value()) {
+                  clear_tile_outside_bounds(backend, tile_surface, tile.local_rect, rung_px,
+                                            *local_bounds);
+                }
                 composite_onto_target(backend, target, tile_surface,
                                       surface_to_device(composed, tile.local_rect, rung_px),
-                                      layer.opacity, clips, counters, device_bounds_ptr);
+                                      layer.opacity, clips, counters, window);
                 tile.hold = CacheHold<TileValue>{};
                 tile.display_source = TileSource::Fresh;
               }
@@ -839,7 +941,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, clips, counters, device_bounds_ptr);
+                                layer.opacity, clips, counters, window);
         }
         break;
       // Composites exactly as the `Stale` arm below does -- same paint, same degraded count --
@@ -862,7 +964,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, clips, counters, device_bounds_ptr);
+                                layer.opacity, clips, counters, window);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }
@@ -879,7 +981,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, clips, counters, device_bounds_ptr);
+                                layer.opacity, clips, counters, window);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }
@@ -889,7 +991,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         // A degraded display: a coarser-rung tile rescaled up (doc 02:64).
         if (tile.hold.valid()) {
           composite_coarser(backend, pool, target, tile, composed, selection.rung, layer.opacity,
-                            counters, clips, device_bounds_ptr);
+                            counters, clips, window);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }

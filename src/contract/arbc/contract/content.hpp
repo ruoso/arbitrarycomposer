@@ -118,6 +118,21 @@ struct RenderResult {
   // marks a framebuffer the content reuses every frame: consume-within-frame,
   // copy-to-cache, never retained (doc 09:106-112).
   std::optional<SurfaceRef> provided{};
+  // Where `provided`'s pixel (0, 0) sits in CONTENT-LOCAL space. Absent -- the
+  // default and the case every non-providing content takes -- means the request's
+  // own `region` origin, i.e. the provided surface answers the request in place,
+  // which is what "honoring the request's region" above says.
+  //
+  // It exists because the two are not always the same point. Content that provides
+  // a surface it did not render for this request -- a decoder handing back its
+  // native frame (doc 09:87-100's motivating case) -- provides pixels whose origin
+  // is a property of the CONTENT, not of the request, and the compositor cannot
+  // otherwise know where to put them. It stayed invisible while every tile request
+  // a provided-surface content ever saw happened to start at that same origin;
+  // `compositor.tile_apron` made tile requests start one apron earlier, and a frame
+  // silently landed an apron up and to the left. Stating the origin is what makes
+  // the zero-copy path correct for ANY request region rather than for one tile.
+  std::optional<Vec2> provided_origin{};
 };
 
 // A playback advisory issued to decoder-backed content (doc 11:160-178): the

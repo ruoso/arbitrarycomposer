@@ -11,6 +11,7 @@
 #include <arbc/compositor/counters.hpp>
 #include <arbc/compositor/scale_ladder.hpp>
 #include <arbc/contract/content.hpp>
+#include <arbc/media/image_resampler.hpp>
 #include <arbc/model/model.hpp>
 #include <arbc/model/records.hpp>
 #include <arbc/surface/backend.hpp>
@@ -143,7 +144,74 @@ using PriorStamps = std::unordered_map<ObjectId, std::uint64_t>;
 // Even at every rung, so tiles satisfy `reduce_rung`'s even-source-dims
 // precondition (the power-of-two tile geometry `scale_ladder.md:251-253`
 // reserved for this task). A named constant a later task can tune.
+//
+// This is the tile's CELL: its identity, its cache-key geometry, the unit of
+// arrival damage, and the region it paints. It is NOT the size of the surface the
+// tile is rendered into -- see `k_tile_apron`.
 inline constexpr int k_tile_size = 256;
+
+// How far, in device pixels, the composite's resampling tap reaches past the
+// destination pixel it is filling. The Catmull-Rom bicubic's 4x4 footprint spans
+// `i0 + k_magnify_first_tap .. i0 + k_magnify_first_tap + k_magnify_taps - 1`
+// (`image_resampler.hpp:129-133`), i.e. two texels past the base texel.
+inline constexpr int k_composite_tap_reach = k_magnify_taps + k_magnify_first_tap - 1;
+
+// The APRON (`compositor.tile_apron`): how many device pixels of the NEIGHBOURING
+// tiles' content each tile surface carries around its cell.
+//
+// A tile surface sized to exactly its cell puts the composite's outer tap on the
+// surface's transparent border (`fetch_texel` zero-fills, `kernels.hpp:66-68`), so
+// at any fractional phase every tile boundary rings and the two abutting tiles each
+// paint the boundary pixel at partial weight -- source-over of two halves is 0.75,
+// not 1.0, and an opaque fill grows a translucent grid every `k_tile_size` device
+// pixels. Rendering the cell PLUS an apron and painting only the cell (through
+// `Backend::composite_windowed`) removes the border from the tap's reach entirely:
+// the neighbour's real colour is there instead, and renders being deterministic
+// (doc 16) the apron holds bit-identical pixels to the neighbour tile that owns
+// them.
+//
+// Four, derived rather than chosen. The tile's own composite needs
+// `k_composite_tap_reach` (2). The coarser-rung fallback needs more: it fills a fine
+// temp spanning the fine cell plus its apron, `(k_tile_size + 2a) / 2^k` coarser
+// pixels for a k-octave gap, and that fill's own tap adds `k_composite_tap_reach`
+// coarser pixels -- so the coarser surface must extend `a / 2^k + 2` past its cell,
+// i.e. `a * (1 - 2^-k) >= 2`. Tightest at `k == 1`, giving `a >= 4`.
+inline constexpr int k_tile_apron = 4;
+
+// The device-pixel edge of a tile's SURFACE: the cell plus an apron on each side.
+// Even (264), so the `reduce_rung` even-source-dims precondition still holds.
+inline constexpr int k_tile_surface_size = k_tile_size + 2 * k_tile_apron;
+
+// The tile's cell in its own surface's pixel coordinates -- the source window an
+// INTERIOR tile composites through (`Backend::composite_windowed`). Adjacent tiles'
+// cells abut exactly in local space, and this window is that cell, so the windows
+// partition the destination: every device pixel is painted by exactly one tile
+// while its tap still reads the apron.
+inline constexpr Rect k_tile_cell_window{static_cast<double>(k_tile_apron),
+                                         static_cast<double>(k_tile_apron),
+                                         static_cast<double>(k_tile_apron + k_tile_size),
+                                         static_cast<double>(k_tile_apron + k_tile_size)};
+
+// The source window for one tile of a covering BLOCK spanning coords `first`
+// through `last` (`compositor.tile_apron` Rule 2): its cell, except on the sides
+// where the block has no further tile, where it opens out to the whole surface.
+//
+// That outward opening is what lets a bounded content's antialiased falloff land at
+// all. The falloff reaches `k_composite_tap_reach` device pixels PAST the extent,
+// and when the extent sits exactly on a cell boundary -- the common case, since most
+// `bounds()` start at the local origin and so does the grid -- those pixels belong
+// to the neighbouring cell. Planning that neighbour would quadruple the tile count
+// of every origin-aligned bounded layer; letting the edge tile paint into its own
+// apron costs nothing, and the apron is already zeroed outside the extent, so what
+// it paints there IS the falloff. No overlap is possible: a side is opened only
+// where the block has no tile to collide with.
+inline constexpr Rect tile_block_window(TileCoord coord, TileCoord first, TileCoord last) {
+  const double lo = static_cast<double>(k_tile_apron);
+  const double hi = static_cast<double>(k_tile_apron + k_tile_size);
+  const double edge = static_cast<double>(k_tile_surface_size);
+  return Rect{(coord.col == first.col) ? 0.0 : lo, (coord.row == first.row) ? 0.0 : lo,
+              (coord.col == last.col) ? edge : hi, (coord.row == last.row) ? edge : hi};
+}
 
 // How many octaves of coarser rungs the degradation fallback probes before it
 // gives up and shows a placeholder (doc 02:64 "coarser-scale tiles rescaled"
@@ -159,11 +227,57 @@ inline constexpr int k_max_fallback_octaves = 4;
 // no cells.
 ARBC_API std::vector<TileCoord> tiles_covering(ScaleRung rung, const Rect& local_region);
 
-// The inverse of `tiles_covering`: the layer-local rectangle a single grid cell
+// The inverse of `tiles_covering`: the layer-local rectangle a single grid CELL
 // covers at `rung` (`tiles_covering(rung, tile_local_rect(rung, c))` contains
 // `c`). Axis-aligned in local space; the composed affine (with the <=1-octave
 // remainder, rotation, shear) is applied at composite time, not baked here.
+//
+// This is the tile's identity and the region it PAINTS. What it is RENDERED over
+// is `tile_render_rect` below.
 ARBC_API Rect tile_local_rect(ScaleRung rung, TileCoord coord);
+
+// The layer-local rectangle a tile is RENDERED over: its cell grown by
+// `k_tile_apron` device pixels per side (`compositor.tile_apron`). This is the
+// region on the tile's `RenderRequest` and the geometry of its
+// `k_tile_surface_size`-square surface; neighbouring tiles' render rects overlap
+// inside the apron and, renders being deterministic, agree there exactly.
+ARBC_API Rect tile_render_rect(ScaleRung rung, TileCoord coord);
+
+// The tiles needed to COVER `local_region` with their RENDER rects rather than
+// their cells (`compositor.tile_apron`). Use this when the region is a target to be
+// FILLED (the pull service delivering into an operator's temp); use
+// `tiles_covering` when it is an area to be PAINTED (a frame's layer walk, where
+// each tile paints its own cell).
+//
+// The distinction matters because a tile's surface holds its cell PLUS its apron,
+// so a region that is exactly some tile's render rect -- which is precisely what an
+// operator's own tile render asks its inputs for -- is held whole by that ONE tile.
+// Covering it by cells would name that tile and both its neighbours in each axis,
+// turning one input render into nine.
+ARBC_API std::vector<TileCoord> tiles_covering_render(ScaleRung rung, const Rect& local_region);
+
+// Clear every pixel of a rendered tile surface lying outside the content's
+// declared local `bounds()` (`compositor.tile_apron` Rule 3).
+//
+// This is where a bounded content's extent is enforced, and enforcing it HERE
+// rather than at composite time is what makes the edge antialiased. A tile is
+// rendered over its whole aproned rect and content is not required to self-clip
+// (doc 03: the compositor requests only in-bounds regions -- which a whole-cell
+// tile request violates by construction), so the tile carries colour past the
+// declared extent. Zeroed, the composite's tap falls off across the extent edge
+// exactly as a temp sized to the content's own region does -- which is what
+// `NestedContent` produces, and therefore what "rendering is recursion" (doc
+// 05:24) requires the tiled path to produce. Inside the content the apron is
+// untouched real neighbour colour, so no seam appears.
+//
+// `local_rect` is the tile's RENDER rect and `rung_px` its scale, so the mapping
+// into surface pixels is the same one `surface_to_device` inverts. The extent's
+// conservative device AABB is used for a rotated/sheared `bounds()`, inheriting
+// `bounded_content_tile_clip` Decision 3 unchanged. Unbounded content (`bounds()
+// == nullopt`, doc 01:68-77) never calls this: there is no extent to enforce and
+// the apron is always real content.
+ARBC_API void clear_tile_outside_bounds(Backend& backend, Surface& surface, const Rect& local_rect,
+                                        double rung_px, const Rect& bounds);
 
 // The source chosen for a tile after the cache lookup and the doc 02:62-67
 // degradation order (fresh -> resident-transient -> stale-revision ->

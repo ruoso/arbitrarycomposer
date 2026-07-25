@@ -95,8 +95,13 @@ void render_layer(const ContentResolver& resolve, const LayerRecord& layer, cons
   // instead of the pooled temp, and release it right after; the temp is returned
   // to the pool untouched (09:80). Absent, this composites the filled temp
   // exactly as before.
+  // A provided surface may start at its OWN local origin rather than the region's
+  // (`RenderResult::provided_origin`), so it rides `temp_to_dst` composed with that
+  // separation; absent an origin the placement is the identity and this is exactly
+  // the mapping above.
+  const Affine placement = provided_placement(result, region, result.achieved_scale);
   consume_render_result(result, temp, [&](const Surface& src) {
-    backend.composite(target, src, temp_to_dst, layer.opacity);
+    backend.composite(target, src, compose(temp_to_dst, placement), layer.opacity);
   });
 }
 

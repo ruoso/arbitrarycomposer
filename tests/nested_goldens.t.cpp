@@ -441,16 +441,15 @@ private:
 } // namespace
 
 // enforces: 05-recursive-composition#nested-renders-through-synthetic-viewport
-// KNOWN-FAILING at MINIFYING scales, tracked (`compositor.render_path_unification`).
-// The flat oracle moved onto the tiled driver when the untiled `render_frame` was
-// retired, so this now compares TILED nested against TILED flat; it used to compare
-// tiled nested against UNTILED flat, and matched. Native scale still matches; 0.5x and
-// 0.25x do not -- and both are EXACT ladder rungs over a scene of two `SolidContent`s,
-// so neither scale quantization, a sub-octave remainder, nor mip sampling explains it.
-// Either nested minification is genuinely wrong (and the old oracle was masking it), or
-// the flat/nested equality is tile-geometry-dependent below native and this test needs
-// restating. `[!mayfail]` keeps it RUNNING and will report as soon as it passes again.
-TEST_CASE("nested renders byte-identically to compositing the child's layers flat", "[!mayfail]") {
+// The MINIFYING sections are the regression guard for `compositor.tile_apron`. Both are
+// exact ladder rungs over two `SolidContent`s, so no scale quantization, sub-octave
+// remainder or mip sampling is involved: they failed only because the two paths
+// disagreed about a content's EDGE. Nested sizes its temp to the content's own region
+// and so falls off across the extent; the tiled walk filled each tile past the extent
+// and re-imposed it with a composite clip rounded out to whole device pixels, painting a
+// half-covered edge pixel at full strength. Enforcing the extent in the tile's pixels
+// instead made the tiled walk agree, at 17 of 64 pixels at 0.5x.
+TEST_CASE("nested renders byte-identically to compositing the child's layers flat") {
   Scene scene;
   scene.build();
   CpuBackend backend;
@@ -476,17 +475,7 @@ TEST_CASE("nested renders byte-identically to compositing the child's layers fla
 // the parent's". No frozen table -- the oracle is the compositor plus one convert.
 // enforces: 07-color-and-pixel-formats#nesting-boundary-converts-composed-output
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
-// KNOWN-FAILING at MINIFYING scales, tracked (`compositor.render_path_unification`).
-// The flat oracle moved onto the tiled driver when the untiled `render_frame` was
-// retired, so this now compares TILED nested against TILED flat; it used to compare
-// tiled nested against UNTILED flat, and matched. Native scale still matches; 0.5x and
-// 0.25x do not -- and both are EXACT ladder rungs over a scene of two `SolidContent`s,
-// so neither scale quantization, a sub-octave remainder, nor mip sampling explains it.
-// Either nested minification is genuinely wrong (and the old oracle was masking it), or
-// the flat/nested equality is tile-geometry-dependent below native and this test needs
-// restating. `[!mayfail]` keeps it RUNNING and will report as soon as it passes again.
-TEST_CASE("nested converts the child's composed output across a heterogeneous boundary",
-          "[!mayfail]") {
+TEST_CASE("nested converts the child's composed output across a heterogeneous boundary") {
   CpuBackend backend;
   InlinePull pull;
 
@@ -622,17 +611,7 @@ TEST_CASE("nested answers honest empty pixels when the child's working space is 
 
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 // enforces: 13-effects-as-operators#operator-pulls-only-via-pull-service
-// KNOWN-FAILING at MINIFYING scales, tracked (`compositor.render_path_unification`).
-// The flat oracle moved onto the tiled driver when the untiled `render_frame` was
-// retired, so this now compares TILED nested against TILED flat; it used to compare
-// tiled nested against UNTILED flat, and matched. Native scale still matches; 0.5x and
-// 0.25x do not -- and both are EXACT ladder rungs over a scene of two `SolidContent`s,
-// so neither scale quantization, a sub-octave remainder, nor mip sampling explains it.
-// Either nested minification is genuinely wrong (and the old oracle was masking it), or
-// the flat/nested equality is tile-geometry-dependent below native and this test needs
-// restating. `[!mayfail]` keeps it RUNNING and will report as soon as it passes again.
-TEST_CASE("nested re-runs the flat-scene equality byte-exact through the live pull service",
-          "[!mayfail]") {
+TEST_CASE("nested re-runs the flat-scene equality byte-exact through the live pull service") {
   Scene scene;
   scene.build();
   CpuBackend backend;

@@ -49,6 +49,8 @@ public:
                   float a) override;
   void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
                          const Rect& device_clip) override;
+  void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
+                          double opacity, const Rect& device_clip, const Rect& src_window) override;
   void downsample(Surface& dst, const Surface& src) override;
   void convert(Surface& dst, const Surface& src) override;
   // Wrap-or-copy import of caller CPU memory (doc 09:59-61,114-120). Equal

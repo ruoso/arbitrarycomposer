@@ -136,6 +136,19 @@ task compositor "Compositor" {
     depends !refinement
     note "The interactive driver plans at step 4 and polls arrivals at step 6, while refinement.hpp's own comment asserts the poll 'runs unconditionally every frame, before any re-plan'. A worker that settles between one frame's poll and the next frame's plan sits in a gap where the cache says miss and the gate says nobody is rendering it; the dispatch gate's settled_ok() split (quality.testing_artifact) closes the behavioral hole, but the structural fix is to hoist the poll before the plan so arrivals composite in the frame they drain. Blocked on counter-semantic analysis: current frame counter tests observe poll-after-plan ordering and must be re-baselined. Source: tasks/refinements/quality/testing_artifact.md (fixer tech-debt). Docs 02/04."
   }
+  task tile_apron "Sample past the tile edge, paint only the cell" {
+    effort 5d
+    allocate team
+    complete 100
+    depends !bounded_content_tile_clip
+    note "The compositor resamples every tile surface against a transparent border that is a TILING artifact, not a content edge, and two user-visible defects fall out of that one fact. (1) SEAM: at any fractional phase -- a sub-pixel pan, an off-rung scale, a rotation -- each tile's Catmull-Rom tap reads its own border, so two abutting tiles each paint the boundary pixel at half weight and source-over of two halves is 0.75; measured on a 600x600 opaque solid at translation(0.5,0.5), alpha 0.75 at device x=256 and x=512 with 1.0625 ringing either side, i.e. a translucent grid every 256px. (2) EXTENT EDGE: a tile is filled past the content's declared bounds and the extent re-imposed by a composite clip rounded OUT to whole device pixels, so a half-covered edge pixel paints at full strength -- which is why the three nested 'rendering is recursion' goldens went [!mayfail] when the flat oracle moved onto the tiled driver. Fix: render each tile over its cell plus an apron of real neighbour content, paint through a new source-space window (Backend::composite_windowed) equal to the cell, and zero the apron only where the declared extent ends. Source-of-debt: tasks/nested-minification-handoff.md. Docs 02/04/07/09. Refinement: tasks/refinements/compositor/tile_apron.md"
+  }
+  task reduce_rung_apron_geometry "Reconcile reduce_rung's geometry with the tile apron" {
+    effort 1d
+    allocate team
+    depends !tile_apron
+    note "scale_ladder's reduce_rung (2:1 Lanczos-3 half-band, scale_ladder.hpp:102) has no production caller -- coarser rungs are rendered at their own rung, never decimated -- and its even-source-dims contract predates the apron: halving a 264px aproned tile yields a 4px apron at the coarser rung's scale, i.e. 2 coarser pixels, below the k_composite_tap_reach the fallback needs. Its geometry was already inconsistent with tile geometry before this (a coarser CELL covers 2x the local area, so it would come from decimating four fine tiles, not one). Reconcile or retire it before anything wires it up. Source-of-debt: tasks/refinements/compositor/tile_apron.md. Docs 02/04."
+  }
   task bounded_content_tile_clip "Clip sub-tile bounded content to its declared extent" {
     effort 2d
     allocate team

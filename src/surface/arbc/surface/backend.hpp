@@ -67,6 +67,30 @@ public:
   virtual void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst,
                                  double opacity, const Rect& device_clip) = 0;
 
+  // The composite with a SOURCE-space paint window (`compositor.tile_apron`).
+  // `device_clip` scopes it exactly as `composite_clipped` does; `src_window` is a
+  // half-open rect in `src`'s own PIXEL space, and a destination pixel is painted
+  // only if its sample position falls inside it. The tap still reads the whole of
+  // `src` -- the window narrows what is PAINTED, never what is SAMPLED.
+  //
+  // That distinction is the whole point. A tiled compositor must let a tile's
+  // resampling tap reach past the tile's edge (or the tap lands on the surface's
+  // transparent border and every tile boundary rings) while still painting each
+  // destination pixel exactly once (or the overlapping paints double-blend). A
+  // destination-space scissor cannot express it: tiles are axis-aligned in LOCAL
+  // space, so under rotation or shear adjacent tiles' device footprints are
+  // overlapping quads, and no rect partition of the destination exists. The
+  // sample position, though, lands in exactly one tile's cell for any invertible
+  // affine -- so the partition is exact in source space and nowhere else.
+  //
+  // Half-open, in the same texel-index convention the resampling tap uses, and
+  // intersected with nothing: a window covering all of `src` IS
+  // `composite_clipped`, which is how that operation is defined -- one kernel,
+  // not two. An empty window is a no-op.
+  virtual void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
+                                  double opacity, const Rect& device_clip,
+                                  const Rect& src_window) = 0;
+
   // Exact 2:1 minifying downsample of `src` into `dst` (doc 09:18's
   // "backend-internal ... resample operation consumed by the compositor"):
   // `dst` dims are `src` dims / 2 (even source dims), same format, the reduction

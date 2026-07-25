@@ -33,6 +33,8 @@ public:
   void composite(Surface&, const Surface&, const Affine&, double) override {}
   void clear_rect(Surface&, const Rect&, float, float, float, float) override {}
   void composite_clipped(Surface&, const Surface&, const Affine&, double, const Rect&) override {}
+  void composite_windowed(Surface&, const Surface&, const Affine&, double, const Rect&,
+                          const Rect&) override {}
   void downsample(Surface&, const Surface&) override {}
   void convert(Surface&, const Surface&) override {}
   expected<std::unique_ptr<Surface>, SurfaceError> import_cpu_memory(const CpuImport&) override {

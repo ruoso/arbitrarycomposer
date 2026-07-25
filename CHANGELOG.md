@@ -21,6 +21,35 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ### Changed
 
+- **Tiles are now rendered over their cell plus an apron, and paint only the
+  cell.** Every tile surface grew from `256²` to `264²` device pixels and covers
+  its cell plus a 4px margin of its neighbours' own content; the composite then
+  paints through a new `Backend::composite_windowed(dst, src, src_to_dst, opacity,
+  device_clip, src_window)`, whose source-space window is that cell. The
+  resampling tap reads freely into the apron while each destination pixel is
+  painted by exactly one tile — a partition that holds under rotation and shear,
+  which no destination-space scissor can express. Cache residency per tile rises
+  6.3%; `composites` and `requests_issued` are unchanged. Backends implementing
+  `arbc::Backend` must supply the new virtual; a double that models pixels must
+  model it, and must model `clear_rect` too (design docs 02/09).
+
+- **A layer with finite `bounds()` now has its extent enforced in the tile's own
+  pixels, not by clipping the composite.** Each rendered tile is zeroed outside
+  the content's declared extent before it is cached or composited, and
+  `compositor.bounded_content_tile_clip`'s device-space round-out clip is
+  **retired**. The visible difference is at the edge: the extent boundary now
+  antialiases through the composite's own tap instead of being clipped to whole
+  device pixels, so a half-covered edge pixel carries its coverage and the
+  previous ≤1px of un-attenuated bleed is gone. A `bounds()`-less layer is
+  untouched (design doc 02).
+
+- **`RenderResult` gained `provided_origin`**, the content-local point a
+  content-provided surface's pixel `(0,0)` covers. Absent (the default, and every
+  non-providing content) it is the request region's origin, which is what the
+  compositor assumed unconditionally before. Content that hands back a surface it
+  did not render for this request — a decoder returning its native frame — must
+  now say where those pixels belong; `org.arbc.imageseq` does (design doc 09).
+
 - **There is now ONE render path.** `render_offline` renders through
   `render_frame_interactive` — the same tiled driver the interactive loop and the
   sequence exporter already ran — and the untiled `arbc::render_frame` free
@@ -46,6 +75,35 @@ surface moves freely, and changelog honesty is what makes that safe
   holds no reference to content memory across frames.
 
 ### Fixed
+
+- **An opaque fill is opaque again across tile boundaries.** At any fractional
+  composite phase — a sub-pixel pan, an off-rung scale, any rotation — each tile's
+  Catmull-Rom tap fell on its own surface's transparent border, so the two tiles
+  abutting a boundary each painted the boundary pixel at roughly half weight and
+  premultiplied source-over of two halves is `0.75`, not `1.0`. Measured on a
+  600×600 opaque solid at `translation(0.5, 0.5)`: alpha `0.75` at device x=256 and
+  x=512, ringing to `1.0625` either side — a translucent grid every 256 device
+  pixels, appearing the moment the camera moved by half a pixel. It was invisible
+  to every landed golden because they all composite at an integral phase, where the
+  cubic collapses to `(0, 1, 0, 0)` and reads one texel. Fixed by the tile apron
+  above. The same defect on `PullServiceImpl`'s delivery path — whose "each covering
+  tile delivers seam-free" claim was false for the same reason — is fixed with it.
+
+- **A nested composition renders byte-identically to compositing its child's
+  layers flat again**, at minifying scales as well as at native (doc 05 §
+  Rendering is recursion). The two paths had disagreed about what happens at a
+  content's edge: `NestedContent` sizes its temp to the content's own region and so
+  falls off across the extent, while the tiled walk filled each tile past the
+  extent and re-imposed it with a whole-pixel clip. Rendering the same scene both
+  ways at 0.5× differed on 17 of 64 pixels — 7 inside the content's device bounds
+  and 10 outside it. The tiled path was the wrong one; the three goldens tagged
+  `[!mayfail]` for this are re-enabled.
+
+- **A content-provided surface is no longer mislaid when the request does not
+  start at the content's own origin.** The zero-copy path copied at the identity,
+  which silently assumed the two origins coincide — true only for the tile at the
+  local origin, so a decoder's frame delivered into any other tile already landed
+  in the wrong place. See `provided_origin` above.
 
 - `org.arbc.raster` and `org.arbc.image` now render at the **requested scale**
   under `BestEffort`, magnifying past native exactly as they already did under

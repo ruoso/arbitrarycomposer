@@ -25,29 +25,31 @@ std::array<float, 4> pixel(const arbc::Surface& surface, int x, int y) {
 
 // The green layer's composited premultiplied value, per device row it covers.
 //
-// Rows 1-3 are the FLAT {0, 0.5, 0, 0.5} the geometry calls for: a uniformly
+// Rows 1-2 are the FLAT {0, 0.5, 0, 0.5} the geometry calls for: a uniformly
 // half-transparent rect, minified 2:1 in y, whose four Catmull-Rom taps all land on
 // green and whose weights sum to 1.
 //
-// Row 0 rings UP to `0.5 * (w1 + w2 + w3) == 0.53125`, because its outer tap falls on
-// the source surface's ZERO BORDER and drops a negative-weight lobe. That is the same
-// zero-border mechanism (`kernels.hpp:66-68`) that makes compositor-side MAGNIFICATION
-// unusable, showing up here on a plain minification.
+// Rows 0 and 3 -- the rect's own top and bottom edges -- ring UP to
+// `0.5 * (w1 + w2 + w3) == 0.53125`, because their outer tap falls past the content's
+// declared extent, where the tile is zeroed (`compositor.tile_apron` Rule 3), and drops
+// a negative-weight lobe. This is the extent edge ANTIALIASING against transparency,
+// which is what a half-covered edge pixel should do; the cubic's negative lobe is why
+// the value overshoots 0.5 rather than falling below it.
 //
-// It is asymmetric -- row 0 rings and row 3 does not -- and the asymmetry is the tile
-// grid: the content's local origin coincides with tile (0,0)'s local origin, so the
-// tap at the TOP edge reaches past the tile surface's first row, while the bottom edge
-// sits deep inside a 256px-tall surface with real green above and below it. A content
-// edge that lands ON a tile boundary rings; one that lands mid-tile does not.
+// It is SYMMETRIC, and the symmetry is the point. It used to ring at row 0 and not at
+// row 3, because the zero the tap read was the tile SURFACE's border -- an artifact of
+// where the tile grid happened to fall relative to the content, not of where the
+// content ends. The content's local origin coincided with tile (0,0)'s, so the top
+// edge sat on the border and the bottom edge sat deep inside a 256px-tall surface full
+// of green that reached well past the extent. Now the tile carries an apron of real
+// neighbour content (so no border is ever inside the tap's reach) and is zeroed outside
+// the declared extent (so the falloff happens exactly where the content ends), and both
+// edges of a rect report the same thing.
 //
-// The retired UNTILED driver rang at BOTH edges: it sized its temp to exactly the
-// content's device footprint (8x8 here), so both the top and the bottom tap hit the
-// border. Moving to the tiled driver fixed row 3 and left row 0 as it was.
-//
-// The red layer was never affected: it maps to device [2,6)^2 by an integer
+// The red layer is unaffected either way: it maps to device [2,6)^2 by an integer
 // translation, so its tap is integer-phase (weights (0,1,0,0)) and byte-exact.
 std::array<float, 4> green_src_row(int y) {
-  const float g = (y == 0) ? 0.53125F : 0.5F;
+  const float g = (y == 0 || y == 3) ? 0.53125F : 0.5F;
   return {0.0F, g, 0.0F, g};
 }
 
@@ -90,7 +92,8 @@ TEST_CASE("walking skeleton: solid layers compose to exact pixels") {
       }
       if (in_green) {
         // Source-over on premultiplied alpha: out = s + (1 - a_s) * d, with the
-        // green source per-row (flat 0.5, ringing at row 0 only -- see above).
+        // green source per-row (flat 0.5 inside, antialiasing at both edge rows --
+        // see above).
         const std::array<float, 4> src = green_src_row(y);
         for (std::size_t k = 0; k < 4; ++k) {
           expected[k] = src[k] + (1.0F - src[3]) * expected[k];

@@ -85,6 +85,12 @@ struct PendingTile {
   // default keeps a hand-constructed test tile exempt (doc 11:134-137,
   // `timed_insert_key_consistent`).
   Stability stability{Stability::Static};
+  // The content's declared local `bounds()`, captured at record time for the same
+  // reason `stability` is: `poll_refinements` must enforce the extent in the
+  // arriving tile's pixels (`compositor.tile_apron` Rule 3) and the queue does not
+  // retain the `Content*` to re-ask. `nullopt` is unbounded content -- nothing to
+  // enforce -- which is also the right default for a hand-constructed test tile.
+  std::optional<Rect> bounds;
   std::size_t bytes{0};
   std::unique_ptr<Surface> surface;
   std::shared_ptr<RenderCompletion> done;

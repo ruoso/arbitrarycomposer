@@ -62,6 +62,12 @@ public:
     d_inner.composite_clipped(dst, src, src_to_dst, opacity, device_clip);
   }
 
+  void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
+                          double opacity, const Rect& device_clip,
+                          const Rect& src_window) override {
+    d_inner.composite_windowed(dst, src, src_to_dst, opacity, device_clip, src_window);
+  }
+
   void downsample(Surface& dst, const Surface& src) override { d_inner.downsample(dst, src); }
 
   void convert(Surface& dst, const Surface& src) override { d_inner.convert(dst, src); }

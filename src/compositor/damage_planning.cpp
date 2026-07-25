@@ -270,7 +270,15 @@ std::size_t invalidate_damage(TileCache& cache, std::span<const Damage> damage) 
       // Bind the caller-injected `Geom` to the tile grid: drop every tile of
       // `object` whose content-space footprint intersects `rect`, across all
       // rungs/revisions/achieved-times (doc 02:94-95).
-      dropped += cache::invalidate_region(cache, d.object, d.rect, tile_local_rect);
+      //
+      // The footprint is the tile's RENDER rect, not its cell: a tile's surface
+      // carries an apron of its neighbours' pixels (`compositor.tile_apron`), so
+      // damage that touches only a neighbouring cell still invalidates THIS tile's
+      // apron. Testing cells would leave a stale apron resident, and the composite
+      // reads the apron -- so the seam the apron exists to remove would come back as
+      // a stale-colour fringe instead. Over-approximating by one apron is the safe
+      // direction: it drops a few tiles that only needed their apron refreshed.
+      dropped += cache::invalidate_region(cache, d.object, d.rect, tile_render_rect);
     }
   }
   return dropped;

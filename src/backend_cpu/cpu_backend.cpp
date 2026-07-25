@@ -142,7 +142,7 @@ void clear_in_box(Surface& surface, const PixelBox& box, float r, float g, float
 // reinterpretation -- debug assert, no-op in release, mirroring the
 // degenerate-transform cull below.
 void composite_in_box(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
-                      const PixelBox& box) {
+                      const PixelBox& box, const Rect& window) {
   assert(dst.format() == src.format());
   if (!(dst.format() == src.format())) {
     return;
@@ -159,7 +159,7 @@ void composite_in_box(Surface& dst, const Surface& src, const Affine& src_to_dst
     const std::span<const typename PixelTraits<k_f>::Storage> src_span = src.span<k_f>();
     assert(!dst_typed.data.empty() && !src_span.empty());
     source_over_kernel<k_f>(dst_typed, dst.width(), src_span, src.width(), src.height(),
-                            *dst_to_src, static_cast<float>(opacity), box);
+                            *dst_to_src, static_cast<float>(opacity), box, window);
   });
 }
 
@@ -224,12 +224,22 @@ void CpuBackend::composite(Surface& dst, const Surface& src, const Affine& src_t
                            double opacity) {
   // The unclipped composite IS the whole-destination clip case (doc 09): same
   // kernel, same taps, every destination pixel in the box.
-  composite_in_box(dst, src, src_to_dst, opacity, whole_surface(dst));
+  composite_in_box(dst, src, src_to_dst, opacity, whole_surface(dst), Rect::infinite());
 }
 
 void CpuBackend::composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst,
                                    double opacity, const Rect& device_clip) {
-  composite_in_box(dst, src, src_to_dst, opacity, clip_box(device_clip, dst.width(), dst.height()));
+  composite_in_box(dst, src, src_to_dst, opacity, clip_box(device_clip, dst.width(), dst.height()),
+                   Rect::infinite());
+}
+
+void CpuBackend::composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
+                                    double opacity, const Rect& device_clip,
+                                    const Rect& src_window) {
+  // Same kernel, same taps, same destination box -- only the source-space paint
+  // window differs, and `composite_clipped` above IS this with an infinite one.
+  composite_in_box(dst, src, src_to_dst, opacity, clip_box(device_clip, dst.width(), dst.height()),
+                   src_window);
 }
 
 void CpuBackend::downsample(Surface& dst, const Surface& src) {
