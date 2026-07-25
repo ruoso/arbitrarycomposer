@@ -37,8 +37,19 @@
   against the visible region, decides what each layer must produce (region +
   scale), consults/fills the tile cache, and composites the results onto the
   target surface.
-- **Renderers**: two drivers over the same core. Interactive owns a frame
-  loop, deadlines, and progressive refinement. Offline owns exact evaluation.
+- **Renderers**: ONE tiled driver, entered under two *disciplines*. The
+  discipline is a request-level value (`Exactness`, doc 03): `BestEffort`
+  may answer asynchronously, degrade, and observe a deadline; `Exact` (with
+  no deadline) must be faithful and may take as long as it needs. Interactive
+  additionally owns the frame loop and progressive refinement, and offline
+  owns the export sequencing, but neither owns a rendering path of its own —
+  a second, untiled driver drifted for exactly as long as it existed, and
+  where the two disagreed the untiled one was the wrong one (§ The frame,
+  offline). One untiled remnant survives, `render_frame_anchored`, with no
+  production driver behind it; it is guarded by a byte-exact golden that only
+  constrains it where the two paths happen to agree (an integral composite
+  phase, a cell-aligned extent), so treat it as unmaintained rather than as a
+  second supported path — registered for retirement.
 - **Backends**: implement surfaces (pixel buffers the layers render into and
   the compositor composites between) and the composite operations. The
   reference backend is CPU memory + software compositing; the abstraction
@@ -299,14 +310,31 @@ re-plan, so no wave is held past the drain it is about to get.
 
 ## The frame, offline
 
-Same steps without deadlines, quantization, or placeholders: exact scale,
-every request rendered to completion, output guaranteed to reflect exactly
-revision-consistent content. A **snapshot** mechanism (freeze revisions
-during a frame) keeps a frame consistent even if the scene is being mutated
-concurrently — needed for "export while editing" and for video where frame N
-must not see frame N+1's edits.
+**The same steps, on the same driver, under `Exactness::Exact` and no
+deadline.** Every request is rendered to completion, nothing degrades, and
+the output is guaranteed to reflect exactly revision-consistent content. A
+**snapshot** mechanism (freeze revisions during a frame) keeps a frame
+consistent even if the scene is being mutated concurrently — needed for
+"export while editing" and for video where frame N must not see frame N+1's
+edits.
 
-The offline path still uses the tile cache when content stability allows —
+"No degradation" is a *behavioural zero*, not a separate code path: an
+offline frame composites only fresh, exact-scale tiles, so the
+`degraded_composites` counter reads zero. Placeholders, stale-revision tiles
+and coarser-rung fallbacks are all reachable only when a deadline cuts a
+frame short, and an offline frame has no deadline to miss.
+
+Quantization is **not** among the differences, and this is the correction
+that matters: an offline frame plans against the same scale ladder as an
+interactive one, and resolves the sub-octave remainder in the same composite.
+It once did not — a separate untiled driver asked for the raw composed scale —
+and the two produced different pixels for the same frame off-rung. Two render
+paths mean two answers, and the second one drifted: by the time it was retired
+it had also lost span culling (it hard-coded time zero), content state (it
+passed an inert snapshot handle), and any layer whose content answered
+asynchronously.
+
+The offline path uses the tile cache when content stability allows —
 rendering 4K video of a mostly-static scene should not re-rasterize every
 layer every frame — but correctness rules are strict: only exact-scale,
 current-revision entries qualify.

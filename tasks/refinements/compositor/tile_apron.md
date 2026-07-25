@@ -350,6 +350,16 @@ Two things surfaced during implementation that were not in the plan above:
   request start one apron earlier, so `org.arbc.imageseq` composited a frame four
   pixels up and to the left. A latent bug the apron exposed rather than caused; stating
   the origin fixes it for any region.
+- **A second, untiled driver is still alive and has now diverged.**
+  `render_frame_anchored` (`anchored_viewports.cpp:171`) is the last caller of
+  `render_layer`, and no production driver calls it. It carries neither the apron nor
+  the tile-side extent enforcement, so it seams at a fractional phase and hard-clips a
+  bounded content's edge; its byte-exact golden against the tiled offline driver only
+  constrains it where the two coincide (integral phase, cell-aligned extent), so the
+  divergence is unguarded. Registered as `compositor.retire_anchored_untiled_driver`.
+  Retiring it also removes the last inline consumer of a content-provided surface,
+  which is why doc 09's realization addendum 2 and the 2026-07-07 parking-lot entry
+  were amended alongside.
 - **`BenchBackend` had to model `clear_rect` and `composite_windowed`.** It inherited
   `StubBackend`'s delegate-to-the-unclipped-op defaults, which are safe when
   `clear_rect` clears a repaint *region* and actively wrong when it clears a *complement*

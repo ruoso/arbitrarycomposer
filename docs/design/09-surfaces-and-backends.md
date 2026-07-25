@@ -236,19 +236,38 @@ is fully specified; the v1 implementation pins three points it left implicit:
    since it is the *surface* whose lifetime it bounds. `RenderResult.provided`
    is a `std::optional<SurfaceRef>` — `nullopt` by default, so the common
    target-filling render stays a trivial by-value copy paying no atomic.
-2. **The compositor v1 branch: composite inline, copy to cache.** At every
-   `RenderResult`-consumption site a single helper honors `provided`: on the
-   inline (non-cache) composite it composites *directly from* the provided
-   surface (zero copy); on the cache path it **copies** the provided surface
-   into a cache-owned `unique_ptr<Surface>` (a source-over blit over a freshly
-   cleared destination) — for **both** transient and non-transient providers —
-   so the tile cache stays entirely oblivious that a surface was ever provided.
-   The `SurfaceRef` is released the instant the compositor has composited or
-   copied it, never before, and is never stored in a structure outliving the
-   frame. Zero-copy *adoption* of a non-transient provided surface as a cache
-   value (holding the `SurfaceRef` in the cache rather than copying) is a
-   parking-lot item: its payoff is real only on a GPU backend where the copy is
-   a measured cost, and it forces a cache-layer change not yet warranted.
+2. **The compositor v1 branch: composite inline, copy to cache — and in
+   practice, always copy.** At every `RenderResult`-consumption site a single
+   helper honors `provided`: on the inline (non-cache) composite it composites
+   *directly from* the provided surface (zero copy); on the cache path it
+   **copies** the provided surface into a cache-owned `unique_ptr<Surface>` (a
+   source-over blit over a freshly cleared destination) — for **both**
+   transient and non-transient providers — so the tile cache stays entirely
+   oblivious that a surface was ever provided. The `SurfaceRef` is released the
+   instant the compositor has composited or copied it, never before, and is
+   never stored in a structure outliving the frame.
+
+   **The zero-copy half of that branch no longer runs.** It belonged to the
+   untiled per-layer composite; the tiled driver renders every miss straight
+   into the cache-owned surface it is about to insert, and copies a provided
+   surface into that same surface. With the untiled `render_frame` retired
+   (doc 02 § The frame, offline) the only remaining caller of the inline
+   composite is `render_frame_anchored`, which no production driver uses. So
+   every provided surface a shipped frame consumes is copied, and the "zero
+   copy" the feature was named for is currently unreachable — worth stating
+   plainly, because the contract above reads as though it were the common case
+   and it is now the dead one. Nothing else about provided surfaces changed:
+   their pixels are honored, and the release callback still fires within the
+   frame that consumed them, so the compositor holds no reference to content
+   memory across frames.
+
+   Zero-copy *adoption* of a non-transient provided surface as a cache value
+   (holding the `SurfaceRef` in the cache rather than copying) is a
+   parking-lot item, and it is the form the idea would have to take to come
+   back at all: with no inline path left, adoption into the cache is the only
+   place a copy could be avoided. Its payoff is still real only on a GPU
+   backend where the copy is a measured cost, and it still forces a
+   cache-layer change not yet warranted.
 3. **v1 requires a working-space tag on a *provided* surface.** The
    tag-compatibility clause above (a differently-tagged provided surface
    converting **at composite time**) is latent until a backend advertises a

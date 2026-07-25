@@ -50,6 +50,17 @@ surface moves freely, and changelog honesty is what makes that safe
   did not render for this request — a decoder returning its native frame — must
   now say where those pixels belong; `org.arbc.imageseq` does (design doc 09).
 
+- **Design docs 02 and 09 reconciled with the one-render-path unification.** Doc
+  02 said "two drivers over the same core" and described the offline frame as
+  running "without quantization"; both were left stale by `6a3e30a`, and the
+  second was the more misleading — an offline frame plans against the same scale
+  ladder as an interactive one, and "no degradation" is a behavioural zero
+  (`degraded_composites == 0`) rather than a separate path. Doc 09's provided-
+  surface addendum said the compositor composites inline from a provided surface
+  zero-copy; that branch has no production caller left, so every provided surface
+  a shipped frame consumes is copied. No behaviour changed with this entry — the
+  documents did.
+
 - **There is now ONE render path.** `render_offline` renders through
   `render_frame_interactive` — the same tiled driver the interactive loop and the
   sequence exporter already ran — and the untiled `arbc::render_frame` free

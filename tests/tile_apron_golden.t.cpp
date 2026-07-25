@@ -29,9 +29,9 @@ namespace {
 float alpha_at(const arbc::Surface& surface, int x, int y) {
   const std::span<const float> px =
       std::as_const(surface).span<arbc::PixelFormat::Rgba32fLinearPremul>();
-  const std::size_t at = 4 * (static_cast<std::size_t>(y) *
-                                  static_cast<std::size_t>(surface.width()) +
-                              static_cast<std::size_t>(x));
+  const std::size_t at =
+      4 * (static_cast<std::size_t>(y) * static_cast<std::size_t>(surface.width()) +
+           static_cast<std::size_t>(x));
   return px[at + 3];
 }
 
