@@ -21,6 +21,21 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ### Fixed
 
+- `org.arbc.raster` and `org.arbc.image` now render at the **requested scale**
+  under `BestEffort`, magnifying past native exactly as they already did under
+  `Exact`, instead of clamping to native and reporting `achieved_scale <
+  request.scale`. The tiled compositor carries no `achieved_scale` term in any
+  composite arm, so the clamped answer broke two things at once: a magnified
+  layer drew at native size however far the camera zoomed, and its tile
+  satisfied neither cache probe, so it re-rendered at frame rate forever — every
+  camera scale strictly above 1.0, not just extreme zooms. Magnification also
+  belongs to the kind rather than the compositor: a kind samples its own source
+  across its internal tile boundaries, where the compositor's tap fetches a
+  transparent border at every isolated tile edge (one source pixel of falloff —
+  a device pixel at the ladder's ≤1-octave remainder, a visible seam grid at
+  10×). The two exactness modes now differ only in **time**, which is what doc
+  03 says `BestEffort` is for (design docs 03/04; issue #18).
+
 - A nested composition whose child is an **external** reference no longer
   composites blank under a worker pool. The interactive driver's operator-layer
   memo admitted a nesting layer on its structural child edge but excluded one

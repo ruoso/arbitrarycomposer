@@ -657,14 +657,45 @@ std::optional<RenderResult> RasterContent::render(const RenderRequest& request,
   const int w = table->width();
   const int h = table->height();
 
-  // Bounded scale: an Exact request renders faithfully at the requested scale
-  // (bicubic-upsampling past native); a BestEffort request clamps at native and
-  // reports achieved_scale < request.scale honestly (doc 03:53-55,142-145,
-  // refinement Constraint 5 reconciled with the enforced #render-scale-honest
-  // claim: achieved < request is never exact).
+  // BOTH exactness modes render at the REQUESTED scale, bicubic-magnifying past
+  // native. `BestEffort` used to clamp here (`min(s, 1.0)`) and report
+  // `achieved_scale < request.scale` honestly, which doc 03:53-55,204-208 permits
+  // in the abstract -- but the TILED compositor cannot honour that answer, and
+  // issue #18 is the two ways it fails at once.
+  //
+  // The pixels: a clamped render fills the whole tile target by sampling at the
+  // ACHIEVED density (`/achieved` below), so it covers `region_size / achieved`
+  // local units instead of `region_size` -- 16x too many at a rung-4 request. The
+  // tiled composite then paints that surface across the tile's own local rect
+  // (`surface_to_device(composed, tile.local_rect, rung_px)`, every arm of
+  // `tile_planning.cpp`), with no `achieved_scale` term anywhere, so the layer
+  // draws at NATIVE size however far you zoom. (The untiled path does compensate --
+  // `compositor.cpp:92` applies `scaling(1/achieved)` -- which is why offline
+  // magnification has always been right and only interactive was wrong.)
+  //
+  // The loop: a tile whose meta says `achieved < rung_px` satisfies neither the
+  // fresh probe nor the transient one (`tile_planning.cpp:257,278`), so it is a
+  // miss on every frame, forever -- a re-render, an arrival, carried damage, a
+  // re-plan, at frame rate, for as long as the framing is held.
+  //
+  // Magnifying HERE is also the only place it can be done without seams: this
+  // samples the content's own `TileTable`, which clamps at the image border and so
+  // reads real neighbouring source pixels across an internal tile boundary
+  // (`sample_bicubic` call below). The compositor's tap cannot -- it fetches a
+  // zero border outside each isolated tile surface (`kernels.hpp:66-68`), which
+  // costs one SOURCE pixel of falloff at every tile edge: invisible at the ladder's
+  // <=1-octave remainder (~1 device px, the case doc 04:95-98 scopes it to), a
+  // visible seam grid at 10x. So the ladder's remainder stays the compositor's and
+  // the magnification stays the kind's.
+  //
+  // `exact` is "rendered at the density you asked for" (see the enforced
+  // #render-scale-honest claim: `achieved < request` is never exact), not "invented
+  // no detail" -- the `Exact` path has always reported an interpolated magnified
+  // render as exact, and this makes `BestEffort` agree. The two now differ only in
+  // TIME, which is what doc 03:204-208 says `BestEffort` is about.
   const double s = request.scale;
-  const double achieved = (request.exactness == Exactness::Exact) ? s : std::min(s, 1.0);
-  const bool exact = (achieved == s);
+  const double achieved = s;
+  const bool exact = true;
 
   const int tw = request.target.width();
   visit_surface(request.target, [&](auto typed) {

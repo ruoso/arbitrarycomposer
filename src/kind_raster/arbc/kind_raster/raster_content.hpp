@@ -23,9 +23,12 @@ namespace arbc {
 // org.arbc.raster (docs 03/14/15): the decoded-buffer raster reference content
 // kind. A finite-bounds, Static, visual-only Content that takes an
 // already-decoded pixel buffer (codec-free -- doc 17:145-153) and serves it at
-// any requested scale from a mip/tile pyramid, clamping at native resolution and
-// reporting `achieved_scale` below the request when asked past native
-// (BestEffort). Its editable state is a persistent copy-on-write tile table --
+// any requested scale from a mip/tile pyramid: decimating through the pyramid
+// below native, bicubic-magnifying above it, and reporting `achieved_scale ==
+// request.scale` either way, in BOTH exactness modes. Magnification is the KIND's
+// because only it can sample across its own tile boundaries without a seam; the
+// compositor keeps the ladder's <=1-octave remainder (see `render`, and doc
+// 04:95-98). Its editable state is a persistent copy-on-write tile table --
 // the reference proof of doc 14's capture discipline (doc 14:164-171): a paint
 // stroke copies only the tiles it touches, so capture is O(touched tiles), undo
 // memory is O(touched tiles), and reported damage equals the stroke's tile set.

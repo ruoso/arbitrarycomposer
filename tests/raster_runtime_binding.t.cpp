@@ -14,6 +14,7 @@
 #include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
+#include <arbc/compositor/compositor.hpp>
 #include <arbc/kind_raster/raster_content.hpp>
 #include <arbc/kind_tone/tone_content.hpp>
 #include <arbc/media/pixel_format.hpp>
@@ -21,11 +22,13 @@
 #include <arbc/media/surface_format.hpp>
 #include <arbc/model/records.hpp>
 #include <arbc/runtime/document.hpp>
+#include <arbc/runtime/interactive.hpp>
 #include <arbc/runtime/offline.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -412,5 +415,112 @@ TEST_CASE("a two-editable-raster document renders byte-identical to two one-rast
       CAPTURE(x, y);
       REQUIRE(pixel(**both_out, x, y) == expected);
     }
+  }
+}
+
+// --- issue #18: magnification through the INTERACTIVE (tiled) driver -----------
+//
+// Both cases below are the tiled path, which is what made #18 invisible to the
+// existing coverage: `render_offline` is UNTILED and compensates for a below-request
+// `achieved_scale` itself (`compositor.cpp:92` applies `scaling(1/achieved)`), so
+// offline magnification was always right. `render_frame_interactive` plans per-tile
+// surfaces and composites each through `surface_to_device(composed, local_rect,
+// rung_px)` -- no `achieved_scale` term in any arm -- so it silently required the
+// kind to answer AT the requested scale, and got a clamp instead.
+
+namespace {
+
+// Drive the tiled interactive driver over `doc` to quiescence, returning the frames it
+// took. 0 means it never went idle within the cap -- the #18 loop.
+int drive_interactive(Document& doc, const Viewport& viewport, Backend& backend, Surface& target,
+                      int cap = 12) {
+  arbc::TileCache cache(64U * 1024 * 1024);
+  SurfacePool pool(backend);
+  arbc::WorkerPoolConfig cfg;
+  cfg.worker_count = 2; // a REAL pool: a leaf miss lands on a worker and returns as an arrival
+  arbc::InteractiveRenderer renderer(cfg, nullptr);
+  const DocStatePtr pin = doc.pin();
+  const ContentResolver resolve = [&doc](ObjectId id) { return doc.resolve(id); };
+  for (int frame = 1; frame <= cap; ++frame) {
+    const auto out = renderer.render_frame(*pin, resolve, viewport, cache, backend, pool, target,
+                                           {}, Time{0}, std::chrono::seconds(2));
+    if (!out.schedule_follow_up) {
+      return frame;
+    }
+  }
+  return 0;
+}
+
+// A one-raster document: `dim` local units, opaque white, identity placement.
+// `Document` is non-copyable, so it is filled in place rather than returned.
+void magnifiable_doc(int dim, Document& doc, std::shared_ptr<RasterContent>& raster_out,
+                     ObjectId& comp_out) {
+  DecodedImage img;
+  img.width = dim;
+  img.height = dim;
+  img.format = k_working_rgba32f;
+  const std::vector<float> f(static_cast<std::size_t>(dim) * dim * 4, 1.0F);
+  const auto* src = reinterpret_cast<const std::byte*>(f.data());
+  img.bytes.assign(src, src + f.size() * sizeof(float));
+
+  raster_out = std::make_shared<RasterContent>(img, /*tile_edge=*/2);
+  const ObjectId cid = doc.add_content(raster_out);
+  comp_out = doc.add_composition(dim, dim);
+  doc.attach_layer(comp_out, doc.add_layer(cid, Affine::identity()));
+}
+
+} // namespace
+
+// enforces: 16-sdlc-and-quality#byte-exact-goldens
+TEST_CASE("a magnified raster composites at the magnified size through the tiled driver") {
+  CpuBackend backend;
+  std::shared_ptr<RasterContent> raster;
+  ObjectId comp;
+  Document doc;
+  magnifiable_doc(4, doc, raster, comp);
+
+  // 2x: 4 local units must cover 8 device px. Under the clamp the layer painted only 4 --
+  // it drew at NATIVE size, so the row read `####....` instead of `########`.
+  const Viewport viewport{8, 8, Affine::scaling(2.0, 2.0), comp};
+
+  auto target = backend.make_surface(8, 8, doc.pin()->working_space());
+  REQUIRE(target.has_value());
+  REQUIRE(drive_interactive(doc, viewport, backend, **target) > 0);
+
+  // The untiled offline driver is the oracle: it has always magnified correctly, so the
+  // tiled path agreeing with it is the whole statement.
+  const auto oracle = render_offline(doc, viewport, backend);
+  REQUIRE(oracle.has_value());
+  for (int y = 0; y < 8; ++y) {
+    for (int x = 0; x < 8; ++x) {
+      INFO("pixel " << x << "," << y);
+      CHECK(pixel(**target, x, y) == pixel(**oracle, x, y));
+    }
+  }
+  // Stated independently of the oracle, so a regression in BOTH drivers cannot pass:
+  // the magnified layer covers the full 8 device px, opaque to the last column.
+  for (int x = 0; x < 8; ++x) {
+    INFO("column " << x);
+    CHECK(pixel(**target, x, 4)[3] > 0.99F);
+  }
+}
+
+TEST_CASE("a magnified raster lets the interactive driver go idle") {
+  CpuBackend backend;
+  // Every camera scale STRICTLY above 1.0 used to loop forever: `select_rung` picks the
+  // smallest 2^k >= scale, so any magnification puts `rung_px` above the clamped
+  // `achieved_scale`, and a tile whose meta says `achieved < rung_px` satisfies neither the
+  // fresh probe nor the transient one (`tile_planning.cpp:257,278`). It was a miss on every
+  // frame, forever. 1.0 and below always settled, which is why the boundary matters here.
+  for (const double s : {0.25, 0.5, 1.0, 1.25, 1.5, 2.0, 4.0, 10.0}) {
+    std::shared_ptr<RasterContent> raster;
+    ObjectId comp;
+    Document doc;
+    magnifiable_doc(4, doc, raster, comp);
+    const Viewport viewport{32, 32, Affine::scaling(s, s), comp};
+    auto target = backend.make_surface(32, 32, doc.pin()->working_space());
+    REQUIRE(target.has_value());
+    INFO("camera scale " << s);
+    CHECK(drive_interactive(doc, viewport, backend, **target) > 0);
   }
 }

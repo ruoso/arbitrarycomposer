@@ -501,13 +501,17 @@ std::optional<RenderResult> ImageContent::render(const RenderRequest& request,
     return std::nullopt;
   }
 
-  // Bounded scale, honestly reported (the raster rule, `raster_content.cpp:508-514`): an
-  // `Exact` request renders faithfully at the requested scale, bicubic-magnifying past
-  // native; a `BestEffort` request CLAMPS AT NATIVE and says `achieved_scale <
-  // request.scale`, which makes `exact` false. `achieved < requested` is never exact.
+  // Render AT the requested scale in both exactness modes, bicubic-magnifying past
+  // native -- the raster rule, and for the reason spelled out there
+  // (`raster_content.cpp`, `render`): the tiled compositor has no `achieved_scale`
+  // term in any composite arm, so a clamped answer draws at native size however far
+  // the camera zooms AND can never satisfy a cache probe, re-rendering at frame rate
+  // forever (issue #18). Magnifying here is also seam-free -- this samples the
+  // retained master, which clamps at the image border, where the compositor's tap
+  // would fetch a zero border at every isolated tile edge.
   const double s = request.scale;
-  const double achieved = (request.exactness == Exactness::Exact) ? s : std::min(s, 1.0);
-  const bool exact = (achieved == s);
+  const double achieved = s;
+  const bool exact = true;
 
   const int w = master->width();
   const int h = master->height();

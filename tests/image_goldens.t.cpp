@@ -223,32 +223,42 @@ TEST_CASE(
 // enforces: 16-sdlc-and-quality#byte-exact-goldens
 // enforces: 03-layer-plugin-interface#image-re-decode-is-byte-identical-and-model-invisible
 // enforces: 03-layer-plugin-interface#render-scale-honest
-TEST_CASE("org.arbc.image clamps a BestEffort upscale at native and reports it honestly") {
+TEST_CASE("org.arbc.image magnifies identically under BestEffort and Exact") {
   CpuBackend backend;
   auto content = fix::make_content();
   const fix::RefImage master = fix::reference_master();
 
-  const Rect region{64.0, 96.0, 80.0, 108.0};
+  // Issue #18. A `BestEffort` upscale used to clamp at native and report the shortfall,
+  // which doc 03 permits in the abstract -- but the TILED compositor carries no
+  // `achieved_scale` term in any composite arm, so the layer drew at native size however
+  // far the camera zoomed, and the below-request tile satisfied no cache probe, so it
+  // re-rendered every frame forever. Magnification also belongs to the KIND: it samples
+  // the retained master, which clamps at the image border, where the compositor's own tap
+  // fetches a zero border at every isolated tile edge (one source pixel of falloff -- a
+  // device pixel at the ladder's <=1-octave remainder, a visible seam grid at 10x).
+  //
+  // Driven at the SAME region and scale as the `Exact` magnification golden above, so the
+  // two modes are compared directly: they now differ only in TIME, never in scale.
+  const Rect region{64.0, 96.0, 72.0, 102.0};
   const Rendered got = render_region(*content, backend, region, 2.0, 16, 12, Exactness::BestEffort);
+  const Rendered oracle = render_region(*content, backend, region, 2.0, 16, 12, Exactness::Exact);
 
-  // The honesty rule (`raster_content.cpp:512-514`): an INTERACTIVE request may degrade, so
-  // it clamps at native -- and `achieved < requested` is NEVER `exact`. A content that
-  // clamped silently while claiming exactness would let the compositor cache a degraded tile
-  // as if it were faithful.
-  CHECK(got.achieved_scale == 1.0);
-  CHECK(got.achieved_scale < 2.0);
-  CHECK_FALSE(got.exact);
-  const std::vector<float> want = reference_resample(master, region, 1.0, 1.0, 16, 12);
+  CHECK(got.achieved_scale == 2.0); // AT the request, not clamped to native
+  CHECK(got.exact);
+  CHECK(got.px == oracle.px);
+  CHECK(got.achieved_scale == oracle.achieved_scale);
+  CHECK(got.exact == oracle.exact);
+  const std::vector<float> want = reference_resample(master, region, 2.0, 1.0, 16, 12);
   CHECK(got.px == want);
 
-  // The scale HONESTY survives eviction too: a re-decoded content clamps at native and still says
-  // so. A memory policy that quietly changed what a render CLAIMS would be worse than one that
-  // changed its pixels.
+  // And it survives eviction: a re-decoded content magnifies to the same pixels and reports
+  // the same scale. A memory policy that quietly changed what a render CLAIMS would be worse
+  // than one that changed its pixels.
   std::uint64_t re_decodes = 0;
   const Rendered evicted = render_under_eviction("goldens/besteffort.ppm", backend, region, 2.0, 16,
                                                  12, Exactness::BestEffort, re_decodes);
   CHECK(re_decodes == 1);
   CHECK(evicted.px == want);
-  CHECK(evicted.achieved_scale == 1.0);
-  CHECK_FALSE(evicted.exact);
+  CHECK(evicted.achieved_scale == 2.0);
+  CHECK(evicted.exact);
 }
