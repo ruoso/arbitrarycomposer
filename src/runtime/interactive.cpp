@@ -131,11 +131,24 @@ void InteractiveRenderer::refresh_identity_memo(const DocRoot& state,
   // (Step 6, post-attach), when the memo IS populated, so admitting the layer here on its
   // structural child edge -- the same edge `build_pull_identity_map` descends -- is what
   // lets the arrival reach the enclosing nesting layer and schedule the follow-up frame.
+  //
+  // An EXTERNAL child (`external_composition_ref()` non-empty) is admitted on exactly the
+  // same edge, and deliberately so. The serializer refuses to descend one (`writer.cpp:290`)
+  // because on SAVE it is another document's data, not ours to inline; that rule does not
+  // transfer here, because at RENDER time an externally-loaded child is an ordinary
+  // composition in THIS document's model -- "external is provenance, not a different runtime
+  // representation, so render / audio / inputs / damage all stay on the path above"
+  // (`nested_content.hpp:68-73`). Excluding it left an external nesting layer in NEITHER
+  // branch of the test below (`is_operator` is false pre-attach, `nesting` was false by the
+  // exclusion), so a deferred external child's leaf arrival routed nowhere: it names an id
+  // that is a layer root only INSIDE the child composition, which no embedder viewport walks
+  // (doc 05:28-36), so it mapped to zero device rects, scheduled no follow-up, and the scene
+  // quiesced BLANK under a worker pool while compositing correctly under inline dispatch --
+  // where `submit` IS the render and no arrival is routed at all (issue #17).
   d_operator_layers.clear();
   state.for_each_layer([&](const LayerRecord& layer) {
     const Content* const content = resolve(layer.content);
-    const bool nesting = content != nullptr && content->composition_ref().valid() &&
-                         content->external_composition_ref().empty();
+    const bool nesting = content != nullptr && content->composition_ref().valid();
     if (is_operator(content) || nesting) {
       d_operator_layers.push_back(OperatorLayer{layer.content, content});
     }

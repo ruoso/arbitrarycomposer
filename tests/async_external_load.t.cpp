@@ -47,6 +47,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -252,19 +253,34 @@ arbc::HostViewport::Clock epoch_clock() {
 // The whole host side of a Document-bound viewport, in one object
 // (runtime.host_viewport_document_binding). Everything the frame needs -- the resolver, the
 // damage-sink install, the external-arrival settle hook -- is derived by the constructor from
-// `doc` and `binding`. There is no `settle_external_loads` call ANYWHERE in the two tests that
+// `doc` and `binding`. There is no `settle_external_loads` call ANYWHERE in the tests that
 // use this: `step()` is the only thing the host drives.
+//
+// `workers` is the ONE axis the pooled/inline pair below differs on. At `0` this is the
+// degenerate inline executor on a frozen clock -- every miss renders inside `submit`, so the
+// scene settles without any arrival being routed at all. Above `0` a leaf miss lands on a real
+// worker and comes back as an ARRIVAL, which is the whole path issue #17 was lost on; that
+// needs a real clock and a budget a render can actually meet, or the frame would expire before
+// its own dispatch settled and the comparison would be about the deadline, not the routing.
 class DocumentViewport {
 public:
-  DocumentViewport(Document& doc, KindBridge& bridge, const Registry& registry, int dim)
+  DocumentViewport(Document& doc, KindBridge& bridge, const Registry& registry, int dim,
+                   std::size_t workers = 0)
       : d_cache(64U * 1024 * 1024), d_pool(d_backend),
         d_target(d_backend.make_surface(dim, dim, doc.pin()->working_space())),
+        d_renderer(pool_config(workers), clock(workers)),
         d_viewport(d_renderer, doc, arbc::HostViewport::DocumentBinding{&bridge, &registry},
-                   d_backend, d_pool, d_cache, checked(d_target), epoch_clock(), config(doc, dim)) {
-  }
+                   d_backend, d_pool, d_cache, checked(d_target), clock(workers),
+                   config(doc, dim, workers)) {}
 
   arbc::HostViewport& operator*() noexcept { return d_viewport; }
   arbc::HostViewport* operator->() noexcept { return &d_viewport; }
+
+  // What this viewport last composited, for a byte-exact comparison between dispatches.
+  std::vector<std::byte> composited() const {
+    const std::span<const std::byte> bytes = (*d_target)->cpu_bytes();
+    return {bytes.begin(), bytes.end()};
+  }
 
 private:
   using Target = arbc::expected<std::unique_ptr<Surface>, arbc::SurfaceError>;
@@ -274,9 +290,24 @@ private:
     return **target;
   }
 
-  static arbc::HostViewport::Config config(const Document& doc, int dim) {
+  // Inline runs on the frozen clock every other test in this file uses; a pooled run needs a
+  // real one, so its budget is a real duration a worker can settle within.
+  static arbc::HostViewport::Clock clock(std::size_t workers) {
+    return workers == 0 ? epoch_clock() : arbc::HostViewport::Clock{};
+  }
+
+  static arbc::WorkerPoolConfig pool_config(std::size_t workers) {
+    arbc::WorkerPoolConfig cfg;
+    cfg.worker_count = workers;
+    return cfg;
+  }
+
+  static arbc::HostViewport::Config config(const Document& doc, int dim, std::size_t workers) {
     arbc::HostViewport::Config cfg;
     cfg.viewport = Viewport{dim, dim, Affine::identity(), root_composition_of(doc)};
+    if (workers != 0) {
+      cfg.budget = std::chrono::seconds(2);
+    }
     return cfg;
   }
 
@@ -284,9 +315,47 @@ private:
   TileCache d_cache;
   SurfacePool d_pool;
   Target d_target;
-  arbc::InteractiveRenderer d_renderer{{}, epoch_clock()};
+  arbc::InteractiveRenderer d_renderer;
   arbc::HostViewport d_viewport;
 };
+
+// Drive ONE deferred-external nested scene to quiescence at `workers` and return what it
+// composited. Everything except the dispatch is shared code: the same document bytes, the same
+// bridge, the same registry, the same viewport geometry -- so a difference in the returned
+// pixels is a difference the dispatch made.
+std::vector<std::byte> composite_deferred_external(std::size_t workers) {
+  DeferringAssetSource source;
+  source.put("mem/child.arbc", k_leaf);
+
+  Document doc;
+  KindBridge bridge;
+  const Registry registry;
+  REQUIRE(arbc::load_document(nesting_doc("child.arbc"), doc, bridge, registry, "mem/parent.arbc",
+                              &source));
+  REQUIRE(doc.pending_external_loads() == 1);
+
+  DocumentViewport viewport(doc, bridge, registry, 16, workers);
+  viewport->step();                // the bootstrap frame, over the placeholder
+  REQUIRE(source.fire_all() == 1); // the bytes come back on the source's own schedule
+  viewport->step();                // the step that settles the arrival AND composites it
+  REQUIRE(doc.pending_external_loads() == 0);
+  REQUIRE(viewport->external_loads_settled() == 1);
+
+  // Then honour every owed follow-up frame, exactly as a conforming host must, until the
+  // viewport says it is done. Bounded so a renderer that never quiesces fails the test
+  // rather than hanging it.
+  for (int extra = 0; extra < 32; ++extra) {
+    if (!viewport->step().schedule_follow_up) {
+      return viewport.composited();
+    }
+  }
+  FAIL("the viewport never went idle");
+  return {};
+}
+
+bool all_transparent(std::span<const std::byte> bytes) {
+  return std::all_of(bytes.begin(), bytes.end(), [](std::byte b) { return b == std::byte{0}; });
+}
 
 } // namespace
 
@@ -824,4 +893,28 @@ TEST_CASE("a deferring grandchild chain lands over successive frames, driven onl
   const auto* const b_nested = dynamic_cast<const NestedContent*>(doc.resolve(b_nest_content));
   REQUIRE(b_nested != nullptr);
   CHECK(pin->find_composition(b_nested->child()) != nullptr); // c, installed under b
+}
+
+// enforces: 02-architecture#worker-pool-degenerates-to-inline
+TEST_CASE("a DEFERRED EXTERNAL nested child composites the same pooled as inline") {
+  // Issue #17. The two runs differ in ONE thing -- whether a leaf miss is rendered inside
+  // `submit` or on a real worker -- and a worker pool is documented to change performance,
+  // not results. It did: the pooled run quiesced fully transparent while the inline run
+  // composited the child, because a nesting layer holding an EXTERNAL child was admitted to
+  // NEITHER branch of the interactive driver's operator-layer memo, so the child leaf's
+  // async arrival routed to no layer root the embedder walks, mapped to zero device rects,
+  // and scheduled no follow-up frame (`interactive.cpp`, `refresh_identity_memo`).
+  //
+  // The existing worker-count byte-identity sweep (`worker_dispatch_leaf_only.t.cpp`) covers
+  // a nested scene already, which is why this was green everywhere: its child is
+  // IN-DOCUMENT, so it never took the excluded branch. The external + deferred pair is what
+  // this case adds.
+  const std::vector<std::byte> inlined = composite_deferred_external(0);
+  const std::vector<std::byte> pooled = composite_deferred_external(2);
+
+  // The control first: an oracle that composited nothing would make the comparison below
+  // pass for the wrong reason.
+  REQUIRE_FALSE(all_transparent(inlined));
+  CHECK_FALSE(all_transparent(pooled));
+  CHECK(inlined == pooled);
 }

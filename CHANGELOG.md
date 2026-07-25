@@ -21,6 +21,18 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ### Fixed
 
+- A nested composition whose child is an **external** reference no longer
+  composites blank under a worker pool. The interactive driver's operator-layer
+  memo admitted a nesting layer on its structural child edge but excluded one
+  holding an external child, so a deferred external child's leaf arrival routed
+  to no layer root the embedding viewport walks: it mapped to zero device rects,
+  scheduled no follow-up frame, and the scene quiesced fully transparent — while
+  compositing correctly under inline dispatch, where the render happens inside
+  `submit` and no arrival is routed at all. The exclusion was the serializer's
+  rule (an external child is not ours to inline on save), which does not hold at
+  render time, where an externally-loaded child is an ordinary composition in
+  this document's model (design doc 05, § Recursive composition; issue #17).
+
 - `Journal::can_redo()` no longer reports a redo that does not exist when read
   from a non-writer thread. The published cursor and entry count were two
   separate atomics, so a reader whose two loads straddled a commit compared a
