@@ -800,6 +800,11 @@ target_link_libraries(arbc_bounded_content_tile_clip_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_bounded_content_tile_clip_golden_t)
 
+add_executable(arbc_document_rebind_content_t document_rebind_content.t.cpp)
+target_link_libraries(arbc_document_rebind_content_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_document_rebind_content_t)
+
 add_executable(arbc_tile_apron_golden_t tile_apron_golden.t.cpp)
 target_link_libraries(arbc_tile_apron_golden_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)

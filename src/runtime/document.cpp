@@ -126,6 +126,52 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
   return id;
 }
 
+bool Document::rebind_content(ObjectId id, std::shared_ptr<Content> content) {
+  // The record must already exist. Binding an object to an id the document does not
+  // have would leave a row nothing can ever reach through `resolve` (which is keyed by
+  // the record graph, not by the map) and nothing can ever reclaim, so it is refused
+  // as a value rather than silently orphaned.
+  const DocStatePtr pinned = d_model->current();
+  if (pinned->find_content(id) == nullptr) {
+    return false;
+  }
+
+  // Drop the outgoing content's `Editable` routing FIRST, with its row still installed,
+  // exactly as `EditableBinding::unbind`'s contract requires: the drain has to run while
+  // the row can still be routed to, or the queued reclaims of the content being replaced
+  // strand and leak their pinned state handles. `unbind` on an unbound id is a no-op, so
+  // a first bind onto a recovered record takes the same line.
+  d_binding.unbind(id);
+
+  // Publish the row copy-on-write, exactly as `add_content` does: copy the current
+  // immutable map, replace (or erase) the row, swap it in. Readers keep their own pinned
+  // generation and simply do not see the change until their next load, so a render
+  // thread mid-walk is never torn.
+  auto next = std::make_shared<ContentBindings>(*d_contents.load());
+  if (content == nullptr) {
+    next->erase(id);
+    d_contents.store(std::move(next));
+    return true;
+  }
+
+  // Register the incoming content's state sinks under the SAME id, so a rebound editable
+  // journals and undoes against the record it was bound to. Unlike `add_content` this does
+  // NOT capture `initial` onto the record: the record's `StateHandle` is the one that was
+  // persisted (or the one the outgoing content left), and overwriting it here would
+  // discard exactly the state a reopen is trying to recover -- and would do it outside any
+  // transaction, since this publishes no version.
+  Content& live = *content;
+  next->insert_or_assign(id, std::move(content));
+  d_contents.store(std::move(next));
+  d_binding.bind(id, live);
+  return true;
+}
+
+const std::vector<Model::RecoveredContentState>&
+Document::recovered_content_state() const noexcept {
+  return d_model->recovered_content_state();
+}
+
 void Document::remove_content(ObjectId content, ObjectId composition, ObjectId layer) {
   // The inverse of `add_content`, composing three existing model teardowns into one
   // atomic, undoable, per-content deletion (doc 14 § Transactions, the removal

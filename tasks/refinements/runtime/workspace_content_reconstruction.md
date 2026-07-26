@@ -14,7 +14,8 @@ from `ruoso/arbitraryeditor` at the v0.3.0 pin.
 
 `tasks/65-runtime.tji` — `task workspace_content_reconstruction`, `effort 8d`,
 `allocate team`, `depends model.persistent_state_walk_hook, runtime.document_serialize,
-pool.workspace_store_directory`. Docs 08/14/15.
+pool.workspace_store_directory`, and informally `model.composition_membership` for the
+spill-chain pattern. Docs 08/14/15.
 
 ## Effort estimate
 
@@ -27,10 +28,10 @@ as the architecture.
   and the tests that pin them. Small because the binding table is already a COW map
   built for exactly this shape.
 - **~7d — the persisted identity.** A model-record format change (`ContentRecord`
-  grows two block refs), a `BigBlockPool` at the model level, blob reachability in
-  the recovery walk, capture-on-add through the codec, the reconstruction pass in
-  `Document::open`, and the doc 14/15 deltas. The crash sweeps and the workspace
-  goldens move with the record format.
+  grows two `ObjectId`s naming spill chains, plus two new `ObjectRecord` union arms),
+  the transaction verbs that write them, capture-on-add through the codec, the
+  reconstruction pass in `Document::open`, and the doc 14/15 deltas. The crash sweeps
+  and the workspace goldens move with the record format.
 
 ## Inherited dependencies
 
@@ -48,15 +49,16 @@ as the architecture.
   task makes the bridge's output *persistent*, which changes it from a per-session
   interning table to something with a durable side.
 - `pool.workspace_store_directory` — per-store chunk ownership in the workspace
-  header, which is what lets a new size-classed store appear in the file and be
-  routed back to its owner on reopen without a header format change.
+  header. Not because this task adds a store (Decision 7 avoids that), but because the
+  widened `ObjectRecord` union changes the record store's slot stride, and the store
+  table is what makes a reopen route each chunk to its owner unambiguously.
 
 **Settled (informal — seams this builds on):**
 
-- `pool.big_block_pool` — `BlockSlotRef` is *already* "standard-layout and trivially
-  copyable so it can live inside an mmapped record… it carries the logical byte
-  length" (`big_block_pool.hpp:39-48`). It is the in-record variable-length reference
-  this task needs, and it exists.
+- `model.composition_membership` — the `LayerOrderChunk` spill chain
+  (`records.hpp:100-113`): variable-length data in the record graph, as a chain of
+  ordinary `ObjectRecord`s named by `ObjectId` value. It is the precedent Rules 1 and 2
+  follow, and the reason they need no new pool machinery (Decision 7).
 - `serialize.kind_params` — `load_document(json, registry, codecs, ctx, sink, into)`
   already routes each content body through `CodecTable` and sinks the resulting
   `Content` (`reader.hpp:90-122`). The reconstruction pass is that routing driven from
@@ -118,25 +120,34 @@ contradicts nothing.
 
 ### The rules
 
-**Rule 1 — the record carries the content's construction identity.**
-`ContentRecord` gains one `BlockSlotRef identity`: a big-block blob holding the
-reverse-DNS `kind_id` and the kind's canonical `params` text, in that order,
-length-prefixed. `BlockSlotRef` is 8 bytes, standard-layout and trivially copyable
-(`big_block_pool.hpp:39-48`), so the record stays fixed-size and pointer-free —
-the doc 15 position-independence requirement is untouched. `k_no_block` is the
-absent case and reads exactly as today's record does.
+**Rule 1 — the record carries the content's construction identity, in a spill
+chain.** `ContentRecord` gains one `ObjectId identity_root` naming the head of a
+chain of `TextChunk` records holding the reverse-DNS `kind_id` and the kind's
+canonical `params` text, in that order, length-prefixed. An `ObjectId` is what a
+record already uses to name another record, so the record stays fixed-size,
+standard-layout and pointer-free, and an invalid id is the absent case that reads
+exactly as today's record does.
 
 The `kind_id` STRING is persisted, not the `kind` token. The token stays in the
 record as the cheap in-memory discriminator it already is, but it is derived from
 the string on reopen rather than trusted — which is what makes a plugin kind survive
 a session that interned in a different order (finding 2).
 
-**Rule 2 — the record carries its input edges.** `ContentRecord` gains a second
-`BlockSlotRef inputs` holding the `ObjectId`s of this content's inputs, in
-declaration order. This is doc 08 Principle 6's *core-owned input edges* given a home
-in the record graph, which is where they always belonged: the canonical writer
-already treats them as the core's rather than the codec's, and a `KindCodec::deserialize`
-already takes them as a parameter (`registry.hpp:74-78`).
+**Rule 2 — the record carries its input edges, in the same shape.** `ContentRecord`
+gains an `ObjectId inputs_root` naming a chain of `IdChunk` records holding this
+content's input `ObjectId`s in declaration order. This is doc 08 Principle 6's
+*core-owned input edges* given a home in the record graph, which is where they always
+belonged: the canonical writer already treats them as the core's rather than the
+codec's, and `KindCodec::deserialize` already takes them as a parameter
+(`registry.hpp:74-78`).
+
+**Both chains are `LayerOrderChunk`'s pattern, and that is the point** (Decision 7).
+A composition whose layer order exceeds its inline cap already spills to "a
+HAMT-backed chain of `LayerOrderChunk` objects… ordinary objects in the DocState HAMT
+keyed by their own `ObjectId`; a composition names the chain head by `ObjectId` value,
+never an owning edge — so, like every other record, a chunk owns no slot and is
+trivially destructible" (`records.hpp:100-108`). Variable-length data in the record
+graph has a precedent, and it is this one. `IdChunk` can be `LayerOrderChunk` itself.
 
 **Rule 3 — identity is captured through the codec, not supplied by the host.**
 `Document::add_content` gains an optional `const CodecTable*` (or takes it once at
@@ -156,12 +167,15 @@ routine, two drivers, so the workspace path cannot drift from the canonical one 
 way a second render path did (doc 02 § The frame, offline). A record whose kind has
 no codec, or whose blob is absent, binds nothing and is **reported**, not guessed.
 
-**Rule 5 — the recovery walk retains the blobs.** `Model::open`'s reachability walk
-already reconstructs refcounts for `HamtNode` and `ObjectRecord` slots
-(`model.cpp:685-695`). It gains the identity/inputs blobs of every reachable
-`ContentRecord`, retained into the model's `BigBlockPool` exactly as the node and
-record counts are. A blob the walk does not reach is free space, by the same
-complement rule as every other store.
+**Rule 5 — the recovery walk needs no change at all.** This is what Rule 1/2's shape
+buys. `Model::open`'s reachability walk follows "exactly the counted `SlotRef` edges —
+`HamtNode` -> child `HamtNode` and `HamtNode` -> leaf `ObjectRecord` — and there is
+nothing else to follow" (`model.hpp:668-678`). A chunk IS an `ObjectRecord` and a HAMT
+leaf, so it is already visited, already counted, already checkpointed, already
+structurally shared across versions, and already undone/redone by the journal's
+before/after edges. A blob store would have needed a new reachability edge, a new
+retain path in the walk, and a new store in the checkpoint's live set; a chunk chain
+needs none of the four.
 
 **Rule 6 — the rebind seam ships regardless.**
 `Document::rebind_content(ObjectId, std::shared_ptr<Content>)`, writer-thread only:
@@ -178,8 +192,9 @@ the issue-#5 trio is unreachable from the public host surface.
 
 - Persisting a kind's *state slab* — `kinds.raster_workspace_backing`, already a leaf.
   This task makes the content exist for that state to be replayed onto.
-- A workspace **header** format change. Rule 1/2's blobs ride the existing arena and
-  the `pool.workspace_store_directory` store table, so the header shape is untouched.
+- A workspace **header** format change, or any new pool store. Rule 1/2's chunks are
+  `ObjectRecord`s in the store that already exists, so neither the header, the store
+  table, nor the checkpoint's live set learns anything new.
 - Cross-machine or cross-version workspace portability. Doc 15 is explicit that
   workspace files are same-machine artifacts with no portability promise; a
   `kind_version` mismatch on reopen is a reported reconstruction failure, not a
@@ -210,8 +225,9 @@ document."* Resuming into a document with no content in it is not that.
 - `src/model/arbc/model/model.hpp:309-331` — `RecoveredContentState`, and the comment
   recording that the list is empty for every shipped kind.
 - `src/model/model.cpp:685-695` — the reachability walk that Rule 5 extends.
-- `src/pool/arbc/pool/big_block_pool.hpp:39-70` — `BlockSlotRef`, the in-record
-  variable-length reference.
+- `src/model/arbc/model/records.hpp:95-113,200` — `LayerOrderChunk`, the spill-chain
+  precedent Rules 1 and 2 follow, and the union-size-class `static_assert` they must
+  each gain a sibling of.
 - `src/runtime/document.cpp:61-66` (`open`), `:95-128` (`add_content`, and the COW
   binding swap Rule 6 reuses).
 - `src/runtime/arbc/runtime/document_serialize.hpp:36-63` — `KindBridge`.
@@ -222,7 +238,10 @@ document."* Resuming into a document with no content in it is not that.
 ## Constraints / requirements
 
 1. **`ContentRecord` stays standard-layout, fixed-size and pointer-free** (doc 15's
-   position-independence rule). Two `BlockSlotRef`s, no strings, no owning pointers.
+   position-independence rule). Two `ObjectId`s, no strings, no owning pointers. And
+   the new chunk arms must not grow the `ObjectRecord` union's size class — the
+   `static_assert` `LayerOrderChunk` already carries (`records.hpp:200`) gains a
+   sibling for each.
 2. **Reconstruction is one routine.** Rule 4 shares `CodecTable` routing with
    `load_document`; a second per-content reconstruction path is forbidden — that is
    the mistake the two render drivers made.
@@ -234,10 +253,9 @@ document."* Resuming into a document with no content in it is not that.
 5. **Back-compatible with existing workspace files.** A record whose identity blob is
    absent (`k_no_block`) reads exactly as today: the reopen binds nothing for it and
    reports it. Reopening a v0.3.0 workspace must not fail.
-6. **Levelization (doc 17).** The model gains a `BigBlockPool` (pool is below model,
-   already allowed) but never names a kind, a registry or a codec: it stores and walks
-   opaque bytes. All interpretation is runtime's, exactly as `RecoveredContentState`
-   already splits it.
+6. **Levelization (doc 17).** The model never names a kind, a registry or a codec: it
+   stores and walks opaque bytes and opaque `ObjectId`s. All interpretation is
+   runtime's, exactly as `RecoveredContentState` already splits it.
 7. **Writer-thread only** for `rebind_content`, `add_content`'s capture, and the
    reconstruction pass — the single-writer discipline `slot_store.hpp:113-119` states.
 
@@ -291,7 +309,19 @@ document."* Resuming into a document with no content in it is not that.
 5. **Input edges in the record, not in the blob.** They are `ObjectId`s — core-owned,
    fixed-width, and needed by the *reconstruction order* before any blob is parsed. A
    topological walk must read them without decoding a kind's params text.
-6. **The rebind seam ships even though Rule 4 mostly obviates it.** Three cases
+7. **Spill chunks in the HAMT, not blobs in a `BigBlockPool`.** Corrected before
+   implementation; the first draft of this refinement said `BlockSlotRef`. Two reasons.
+   (a) `BigBlockPool` is explicitly "a variable-size, page-aligned… allocator for raster
+   tile pixels, decoded frames, and audio sample runs — the page-scale blobs… as
+   distinct from the small fixed-size document-record slabs"
+   (`big_block_pool.hpp:20-24`), with a 4 KiB floor per allocation. A kind_id plus
+   params is ~100 bytes; a thousand-content document would spend 4 MiB of workspace on
+   ~100 KiB of text, and it is the wrong tool by its own description. (b) Decisively,
+   a chunk chain costs *no new machinery*: chunks are `ObjectRecord`s, so the
+   reachability walk, the checkpoint live set, structural sharing and undo/redo all
+   already cover them (Rule 5), where a blob store would have needed a new edge in each.
+   The model also gains no `BigBlockPool` and no new dependency.
+8. **The rebind seam ships even though Rule 4 mostly obviates it.** Three cases
    outlive reconstruction: a plugin absent this session, a kind with no codec, and a
    file written before this task. All three are permanent shapes, not transitional.
 

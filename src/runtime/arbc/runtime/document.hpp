@@ -130,6 +130,50 @@ public:
   // moment the removal leaves history. WRITER-THREAD ONLY.
   void remove_content(ObjectId content, ObjectId composition, ObjectId layer);
 
+  // Bind (or REBIND) `content` to an EXISTING content record, without minting one.
+  //
+  // The repair seam for a workspace reopen. `Document::open` restores the record
+  // graph but binds no `Content` (`open` above), so a reopened document's records
+  // resolve to null until something supplies the objects. `add_content` cannot: it
+  // mints a new record with a new id, and the recovered records already have ids that
+  // the layers, the journal and the persisted `StateHandle`s all name. This binds an
+  // object to an id that already exists, leaving the record untouched.
+  //
+  // It also REBINDS: a row already present is replaced, its prior `Editable` routing
+  // dropped (draining first, so the outgoing content's queued reclaims still reach it)
+  // and the new content's registered in its place. That is what lets a host swap in a
+  // reconstruction after the fact -- a plugin that loaded late, a kind whose codec
+  // arrived with an update.
+  //
+  // Nothing about the RECORD changes: not its kind, not its `StateHandle`, not its
+  // revision. This publishes no version and appends no journal entry, because nothing
+  // versioned happened -- the id->Content side-map is runtime state beside the model,
+  // not in it (doc 17:66-72). A caller wanting the record's state replayed onto the
+  // new object drives that separately, through `recovered_content_state()` below.
+  //
+  // `content == nullptr` unbinds: the row is dropped (after the same drain) and
+  // `resolve(id)` returns null again.
+  //
+  // Returns false if `id` names no content record in the current version -- binding an
+  // object to an id the document does not have is a caller error reported as a value
+  // (doc 10), never a silently orphaned row. WRITER-THREAD ONLY.
+  bool rebind_content(ObjectId id, std::shared_ptr<Content> content);
+
+  // The persisted non-inert content-state handles this document's `open` found
+  // reachable (`model.persistent_state_walk_hook`, issue #5), for a host driving
+  // `replay_recovered_content_state` after it has supplied the content objects those
+  // handles belong to.
+  //
+  // `Model` collects these and `replay_recovered_content_state` consumes them, but a
+  // host that opens through `Document` -- which is every host, since `Document` is
+  // what owns the housekeeping, the journal and the binding -- had no way to reach
+  // the list: `Document` publishes no accessor for its `Model`, deliberately (see the
+  // attorney-client friends below), so the whole recovery-replay trio was unreachable
+  // from the public surface. Empty for an anonymous document, a freshly created one,
+  // and any document whose kinds ship only inert state. Read once, post-open, on the
+  // writer thread.
+  const std::vector<Model::RecoveredContentState>& recovered_content_state() const noexcept;
+
   ObjectId add_layer(ObjectId content, const Affine& transform, double opacity = 1.0);
   void set_layer_transform(ObjectId layer, const Affine& transform);
 
