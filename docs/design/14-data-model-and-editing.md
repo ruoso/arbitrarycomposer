@@ -51,11 +51,13 @@ Concretely: `DocState` is a persistent (path-copying) map from `ObjectId`
 to immutable object records — composition records (layer order, canvas,
 working spaces), layer records (placement: transform, opacity/gain,
 span/time map, flags, content reference), and content records (kind id +
-a state handle, below). The writer thread is the single mutator (doc 02's
+a state handle, below, plus the construction identity and input edges a
+workspace reopen rebuilds the content from — doc 15 § File-backed arenas). The writer thread is the single mutator (doc 02's
 single-writer rule, unchanged); `Document` holds the current `DocState`
 in an atomic shared pointer.
 
-A composition's ordered layer list is stored inline in the composition
+**Variable-length data in a record is a spill chain, always.** A
+composition's ordered layer list is stored inline in the composition
 record up to a small fixed cap (`k_max_inline_layers`); past the cap it
 spills to a HAMT-backed chain of order-chunk objects — ordinary records in
 the same `DocState` map, keyed by their own `ObjectId` and named from the
@@ -71,6 +73,19 @@ untouched chunk is shared by `SlotRef` identity across versions
 (`14-data-model-and-editing#membership-spills-past-inline-cap`). Order
 rewrites are O(members) worst case, which value semantics blesses at this
 scale ("hundreds of layers … nanoseconds-to-microseconds", above).
+
+That shape generalizes, and every other variable-length field in a record
+uses it rather than reaching for a blob allocator. A content record's
+**construction identity** (its `kind_id` string and the kind's canonical
+`params` text) and its **input edges** are both chains of ordinary records,
+named from the content record by plain `ObjectId` value. The reason is the
+paragraph above: because chunks are ordinary map objects, they are already
+walked by the recovery reachability walk, already in the checkpoint's live
+set, already shared structurally across versions, and already restored by
+undo — where a side allocator would need a new edge in each of the four.
+Chains that are written once and read whole (an identity, an input list) are
+rewritten wholesale rather than diffed; only the layer order, edited
+incrementally on a hot path, is worth diffing.
 
 ## Identity
 

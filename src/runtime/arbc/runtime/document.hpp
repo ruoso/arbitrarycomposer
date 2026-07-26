@@ -130,6 +130,28 @@ public:
   // moment the removal leaves history. WRITER-THREAD ONLY.
   void remove_content(ObjectId content, ObjectId composition, ObjectId layer);
 
+  // Capture a content's CONSTRUCTION IDENTITY -- the reverse-DNS `kind_id` and the
+  // kind's canonical `params` text -- at the one point a content enters the document
+  // (`runtime.workspace_content_reconstruction`, issue #19). `add_content` calls it
+  // inside its own transaction and records the result on the `ContentRecord`, so a
+  // workspace reopen can REBUILD the content rather than merely name it.
+  //
+  // A HOOK rather than a parameter, for the reason `set_external_load_settler` is one:
+  // capturing the identity means running the kind's registered `KindCodec::serialize`,
+  // which lives behind the serialize component's `CodecTable` -- a type this header
+  // must not name (it names JSON). The runtime bridge supplies a ready-made capture
+  // (`codec_identity_capture` in `document_serialize.hpp`); a host that registers no
+  // codecs installs nothing and every record keeps the pre-issue-#19 shape.
+  //
+  // Returns false to capture NOTHING for this content -- a kind with no codec, or a
+  // codec that failed. Nothing is invented in that case: the record simply carries no
+  // identity and a reopen reports it as unreconstructable rather than guessing
+  // (refinement Decision 1). WRITER-THREAD ONLY, and installed before any
+  // `add_content` whose identity should be captured.
+  using ContentIdentityCapture = std::function<bool(const Content& content, std::uint64_t kind,
+                                                    std::string& kind_id, std::string& params)>;
+  void set_content_identity_capture(ContentIdentityCapture capture);
+
   // Bind (or REBIND) `content` to an EXISTING content record, without minting one.
   //
   // The repair seam for a workspace reopen. `Document::open` restores the record
@@ -573,6 +595,10 @@ private:
   std::size_t d_settler_installs{0}; // install count: the last one out clears the slot
   bool d_settling{false};            // re-entrancy / load-in-flight suppression
   std::uint64_t d_auto_settled{0};   // arrivals installed ahead of a host edit
+
+  // The construction-identity capture (`set_content_identity_capture`): another
+  // writer-thread-only plain value beside the settler, owning nothing.
+  ContentIdentityCapture d_identity_capture;
 
   // The last writer-side cadence checkpoint error (see `last_checkpoint_error()`).
   std::optional<WorkspaceFileError> d_last_checkpoint_error;

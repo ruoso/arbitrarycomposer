@@ -331,4 +331,38 @@ document."* Resuming into a document with no content in it is not that.
 
 ## Status
 
-_pending implementation_
+**Done — 2026-07-26.**
+
+Artifacts:
+
+- **Model.** `TextChunk` (a fifth `RecordKind`, sized to stay inside the existing
+  `ObjectRecord` union size class, so the record store's slot stride is unchanged and
+  no existing workspace file is invalidated); `ContentRecord::identity_root` /
+  `inputs_root`; `Transaction::set_content_identity` / `set_content_inputs` over one
+  shared `write_content_chain`; `DocRoot::content_identity` / `content_inputs` /
+  `for_each_content`. The recovery walk is untouched, as Rule 5 predicted.
+- **Runtime.** `Document::set_content_identity_capture` and the capture at
+  `add_content` (identity through the hook, input edges read off the content's own
+  `inputs()` and mapped back to ids); `codec_identity_capture` and `open_document` in
+  the serialize bridge; `Document::rebind_content` and
+  `Document::recovered_content_state` from Phase A.
+- **Docs.** Doc 15's crash-recovery bullet now says what "resume" means and why a
+  record that cannot be rebuilt is reported rather than defaulted; doc 14 states the
+  spill chain as the general shape for variable-length record data. Claim
+  `15-memory-model#workspace-reopen-rebuilds-its-content` registered.
+- **Tests.** `tests/workspace_content_reconstruction.t.cpp` (leaf rebuilt with its own
+  parameters, operator rebuilt over its persisted input edges pointing at the rebuilt
+  leaf, no-identity record reported and left unbound, and reconstruction surviving a
+  session that interns kinds in a different order — the finding-2 guard);
+  `tests/document_rebind_content.t.cpp` from Phase A.
+
+Deviations from the plan above, both recorded before the code was written:
+
+- **Rule 1/2's vehicle changed from `BlockSlotRef` to spill chunks** (Decision 7),
+  which also made Rule 5 vanish entirely rather than shrink.
+- **Rule 3's shape changed from a `CodecTable` parameter on `add_content` to a hook.**
+  `CodecTable` names JSON and is a serialize-INTERNAL type; `document.hpp` must not
+  name it (Constraint 7 of `runtime.document_serialize`). A
+  `std::function` over strings keeps the public runtime header JSON-free, and the
+  serialize bridge supplies the ready-made codec-backed capture — the same shape
+  `set_external_load_settler` already uses for the same reason.

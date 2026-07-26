@@ -286,6 +286,30 @@ is the default for document arenas, because it buys four things at once:
    after a crash. Teardown must therefore not hole-punch the live chunks it
    is releasing — the file is a cache that survives an ordinary quit, and a
    close that emptied it would make the workspace useless across restarts.
+
+   **"Resume" means the content comes back, not just the records naming it.**
+   A content record therefore carries its **construction identity** — the
+   reverse-DNS `kind_id` and the kind's canonical `params` — and its **input
+   edges**, alongside the state handle. Without them a reopen restores the
+   composition, the layers and the placements and has nothing to build a
+   content out of: the kind token in the record is interned per session in
+   first-sight order, so it is stable only for pre-interned built-ins, and a
+   solid's colour or an operator's input list lived only in the live object,
+   which is process memory. Both ride the record graph as chains of ordinary
+   objects named by `ObjectId` value — the same spill-chunk shape a
+   composition's overflowing layer order uses — so the reachability walk, the
+   checkpoint, structural sharing and undo/redo all cover them with no
+   machinery of their own.
+
+   The identity is captured through the kind's own registered codec, the same
+   one the canonical `.arbc` save runs, so the two agree by construction
+   rather than by two implementations staying in step. A reopen rebuilds
+   through the same routing a canonical load uses. **A record that cannot be
+   rebuilt is reported and left unbound** — a kind whose plugin is absent this
+   session, a kind with no codec, a file written before this was recorded.
+   Never a default-constructed stand-in of the right kind: a black solid where
+   the user left a red one is silent data loss that looks like a working
+   feature, where an unbound record is a fact a host can act on.
 2. **Larger-than-RAM documents.** Residency is the kernel's problem:
    file-backed pages are demand-paged in and — unlike anonymous memory,
    which needs swap — *clean pages evict for free* under pressure. This is

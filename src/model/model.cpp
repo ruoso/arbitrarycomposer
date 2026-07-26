@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
@@ -288,6 +289,46 @@ void read_layer_order(const StoreBundle& sb, const Ref<HamtNode>& root,
   }
 }
 
+// Walk an `ObjectId`-keyed chunk chain of `Kind`, appending each chunk's id to
+// `chunk_ids`. The traversal `read_layer_order` does, factored out so the identity
+// and input chains reuse it instead of growing a third copy. Pure peek (refcount-free).
+template <RecordKind Kind, class Visit>
+void read_chunk_chain(const StoreBundle& sb, const Ref<HamtNode>& root, ObjectId head,
+                      std::vector<ObjectId>* chunk_ids, Visit&& visit) {
+  ObjectId cur = head;
+  while (cur.valid()) {
+    SlotRef<ObjectRecord> edge;
+    if (!hamt_lookup(sb, root, cur.value, edge)) {
+      break; // defensive: a well-formed chain always resolves
+    }
+    const ObjectRecord* r = sb.records->peek(edge);
+    if (r->kind != Kind) {
+      break;
+    }
+    if (chunk_ids != nullptr) {
+      chunk_ids->push_back(cur);
+    }
+    cur = visit(*r);
+  }
+}
+
+// The whole of a content's identity chain as one string: `kind_id`, a NUL, then the
+// canonical `params` text. One chain and one encoding, because the two are written,
+// stored and read as a unit; a reverse-DNS kind id contains no NUL, so the split is
+// unambiguous.
+std::string read_identity_text(const StoreBundle& sb, const Ref<HamtNode>& root, ObjectId head) {
+  std::string text;
+  read_chunk_chain<RecordKind::TextChunk>(sb, root, head, nullptr, [&](const ObjectRecord& r) {
+    const TextChunk& ch = r.as.text_chunk;
+    if (text.empty()) {
+      text.reserve(ch.total);
+    }
+    text.append(ch.bytes, std::min<std::size_t>(ch.count, k_text_chunk_bytes));
+    return ch.next;
+  });
+  return text;
+}
+
 } // namespace
 
 expected<Ref<HamtNode>, PoolError> hamt_insert(StoreBundle& sb, const Ref<HamtNode>& root,
@@ -436,6 +477,40 @@ StateHandle DocRoot::content_state(ObjectId id) const {
   return c != nullptr ? c->state : StateHandle{};
 }
 
+DocRoot::ContentIdentity DocRoot::content_identity(ObjectId id) const {
+  const ContentRecord* c = find_content(id);
+  if (c == nullptr || !c->identity_root.valid()) {
+    return {};
+  }
+  const std::string text = read_identity_text(d_stores, d_root, c->identity_root);
+  const std::size_t split = text.find('\0');
+  if (split == std::string::npos) {
+    return ContentIdentity{text, {}}; // defensive: a chain with no separator is all kind_id
+  }
+  return ContentIdentity{text.substr(0, split), text.substr(split + 1)};
+}
+
+std::vector<ObjectId> DocRoot::content_inputs(ObjectId id) const {
+  std::vector<ObjectId> inputs;
+  const ContentRecord* c = find_content(id);
+  if (c == nullptr || c->input_count == 0) {
+    return inputs;
+  }
+  if (!c->inputs_root.valid()) {
+    inputs.assign(c->inputs, c->inputs + c->input_count);
+    return inputs;
+  }
+  read_chunk_chain<RecordKind::LayerOrderChunk>(d_stores, d_root, c->inputs_root, nullptr,
+                                                [&](const ObjectRecord& r) {
+                                                  const LayerOrderChunk& ch = r.as.order_chunk;
+                                                  for (std::uint32_t i = 0; i < ch.count; ++i) {
+                                                    inputs.push_back(ch.members[i]);
+                                                  }
+                                                  return ch.next;
+                                                });
+  return inputs;
+}
+
 const CompositionRecord* DocRoot::find_composition(ObjectId id) const {
   SlotRef<ObjectRecord> edge;
   if (!hamt_lookup(d_stores, d_root, id.value, edge)) {
@@ -528,6 +603,22 @@ void DocRoot::for_each_layer(const std::function<void(const LayerRecord&)>& fn) 
     const ObjectRecord* r = d_stores.records->peek(edge);
     if (r->kind == RecordKind::Layer) {
       fn(r->as.layer);
+    }
+  }
+}
+
+void DocRoot::for_each_content(const std::function<void(ObjectId)>& fn) const {
+  if (!d_root) {
+    return;
+  }
+  std::vector<std::pair<std::uint64_t, SlotRef<ObjectRecord>>> leaves;
+  collect_leaves(d_stores, d_root.slot(), leaves);
+  std::sort(leaves.begin(), leaves.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (const auto& [key, edge] : leaves) {
+    const ObjectRecord* r = d_stores.records->peek(edge);
+    if (r->kind == RecordKind::Content) {
+      fn(r->id);
     }
   }
 }
@@ -1626,6 +1717,181 @@ void Model::Transaction::set_content_state(ObjectId content, StateHandle after) 
     }
   }
   d_contents.push_back(ContentStateEdit{content, before, after});
+}
+
+// The shared tail of the two content-chain writers: drop `old_head`'s chain, write
+// `chunk_count` fresh chunks through `fill`, and path-copy the content record so
+// `head_of` names the new chain. Returns false and sets `d_status` on a pool error.
+//
+// Chains are REWRITTEN wholesale rather than diffed the way a composition's layer
+// order is. That is the right trade here and not there: a layer order is edited
+// incrementally on a hot path and is often thousands of ids long, while an identity
+// or an input list is written once when the content is created and is a handful of
+// records. Diffing would buy nothing and would have to be maintained twice.
+bool Model::Transaction::write_content_chain(ObjectId content, RecordKind chunk_kind,
+                                             std::size_t chunk_count, const ChunkFill& fill,
+                                             ObjectId ContentRecord::* head_of,
+                                             const RecordFill& on_record) {
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, content.value, old_edge)) {
+    return false; // absent: no-op
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Content) {
+    return false; // not a content object: no-op
+  }
+  const ObjectRecord base = *old; // trivial copy: the path-copy source
+
+  // Erase the previous chain. Its chunks are ordinary records, so this is the same
+  // `hamt_erase` any record removal is, and a version pinned before this call keeps
+  // resolving them by structural sharing.
+  std::vector<ObjectId> old_chunks;
+  const ObjectId old_head = base.as.content.*head_of;
+  if (old_head.valid()) {
+    if (chunk_kind == RecordKind::TextChunk) {
+      read_chunk_chain<RecordKind::TextChunk>(
+          d_model->d_bundle, d_root, old_head, &old_chunks,
+          [](const ObjectRecord& r) { return r.as.text_chunk.next; });
+    } else {
+      read_chunk_chain<RecordKind::LayerOrderChunk>(
+          d_model->d_bundle, d_root, old_head, &old_chunks,
+          [](const ObjectRecord& r) { return r.as.order_chunk.next; });
+    }
+  }
+  for (const ObjectId dead : old_chunks) {
+    expected<Ref<HamtNode>, PoolError> erased = hamt_erase(d_model->d_bundle, d_root, dead.value);
+    if (!erased) {
+      d_status = unexpected(erased.error());
+      return false;
+    }
+    d_root = std::move(*erased);
+    touch(dead);
+  }
+
+  // Mint the fresh chain back-to-front so each chunk knows its successor's id. Chunk
+  // ids come from the document's own counter -- they are ordinary objects and doc 14's
+  // "ids are never reused" applies to them exactly as to any record.
+  std::vector<ObjectId> chunk_ids(chunk_count);
+  for (std::size_t i = 0; i < chunk_count; ++i) {
+    chunk_ids[i] = d_model->allocate_id();
+  }
+  for (std::size_t p = chunk_count; p-- > 0;) {
+    expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+    if (!rec) {
+      d_status = unexpected(rec.error());
+      return false;
+    }
+    ObjectRecord& cr = **rec;
+    stamp(cr);
+    cr.kind = chunk_kind;
+    cr.id = chunk_ids[p];
+    fill(cr, p, (p + 1 < chunk_count) ? chunk_ids[p + 1] : ObjectId{});
+    expected<Ref<HamtNode>, PoolError> ins =
+        hamt_insert(d_model->d_bundle, d_root, chunk_ids[p].value, rec->slot());
+    if (!ins) {
+      d_status = unexpected(ins.error());
+      return false;
+    }
+    d_root = std::move(*ins);
+    touch(chunk_ids[p]);
+  }
+
+  // Path-copy the content record to name the new chain head (invalid when cleared).
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return false;
+  }
+  ObjectRecord& nr = **rec;
+  nr = base;
+  stamp(nr);
+  nr.as.content.*head_of = chunk_count > 0 ? chunk_ids[0] : ObjectId{};
+  if (on_record) {
+    on_record(nr.as.content);
+  }
+
+  // The record carries a `StateHandle` and every distinct content `ObjectRecord`
+  // instance owns one retain on it (doc 14:133-136), so a path-copy that keeps the
+  // handle must take its own -- exactly as `set_content_state` does for `after`.
+  StateRefSink* const ref_sink = d_model->d_state_ref_sink.load(std::memory_order_acquire);
+  if (nr.as.content.state.has_state() && ref_sink != nullptr) {
+    ref_sink->retain(content, nr.as.content.state);
+  }
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, content.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return false;
+  }
+  d_root = std::move(*next);
+  touch(content);
+  return true;
+}
+
+void Model::Transaction::set_content_identity(ObjectId content, std::string_view kind_id,
+                                              std::string_view params) {
+  if (!d_status) {
+    return;
+  }
+  // One text: `kind_id`, a NUL, then `params`. Written and read as a unit because
+  // that is what they are -- a content's construction identity, useless in halves.
+  std::string text;
+  if (!kind_id.empty() || !params.empty()) {
+    text.reserve(kind_id.size() + 1 + params.size());
+    text.append(kind_id);
+    text.push_back('\0');
+    text.append(params);
+  }
+  const std::size_t chunks = (text.size() + k_text_chunk_bytes - 1) / k_text_chunk_bytes;
+  const auto total = static_cast<std::uint32_t>(text.size());
+  write_content_chain(
+      content, RecordKind::TextChunk, chunks,
+      [&](ObjectRecord& cr, std::size_t p, ObjectId next_id) {
+        const std::size_t begin = p * k_text_chunk_bytes;
+        const std::size_t cnt = std::min(k_text_chunk_bytes, text.size() - begin);
+        cr.as.text_chunk = TextChunk{};
+        cr.as.text_chunk.count = static_cast<std::uint32_t>(cnt);
+        cr.as.text_chunk.total = total;
+        cr.as.text_chunk.next = next_id;
+        std::memcpy(static_cast<void*>(cr.as.text_chunk.bytes), text.data() + begin, cnt);
+      },
+      &ContentRecord::identity_root);
+}
+
+void Model::Transaction::set_content_inputs(ObjectId content, std::span<const ObjectId> inputs) {
+  if (!d_status) {
+    return;
+  }
+  // Inline while it fits (`k_max_inline_inputs`), which is every operator that exists.
+  // The chain is written only past the cap, so an ordinary fade or crossfade mints no
+  // chunk id at all and a document's id sequence is unperturbed by having operators in
+  // it -- the same inline-then-spill trade `CompositionRecord` makes for layer order.
+  const bool inline_form = inputs.size() <= k_max_inline_inputs;
+  const std::size_t chunks =
+      inline_form ? 0 : (inputs.size() + k_max_inline_layers - 1) / k_max_inline_layers;
+  write_content_chain(
+      content, RecordKind::LayerOrderChunk, chunks,
+      [&](ObjectRecord& cr, std::size_t p, ObjectId next_id) {
+        const std::size_t begin = p * k_max_inline_layers;
+        const std::size_t cnt = std::min(k_max_inline_layers, inputs.size() - begin);
+        cr.as.order_chunk = LayerOrderChunk{};
+        cr.as.order_chunk.count = static_cast<std::uint32_t>(cnt);
+        for (std::size_t i = 0; i < cnt; ++i) {
+          cr.as.order_chunk.members[i] = inputs[begin + i];
+        }
+        cr.as.order_chunk.next = next_id;
+      },
+      &ContentRecord::inputs_root,
+      [&](ContentRecord& cr) {
+        // `input_count` is authoritative in BOTH forms, exactly as a composition's
+        // `layer_count` is; the inline array is cleared when the chain owns the list,
+        // so a record has one canonical shape per membership.
+        cr.input_count = static_cast<std::uint32_t>(inputs.size());
+        for (std::size_t i = 0; i < k_max_inline_inputs; ++i) {
+          cr.inputs[i] = (inline_form && i < inputs.size()) ? inputs[i] : ObjectId{};
+        }
+      });
 }
 
 void Model::Transaction::remove(ObjectId id) {

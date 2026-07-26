@@ -19,6 +19,36 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+### Added
+
+- **A workspace reopen gives back its CONTENT, not just its record graph**
+  (issue #19). `Document::open` restored records and bound no `Content` for any
+  kind, so a reopened workspace could be neither rendered, edited nor hit-tested,
+  and a host had no repair available. `ContentRecord` now carries the content's
+  **construction identity** — the reverse-DNS `kind_id` and the kind's canonical
+  `params` — and its **input edges**, both as spill chains of ordinary records
+  (the shape a composition's overflowing layer order already uses), captured at
+  `add_content` through the kind's own registered codec. `arbc::open_document`
+  rebuilds each content through the same routing `load_document` uses for a
+  canonical file. A record that cannot be rebuilt — a plugin absent this session,
+  a kind with no codec, a file written before this — is **reported** in
+  `ReopenedDocument::unreconstructed` and left unbound, never filled with a
+  default-constructed stand-in of the right kind (design docs 14/15).
+
+- **`Document::rebind_content(id, content)`** binds an object to a content record
+  that already exists, and rebinds one that is bound. It is the repair seam for
+  everything reconstruction cannot cover; `add_content` could not serve, since it
+  mints a new record with a new id while the recovered layers, journal edges and
+  state handles all name the old one. Publishes no version and appends no journal
+  entry. **`Document::recovered_content_state()`** ships with it, making the
+  issue-#5 recovery-replay trio reachable from the public host surface.
+
+- **`Document::set_content_identity_capture`**, the hook `add_content` runs to
+  capture the above; `arbc::codec_identity_capture(codecs, bridge)` is the
+  ready-made codec-backed one. A host that installs none keeps the previous record
+  shape exactly, and its documents still reopen — they simply report every content
+  as unreconstructed.
+
 ### Changed
 
 - **Tiles are now rendered over their cell plus an apron, and paint only the

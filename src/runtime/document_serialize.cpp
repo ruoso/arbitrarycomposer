@@ -240,6 +240,131 @@ CodecTable builtin_codecs(const Registry& registry) {
 
 // ---- Save path --------------------------------------------------------------
 
+Document::ContentIdentityCapture codec_identity_capture(const CodecTable& codecs,
+                                                        const KindBridge& bridge) {
+  return [&codecs, &bridge](const Content& content, std::uint64_t kind, std::string& kind_id,
+                            std::string& params) -> bool {
+    std::string_view id_view;
+    std::string_view version_view;
+    if (!bridge.lookup(kind, id_view, version_view)) {
+      return false; // an un-bridged token names no kind: capture nothing
+    }
+    // The SAME write routing the canonical save path runs, so the workspace's notion
+    // of a content and the `.arbc` file's cannot drift apart. Params-only: this asks
+    // the codec for its parameter set, not for its bytes -- an asset-bearing kind's
+    // blobs belong to the canonical save, not to a workspace record.
+    SaveContext ctx;
+    expected<nlohmann::json, SerializeError> body =
+        content_body_to_json(id_view, version_view, content, codecs, ctx);
+    if (!body.has_value()) {
+      return false; // no codec, or the codec failed: capture nothing, invent nothing
+    }
+    const auto found = body->find("params");
+    kind_id.assign(id_view);
+    params = (found != body->end()) ? found->dump() : std::string{"{}"};
+    return true;
+  };
+}
+
+expected<ReopenedDocument, WorkspaceFileError>
+open_document(const std::string& path, const Registry& registry, const CodecTable& codecs,
+              LoadContext& ctx, KindBridge& bridge,
+              const DocumentHousekeepingConfig& housekeeping) {
+  expected<std::unique_ptr<Document>, WorkspaceFileError> opened =
+      Document::open(path, housekeeping);
+  if (!opened.has_value()) {
+    return unexpected(opened.error());
+  }
+  ReopenedDocument out;
+  out.document = std::move(*opened);
+  Document& doc = *out.document;
+
+  // Collect the recovered content records with their persisted identity and input
+  // edges. The pin is taken once: reconstruction binds objects into the runtime
+  // side-map and publishes no version, so this snapshot stays the whole truth.
+  const DocStatePtr state = doc.pin();
+  std::vector<ObjectId> order;
+  std::unordered_map<std::uint64_t, std::vector<ObjectId>> inputs_of;
+  state->for_each_content([&](ObjectId id) {
+    order.push_back(id);
+    inputs_of.emplace(id.value, state->content_inputs(id));
+  });
+
+  // Input-topological order: an operator's inputs must be live `Content*`s before its
+  // own codec can adopt them (doc 08 Principle 6). A cycle or a missing input simply
+  // never becomes ready, so it lands in `unreconstructed` -- the same answer as a
+  // missing codec, and never a partially-built operator.
+  std::unordered_map<std::uint64_t, Content*> built;
+  bool progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const ObjectId id : order) {
+      if (built.count(id.value) != 0) {
+        continue;
+      }
+      const std::vector<ObjectId>& ins = inputs_of[id.value];
+      std::vector<ContentRef> live;
+      live.reserve(ins.size());
+      bool ready = true;
+      for (const ObjectId in : ins) {
+        const auto found = built.find(in.value);
+        if (found == built.end()) {
+          ready = false;
+          break;
+        }
+        live.push_back(found->second);
+      }
+      if (!ready) {
+        continue;
+      }
+      const DocRoot::ContentIdentity identity = state->content_identity(id);
+      if (identity.kind_id.empty()) {
+        continue; // no persisted identity: reported below, never guessed at
+      }
+      // Rebuild through the SAME routing `load_document` uses per content body: the
+      // persisted `kind_id` and `params` are exactly the `{kind, params}` frame it
+      // takes, so one reconstruction routine serves both drivers.
+      nlohmann::json body;
+      body["kind"] = identity.kind_id;
+      body["params"] = nlohmann::json::parse(identity.params, nullptr, /*allow_exceptions=*/false);
+      if (body["params"].is_discarded()) {
+        body["params"] = nlohmann::json::object();
+      }
+      // A nesting kind names its child composition in the record graph, which the
+      // reopen already restored -- so it is read from the persisted params frame the
+      // codec itself wrote, not re-derived. `ObjectId{}` for every other kind, which
+      // is exactly what the canonical reader passes for a non-nesting body.
+      ObjectId composition{};
+      if (const auto comp_field = body["params"].find("composition");
+          comp_field != body["params"].end() && comp_field->is_number_unsigned()) {
+        composition = ObjectId{comp_field->get<std::uint64_t>()};
+      }
+      expected<std::unique_ptr<Content>, ReaderError> rebuilt = content_body_from_json(
+          body, std::span<const ContentRef>(live), composition, codecs, registry, ctx);
+      if (!rebuilt.has_value()) {
+        continue; // a codec failure is reported, not approximated
+      }
+      Content* const live_ptr = rebuilt->get();
+      // Re-intern the kind so this session's bridge knows the string the file carried:
+      // the token in the record came from a PREVIOUS session's intern order and is only
+      // trustworthy for a pre-interned built-in.
+      bridge.intern(identity.kind_id, {});
+      if (!doc.rebind_content(id, std::shared_ptr<Content>(std::move(*rebuilt)))) {
+        continue;
+      }
+      built.emplace(id.value, live_ptr);
+      ++out.reconstructed;
+      progressed = true;
+    }
+  }
+  for (const ObjectId id : order) {
+    if (built.count(id.value) == 0) {
+      out.unreconstructed.push_back(id);
+    }
+  }
+  return out;
+}
+
 ContentSnapshot capture_snapshot(const Document& doc, const KindBridge& bridge) {
   // MUST run on the writer thread: `doc.resolve` reads the writer-thread-owned
   // content side-map. We pin the version and copy each layer-bound content's live

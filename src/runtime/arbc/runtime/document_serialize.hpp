@@ -141,6 +141,57 @@ ARBC_API CodecTable builtin_codecs(const Registry& registry, RasterTileStore* ti
 ARBC_API CodecTable builtin_codecs(const Registry& registry, RasterTileStore* tiles,
                                    TileEncodeDispatch* dispatch);
 
+// The codec-backed `Document::ContentIdentityCapture`
+// (`runtime.workspace_content_reconstruction`, issue #19): run the kind's registered
+// codec over the content and hand back its reverse-DNS `kind_id` and canonical
+// `params` text, for `add_content` to record onto the `ContentRecord`.
+//
+// It is the SAME `content_body_to_json` routing the canonical save path uses, so the
+// workspace's notion of a content and the `.arbc` file's agree by construction rather
+// than by two implementations staying in step. A kind with no registered codec, or a
+// codec that fails, captures nothing (returns false) and the record keeps no identity
+// -- which a reopen reports rather than guesses at.
+//
+// `bridge` resolves the `ContentRecord.kind` token to its string id; the returned
+// closure borrows both it and `codecs`, so both must outlive the `Document`.
+ARBC_API Document::ContentIdentityCapture codec_identity_capture(const CodecTable& codecs,
+                                                                 const KindBridge& bridge);
+
+// What a reconstructing reopen produced (`open_document` below).
+struct ReopenedDocument {
+  std::unique_ptr<Document> document;
+  // Content records whose object could not be rebuilt: no persisted identity (a record
+  // written before issue #19, or a kind whose codec captured none), no registered codec
+  // for the persisted `kind_id` (a plugin absent this session), or a codec that failed.
+  // They resolve to null and the host may repair them with `Document::rebind_content`.
+  //
+  // REPORTED, never guessed at: a factory called with no params yields the right type
+  // with the wrong parameters -- a black solid where a red one was -- and wrong content
+  // is undetectable where absent content is not (refinement Decision 1).
+  std::vector<ObjectId> unreconstructed;
+  std::size_t reconstructed{0};
+};
+
+// Reopen a workspace file AND rebuild its contents
+// (`runtime.workspace_content_reconstruction`, issue #19).
+//
+// `Document::open` restores the record graph only: it takes no `Registry`, runs no
+// factory, and leaves the id->Content side-map empty, so every record resolves to null
+// and the reopened document can be neither rendered, edited nor hit-tested. This
+// overload walks the recovered content records in input-topological order and rebuilds
+// each through the persisted construction identity the records now carry, using the
+// SAME `content_body_from_json` routing `load_document` uses for a canonical file --
+// one reconstruction routine driven by two sources, so the workspace path cannot drift
+// from the canonical one.
+//
+// Contents are bound through `Document::rebind_content`, so each object lands on the id
+// its layers already name. A record that cannot be rebuilt is listed in
+// `unreconstructed` and left unbound.
+ARBC_API expected<ReopenedDocument, WorkspaceFileError>
+open_document(const std::string& path, const Registry& registry, const CodecTable& codecs,
+              LoadContext& ctx, KindBridge& bridge,
+              const DocumentHousekeepingConfig& housekeeping = {});
+
 // Capture a pinned content-binding snapshot of `doc` (MUST run on the writer
 // thread): pins the current version and copies each layer-bound content's live
 // pointer + bridged kind into an immutable `ContentSnapshot`.

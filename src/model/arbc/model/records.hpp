@@ -7,6 +7,7 @@
 #include <arbc/media/surface_format.hpp> // SurfaceFormat (per-composition working space, doc 07)
 #include <arbc/pool/slot_store.hpp>      // SlotIndex
 
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
@@ -29,7 +30,8 @@ enum class RecordKind : std::uint32_t {
   Composition = 0,
   Layer = 1,
   Content = 2,
-  LayerOrderChunk = 3
+  LayerOrderChunk = 3,
+  TextChunk = 4
 };
 
 // Sentinel meaning "no editable state captured". State handles are inert in this
@@ -55,11 +57,69 @@ struct StateHandle {
   friend bool operator==(const StateHandle&, const StateHandle&) = default;
 };
 
-// Content record (doc 14): a kind id plus the (inert) editable-state handle.
-// `model.content_binding` populates these from the runtime side-map.
+// How many bytes of text one `TextChunk` carries. Sized so the chunk arm stays
+// inside the `ObjectRecord` union's existing size class (the `CompositionRecord`
+// arm is the widest), which is what keeps this a zero-cost addition: no new slab
+// size class, no new store, no workspace-header change.
+inline constexpr std::size_t k_text_chunk_bytes = 96;
+
+// A chunk of a content's persisted CONSTRUCTION IDENTITY
+// (`runtime.workspace_content_reconstruction`, issue #19): the reverse-DNS
+// `kind_id` and the kind's canonical `params` text, concatenated and split across a
+// chain of these.
+//
+// Text in the record graph follows `LayerOrderChunk`'s pattern exactly, and for the
+// same reasons: chunks are ordinary objects in the DocState HAMT keyed by their own
+// `ObjectId`, the owner names the chain head by `ObjectId` VALUE rather than an
+// owning edge, and a chunk therefore owns no slot and is trivially destructible. The
+// consequence that matters is that a chunk IS a record -- so the recovery walk
+// already visits it, the checkpoint already includes it, structural sharing already
+// shares it across versions, and undo/redo already restores it, with no new machinery
+// anywhere. A blob store would have needed a new reachability edge in each of the
+// four.
+//
+// `total` is the whole text's byte length, carried on EVERY chunk so a reader can
+// size its buffer from the head alone; `count` is how many of `bytes` this chunk
+// fills. `next` is the following chunk, invalid at the chain end.
+struct TextChunk {
+  std::uint32_t count{0};
+  std::uint32_t total{0};
+  ObjectId next{};
+  char bytes[k_text_chunk_bytes]{};
+};
+
+// Content record (doc 14): a kind id, the (inert) editable-state handle, and the two
+// chain heads that make a workspace reopen able to REBUILD this content rather than
+// merely name it (`runtime.workspace_content_reconstruction`, issue #19).
+//
+// `kind` alone cannot: it is a `KindBridge` token interned per session in first-sight
+// order, so it is stable for pre-interned built-ins and not for a plugin kind, and it
+// says nothing about the parameters the content was constructed from. A solid's
+// colour, an imageseq's directory, an operator's input edges all lived only in the
+// `Content` object -- process memory -- so a reopened workspace could restore the
+// record graph and still have nothing to build a content out of.
+//
+// `identity_root` heads a `TextChunk` chain holding `kind_id` then `params`.
+//
+// Input edges follow `CompositionRecord`'s inline-then-spill shape rather than always
+// spilling: `inputs[0, input_count)` while the count fits `k_max_inline_inputs`, else
+// the `LayerOrderChunk` chain headed by `inputs_root` (the inline array is then dead)
+// with `input_count` still authoritative. Every operator that exists has one or two
+// inputs, so the inline form is the only one they ever take -- which matters beyond
+// space: a spill chunk is an ordinary object and draws an `ObjectId` from the
+// document's counter, so spilling unconditionally would shift the id sequence of every
+// document holding an operator, for nothing.
+//
+// All-default is the pre-issue-#19 record, which reads exactly as it always did.
+inline constexpr std::size_t k_max_inline_inputs = 4;
+
 struct ContentRecord {
   std::uint64_t kind{0};
   StateHandle state{};
+  ObjectId identity_root{};
+  ObjectId inputs_root{};
+  std::uint32_t input_count{0};
+  ObjectId inputs[k_max_inline_inputs]{};
 };
 
 // Layer placement in its parent composition (doc 14). The bound content is named
@@ -175,6 +235,7 @@ struct ObjectRecord {
     LayerRecord layer;
     ContentRecord content;
     LayerOrderChunk order_chunk;
+    TextChunk text_chunk;
   } as;
 
   // Value-initialize the union (defined state for asan/debug); every real record
@@ -198,6 +259,10 @@ static_assert(std::is_standard_layout_v<LayerOrderChunk> &&
               "LayerOrderChunk must be a fixed-size, trivially destructible slab record");
 static_assert(sizeof(LayerOrderChunk) <= sizeof(CompositionRecord),
               "the spill chunk arm must not grow the ObjectRecord union size class");
+static_assert(std::is_standard_layout_v<TextChunk> && std::is_trivially_destructible_v<TextChunk>,
+              "TextChunk must be a fixed-size, trivially destructible slab record");
+static_assert(sizeof(TextChunk) <= sizeof(CompositionRecord),
+              "the text chunk arm must not grow the ObjectRecord union size class");
 static_assert(std::is_standard_layout_v<ObjectRecord> &&
                   std::is_trivially_destructible_v<ObjectRecord> &&
                   std::is_trivially_copyable_v<ObjectRecord>,

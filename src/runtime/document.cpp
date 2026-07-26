@@ -111,6 +111,47 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
     }
   }
 
+  // Capture the content's CONSTRUCTION IDENTITY and INPUT EDGES onto the record, in
+  // the SAME transaction that publishes it (`runtime.workspace_content_reconstruction`,
+  // issue #19). Without these a workspace reopen restores the record graph and has
+  // nothing to rebuild a content out of: `kind` is a per-session interning token, and a
+  // solid's colour or an operator's inputs live only in the `Content` object.
+  //
+  // Identity comes from the installed capture hook -- the kind's registered codec, which
+  // is also what the canonical save path trusts, so the workspace and the `.arbc` agree
+  // by construction. No hook, or a kind with no codec, captures nothing and leaves the
+  // pre-issue-#19 record, which a reopen reports rather than guesses at.
+  if (d_identity_capture) {
+    std::string kind_id;
+    std::string params;
+    if (d_identity_capture(live, kind, kind_id, params)) {
+      txn.set_content_identity(id, kind_id, params);
+    }
+  }
+
+  // Input edges are the CORE's, not a codec's (doc 08 Principle 6), so they are read
+  // straight off the content's own `inputs()` and mapped back to the ids the document
+  // knows them by. An operator is constructed over contents the host already added, so
+  // those bindings are present; an input that is somehow unbound contributes an invalid
+  // id, which reconstruction then reports rather than silently dropping (an operator
+  // rebuilt with a missing input is wrong content, not partial content).
+  if (const std::span<const ContentRef> inputs = live.inputs(); !inputs.empty()) {
+    const std::shared_ptr<const ContentBindings> snap = d_contents.load();
+    std::vector<ObjectId> input_ids;
+    input_ids.reserve(inputs.size());
+    for (const ContentRef in : inputs) {
+      ObjectId found{};
+      for (const auto& [bound_id, bound] : *snap) {
+        if (bound.get() == in) {
+          found = bound_id;
+          break;
+        }
+      }
+      input_ids.push_back(found);
+    }
+    txn.set_content_inputs(id, input_ids);
+  }
+
   txn.commit();
 
   // Publish the id->Content binding COPY-ON-WRITE (issue #10): copy the current
@@ -124,6 +165,10 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
   next->emplace(id, std::move(content));
   d_contents.store(std::move(next));
   return id;
+}
+
+void Document::set_content_identity_capture(ContentIdentityCapture capture) {
+  d_identity_capture = std::move(capture);
 }
 
 bool Document::rebind_content(ObjectId id, std::shared_ptr<Content> content) {

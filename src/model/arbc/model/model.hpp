@@ -21,7 +21,9 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <thread> // the bound writer identity (doc 15 § Thread rules)
 #include <variant>
 #include <vector>
@@ -95,6 +97,15 @@ public:
   // is `model.transactions`' concern. Refcount-free peek traversal.
   void for_each_layer(const std::function<void(const LayerRecord&)>& fn) const;
 
+  // Every CONTENT record in this version, in ascending id order -- the twin of
+  // `for_each_layer`, and the walk a workspace reopen needs
+  // (`runtime.workspace_content_reconstruction`, issue #19). Layer-driven enumeration
+  // is not enough there: a content an operator holds as an input is a record with no
+  // layer of its own, and one whose layer was deleted is still reachable from the
+  // journal. Ascending id is deterministic and, because ids are minted in creation
+  // order, it also visits a content before anything created after it.
+  void for_each_content(const std::function<void(ObjectId)>& fn) const;
+
   // Visit a composition's members in true bottom-to-top membership order
   // (`model.composition_membership`, doc 14 § The central decision): the inline
   // `layers[]` array while the count is within `k_max_inline_layers`, else the
@@ -151,6 +162,30 @@ public:
   // ones. `contract.snapshot_pins` (L3) consumes this to place the handle on a
   // `RenderRequest`. Returns `k_state_none` when `id` is absent or not content.
   StateHandle content_state(ObjectId id) const;
+
+  // A content's persisted CONSTRUCTION IDENTITY: the `kind_id` string and the kind's
+  // canonical `params` text the record's `TextChunk` chain holds
+  // (`runtime.workspace_content_reconstruction`, issue #19). Empty views for a content
+  // with no identity recorded -- every record written before that task, and every
+  // content whose kind registered no codec to capture one.
+  //
+  // The MODEL stores and returns opaque text: it never parses the params, never names
+  // a kind and never consults a registry (doc 17 -- contract depends on model, never
+  // the reverse). Interpreting the pair is the runtime's, exactly as it is for
+  // `RecoveredContentState`. The two are returned as one owned string plus the split
+  // point rather than two, because that is how they are stored: one chain, written and
+  // read as a unit.
+  struct ContentIdentity {
+    std::string kind_id;
+    std::string params;
+    bool empty() const noexcept { return kind_id.empty() && params.empty(); }
+  };
+  ContentIdentity content_identity(ObjectId id) const;
+
+  // A content's persisted INPUT EDGES, in declaration order -- doc 08 Principle 6's
+  // core-owned input edges, read back from the record's `LayerOrderChunk` chain. Empty
+  // for a leaf, and for every record written before issue #19.
+  std::vector<ObjectId> content_inputs(ObjectId id) const;
 
   // Internal: the owning root reference a new transaction forks from.
   const Ref<HamtNode>& root_ref() const noexcept { return d_root; }
@@ -536,6 +571,26 @@ public:
     // (doc 17). No-op if `content` is absent or not a content object.
     void set_content_state(ObjectId content, StateHandle after);
 
+    // Record a content's CONSTRUCTION IDENTITY -- the reverse-DNS `kind_id` and the
+    // kind's canonical `params` text -- so a workspace reopen can rebuild the content
+    // rather than merely name it (`runtime.workspace_content_reconstruction`, issue
+    // #19). Stored as a `TextChunk` chain of ordinary records keyed by their own ids,
+    // headed from the content record by `ObjectId` value: the `LayerOrderChunk` pattern,
+    // so the chain is walked, counted, checkpointed, shared and undone by machinery that
+    // already exists.
+    //
+    // Both strings empty CLEARS the identity (the chain is dropped and the head goes
+    // invalid). Writing is idempotent in the sense that matters: an identical identity
+    // rewrites the same bytes, so a redundant call costs records but changes no reader's
+    // answer.
+    void set_content_identity(ObjectId content, std::string_view kind_id, std::string_view params);
+
+    // Record a content's INPUT EDGES in declaration order, in the same shape. An empty
+    // span clears them. The model treats the ids as opaque: it does not resolve them,
+    // does not require them to exist, and takes no owning edge on them -- exactly the
+    // by-value discipline every other inter-record reference follows (records.hpp:12-19).
+    void set_content_inputs(ObjectId content, std::span<const ObjectId> inputs);
+
     // Remove an object: a `hamt_erase` path-copy that shares untouched siblings
     // and collapses emptied branches. Enables `model.journal`'s inverse of an
     // add. No-op if the id is absent.
@@ -569,6 +624,22 @@ public:
 
   private:
     friend class Model;
+
+    // Fill chunk `p` of a content chain, given the id of its successor (invalid at
+    // the tail). The one thing the two chain writers below do differently.
+    using ChunkFill = std::function<void(ObjectRecord&, std::size_t, ObjectId)>;
+
+    // Applied to the path-copied CONTENT record after its chain head is set, for the
+    // fields that live on the record itself rather than in the chain (the inline input
+    // array). Absent for a writer with none.
+    using RecordFill = std::function<void(ContentRecord&)>;
+
+    // Rewrite a content's chunk chain wholesale and path-copy the record to head it.
+    // `head_of` names which chain (`identity_root` / `inputs_root`), so the two
+    // writers share every step but the fills.
+    bool write_content_chain(ObjectId content, RecordKind chunk_kind, std::size_t chunk_count,
+                             const ChunkFill& fill, ObjectId ContentRecord::* head_of,
+                             const RecordFill& on_record = {});
     Transaction(Model& model, std::string name);
 
     // Note `id` as touched so `commit()` assembles its (before, after) edge.
