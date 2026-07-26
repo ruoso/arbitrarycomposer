@@ -524,3 +524,51 @@ TEST_CASE("a magnified raster lets the interactive driver go idle") {
     CHECK(drive_interactive(doc, viewport, backend, **target) > 0);
   }
 }
+
+// enforces: 14-data-model-and-editing#editable-runtime-bound
+TEST_CASE("a removed content is reclaimed once its removal leaves history") {
+  // Issue #26. `Document::remove_content` deliberately RETAINS the live `Content*` and
+  // its binding row: the erased record's deferred `StateHandle` release must still
+  // route to a live row while the journal holds the removal, and dropping the row early
+  // strands that release and trips the binding's asserted-zero `unrouted_state_calls()`
+  // invariant. The cost was that a long session of insert/delete cycles grew
+  // monotonically in resident memory until close, EVEN AFTER history trims -- the
+  // journal's byte budget bounds the entries, not the retained content behind them, and
+  // no host-side mitigation exists because the retention is internal and correct.
+  //
+  // The safe moment to finish the teardown is the LAST release: zero outstanding
+  // retains means no live `ContentRecord` instance -- current version, pinned snapshot
+  // or journal edge -- still embeds this content's state, so nothing can route to it.
+  const auto raster = std::make_shared<RasterContent>(white_4x4(), /*tile_edge=*/2);
+  // A one-entry budget, so the removal's own entry pushes the create out of history.
+  Document doc(arbc::DocumentHousekeepingConfig{});
+  doc.journal().set_byte_budget(1);
+
+  const ObjectId comp = doc.add_composition(4.0, 4.0);
+  const ObjectId cid = doc.add_content(raster, /*kind=*/1);
+  const ObjectId layer = doc.add_layer(cid, Affine::identity());
+  doc.attach_layer(comp, layer);
+  REQUIRE(doc.resolve(cid) != nullptr);
+  const std::size_t bound_before = doc.editable_binding().bound_count();
+  CHECK(bound_before >= 1);
+
+  doc.remove_content(cid, comp, layer);
+  doc.drain();
+
+  // The record is gone from the current version; whether the row is gone yet depends
+  // on the journal still holding the removal's `before` edge.
+  CHECK(doc.pin()->find_content(cid) == nullptr);
+
+  // Push the removal out of history, then drain: the last state-bearing record goes
+  // with it, the last release fires, and the runtime completes the teardown.
+  for (int i = 0; i < 4; ++i) {
+    doc.add_composition(4.0, 4.0);
+  }
+  doc.drain();
+
+  CHECK(doc.editable_binding().bound_count() < bound_before);
+  CHECK(doc.resolve(cid) == nullptr);
+  // And nothing was misrouted on the way -- the invariant the retention existed to
+  // protect is still zero.
+  CHECK(doc.editable_binding().unrouted_state_calls() == 0);
+}

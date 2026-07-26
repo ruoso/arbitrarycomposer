@@ -101,6 +101,17 @@ public:
   Journal(const Journal&) = delete;
   Journal& operator=(const Journal&) = delete;
 
+  // Re-budget the history (writer-thread only). Trimming is opt-in, and a `Document`
+  // constructs its journal with no bound, so this is how a host that wants bounded undo
+  // memory asks for it after construction -- and, with `runtime.removed_content_reclaim`
+  // (issue #26), how it lets removed content actually leave history and be reclaimed.
+  // Lowering the budget trims immediately, exactly as a commit that exceeded it would.
+  void set_byte_budget(std::size_t bytes) {
+    d_budget = bytes;
+    trim();
+    publish();
+  }
+
   // Register the L3 seams (writer-thread only; null clears). Consumed by
   // `model.editable_facet` from above.
   void set_state_cost_fn(StateCostFn* fn) noexcept { d_cost_fn = fn; }

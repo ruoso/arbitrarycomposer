@@ -540,6 +540,10 @@ private:
   // Publish one id->Content row copy-on-write.
   void publish_binding(ObjectId id, std::shared_ptr<Content> content);
 
+  // Complete a removed content's teardown once its last state-bearing record is gone
+  // (`runtime.removed_content_reclaim`, issue #26). Drain-thread.
+  void reclaim_removed_content(ObjectId content);
+
   // Run the installed settler if anything has arrived. Writer-thread, re-entrancy-guarded (the
   // settler edits this very document), and suppressed outright while a load or a settle is in
   // flight -- see `DocumentSerializeAccess::installing`.
@@ -650,6 +654,13 @@ private:
   // The construction-identity capture (`set_content_identity_capture`): another
   // writer-thread-only plain value beside the settler, owning nothing.
   ContentIdentityCapture d_identity_capture;
+
+  // Set at the top of `~Document` so the reclaim hook goes inert for the teardown drain
+  // (issue #26). That drain releases EVERY content's state and would otherwise walk the
+  // binding and the copy-on-write map while both are being destroyed -- to free memory
+  // the destructor is about to free anyway. Atomic because the drain it guards runs on
+  // the housekeeping thread.
+  std::atomic<bool> d_tearing_down{false};
 
   // The last writer-side cadence checkpoint error (see `last_checkpoint_error()`).
   std::optional<WorkspaceFileError> d_last_checkpoint_error;

@@ -42,11 +42,32 @@ Document::Document(std::unique_ptr<Model> model, const DocumentHousekeepingConfi
   // The binding's teardown drains must go through the single drainer, not around it
   // (Constraint 2): `unbind`/`unbind_all` would otherwise race the background loop.
   d_binding.set_drain_hook([this] { d_housekeeping.drain_and_quiesce(); });
+  // Complete the teardown a removal deferred, at the moment it becomes safe
+  // (`runtime.removed_content_reclaim`, issue #26). `remove_content` deliberately
+  // RETAINS the live `Content*` and its binding row, because the erased record's
+  // deferred `StateHandle` release must still route to a live row while the journal
+  // holds the removal -- so a long editing session that repeatedly inserts and deletes
+  // large content grew monotonically until close, even after history trims.
+  //
+  // The safe moment is the LAST release: zero outstanding retains means no live
+  // `ContentRecord` instance -- not in the current version, not in a pinned snapshot,
+  // not behind a journal edge -- still embeds this content's state. Nothing can route
+  // to it any more, so nothing can strand. That is a stronger condition than "absent
+  // from the current version", which a pinned render or an undoable removal can both
+  // falsify.
+  d_binding.set_reclaim_hook([this](ObjectId content) { reclaim_removed_content(content); });
 }
 
 // Out-of-line so `~HousekeepingThread` (which joins the loop) is instantiated here,
 // with the whole member set complete -- the teardown contract in document.hpp.
-Document::~Document() = default;
+Document::~Document() {
+  // Go inert BEFORE any member is destroyed (issue #26): the teardown drain releases
+  // every content's state, and the reclaim hook it would fire walks the binding and the
+  // copy-on-write map -- both mid-destruction, and both about to be freed wholesale
+  // anyway. The declaration-order contract does the real work; this just keeps the
+  // shortening path out of it.
+  d_tearing_down.store(true, std::memory_order_release);
+}
 
 expected<std::unique_ptr<Document>, WorkspaceFileError>
 Document::create(const std::string& path, const DocumentHousekeepingConfig& housekeeping) {
@@ -246,6 +267,41 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
   next->emplace(id, std::move(content));
   d_contents.store(std::move(next));
   return id;
+}
+
+void Document::reclaim_removed_content(ObjectId content) {
+  // Runs on whichever thread drained the record -- the housekeeping thread for a live
+  // document -- so it must not assume the writer. Dropping the routing row is
+  // `EditableBinding`'s own drain-safe teardown; erasing the binding is a
+  // copy-on-write swap, which is safe against concurrent lock-free readers by
+  // construction (they keep their pinned generation).
+  //
+  // Guarded on the content being absent from the CURRENT version as well: a content
+  // whose state simply happens to have no live record right now -- one that has never
+  // been edited, so no version embeds a non-inert handle for it -- is still very much
+  // part of the document, and dropping its row would unbind a live layer.
+  // No current version means the model is publishing or tearing down, and there is no
+  // document to ask whether this content is still part of. Do nothing: the conservative
+  // answer costs at most the retention this reclaim exists to shorten, while acting on a
+  // null pin is a crash. (`~Document`'s declaration-order drain frees everything anyway,
+  // which is the case this guard actually covers.)
+  if (d_tearing_down.load(std::memory_order_acquire)) {
+    return; // ~Document is releasing everything; there is nothing to shorten
+  }
+  const DocStatePtr pinned = d_model->current();
+  if (pinned == nullptr || pinned->find_content(content) != nullptr) {
+    return;
+  }
+  // NOT `unbind`, which drains before it drops: this runs FROM the release that
+  // emptied this content's queue, so the drain has already happened and re-entering it
+  // would recurse into the drainer currently running. Zero outstanding retains is
+  // exactly the proof that drain exists to establish, already in hand.
+  d_binding.drop_row_after_last_release(content);
+  auto next = std::make_shared<ContentBindings>(*d_contents.load());
+  if (next->erase(content) == 0) {
+    return; // already gone: nothing to publish
+  }
+  d_contents.store(std::move(next));
 }
 
 void Document::set_content_identity_capture(ContentIdentityCapture capture) {

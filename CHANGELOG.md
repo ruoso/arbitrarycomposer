@@ -189,6 +189,18 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ### Fixed
 
+- **Removed content is reclaimed once its removal leaves history** (issue #26,
+  `runtime.removed_content_reclaim`). `Document::remove_content` retains the live
+  `Content*` and its binding row so the erased record's deferred `StateHandle`
+  release can still route while the journal holds the removal — correct, but it
+  meant a long session of insert/delete cycles grew monotonically in resident
+  memory until close, even after history trims, with no host-side mitigation. The
+  teardown now completes at the LAST release: zero outstanding retains means no
+  live `ContentRecord` instance — current version, pinned snapshot or journal edge
+  — still embeds that content's state, so nothing can route to it and nothing can
+  strand. `Journal::set_byte_budget` re-budgets history after construction, which
+  is what lets a removal leave it at all.
+
 - **An opaque fill is opaque again across tile boundaries.** At any fractional
   composite phase — a sub-pixel pan, an off-rung scale, any rotation — each tile's
   Catmull-Rom tap fell on its own surface's transparent border, so the two tiles

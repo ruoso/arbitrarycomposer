@@ -128,21 +128,62 @@ private:
 // WRITER/DRAIN-THREAD ONLY.
 class EditableStateRefSink final : public StateRefSink {
 public:
+  // Called after a release leaves a content with ZERO outstanding retains -- i.e. no
+  // live `ContentRecord` instance anywhere (current version, pinned snapshot, or
+  // journal edge) still embeds its state. That is the moment the runtime may complete
+  // the teardown a removal deferred (`runtime.removed_content_reclaim`, issue #26).
+  // Runs on whichever thread drained the record, which for a live `Document` is its
+  // background housekeeping thread.
+  using ReclaimHook = std::function<void(ObjectId)>;
+
   explicit EditableStateRefSink(EditableRouter& router) noexcept : d_router(&router) {}
+
+  // Install the last-release hook (writer thread, before any drain can run).
+  void set_reclaim_hook(ReclaimHook hook) { d_reclaim = std::move(hook); }
 
   void retain(ObjectId content, StateHandle handle) override {
     if (Editable* const editable = d_router->route(content, handle)) {
       editable->retain(handle);
+      const std::lock_guard<std::mutex> lock(d_outstanding_mutex);
+      ++d_outstanding[content];
     }
   }
   void release(ObjectId content, StateHandle handle) override {
     if (Editable* const editable = d_router->route(content, handle)) {
       editable->release(handle);
+      bool last = false;
+      {
+        const std::lock_guard<std::mutex> lock(d_outstanding_mutex);
+        const auto it = d_outstanding.find(content);
+        if (it != d_outstanding.end() && --it->second == 0) {
+          d_outstanding.erase(it);
+          last = true;
+        }
+      }
+      // OUTSIDE the lock: the hook re-enters the binding (it drops a row), and the
+      // count is a leaf that must not be held across a callback that takes other
+      // locks.
+      if (last && d_reclaim) {
+        d_reclaim(content);
+      }
     }
+  }
+
+  // How many contents still have live state-bearing records. A behavioural witness
+  // (doc 16) for the reclaim: it falls to zero as removals leave history.
+  std::size_t outstanding_contents() const {
+    const std::lock_guard<std::mutex> lock(d_outstanding_mutex);
+    return d_outstanding.size();
   }
 
 private:
   EditableRouter* d_router;
+  ReclaimHook d_reclaim;
+  // Live `ContentRecord` instances per content that embed a non-inert handle. Retains
+  // arrive on the writer and releases on the drain thread, so the count needs its own
+  // lock; it is touched once per reclaimed record, never per pixel.
+  mutable std::mutex d_outstanding_mutex;
+  std::unordered_map<ObjectId, std::size_t> d_outstanding;
 };
 
 // The content's byte contribution to the journal's budget (doc 14:120-122): the
@@ -276,6 +317,27 @@ public:
   // number of bound contents -- that is the proof the trio is per-document rather
   // than per-content, and the counter a per-content implementation would fail.
   std::uint64_t seam_registrations() const noexcept { return d_registrations; }
+
+  // Install the last-release hook on the state-ref sink
+  // (`runtime.removed_content_reclaim`, issue #26): called with a content's id once no
+  // live `ContentRecord` instance embeds its state any more. The owning `Document`
+  // installs it and completes the teardown a removal deferred.
+  void set_reclaim_hook(EditableStateRefSink::ReclaimHook hook) {
+    d_ref_sink.set_reclaim_hook(std::move(hook));
+  }
+
+  // Behavioural witness (doc 16): contents that still have state-bearing records.
+  std::size_t outstanding_contents() const { return d_ref_sink.outstanding_contents(); }
+
+  // Drop one row WITHOUT draining first (`runtime.removed_content_reclaim`, issue #26).
+  //
+  // `unbind` drains before it drops, because a queued release must still find its row.
+  // The reclaim path is the one caller for which that is both unnecessary and unsafe:
+  // it is invoked FROM the release that emptied the queue for this content, so the
+  // drain has already happened -- and re-entering it from inside itself would recurse
+  // into the drainer that is currently running. Zero outstanding retains is exactly the
+  // proof `unbind`'s drain exists to establish, already in hand.
+  void drop_row_after_last_release(ObjectId id) noexcept { d_router.erase(id); }
 
 private:
   // The one drain seam this binding uses: the injected hook when the owner has a
