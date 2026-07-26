@@ -128,10 +128,16 @@ private:
 };
 
 // A park bound over the REAL clock for the frames that must actually WAIT for a worker
-// (the reaping loops). Nothing is timed and no assertion depends on the value: a frame
-// with work in flight returns the instant a completion settles, and cancellation is
-// advisory (`content.hpp:161-165`), so a missed deadline costs the loop one more turn,
-// never a wrong answer.
+// (the reaping loops). Nothing is timed, and no assertion depends on the value for its
+// PIXELS: a frame with work in flight returns the instant a completion settles, and
+// cancellation is advisory (`content.hpp:161-165`), so a missed deadline costs the loop
+// one more turn, never a wrong picture -- the byte-identity checks below hold under
+// arbitrary load, and were measured doing so under `nproc` spinners.
+//
+// COUNTS are a different matter, and this comment used to overclaim by lumping them in.
+// How much asynchrony actually occurs is a scheduling outcome, so any assertion that an
+// operator renders a placeholder pass -- rather than finding its input already settled
+// -- is asserting a schedule. Those are stated as BOUNDS below for that reason.
 constexpr auto k_frame_budget = std::chrono::milliseconds(100);
 
 std::vector<float> snapshot(const Surface& surface) {
@@ -936,12 +942,27 @@ TEST_CASE("the interactive frame loop is byte-identical and duplicate-free at ev
       CHECK(counters.operator_renders() == oracle_operator_renders);
       CHECK(counters.renders_coalesced() == 0);
     } else {
-      // THE TWO-PASS IDENTITY. Every leaf renders exactly once; every operator exactly
-      // twice -- once to request its inputs and paint the placeholder, once when the wave
-      // lands. That is what "at most one chain re-render per wave" means when the wave is
-      // singular, which on a cold-cache scene it is.
-      CHECK(counters.requests_issued() == oracle_requests + oracle_operator_renders);
-      CHECK(counters.operator_renders() == 2 * oracle_operator_renders);
+      // THE TWO-PASS BOUND. Every leaf renders once; every operator renders once to
+      // request its inputs, and AT MOST once more when the wave lands. That upper bound
+      // is what "at most one chain re-render per wave" means when the wave is singular,
+      // which on a cold-cache scene it is -- and it is the whole regression this guards:
+      // the amplification `compositor.operator_refinement_wave_amplification` fixed
+      // showed up as 12 renders against a 5-render inline oracle, which blows the bound
+      // immediately.
+      //
+      // A BOUND, not an equality, and the difference is not pedantry. The second pass
+      // happens only if the operator's input was STILL IN FLIGHT when the operator
+      // rendered -- that is what the placeholder pass IS. Whether it was is a scheduling
+      // outcome: on a loaded machine a dispatched leaf can settle before the pull that
+      // dispatched it returns, and the operator's first render is then already exact.
+      // Measured, under `nproc` spinners on a 1-worker pool: 3 operator renders where
+      // the equality demanded 6, with the pixels still byte-identical. Fewer renders is
+      // the pipeline doing strictly less work for the same picture; failing on it taught
+      // nothing and cost a red suite.
+      CHECK(counters.requests_issued() >= oracle_requests);
+      CHECK(counters.requests_issued() <= oracle_requests + oracle_operator_renders);
+      CHECK(counters.operator_renders() >= oracle_operator_renders);
+      CHECK(counters.operator_renders() <= 2 * oracle_operator_renders);
       // And it is still NOT duplicate dispatch: nothing is re-dispatched, so nothing is
       // suppressed. The second operator render finds its leaf already warm in the cache,
       // so it re-pulls a hit -- never a second dispatch of a render already in flight.

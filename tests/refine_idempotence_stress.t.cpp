@@ -492,14 +492,25 @@ TEST_CASE("a quiesced refine loop composites each tile once per frame, never twi
   CHECK(byte_identical(worker_pixels, inline_pixels));
   CHECK(worker_counters.composites() > 0);
 
-  // The two-pass identity, under a LIVE worker pool and real arrival races. On a cold
-  // cache with workers, each operator renders exactly TWICE -- once to request its inputs
-  // and paint the transient placeholder (which is how the driver discovers the input tiles
-  // at all), once when the wave lands and it can compose the real pixels. The inline oracle
+  // The two-pass BOUND, under a LIVE worker pool and real arrival races. On a cold cache
+  // with workers, an operator renders once to request its inputs and paint the transient
+  // placeholder (which is how the driver discovers the input tiles at all), and AT MOST
+  // once more when the wave lands and it can compose the real pixels. The inline oracle
   // renders each exactly once, because `submit` IS the render there and every leaf settles
   // into the cache before the pull returns, so its first render is already exact.
+  //
+  // A BOUND rather than an equality, for the reason the equality was wrong: the second
+  // pass happens only if the input was STILL IN FLIGHT when the operator rendered, and
+  // whether it was is a scheduling outcome. Under CPU pressure a dispatched leaf can
+  // settle before the pull that dispatched it returns, and that operator then renders
+  // once -- measured at 5 against the equality's demanded 6, with `byte_identical` above
+  // still holding. The upper bound is the property worth guarding and the one this case
+  // exists for: it is "at most one chain re-render per wave", whose violation
+  // (`compositor.operator_refinement_wave_amplification`) presented as 12 renders against
+  // a 5-render inline oracle. Doing LESS work for the same pixels must not be a failure.
   REQUIRE(inline_counters.operator_renders() > 0);
-  CHECK(worker_counters.operator_renders() == 2 * inline_counters.operator_renders());
+  CHECK(worker_counters.operator_renders() >= inline_counters.operator_renders());
+  CHECK(worker_counters.operator_renders() <= 2 * inline_counters.operator_renders());
 
   // No renders are COALESCED here, and after `compositor.root_composition_frame_walk` (doc
   // 05:28-36) that is the correct observation. The in-flight wave gate deterministically

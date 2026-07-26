@@ -2,6 +2,23 @@
 # Local quality gate (design doc 16): build + test + format + structure
 # checks. Run before every push; CI runs the same steps plus the full
 # matrix. Preset defaults to `dev`; override with ARBC_GATE_PRESET.
+#
+# WHAT THIS COVERS, AND WHAT IT DOES NOT. The gate is only worth running if its
+# green means something, so the two ways it has actually let a red push through
+# are handled explicitly below rather than left to the matrix:
+#
+#   - the RELEASE lane's `-O2` diagnostics. A debug build runs no optimizer, so
+#     `-Wmaybe-uninitialized`, `-Wstringop-overflow` and friends -- all of which
+#     the project builds with `-Werror` -- simply do not fire in it. Five
+#     consecutive pushes went red on CI's `gcc-release` while this gate stayed
+#     green.
+#   - clang-tidy's curated profile, whose per-check ratchet (`check_tidy.py`) is
+#     a per-push CI gate. Three findings landed on `main` the same way.
+#
+# Still NOT covered here, deliberately -- they need a sanitizer runtime or a
+# second toolchain and belong to the matrix: ASan/UBSan, TSan, RTSan, the shared
+# and fetched-zstd install lanes, and the coverage floor. `act -j <lane>` runs any
+# of them locally when a change plausibly touches one.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -28,11 +45,49 @@ cmake --build --preset "$preset" --parallel "$(nproc)"
 echo "gate: test"
 ctest --preset "$preset"
 
+# The release lane's compile-time diagnostics, BUILD ONLY: the failure mode this
+# closes is a warning the optimizer emits, not a behavioural difference, and the
+# matrix runs the release tests. Incremental against its own build dir, so the
+# steady-state cost is a few recompiled TUs.
+#
+# Built with the OLDEST available GCC, not the default one, and that is the whole
+# point of the step. `-Wmaybe-uninitialized` is a flow-analysis warning whose false
+# positives differ sharply between releases: the diagnostic that took `gcc-release`
+# down was reported by gcc-13 and NOT by gcc-14 on identical source, so a release
+# build under whichever compiler happens to be default would have sailed past it.
+# CI's `gcc-release` lane runs ubuntu-latest's system `g++`, which trails the
+# newest available, so oldest-available is the closer proxy as well as the
+# stricter one.
+gate_release_cxx=""
+for candidate in g++-13 g++-14 g++ c++; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    gate_release_cxx="$candidate"
+    break
+  fi
+done
+if [[ -n "$gate_release_cxx" ]]; then
+  echo "gate: release build (-O2 diagnostics, CXX=$gate_release_cxx)"
+  CXX="$gate_release_cxx" cmake --preset release >/dev/null
+  CXX="$gate_release_cxx" cmake --build --preset release --parallel "$(nproc)"
+else
+  echo "gate: WARNING no C++ compiler found for the release build; CI will enforce it" >&2
+fi
+
 echo "gate: format"
 if command -v clang-format >/dev/null 2>&1; then
   git ls-files '*.cpp' '*.hpp' | xargs -r clang-format --dry-run -Werror
 else
   echo "gate: WARNING clang-format not found locally; CI will enforce it" >&2
+fi
+
+# clang-tidy's per-check ratchet. Same shape as the format step above: run it when
+# the tool is here, say so plainly when it is not -- with the command that DOES run
+# it, because "CI will enforce it" is what let three findings land.
+echo "gate: tidy"
+if command -v clang-tidy >/dev/null 2>&1; then
+  python3 scripts/check_tidy.py
+else
+  echo "gate: WARNING clang-tidy not found locally; run 'act -j tidy' to check it" >&2
 fi
 
 echo "gate: levelization"

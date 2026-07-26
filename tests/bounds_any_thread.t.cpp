@@ -70,6 +70,7 @@ TEST_CASE("bounds() read off the writer thread observes whole extents, never tor
   std::atomic<bool> stop{false};
   std::atomic<std::size_t> torn{0};
   std::atomic<std::size_t> reads{0};
+  std::atomic<int> ready{0};
 
   // Two readers standing in for the two threads that really do this: the compositor's
   // frame thread and a host's UI hit-test.
@@ -78,17 +79,35 @@ TEST_CASE("bounds() read off the writer thread observes whole extents, never tor
   readers.reserve(k_readers);
   for (int i = 0; i < k_readers; ++i) {
     readers.emplace_back([&] {
+      bool announced = false;
       while (!stop.load(std::memory_order_relaxed)) {
         const std::optional<Rect> seen = content.bounds();
         reads.fetch_add(1, std::memory_order_relaxed);
         if (!seen.has_value() || !(*seen == k_small || *seen == k_large)) {
           torn.fetch_add(1, std::memory_order_relaxed);
         }
+        if (!announced) {
+          announced = true;
+          ready.fetch_add(1, std::memory_order_release);
+        }
       }
     });
   }
 
-  // The writer edits the extent repeatedly while they read.
+  // The writer edits the extent repeatedly while they read. It keeps editing until BOTH
+  // readers have announced a first read, and only then runs its fixed burst -- a hand-off,
+  // not a timeout, in the shape `host_viewport_writer_identity.t.cpp` uses: the partner
+  // threads always arrive, so nothing here can flake on a wall clock.
+  //
+  // Without the hand-off this test raced its own anti-vacuity guard. On a loaded machine
+  // the writer finished all its stores and set `stop` before either reader was scheduled,
+  // so `reads == 0` and the case failed for having proved nothing -- which is what that
+  // guard is for, but it should be unreachable by construction rather than by luck.
+  int spin = 0;
+  while (ready.load(std::memory_order_acquire) < k_readers) {
+    content.grow((spin++ % 2 == 0) ? k_large : k_small);
+    std::this_thread::yield();
+  }
   for (int i = 0; i < 2000; ++i) {
     content.grow((i % 2 == 0) ? k_large : k_small);
   }
@@ -98,5 +117,5 @@ TEST_CASE("bounds() read off the writer thread observes whole extents, never tor
   }
 
   CHECK(torn.load() == 0);
-  CHECK(reads.load() > 0); // the readers really ran; a vacuous pass would be worse
+  CHECK(reads.load() > 0); // now guaranteed by the hand-off above, not hoped for
 }
