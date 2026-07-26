@@ -236,7 +236,7 @@ public:
   // this viewport already stores IS that document's own model.
   HostViewport(InteractiveRenderer& renderer, Document& doc, DocumentBinding binding,
                Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target, Clock clock,
-               Config config);
+               const Config& config);
   ~HostViewport();
 
   // Install / release the external-load settle hook on the bound document, apart from

@@ -42,20 +42,36 @@ namespace arbc {
 // used before the origin became statable. `region` and `scale` are the request's
 // (the target covers `region` at `scale`), so the offset is the two origins'
 // separation taken into target pixels.
-inline Affine provided_placement(const RenderResult& result, const Rect& region, double scale) {
-  if (!result.provided_origin.has_value()) {
+//
+// Takes the ORIGIN rather than the whole `RenderResult` deliberately. Passing the
+// result would alias its `std::optional<SurfaceRef>` into this function, and gcc-13
+// at `-O2` then loses track of that optional's shared-count across the consume below
+// and reports a `-Wmaybe-uninitialized` on the result's own destructor. The helper
+// needs two scalars; taking two scalars is both the smaller interface and the one
+// that does not hand an optimizer a reason to guess.
+inline Affine provided_placement(const std::optional<SurfaceRef>& provided_surface,
+                                 const Rect& region, double scale) {
+  if (!provided_surface.has_value() || !provided_surface->origin().has_value()) {
     return Affine::identity();
   }
-  return Affine::translation((result.provided_origin->x - region.x0) * scale,
-                             (result.provided_origin->y - region.y0) * scale);
+  const Vec2& origin = *provided_surface->origin();
+  return Affine::translation((origin.x - region.x0) * scale, (origin.y - region.y0) * scale);
 }
 
+//
+// Takes the `provided` OPTIONAL rather than the whole `RenderResult`, for the same
+// reason `provided_placement` takes the origin: it touches nothing else, and handing
+// the result in aliases its refcounted optional into a function whose reset gcc-13 at
+// `-O2` cannot then reconcile with the result's own destructor (a
+// `-Wmaybe-uninitialized` on the shared count). The smaller interface is also the
+// truer one -- the helper's whole job is this one member.
 template <class Consume>
-void consume_render_result(RenderResult& result, Surface& fallback, Consume&& consume) {
-  if (result.provided.has_value()) {
-    const Surface& provided = result.provided->surface();
+void consume_render_result(std::optional<SurfaceRef>& provided_surface, Surface& fallback,
+                           Consume&& consume) {
+  if (provided_surface.has_value()) {
+    const Surface& provided = provided_surface->surface();
     consume(provided);
-    result.provided.reset(); // release after composite/copy, never before
+    provided_surface.reset(); // release after composite/copy, never before
   } else {
     const Surface& src = fallback;
     consume(src);

@@ -116,23 +116,12 @@ struct RenderResult {
   // the composition working-space tag (v1; cross-tag convert-at-composite is
   // gated on a multi-format backend, doc 09:102-105). `SurfaceRef::transient`
   // marks a framebuffer the content reuses every frame: consume-within-frame,
-  // copy-to-cache, never retained (doc 09:106-112).
+  // copy-to-cache, never retained (doc 09:106-112). `SurfaceRef::origin` says
+  // where the provided pixels BELONG in content-local space, for content whose
+  // surface was not rendered for this request -- a decoder handing back its
+  // native frame (issue #19). Both ride the handle rather than this struct, for
+  // the same reason: they are properties of the surface.
   std::optional<SurfaceRef> provided{};
-  // Where `provided`'s pixel (0, 0) sits in CONTENT-LOCAL space. Absent -- the
-  // default and the case every non-providing content takes -- means the request's
-  // own `region` origin, i.e. the provided surface answers the request in place,
-  // which is what "honoring the request's region" above says.
-  //
-  // It exists because the two are not always the same point. Content that provides
-  // a surface it did not render for this request -- a decoder handing back its
-  // native frame (doc 09:87-100's motivating case) -- provides pixels whose origin
-  // is a property of the CONTENT, not of the request, and the compositor cannot
-  // otherwise know where to put them. It stayed invisible while every tile request
-  // a provided-surface content ever saw happened to start at that same origin;
-  // `compositor.tile_apron` made tile requests start one apron earlier, and a frame
-  // silently landed an apron up and to the left. Stating the origin is what makes
-  // the zero-copy path correct for ANY request region rather than for one tile.
-  std::optional<Vec2> provided_origin{};
 };
 
 // A playback advisory issued to decoder-backed content (doc 11:160-178): the

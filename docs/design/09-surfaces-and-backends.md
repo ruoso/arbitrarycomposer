@@ -185,22 +185,23 @@ struct RenderResult {
   double achieved_scale;
   bool   exact;
   std::optional<SurfaceRef> provided;  // instead of the request's target
-  std::optional<Vec2> provided_origin; // where its pixel (0,0) sits, in local space
   // provided != target implies: compositor composites/caches from
   // `provided`; the request's target is returned to the pool untouched.
 };
 ```
 
-- **Placement:** `provided_origin` names the content-local point the provided
-  surface's pixel `(0, 0)` covers. Absent — the default — it is the request
-  `region`'s own origin, i.e. the surface answers the request in place. The
-  two are not always the same point: content that provides a surface it did
-  *not* render for this request, such as a decoder handing back its native
-  frame (the motivating case above), provides pixels whose origin is a
-  property of the content rather than of the request, and the compositor
-  cannot otherwise know where to put them. Stating the origin is what makes
-  the zero-copy path correct for any request region rather than for the one
-  request whose origin happens to coincide.
+- **Placement:** the handle carries an optional `origin` — the content-local
+  point the provided surface's pixel `(0, 0)` covers. Absent, it is the
+  request `region`'s own origin, i.e. the surface answers the request in
+  place. The two are not always the same point: content that provides a
+  surface it did *not* render for this request, such as a decoder handing
+  back its native frame (the motivating case above), provides pixels whose
+  origin is a property of the content rather than of the request, and the
+  compositor cannot otherwise know where to put them. Stating the origin is
+  what makes the zero-copy path correct for any request region rather than
+  for the one request whose origin happens to coincide. It lives on the
+  **handle**, beside `transient`, for the reason given below: both describe
+  the *surface*, not the result that carries it.
 
 - A content-provided surface must carry compatible tags or be convertible;
   the backend converts at composite time if needed (doc 07 rules apply —

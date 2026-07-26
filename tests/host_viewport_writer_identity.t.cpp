@@ -140,11 +140,11 @@ public:
       : DocumentViewport(doc, bridge, registry, dim, config(doc, dim)) {}
 
   DocumentViewport(Document& doc, KindBridge& bridge, const Registry& registry, int dim,
-                   arbc::HostViewport::Config cfg)
+                   const arbc::HostViewport::Config& cfg)
       : d_cache(64U * 1024 * 1024), d_pool(d_backend),
         d_target(d_backend.make_surface(dim, dim, doc.pin()->working_space())),
         d_viewport(d_renderer, doc, arbc::HostViewport::DocumentBinding{&bridge, &registry},
-                   d_backend, d_pool, d_cache, checked(d_target), epoch_clock(), std::move(cfg)) {}
+                   d_backend, d_pool, d_cache, checked(d_target), epoch_clock(), cfg) {}
 
   arbc::HostViewport& operator*() noexcept { return d_viewport; }
   arbc::HostViewport* operator->() noexcept { return &d_viewport; }

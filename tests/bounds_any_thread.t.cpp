@@ -73,8 +73,10 @@ TEST_CASE("bounds() read off the writer thread observes whole extents, never tor
 
   // Two readers standing in for the two threads that really do this: the compositor's
   // frame thread and a host's UI hit-test.
+  constexpr int k_readers = 2;
   std::vector<std::thread> readers;
-  for (int i = 0; i < 2; ++i) {
+  readers.reserve(k_readers);
+  for (int i = 0; i < k_readers; ++i) {
     readers.emplace_back([&] {
       while (!stop.load(std::memory_order_relaxed)) {
         const std::optional<Rect> seen = content.bounds();

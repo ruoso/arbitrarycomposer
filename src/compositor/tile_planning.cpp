@@ -833,8 +833,8 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                 // the provided pixels. Absent, the content already filled
                 // `tile_surface` and there is nothing to copy.
                 const Affine placement =
-                    provided_placement(result, tile.local_rect, result.achieved_scale);
-                consume_render_result(result, tile_surface, [&](const Surface& src) {
+                    provided_placement(result.provided, tile.local_rect, result.achieved_scale);
+                consume_render_result(result.provided, tile_surface, [&](const Surface& src) {
                   if (&src != &tile_surface) {
                     backend.composite(tile_surface, src, placement, 1.0);
                   }

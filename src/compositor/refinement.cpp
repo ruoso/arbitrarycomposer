@@ -251,8 +251,8 @@ std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
       // (`runtime.interactive`); a null backend only reaches here in a test with no
       // provided surface, so the copy branch is never taken without one.
       const Affine placement =
-          provided_placement(result, pending.local_rect, result.achieved_scale);
-      consume_render_result(result, *pending.surface, [&](const Surface& src) {
+          provided_placement(result.provided, pending.local_rect, result.achieved_scale);
+      consume_render_result(result.provided, *pending.surface, [&](const Surface& src) {
         if (&src != pending.surface.get() && backend != nullptr) {
           backend->composite(*pending.surface, src, placement, 1.0);
         }

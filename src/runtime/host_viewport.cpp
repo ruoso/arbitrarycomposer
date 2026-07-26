@@ -97,7 +97,7 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Model& model, ContentR
 // the retention is a body assignment.
 HostViewport::HostViewport(InteractiveRenderer& renderer, Document& doc, DocumentBinding binding,
                            Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target,
-                           Clock clock, Config config)
+                           Clock clock, const Config& config)
     : HostViewport(
           renderer, HostViewportDocumentAccess::model(doc),
           [&doc](ObjectId id) { return doc.resolve(id); }, backend, pool, cache, target,

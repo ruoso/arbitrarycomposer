@@ -99,8 +99,8 @@ void render_layer(const ContentResolver& resolve, const LayerRecord& layer, cons
   // (`RenderResult::provided_origin`), so it rides `temp_to_dst` composed with that
   // separation; absent an origin the placement is the identity and this is exactly
   // the mapping above.
-  const Affine placement = provided_placement(result, region, result.achieved_scale);
-  consume_render_result(result, temp, [&](const Surface& src) {
+  const Affine placement = provided_placement(result.provided, region, result.achieved_scale);
+  consume_render_result(result.provided, temp, [&](const Surface& src) {
     backend.composite(target, src, compose(temp_to_dst, placement), layer.opacity);
   });
 }

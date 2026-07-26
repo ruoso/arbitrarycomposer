@@ -434,8 +434,9 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
         // copy is exact) and release it -- the cache never learns the surface was
         // provided (doc 09:109-112,328-340). Absent, the content filled
         // `tile_surface` and there is nothing to copy.
-        const Affine placement = provided_placement(result, tile_region, result.achieved_scale);
-        consume_render_result(result, tile_surface, [&](const Surface& src) {
+        const Affine placement =
+            provided_placement(result.provided, tile_region, result.achieved_scale);
+        consume_render_result(result.provided, tile_surface, [&](const Surface& src) {
           if (&src != &tile_surface) {
             d_backend.composite(tile_surface, src, placement, 1.0);
           }

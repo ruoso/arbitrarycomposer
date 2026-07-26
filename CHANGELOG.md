@@ -145,12 +145,14 @@ surface moves freely, and changelog honesty is what makes that safe
   previous ≤1px of un-attenuated bleed is gone. A `bounds()`-less layer is
   untouched (design doc 02).
 
-- **`RenderResult` gained `provided_origin`**, the content-local point a
+- **`SurfaceRef` gained an optional `origin`**, the content-local point a
   content-provided surface's pixel `(0,0)` covers. Absent (the default, and every
   non-providing content) it is the request region's origin, which is what the
   compositor assumed unconditionally before. Content that hands back a surface it
   did not render for this request — a decoder returning its native frame — must
-  now say where those pixels belong; `org.arbc.imageseq` does (design doc 09).
+  now say where those pixels belong; `org.arbc.imageseq` does. It rides the
+  handle beside `transient`, for the reason doc 09 already gives for that flag:
+  both describe the surface, not the `RenderResult` carrying it (design doc 09).
 
 - **Design docs 02 and 09 reconciled with the one-render-path unification.** Doc
   02 said "two drivers over the same core" and described the offline frame as
@@ -228,7 +230,7 @@ surface moves freely, and changelog honesty is what makes that safe
   start at the content's own origin.** The zero-copy path copied at the identity,
   which silently assumed the two origins coincide — true only for the tile at the
   local origin, so a decoder's frame delivered into any other tile already landed
-  in the wrong place. See `provided_origin` above.
+  in the wrong place. See `SurfaceRef::origin` above.
 
 - `org.arbc.raster` and `org.arbc.image` now render at the **requested scale**
   under `BestEffort`, magnifying past native exactly as they already did under

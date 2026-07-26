@@ -358,6 +358,7 @@ TEST_CASE("a kind's insert schema describes its config without the host knowing 
   // never learns that solid's separator is a comma, or that raster's is an 'x' -- the
   // grammar stays the kind's own.
   std::vector<std::string> values;
+  values.reserve(schema->fields.size());
   for (const arbc::KindInsertField& field : schema->fields) {
     values.push_back(field.default_value);
   }
