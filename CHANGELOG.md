@@ -43,6 +43,27 @@ surface moves freely, and changelog honesty is what makes that safe
   entry. **`Document::recovered_content_state()`** ships with it, making the
   issue-#5 recovery-replay trio reachable from the public host surface.
 
+- **`Journal::history()` publishes an any-thread view of the entry list** (issue
+  #24), the follow-on to the enable pair #15 published. A History panel draws one
+  row per entry every frame, off the writer thread, against a vector a commit may
+  reallocate — the one UI read the single published word could not cover, and one
+  every host would otherwise re-implement. Returned as a pinned immutable snapshot
+  (the shape `Model::current()` already uses), carrying the projection a panel
+  draws — name and byte cost — rather than the entries themselves, whose edit and
+  damage vectors a UI never shows and would copy per commit. Unchanged rows are
+  shared by pointer, so a commit copies N pointers, not N strings, and an undo
+  republishes without allocating a row. `entry_at` stays writer-thread-only.
+
+- **`HostViewport` can install its settle hook apart from its lifetime** (issue
+  #25): `attach_settler()` / `detach_settler()`, opted into with
+  `Config::install_settler = false`. The `Document&` constructor installed the
+  hook itself, which welded a writer-thread requirement onto `new` and `delete` —
+  so a host whose viewports live on a render thread had to post the whole
+  construction to the writer thread for one line inside it, paying a synchronous
+  round trip per canvas add and remove and giving up scoped ownership. The install
+  counting and the N-viewports-per-document rule are unchanged; only *when* they
+  happen moves. The default keeps the fused behaviour.
+
 - **`render_offline` takes a caller-held pin**, so a batch export is coherent
   across one document state (issue #27):
   `render_offline(document, pinned, viewport, backend)` beside the

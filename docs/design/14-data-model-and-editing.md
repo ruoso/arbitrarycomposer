@@ -379,11 +379,22 @@ kinds, which is the whole point for a multi-disciplinary editor:
   depth and offers a redo that never existed — no writer store order can
   close a gap on the reading side. They need no freshness to be correct:
   `undo()`/`redo()` re-check on the writer thread, so a stale enable costs
-  a refused no-op, never a wrong mutation. The entry *vector* stays
-  writer-owned — history **inspection** (`entry_at`, `byte_cost`) is
-  writer-thread only, because handing out a reference into a vector a
-  commit may reallocate is a different (and larger) promise: a history
-  browser would need the entry list published copy-on-write.
+  a refused no-op, never a wrong mutation.
+- **The history a UI DRAWS is published; the entries are not.** A History
+  panel is the read the single word cannot cover: it lists one row per
+  entry every frame, which is a walk, not a scalar load. So the
+  *displayable projection* — each entry's name and byte cost, in order —
+  is published as an immutable snapshot swapped whole on every mutation,
+  which a reader pins and walks exactly as it pins a document version. It
+  is a projection rather than the entries themselves because a journal
+  entry carries the object edits, content-state edits and damage that undo
+  runs on: none of it is drawn, and all of it would be copied per commit
+  to publish. Rows are shared by pointer between snapshots, so a commit
+  costs N pointer copies rather than N string copies and an undo — which
+  changes no entry, only the cursor — republishes without allocating a
+  row. The entry *vector* itself stays writer-owned: `entry_at` hands out
+  a reference into a vector a commit may reallocate, which is a different
+  and larger promise than a snapshot of what is on screen.
 
 ## The scenarios, validated
 

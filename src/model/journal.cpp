@@ -34,6 +34,29 @@ std::size_t Journal::entry_cost(const JournalEntry& e) const {
   return cost;
 }
 
+void Journal::publish_history() {
+  // Reuse an unchanged row by POINTER: the entry vector is append-at-tip and
+  // trim-at-front, so on a commit every surviving row is the same object it was and
+  // only the tip is new. Comparing name and cost is cheaper than allocating a row,
+  // and it makes a republish after an undo (which changes no entry at all, only the
+  // cursor) allocate nothing.
+  const std::shared_ptr<const HistoryView> prev = d_history.load(std::memory_order_relaxed);
+  auto next = std::make_shared<HistoryView>();
+  next->reserve(d_entries.size());
+  for (std::size_t i = 0; i < d_entries.size(); ++i) {
+    const Stored& stored = d_entries[i];
+    if (prev != nullptr && i < prev->size()) {
+      const std::shared_ptr<const HistoryRow>& old = (*prev)[i];
+      if (old != nullptr && old->name == stored.entry.name && old->byte_cost == stored.cost) {
+        next->push_back(old);
+        continue;
+      }
+    }
+    next->push_back(std::make_shared<const HistoryRow>(HistoryRow{stored.entry.name, stored.cost}));
+  }
+  d_history.store(std::shared_ptr<const HistoryView>(std::move(next)), std::memory_order_release);
+}
+
 void Journal::trim() {
   // Drop oldest entries from the front until within budget, never below one entry
   // (doc 14:173-179). Erasing a `Stored` runs `~JournalEntry`, whose `ObjectEdit`

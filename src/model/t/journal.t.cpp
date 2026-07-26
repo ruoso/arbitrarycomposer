@@ -509,3 +509,62 @@ TEST_CASE("undo of a committed content removal restores the record to its exact 
 }
 
 } // namespace
+
+// enforces: 14-data-model-and-editing#history-projection-is-any-thread
+TEST_CASE("the journal publishes an any-thread history projection") {
+  // Issue #24, the follow-on to #15. That task published the ENABLE pair
+  // (`can_undo`/`can_redo`/`depth`/`cursor`) as one atomic word and deliberately left
+  // history INSPECTION writer-thread-only, which is the right shape for a per-frame
+  // scalar read and the wrong one for a History PANEL: drawing it means reading every
+  // entry every frame, off the writer thread, against a vector a commit may reallocate.
+  // Every host that wants one would otherwise re-implement the same publication.
+  arbc::Model model;
+  arbc::Journal journal(model);
+  model.set_commit_sink(&journal);
+
+  // Never null, even empty -- so a caller needs no null check.
+  REQUIRE(journal.history() != nullptr);
+  CHECK(journal.history()->empty());
+
+  {
+    auto txn = model.transact("first");
+    txn.add_composition(4.0, 4.0);
+    REQUIRE(txn.commit().has_value());
+  }
+  {
+    auto txn = model.transact("second");
+    txn.add_composition(8.0, 8.0);
+    REQUIRE(txn.commit().has_value());
+  }
+
+  // One row per entry, oldest first, carrying what a panel draws.
+  const std::shared_ptr<const arbc::HistoryView> view = journal.history();
+  REQUIRE(view->size() == 2);
+  CHECK((*view)[0]->name == "first");
+  CHECK((*view)[1]->name == "second");
+  CHECK((*view)[0]->byte_cost > 0);
+
+  // A reader's PIN survives the writer moving on: the snapshot it holds is immutable,
+  // so a UI mid-walk can never observe a reallocation. This is the whole guarantee.
+  {
+    auto txn = model.transact("third");
+    txn.add_composition(16.0, 16.0);
+    REQUIRE(txn.commit().has_value());
+  }
+  CHECK(view->size() == 2);              // the pinned snapshot is unchanged ...
+  CHECK(journal.history()->size() == 3); // ... and the new one has the new entry
+
+  // Unchanged rows are reused BY POINTER, so a commit copies N pointers rather than N
+  // strings -- which is what makes publishing per commit affordable at all.
+  const std::shared_ptr<const arbc::HistoryView> after = journal.history();
+  CHECK((*after)[0].get() == (*view)[0].get());
+  CHECK((*after)[1].get() == (*view)[1].get());
+
+  // Undo moves the cursor and changes no entry, so it republishes without allocating a
+  // single row; the applied ones are `[0, cursor())`.
+  REQUIRE(journal.undo());
+  const std::shared_ptr<const arbc::HistoryView> undone = journal.history();
+  CHECK(undone->size() == 3);
+  CHECK(journal.cursor() == 2);
+  CHECK((*undone)[2].get() == (*after)[2].get());
+}

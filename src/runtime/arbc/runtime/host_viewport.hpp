@@ -104,6 +104,15 @@ public:
     // registers with it.
     DamageRouter* router{nullptr};
 
+    // Whether the `Document&` constructor installs the external-load settle hook on the
+    // document itself (issue #25). True keeps the fused behaviour, which is right for a
+    // single-threaded host and is what every landed caller gets. False leaves the install
+    // to `attach_settler()` / `detach_settler()`, so a host whose viewports live on a
+    // render thread can construct and destroy them there and post only those two calls to
+    // its writer thread -- rather than posting the whole constructor for the sake of the
+    // one writer-thread line inside it. Inert on the `Model&` path, which has no document.
+    bool install_settler{true};
+
     // The external-arrival settle hook (`runtime.async_external_load` Decision 7): the bytes
     // behind a nested content's `params.ref` may arrive from a deferring `AssetSource` long
     // after the document loaded, and installing them is a WRITER-THREAD publish. `step()`
@@ -229,6 +238,31 @@ public:
                Backend& backend, SurfacePool& pool, TileCache& cache, Surface& target, Clock clock,
                Config config);
   ~HostViewport();
+
+  // Install / release the external-load settle hook on the bound document, apart from
+  // this object's lifetime (issue #25). WRITER-THREAD ONLY, as
+  // `Document::set_external_load_settler` is.
+  //
+  // The `Document&` constructor installs the hook itself, which welds a writer-thread
+  // requirement onto `new` and `delete`. A host whose viewports live on a render thread
+  // then cannot construct one there: it must post the whole construction to the writer
+  // thread for the sake of one line inside it, which costs a synchronous round trip on
+  // every canvas add and remove, entangles viewport lifetime with the writer's queue
+  // depth and shutdown ordering, and denies the render thread an ordinary scoped
+  // `unique_ptr`.
+  //
+  // Split out, a host constructs and destroys viewports wherever it likes and posts two
+  // cheap, unambiguously-writer-thread calls. Pass `install = false` in `Config` to opt
+  // out of the constructor's install and drive these instead; the default keeps the
+  // fused behaviour, which is exactly right for a single-threaded host.
+  //
+  // The install is COUNTED on the document, so N viewports over one document is not an
+  // out-of-order teardown hazard -- unchanged, and the reason `detach()` is safe to call
+  // from a destructor a host forgot to precede with one. Both are idempotent: a second
+  // `attach()` installs nothing further and a `detach()` with nothing installed is a
+  // no-op, so a host may pair them loosely without leaking a count.
+  void attach_settler();
+  void detach_settler() noexcept;
 
   HostViewport(const HostViewport&) = delete;
   HostViewport& operator=(const HostViewport&) = delete;
@@ -358,6 +392,10 @@ private:
   // `~HostViewport` is a mutation; separate from `d_document` because the two answer different
   // questions ("do I bind operators?" vs "do I owe a release?").
   Document* d_settle_owner{nullptr};
+  // The document this viewport MAY install onto -- set on the `Document&` path regardless
+  // of whether the constructor installed, so a later `attach_settler()` knows its target
+  // (issue #25). `d_settle_owner` stays the narrower "do I owe a release?" answer.
+  Document* d_settle_document{nullptr};
   ContentResolver d_resolve;
   Backend& d_backend;
   SurfacePool& d_pool;

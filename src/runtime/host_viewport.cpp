@@ -101,7 +101,8 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Document& doc, Documen
     : HostViewport(
           renderer, HostViewportDocumentAccess::model(doc),
           [&doc](ObjectId id) { return doc.resolve(id); }, backend, pool, cache, target,
-          std::move(clock), derive_document_config(doc, binding, std::move(config))) {
+          std::move(clock), derive_document_config(doc, binding, config)) {
+  const bool config_installs_settler = config.install_settler;
   d_document = &doc;
   // Hand the settle hook to the DOCUMENT as well (issue #13). `step()` runs it only when the
   // step is itself the writer thread; this is what covers the other case, without asking the
@@ -111,10 +112,28 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Document& doc, Documen
   // report is a latency optimization for an IDLE document, not an obligation. Cleared in the
   // destructor; the install is counted, so N viewports over one document is not an
   // out-of-order teardown hazard.
-  if (d_settle_loads) {
-    doc.set_external_load_settler(d_settle_loads);
-    d_settle_owner = &doc;
+  d_settle_document = &doc;
+  if (config_installs_settler) {
+    attach_settler();
   }
+}
+
+void HostViewport::attach_settler() {
+  // Idempotent: a second call installs nothing further, so a host may pair attach/detach
+  // loosely without inflating the document's install count.
+  if (d_settle_owner != nullptr || d_settle_document == nullptr || !d_settle_loads) {
+    return;
+  }
+  d_settle_document->set_external_load_settler(d_settle_loads);
+  d_settle_owner = d_settle_document;
+}
+
+void HostViewport::detach_settler() noexcept {
+  if (d_settle_owner == nullptr) {
+    return;
+  }
+  d_settle_owner->set_external_load_settler(nullptr);
+  d_settle_owner = nullptr;
 }
 
 HostViewport::~HostViewport() {
@@ -126,9 +145,7 @@ HostViewport::~HostViewport() {
   // Release the auto-settle install (issue #13): the hook captures this viewport's binding, so
   // it must not outlive the viewport. The document decrements; the slot survives while another
   // viewport still holds an install.
-  if (d_settle_owner != nullptr) {
-    d_settle_owner->set_external_load_settler(nullptr);
-  }
+  detach_settler();
 }
 
 HostViewport::StepOutcome HostViewport::step() {

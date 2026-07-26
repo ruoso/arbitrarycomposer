@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace arbc {
@@ -58,10 +60,35 @@ public:
 // The cursor and the entry count are PUBLISHED (one relaxed atomic word holding
 // both), because a host whose UI thread is not its writer thread asks
 // `can_undo()`/`can_redo()` every frame to enable its undo/redo affordances
-// (issue #15). The entry vector itself is not published -- it stays writer-owned,
-// so history INSPECTION (`entry_at`, `byte_cost`) remains writer-thread only. Doc
-// 15's other UI-per-frame reads have the same shape: one word a reader can load,
-// not a structure it must walk.
+// (issue #15). Doc 15's other UI-per-frame reads have the same shape: one word a
+// reader can load, not a structure it must walk.
+//
+// A history PANEL is the read that shape does not cover (issue #24): it lists one
+// row per entry every frame, which is a walk. So the displayable projection --
+// each entry's name and byte cost, in order -- is published too, as an immutable
+// snapshot swapped whole on every mutation (`history()`). Every host that wants a
+// history view would otherwise re-implement exactly that publication, as the
+// reporting host did.
+//
+// It is a PROJECTION, not the entries. A `JournalEntry` carries its object edits,
+// content-state edits and damage -- the machinery undo runs on, none of which a UI
+// displays and all of which would be copied per commit to publish. `entry_at`
+// still hands out a reference into the writer-owned vector and stays
+// writer-thread-only, for the same reason it always did: a concurrent commit may
+// reallocate it.
+// One row of the published history projection (issue #24): what a history panel
+// draws, and nothing else. `name` is the entry's; `byte_cost` is what that entry
+// contributes to the journal's budget, which is what a memory-aware UI shows
+// beside it.
+struct HistoryRow {
+  std::string name;
+  std::size_t byte_cost{0};
+};
+
+// The published snapshot: rows oldest-first. Rows are shared so republishing copies
+// pointers, not strings.
+using HistoryView = std::vector<std::shared_ptr<const HistoryRow>>;
+
 class ARBC_API Journal final : public CommitSink {
 public:
   // A large default budget: trimming is opt-in via `byte_budget` so a journal that
@@ -115,9 +142,26 @@ public:
   // Applied-entry count -- the cursor position in `[0, depth()]`. ANY THREAD.
   std::size_t cursor() const noexcept { return published_cursor(load_published()); }
   // The accumulated byte cost the budget bounds (record sizes + content cost).
-  // WRITER-THREAD ONLY -- a plain read of a writer-mutated word; it is a budget
-  // diagnostic, not a per-frame UI read, so it is not published.
+  // WRITER-THREAD ONLY -- a plain read of a writer-mutated word. The per-entry
+  // costs a UI displays are in the published `history()` snapshot below; this is
+  // the writer's own running total.
   std::size_t byte_cost() const noexcept { return d_total_cost; }
+
+  // The published history projection: one row per stored entry, oldest first, with
+  // the entries in `[0, cursor())` being the APPLIED ones. ANY THREAD.
+  //
+  // Returned as a pinned `shared_ptr` to an immutable snapshot, exactly as
+  // `Model::current()` returns a pinned version: a reader loads it once and walks
+  // it for as long as it likes while the writer swaps a new one in, and the walk
+  // can never observe a reallocation. A row is itself shared, so publishing a new
+  // snapshot copies N pointers rather than N strings -- a commit's cost is O(N)
+  // pointer copies, not O(total name bytes).
+  //
+  // Never null: a journal with no entries publishes an empty snapshot, so a caller
+  // needs no null check.
+  std::shared_ptr<const HistoryView> history() const noexcept {
+    return d_history.load(std::memory_order_acquire);
+  }
 
   // Read a stored entry (history-inspection seam; `i` in `[0, depth())`).
   // WRITER-THREAD ONLY: this hands out a reference INTO the writer-owned entry
@@ -143,8 +187,17 @@ private:
   // and `can_redo()` invents a redo the history never offered. That gap is between
   // the reader's two loads, so only the writer publishing both at once closes it.
   void publish() noexcept {
+    publish_history();
     d_published.store(pack(d_cursor, d_entries.size()), std::memory_order_relaxed);
   }
+
+  // Rebuild and swap in the history projection (issue #24). Rows are reused by
+  // pointer wherever the entry is unchanged, so the common case -- a commit at the
+  // tip -- allocates ONE row and copies N pointers. The snapshot is published
+  // BEFORE the cursor/depth word, so a reader that sees a depth has a snapshot at
+  // least that long; the reverse order could hand a UI a depth its snapshot cannot
+  // index.
+  void publish_history();
 
   std::uint64_t load_published() const noexcept {
     return d_published.load(std::memory_order_relaxed);
@@ -190,6 +243,11 @@ private:
   std::size_t d_cursor{0};       // writer-owned truth: applied-entry count
   // The any-thread view of `(d_cursor, d_entries.size())`, packed (see `publish`).
   std::atomic<std::uint64_t> d_published{0};
+  // The any-thread history projection (see `history()`), swapped whole on every
+  // mutation -- the same atomic-shared-pointer publication `Model::current()` uses
+  // for the document version, and for the same reason: a reader pins a snapshot and
+  // walks it while the writer builds the next one.
+  std::atomic<std::shared_ptr<const HistoryView>> d_history{std::make_shared<const HistoryView>()};
   std::size_t d_total_cost{0};
 };
 

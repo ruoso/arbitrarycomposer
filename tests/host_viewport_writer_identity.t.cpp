@@ -137,16 +137,18 @@ arbc::HostViewport::Clock epoch_clock() {
 class DocumentViewport {
 public:
   DocumentViewport(Document& doc, KindBridge& bridge, const Registry& registry, int dim)
+      : DocumentViewport(doc, bridge, registry, dim, config(doc, dim)) {}
+
+  DocumentViewport(Document& doc, KindBridge& bridge, const Registry& registry, int dim,
+                   arbc::HostViewport::Config cfg)
       : d_cache(64U * 1024 * 1024), d_pool(d_backend),
         d_target(d_backend.make_surface(dim, dim, doc.pin()->working_space())),
         d_viewport(d_renderer, doc, arbc::HostViewport::DocumentBinding{&bridge, &registry},
-                   d_backend, d_pool, d_cache, checked(d_target), epoch_clock(), config(doc, dim)) {
-  }
+                   d_backend, d_pool, d_cache, checked(d_target), epoch_clock(), std::move(cfg)) {}
 
   arbc::HostViewport& operator*() noexcept { return d_viewport; }
   arbc::HostViewport* operator->() noexcept { return &d_viewport; }
 
-private:
   using Target = arbc::expected<std::unique_ptr<Surface>, arbc::SurfaceError>;
 
   static Surface& checked(Target& target) {
@@ -161,6 +163,7 @@ private:
     return cfg;
   }
 
+private:
   CpuBackend d_backend;
   TileCache d_cache;
   SurfacePool d_pool;
@@ -316,6 +319,59 @@ TEST_CASE("an arrival the render thread declined to install lands at the host's 
   // And it is not a per-edit cost: with nothing arrived, the next edit settles nothing.
   doc.add_composition(4.0, 4.0);
   CHECK(doc.external_loads_auto_settled() == 1);
+}
+
+// enforces: 15-memory-model#writer-identity-is-queryable
+TEST_CASE("the settle install can be driven apart from the viewport's lifetime") {
+  // Issue #25: `Document::set_external_load_settler` is writer-thread-only, and the
+  // `Document&` constructor called it -- welding a writer-thread requirement onto `new`
+  // and `delete`. A host whose viewports live on a render thread had to post the whole
+  // construction to the writer thread for the sake of that one line, paying a
+  // synchronous round trip per canvas add and remove and giving up scoped ownership.
+  //
+  // `Config::install_settler = false` decouples them: the object is constructed
+  // wherever the host likes, and only `attach_settler()` / `detach_settler()` are
+  // writer-thread work.
+  DeferringAssetSource source;
+  source.put("mem/child.arbc", k_leaf);
+
+  Document doc;
+  KindBridge bridge;
+  const Registry registry;
+  REQUIRE(arbc::load_document(nesting_doc("child.arbc"), doc, bridge, registry, "mem/parent.arbc",
+                              &source));
+  arbc::register_builtin_operator_binders();
+
+  arbc::HostViewport::Config cfg = DocumentViewport::config(doc, 16);
+  cfg.install_settler = false;
+  DocumentViewport view(doc, bridge, registry, 16, cfg);
+
+  REQUIRE(source.fire_all() == 1);
+
+  // NOT installed: the document has no hook, so an edit settles nothing. This is the
+  // state a render thread's freshly-constructed viewport is in before the host posts
+  // its attach.
+  doc.add_composition(4.0, 4.0);
+  CHECK(doc.external_loads_auto_settled() == 0);
+  CHECK(doc.pending_external_loads() == 1);
+
+  // The host posts the attach to its writer thread; from here the behaviour is
+  // identical to the fused path.
+  view->attach_settler();
+  doc.add_composition(4.0, 4.0);
+  CHECK(doc.external_loads_auto_settled() == 1);
+  CHECK(doc.pending_external_loads() == 0);
+
+  // Detach releases it, and both calls are idempotent -- a host may pair them loosely
+  // without inflating or stranding the document's install count.
+  view->detach_settler();
+  view->detach_settler();
+  view->attach_settler();
+  view->attach_settler();
+  view->detach_settler();
+  source.put("mem/other.arbc", k_leaf);
+  doc.add_composition(4.0, 4.0);
+  CHECK(doc.external_loads_auto_settled() == 1); // nothing installed: nothing settled
 }
 
 // enforces: 15-memory-model#writer-identity-is-queryable
