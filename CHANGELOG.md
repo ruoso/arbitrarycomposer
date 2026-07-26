@@ -43,6 +43,28 @@ surface moves freely, and changelog honesty is what makes that safe
   entry. **`Document::recovered_content_state()`** ships with it, making the
   issue-#5 recovery-replay trio reachable from the public host surface.
 
+- **`Document::create_content_and_attach` and `Document::remove_contents`** make
+  one user-visible action one journal entry (issue #20). `add_content`
+  self-commits, so creating a *placed* object took two entries, two undo presses,
+  and passed through a published state in which a content existed attached to
+  nothing; `remove_content` is atomic within one object but had no batching hook,
+  so deleting a multi-selection of N objects took N undo presses to reverse
+  something the user did once. Both now publish once, append one entry, and
+  reverse whole.
+
+- **`Registry` carries a per-kind insert schema** (issue #21):
+  `KindInsertSchema` — the fields a host must collect, with types, defaults,
+  ranges and units — plus an `assemble` thunk turning collected strings into the
+  kind's config. `ContentConfig` is opaque, so a host offering "insert a cell of
+  kind X" had to hardcode a per-kind grammar table, and a plugin kind could be
+  listed in a menu but not inserted with anything but a guessed config — the case
+  the plugin seam exists to serve. The grammar stays the kind's own: a host
+  renders fields and hands back strings, never learning that solid's separator is
+  a comma. Registered on the same atomic `add` as the factory, so a plugin cannot
+  describe another kind's config after the fact; a kind that registers none is
+  unaffected. The built-ins advertise theirs, with solid's extent defaulted so an
+  insert dialog produces a *placeable* solid.
+
 - **`Journal::history()` publishes an any-thread view of the entry list** (issue
   #24), the follow-on to the enable pair #15 published. A History panel draws one
   row per entry every frame, off the writer thread, against a vector a commit may

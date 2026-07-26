@@ -340,3 +340,51 @@ TEST_CASE("a bootstrapped registry leaves document bytes and load behavior uncha
   REQUIRE(resaved.has_value());
   CHECK(*resaved == *baseline);
 }
+
+// enforces: 17-internal-components#umbrella-bootstrap-is-factory-and-metadata-only
+TEST_CASE("a kind's insert schema describes its config without the host knowing the grammar") {
+  // Issue #21: `Registry` advertised everything needed to USE a kind and nothing
+  // describing what the factory's config string MEANS, so a host offering "insert a
+  // cell of kind X" had to hardcode a per-kind grammar table -- and a plugin kind could
+  // be listed in the menu but not inserted with anything but a guessed config, which is
+  // exactly the case the plugin seam exists to serve.
+  Registry registry;
+  arbc::register_builtin_kinds(registry);
+
+  const arbc::KindInsertSchema* const schema = registry.insert_schema(SolidContent::kind_id);
+  REQUIRE(schema != nullptr);
+
+  // The host renders the advertised fields and hands the collected strings back. It
+  // never learns that solid's separator is a comma, or that raster's is an 'x' -- the
+  // grammar stays the kind's own.
+  std::vector<std::string> values;
+  for (const arbc::KindInsertField& field : schema->fields) {
+    values.push_back(field.default_value);
+  }
+  const auto config = schema->assemble(values);
+  REQUIRE(config.has_value());
+
+  // And the config it assembled is one the kind's OWN factory accepts -- the round trip
+  // that makes the schema worth anything.
+  const Made made = make(registry, SolidContent::kind_id, *config);
+  REQUIRE(made.has_value());
+  // Defaults produce a PLACEABLE solid: an unbounded one has a no-op layer transform,
+  // which is the trap issue #22 was about, so the schema must not steer a host into it.
+  CHECK((*made)->bounds().has_value());
+
+  // Raster's grammar is a different one entirely, and the same host code drives it.
+  const arbc::KindInsertSchema* const raster = registry.insert_schema(RasterContent::kind_id);
+  REQUIRE(raster != nullptr);
+  REQUIRE(raster->fields.size() == 2);
+  CHECK(raster->fields[0].type == arbc::KindInsertField::Type::Integer);
+  const auto raster_config = raster->assemble(std::vector<std::string>{"64", "32"});
+  REQUIRE(raster_config.has_value());
+  CHECK(*raster_config == "64x32");
+  CHECK(make(registry, RasterContent::kind_id, *raster_config).has_value());
+
+  // A kind that registers none is unaffected: the host falls back to a raw config text
+  // box exactly as it must today. Operator kinds refuse config construction outright,
+  // so they advertise nothing to collect.
+  CHECK(registry.insert_schema(arbc::FadeContent::kind_id) == nullptr);
+  CHECK(registry.insert_schema("org.example.absent") == nullptr);
+}

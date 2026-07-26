@@ -209,17 +209,56 @@ void register_builtin_kinds(Registry& registry) {
   // deliberately dropped: a partial overlap must not strand the remaining
   // kinds unregistered (refinement Decision 3).
   const auto add = [&registry](std::string_view id, ContentFactory factory, std::string human_name,
-                               std::string version) {
+                               std::string version,
+                               std::optional<KindInsertSchema> schema = std::nullopt) {
     (void)registry.add(id, std::move(factory),
-                       KindMetadata{std::move(human_name), std::move(version)});
+                       KindMetadata{std::move(human_name), std::move(version)},
+                       /*codec=*/std::nullopt, /*binder=*/std::nullopt,
+                       /*state_walker=*/std::nullopt, std::move(schema));
   };
+  // Join the collected values with `sep` -- the whole of every builtin's config
+  // assembly, and the reason a host never learns that solid's separator is a comma
+  // (issue #21): it renders the advertised fields and hands back strings.
+  const auto joined = [](char sep) {
+    return [sep](std::span<const std::string> values) -> expected<std::string, std::string> {
+      std::string out;
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+          out.push_back(sep);
+        }
+        out.append(values[i]);
+      }
+      return out;
+    };
+  };
+  using Field = KindInsertField;
+  using Type = KindInsertField::Type;
   // Registration order below is the enumeration order a host menu sees;
   // metadata versions reuse the persisted k_*_kind_version constants
   // (arbc/runtime/builtin_kind_versions.hpp) so registry metadata always
   // equals the serialized kind_version (refinement Constraint 6).
-  add(SolidContent::kind_id, make_solid, "Solid Color", k_solid_kind_version);
-  add(ToneContent::kind_id, make_tone, "Tone", k_tone_kind_version);
-  add(RasterContent::kind_id, make_raster, "Raster", k_raster_kind_version);
+  // The premultiplied colour plus the extent the grammar gained with issue #22. The
+  // extent is offered with a default so an insert dialog produces a PLACEABLE solid by
+  // default -- an unbounded one has a no-op transform, which is the trap issue #22 is
+  // about.
+  add(SolidContent::kind_id, make_solid, "Solid Color", k_solid_kind_version,
+      KindInsertSchema{{Field{"red", Type::Number, "1", 0.0, 1.0, {}},
+                        Field{"green", Type::Number, "1", 0.0, 1.0, {}},
+                        Field{"blue", Type::Number, "1", 0.0, 1.0, {}},
+                        Field{"alpha", Type::Number, "1", 0.0, 1.0, {}},
+                        Field{"x", Type::Number, "0", {}, {}, "px"},
+                        Field{"y", Type::Number, "0", {}, {}, "px"},
+                        Field{"width", Type::Number, "256", 0.0, {}, "px"},
+                        Field{"height", Type::Number, "256", 0.0, {}, "px"}},
+                       joined(',')});
+  add(ToneContent::kind_id, make_tone, "Tone", k_tone_kind_version,
+      KindInsertSchema{{Field{"frequency", Type::Number, "440", 0.0, {}, "Hz"},
+                        Field{"amplitude", Type::Number, "0.5", 0.0, 1.0, {}}},
+                       joined(',')});
+  add(RasterContent::kind_id, make_raster, "Raster", k_raster_kind_version,
+      KindInsertSchema{{Field{"width", Type::Integer, "1024", 1.0, {}, "px"},
+                        Field{"height", Type::Integer, "1024", 1.0, {}, "px"}},
+                       joined('x')});
   add(
       FadeContent::kind_id,
       [](ContentConfig) { return refuse_config_construction(FadeContent::kind_id); }, "Fade",

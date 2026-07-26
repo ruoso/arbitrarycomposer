@@ -333,3 +333,67 @@ TEST_CASE("a caller-pinned batch of offline frames is coherent across one docume
   // A null pin is an error value, never a crash (doc 10).
   CHECK_FALSE(arbc::render_offline(doc, arbc::DocStatePtr{}, viewport, backend).has_value());
 }
+
+// enforces: 14-data-model-and-editing#editable-runtime-bound
+TEST_CASE("one user-visible action is one journal entry, creating and deleting alike") {
+  // Issue #20: two asymmetries made undo granularity not match user actions.
+  // `add_content` self-commits (it is the vtable-binding call), so creating a PLACED
+  // object took two entries, two undo presses, and passed through a published state in
+  // which a content existed attached to nothing. And `remove_content` is atomic within
+  // one object but self-commits with no batching hook, so deleting a multi-selection of
+  // N objects took N entries to reverse something the user did once.
+  Document doc;
+  const ObjectId comp = doc.add_composition(64.0, 64.0);
+  const std::size_t before_create = doc.journal().depth();
+
+  const Document::Placed placed = doc.create_content_and_attach(
+      red_solid(), /*kind=*/1, comp, arbc::Affine::translation(4.0, 4.0), 0.5);
+
+  // ONE entry for the whole action, and no intermediate version in which the content
+  // was attached to nothing.
+  CHECK(doc.journal().depth() - before_create == 1);
+  CHECK(doc.resolve(placed.content) != nullptr);
+  const arbc::DocStatePtr placed_state = doc.pin();
+  REQUIRE(placed_state->find_layer(placed.layer) != nullptr);
+  CHECK(placed_state->find_layer(placed.layer)->content == placed.content);
+  CHECK(placed_state->find_layer(placed.layer)->opacity == 0.5);
+  std::size_t members = 0;
+  placed_state->for_each_layer_in(comp, [&](ObjectId) { ++members; });
+  CHECK(members == 1);
+
+  // ... and ONE undo press reverses it whole.
+  REQUIRE(doc.journal().undo());
+  CHECK(doc.pin()->find_layer(placed.layer) == nullptr);
+  CHECK(doc.pin()->find_content(placed.content) == nullptr);
+  REQUIRE(doc.journal().redo());
+
+  // Now the delete side: three placed objects, removed as one action.
+  std::vector<Document::Removal> selection;
+  for (int i = 0; i < 3; ++i) {
+    const Document::Placed p =
+        doc.create_content_and_attach(red_solid(), 1, comp, arbc::Affine::identity());
+    selection.push_back(Document::Removal{p.content, comp, p.layer});
+  }
+  const std::size_t before_remove = doc.journal().depth();
+  doc.remove_contents(selection);
+
+  CHECK(doc.journal().depth() - before_remove == 1); // one action, one entry
+  const arbc::DocStatePtr after = doc.pin();
+  for (const Document::Removal& r : selection) {
+    CHECK(after->find_content(r.content) == nullptr);
+    CHECK(after->find_layer(r.layer) == nullptr);
+  }
+
+  // One undo press brings the whole selection back.
+  REQUIRE(doc.journal().undo());
+  const arbc::DocStatePtr restored = doc.pin();
+  for (const Document::Removal& r : selection) {
+    CHECK(restored->find_content(r.content) != nullptr);
+    CHECK(restored->find_layer(r.layer) != nullptr);
+  }
+
+  // An empty batch publishes nothing at all.
+  const std::size_t quiet = doc.journal().depth();
+  doc.remove_contents({});
+  CHECK(doc.journal().depth() == quiet);
+}

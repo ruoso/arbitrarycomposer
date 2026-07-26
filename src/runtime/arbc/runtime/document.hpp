@@ -24,6 +24,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -105,6 +106,49 @@ public:
   // now rides each state seam (`EditableBinding`). The v1 one-per-document limit,
   // which used to throw here, is gone (`runtime.editable_sink_multiplex`).
   ObjectId add_content(std::shared_ptr<Content> content, std::uint64_t kind = 0);
+
+  // Mint a content, place it, and attach it -- ONE user-visible action, ONE journal
+  // entry (issue #20). The mirror of `remove_content`, and the composition
+  // `add_content` + `add_layer` + `attach_layer` could not be: `add_content`
+  // self-commits (it is the vtable-binding call), so creating a placed object took two
+  // entries, two undo presses, and passed through an intermediate published state in
+  // which a content existed attached to nothing.
+  //
+  // Everything `add_content` does still happens, in the same order and inside the one
+  // transaction: the `Editable` facet's sinks register before the commit that publishes
+  // the record, so the record embeds the content's CAPTURED initial state and the first
+  // edit has an undo target; the construction identity and input edges are captured;
+  // the id->Content binding is published copy-on-write after the commit.
+  //
+  // Returns the content and layer ids. WRITER-THREAD ONLY.
+  struct Placed {
+    ObjectId content;
+    ObjectId layer;
+  };
+  Placed create_content_and_attach(std::shared_ptr<Content> content, std::uint64_t kind,
+                                   ObjectId composition, const Affine& transform,
+                                   double opacity = 1.0);
+
+  // Delete N contents and their referencing layers as ONE user-visible action -- one
+  // transaction, one publish, one journal entry, one undo press (issue #20).
+  //
+  // `remove_content` is atomic WITHIN one object but self-commits with no batching hook,
+  // so deleting a multi-selection of N objects produced N entries and took N undo
+  // presses to reverse something the user did once. The two asymmetries are mirrors: the
+  // create path could not be collapsed INTO one entry, the delete path could not be
+  // collapsed ACROSS objects.
+  //
+  // Every removal's teardowns share the single transaction, so an observer sees the
+  // document with the whole selection present or wholly gone, never a layer naming an
+  // erased content. Binding rows are RETAINED exactly as the single-object form retains
+  // them, and for the same reason (the deferred `StateHandle` release must still route
+  // to a live row). An empty span is a no-op that publishes nothing.
+  struct Removal {
+    ObjectId content;
+    ObjectId composition;
+    ObjectId layer;
+  };
+  void remove_contents(std::span<const Removal> removals);
 
   // Delete an editable content and its referencing layer at the document level: the
   // inverse of `add_content` (doc 14 § Transactions, the removal paragraph).
@@ -488,6 +532,13 @@ private:
   // by writing the same line its neighbours write. `transact()`, the host-facing seam, is this
   // too.
   Model::Transaction begin(std::string name = {});
+
+  // `add_content`'s per-content work inside a caller-owned transaction, shared with
+  // `create_content_and_attach` so the two cannot drift.
+  ObjectId mint_content(Model::Transaction& txn, Content& live, std::uint64_t kind);
+
+  // Publish one id->Content row copy-on-write.
+  void publish_binding(ObjectId id, std::shared_ptr<Content> content);
 
   // Run the installed settler if anything has arrived. Writer-thread, re-entrancy-guarded (the
   // settler edits this very document), and suppressed outright while a load or a settle is in

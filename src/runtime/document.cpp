@@ -81,6 +81,87 @@ void Document::CommitRelay::on_commit(JournalEntry entry) {
   d_doc->d_last_checkpoint_error.reset();
 }
 
+// Everything `add_content` does INSIDE its transaction, for the one content: mint the
+// record, register the `Editable` routing and capture its initial state onto the record,
+// and capture the construction identity + input edges. Shared verbatim with
+// `create_content_and_attach` so the two cannot drift -- the whole point of that verb is
+// that a placed object is created the same way, in one entry rather than two.
+ObjectId Document::mint_content(Model::Transaction& txn, Content& live, std::uint64_t kind) {
+  const ObjectId id = txn.add_content(kind);
+  if (Editable* editable = d_binding.bind(id, live)) {
+    const StateHandle initial = editable->capture();
+    if (initial.has_state()) {
+      txn.set_content_state(id, initial);
+    }
+  }
+  if (d_identity_capture) {
+    std::string kind_id;
+    std::string params;
+    if (d_identity_capture(live, kind, kind_id, params)) {
+      txn.set_content_identity(id, kind_id, params);
+    }
+  }
+  if (const std::span<const ContentRef> inputs = live.inputs(); !inputs.empty()) {
+    const std::shared_ptr<const ContentBindings> snap = d_contents.load();
+    std::vector<ObjectId> input_ids;
+    input_ids.reserve(inputs.size());
+    for (const ContentRef in : inputs) {
+      ObjectId found{};
+      for (const auto& [bound_id, bound] : *snap) {
+        if (bound.get() == in) {
+          found = bound_id;
+          break;
+        }
+      }
+      input_ids.push_back(found);
+    }
+    txn.set_content_inputs(id, input_ids);
+  }
+  return id;
+}
+
+// Publish one id->Content row copy-on-write (issue #10). The whole-map copy is near-free
+// -- the values are `shared_ptr` and this is rare -- and it is what lets `resolve()` and
+// `for_each_content()` be lock-free pinned reads on the render thread.
+void Document::publish_binding(ObjectId id, std::shared_ptr<Content> content) {
+  auto next = std::make_shared<ContentBindings>(*d_contents.load());
+  next->insert_or_assign(id, std::move(content));
+  d_contents.store(std::move(next));
+}
+
+Document::Placed Document::create_content_and_attach(std::shared_ptr<Content> content,
+                                                     std::uint64_t kind, ObjectId composition,
+                                                     const Affine& transform, double opacity) {
+  // ONE transaction for the whole user-visible action (issue #20): the content record,
+  // its placement, and its membership publish together, so there is no intermediate
+  // version in which a content exists attached to nothing and no second undo press.
+  Content& live = *content;
+  auto txn = begin();
+  const ObjectId id = mint_content(txn, live, kind);
+  const ObjectId layer = txn.add_layer(id, transform, opacity);
+  txn.attach_layer(composition, layer);
+  txn.commit();
+  publish_binding(id, std::move(content));
+  return Placed{id, layer};
+}
+
+void Document::remove_contents(std::span<const Removal> removals) {
+  if (removals.empty()) {
+    return; // nothing to publish, so no version and no journal entry
+  }
+  auto txn = begin();
+  for (const Removal& r : removals) {
+    txn.detach_layer(r.composition, r.layer);
+    txn.remove(r.layer);
+    txn.remove(r.content);
+  }
+  txn.commit();
+  // Binding rows are RETAINED, exactly as the single-object `remove_content` retains
+  // them and for the same reason: each erased record's deferred `StateHandle` release is
+  // routed to the content's binding row when the record is finally reclaimed, and
+  // dropping the row now would strand that release.
+}
+
 ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t kind) {
   // Mint a versioned ContentRecord (kind id + inert StateHandle) as a top-level
   // DocState entry, published as one new version -- exactly like every other

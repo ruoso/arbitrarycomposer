@@ -102,6 +102,40 @@ struct KindBinder {
   void (*detach)(Content& content) noexcept;
 };
 
+// One field of a kind's INSERT SCHEMA (issue #21): what a host must collect from the
+// user to build a valid `ContentConfig` for this kind.
+struct KindInsertField {
+  enum class Type { Integer, Number, Text };
+
+  std::string name;            // "width", "red" -- the label a host shows
+  Type type{Type::Number};     // how to collect it
+  std::string default_value{}; // pre-filled; also what an omitted field means
+  std::optional<double> min{}; // inclusive, numeric fields only
+  std::optional<double> max{}; // inclusive, numeric fields only
+  std::string unit{};          // "px", "s" -- display only, never parsed
+};
+
+// What a kind advertises so a host can build an insert dialog for it without knowing
+// the kind (issue #21).
+//
+// `Registry` already advertises everything needed to USE a kind -- factory, metadata,
+// codec, binder, state walker -- and nothing describing what the factory's config
+// string MEANS. `ContentConfig` is an opaque `string_view` and each kind's grammar
+// lives only in that kind's implementation, so a host offering "insert a cell of kind
+// X" had to hardcode a per-kind grammar table: `org.arbc.raster` is "<w>x<h>",
+// `org.arbc.solid` is "r,g,b,a", and a plugin kind could be listed in the menu but not
+// inserted with anything other than an empty or guessed config -- precisely the case
+// the plugin seam exists to serve.
+//
+// `assemble` turns the collected values, in `fields` order, into the config string,
+// so the GRAMMAR stays the kind's own secret: a host renders fields and hands back
+// strings, and never learns that solid's separator is a comma. Errors are values, as
+// everywhere on this boundary.
+struct KindInsertSchema {
+  std::vector<KindInsertField> fields;
+  std::function<expected<std::string, std::string>(std::span<const std::string> values)> assemble;
+};
+
 // A per-kind state-slab reachability walker (model.persistent_state_walk_hook,
 // issue #5). On a workspace fast-reopen the model's recovery walk collects every
 // reachable non-inert content `StateHandle` but cannot descend a kind-owned state
@@ -143,7 +177,8 @@ public:
   add(std::string_view id, ContentFactory factory, KindMetadata metadata = {},
       std::optional<KindCodec> codec = std::nullopt,
       std::optional<KindBinder> binder = std::nullopt,
-      std::optional<KindStateWalker> state_walker = std::nullopt);
+      std::optional<KindStateWalker> state_walker = std::nullopt,
+      std::optional<KindInsertSchema> insert_schema = std::nullopt);
 
   // Look up a factory by id; nullptr if absent.
   const ContentFactory* factory(std::string_view id) const;
@@ -163,6 +198,12 @@ public:
   // with no walker). Read lock-free post-load, exactly as `factory` (doc 03:267-270).
   const KindStateWalker* state_walker(std::string_view id) const;
 
+  // Look up the kind's insert schema by id (issue #21); nullptr if the kind is absent
+  // or registered without one -- in which case a host falls back to a raw config text
+  // box, exactly as it must today. Registered on the SAME atomic `add` as the factory,
+  // so a plugin cannot describe another kind's config after the fact.
+  const KindInsertSchema* insert_schema(std::string_view id) const;
+
   // Number of registered kinds.
   std::size_t size() const noexcept { return d_entries.size(); }
 
@@ -180,6 +221,7 @@ private:
     std::optional<KindCodec> codec;
     std::optional<KindBinder> binder;
     std::optional<KindStateWalker> state_walker;
+    std::optional<KindInsertSchema> insert_schema;
   };
   const Entry* find(std::string_view id) const;
 

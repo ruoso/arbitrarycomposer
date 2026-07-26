@@ -13,11 +13,11 @@ const Registry::Entry* Registry::find(std::string_view id) const {
   return nullptr;
 }
 
-expected<std::monostate, RegistryError> Registry::add(std::string_view id, ContentFactory factory,
-                                                      KindMetadata metadata,
-                                                      std::optional<KindCodec> codec,
-                                                      std::optional<KindBinder> binder,
-                                                      std::optional<KindStateWalker> state_walker) {
+expected<std::monostate, RegistryError>
+Registry::add(std::string_view id, ContentFactory factory, KindMetadata metadata,
+              std::optional<KindCodec> codec, std::optional<KindBinder> binder,
+              std::optional<KindStateWalker> state_walker,
+              std::optional<KindInsertSchema> insert_schema) {
   if (id.empty()) {
     return unexpected<RegistryError>(RegistryError::EmptyId);
   }
@@ -27,8 +27,13 @@ expected<std::monostate, RegistryError> Registry::add(std::string_view id, Conte
     return unexpected<RegistryError>(RegistryError::DuplicateId);
   }
   d_entries.push_back(Entry{std::string(id), std::move(factory), std::move(metadata),
-                            std::move(codec), binder, state_walker});
+                            std::move(codec), binder, state_walker, std::move(insert_schema)});
   return std::monostate{};
+}
+
+const KindInsertSchema* Registry::insert_schema(std::string_view id) const {
+  const Entry* entry = find(id);
+  return (entry != nullptr && entry->insert_schema.has_value()) ? &*entry->insert_schema : nullptr;
 }
 
 const ContentFactory* Registry::factory(std::string_view id) const {
