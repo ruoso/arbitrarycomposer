@@ -85,21 +85,46 @@ std::vector<std::string_view> split(std::string_view text, char separator) {
   }
 }
 
-// "r,g,b,a" -- premultiplied working-space floats, unbounded extent.
+// "r,g,b,a"           -- premultiplied working-space floats, UNBOUNDED extent
+// "r,g,b,a,x,y,w,h"    -- the same, bounded to the local-space rect (x, y, w, h)
+//
+// `SolidContent` has always taken an optional extent (`solid_content.hpp:23`), and
+// the four-field grammar could not express it -- so a solid created through the
+// `Registry`, which is the only route a host has that does not bypass the factory to
+// name the concrete type, was ALWAYS unbounded. An unbounded solid fills everywhere,
+// which makes its layer transform a no-op: placing, scaling or rotating it changes
+// nothing on screen, and one built-in kind silently opted out of "everything placed is
+// an affine you can drag" (issue #22).
+//
+// Four fields keep their exact meaning, so every existing document, config string and
+// test is unaffected; the extent is a strictly additive tail.
 Made make_solid(ContentConfig config) {
   const std::vector<std::string_view> fields = split(config, ',');
-  if (fields.size() != 4) {
-    return made_error("org.arbc.solid: expected \"r,g,b,a\"");
+  if (fields.size() != 4 && fields.size() != 8) {
+    return made_error("org.arbc.solid: expected \"r,g,b,a\" or \"r,g,b,a,x,y,w,h\"");
   }
-  std::array<double, 4> channel{};
-  for (std::size_t i = 0; i < channel.size(); ++i) {
-    if (!parse_double(fields[i], channel[i])) {
-      return made_error("org.arbc.solid: channel is not a number");
+  std::array<double, 8> value{};
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    if (!parse_double(fields[i], value[i])) {
+      return made_error("org.arbc.solid: field is not a number");
     }
   }
-  return std::unique_ptr<Content>(std::make_unique<SolidContent>(
-      Rgba{static_cast<float>(channel[0]), static_cast<float>(channel[1]),
-           static_cast<float>(channel[2]), static_cast<float>(channel[3])}));
+  const Rgba color{static_cast<float>(value[0]), static_cast<float>(value[1]),
+                   static_cast<float>(value[2]), static_cast<float>(value[3])};
+  if (fields.size() == 4) {
+    return std::unique_ptr<Content>(std::make_unique<SolidContent>(color));
+  }
+  // (x, y, w, h) rather than (x0, y0, x1, y1): an origin plus a size is what a host's
+  // insert UI collects, and it cannot express an inverted rect by typo. A non-positive
+  // size is refused as a value -- an empty extent renders nothing, which would look
+  // exactly like the unbounded-solid bug this grammar exists to fix.
+  const double w = value[6];
+  const double h = value[7];
+  if (!(w > 0.0) || !(h > 0.0)) {
+    return made_error("org.arbc.solid: bounds width and height must be positive");
+  }
+  return std::unique_ptr<Content>(
+      std::make_unique<SolidContent>(color, Rect{value[4], value[5], value[4] + w, value[5] + h}));
 }
 
 // "<frequency_hz>,<amplitude>".

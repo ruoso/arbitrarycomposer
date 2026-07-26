@@ -17,6 +17,7 @@
 // so it lives here rather than in src/runtime/t/. The `TempPath` recipe is
 // tests/document_workspace_checkpoint.t.cpp's.
 
+#include <arbc/backend_cpu/cpu_backend.hpp>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/ids.hpp>
 #include <arbc/base/transform.hpp>
@@ -25,13 +26,16 @@
 #include <arbc/kind_solid/solid_content.hpp>
 #include <arbc/media/surface_format.hpp>
 #include <arbc/runtime/document.hpp>
+#include <arbc/runtime/offline.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -280,3 +284,52 @@ TEST_CASE("a reopened workspace's records resolve again once the host rebinds th
 }
 
 #endif // ARBC_HAS_WORKSPACE_FILES
+
+// enforces: 02-architecture#offline-frame-renders-exactly-no-degrade
+TEST_CASE("a caller-pinned batch of offline frames is coherent across one document state") {
+  // Issue #27: `render_offline` pinned per call, so an N-frame batch straddled any edit
+  // that landed mid-batch -- item 3 reflecting a document state item 1 did not, with no
+  // way for the host to ask for the same version twice. The host's only alternatives
+  // were blocking the writer for the whole batch (a frozen UI for the minutes a dozen
+  // 4K frames take) or a full serialize-and-reload snapshot per export.
+  arbc::CpuBackend backend;
+  Document doc;
+  const ObjectId comp = doc.add_composition(8.0, 8.0);
+  const ObjectId cid = doc.add_content(
+      std::make_shared<SolidContent>(Rgba{1.0F, 0.0F, 0.0F, 1.0F}, Rect{0.0, 0.0, 8.0, 8.0}), 1);
+  doc.attach_layer(comp, doc.add_layer(cid, arbc::Affine::identity()));
+
+  // The batch pins ONCE, up front -- the whole of the fix.
+  const arbc::DocStatePtr pinned = doc.pin();
+  const arbc::Viewport viewport{8, 8, arbc::Affine::identity(), comp};
+
+  const auto first = arbc::render_offline(doc, pinned, viewport, backend);
+  REQUIRE(first.has_value());
+
+  // An edit lands MID-BATCH, exactly as a user editing while an export runs would.
+  doc.attach_layer(
+      comp,
+      doc.add_layer(doc.add_content(std::make_shared<SolidContent>(Rgba{0.0F, 1.0F, 0.0F, 1.0F},
+                                                                   Rect{0.0, 0.0, 8.0, 8.0}),
+                                    1),
+                    arbc::Affine::identity()));
+
+  // The rest of the batch still renders the version the batch began with: byte-identical
+  // to the first frame, because they are frames of ONE document state.
+  const auto second = arbc::render_offline(doc, pinned, viewport, backend);
+  REQUIRE(second.has_value());
+  const std::span<const std::byte> a = (*first)->cpu_bytes();
+  const std::span<const std::byte> b = (*second)->cpu_bytes();
+  REQUIRE(a.size() == b.size());
+  CHECK(std::memcmp(a.data(), b.data(), a.size()) == 0);
+
+  // And the un-pinned overload sees the edit -- proving the pin is what held the batch
+  // still, not that the edit failed to land.
+  const auto current = arbc::render_offline(doc, viewport, backend);
+  REQUIRE(current.has_value());
+  const std::span<const std::byte> c = (*current)->cpu_bytes();
+  CHECK(std::memcmp(a.data(), c.data(), a.size()) != 0);
+
+  // A null pin is an error value, never a crash (doc 10).
+  CHECK_FALSE(arbc::render_offline(doc, arbc::DocStatePtr{}, viewport, backend).has_value());
+}

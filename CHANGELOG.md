@@ -43,6 +43,26 @@ surface moves freely, and changelog honesty is what makes that safe
   entry. **`Document::recovered_content_state()`** ships with it, making the
   issue-#5 recovery-replay trio reachable from the public host surface.
 
+- **`render_offline` takes a caller-held pin**, so a batch export is coherent
+  across one document state (issue #27):
+  `render_offline(document, pinned, viewport, backend)` beside the
+  pin-per-call overload. An N-frame export previously pinned N times, so an edit
+  landing mid-batch made item 3 reflect a state item 1 did not, and the host had
+  no way to ask for the same version twice — its alternatives being to block the
+  writer for the whole batch or to serialize-and-reload a private copy. A
+  `DocStatePtr` retains its version, so there is no "that revision is gone" error
+  case a revision number would have needed.
+
+- **`org.arbc.solid`'s factory grammar admits the extent the type always
+  supported** (issue #22): `"r,g,b,a,x,y,w,h"` alongside the unchanged
+  `"r,g,b,a"`. A solid built through the `Registry` — the only route a host has
+  that does not bypass the factory to name the concrete type — was always
+  unbounded, and an unbounded solid fills everywhere, so its layer transform was
+  a no-op: placing, scaling or rotating one changed nothing on screen. Origin
+  plus size, so a typo cannot express an inverted rect; a non-positive size is an
+  error value, since an empty extent renders nothing and would look exactly like
+  the bug this fixes.
+
 - **`Document::set_content_identity_capture`**, the hook `add_content` runs to
   capture the above; `arbc::codec_identity_capture(codecs, bridge)` is the
   ready-made codec-backed one. A host that installs none keeps the previous record
@@ -50,6 +70,15 @@ surface moves freely, and changelog honesty is what makes that safe
   as unreconstructed.
 
 ### Changed
+
+- **`Content::bounds()` is documented ANY THREAD**, and a kind whose extent
+  changes under an edit must publish the change atomically (issue #23). No
+  behaviour changed: the compositor already calls it on the frame thread once per
+  visible layer per frame while the writer may be committing, and a host
+  hit-testing through the lock-free `pin()` seam already did the same — it was
+  safe only because every shipped kind fixes its extent at construction, which is
+  an accident of the kind set rather than a contract. Kind authors with a mutable
+  extent are now on notice; every other kind is unaffected (design doc 03).
 
 - **Tiles are now rendered over their cell plus an apron, and paint only the
   cell.** Every tile surface grew from `256²` to `264²` device pixels and covers

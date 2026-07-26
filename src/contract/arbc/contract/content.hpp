@@ -499,6 +499,30 @@ public:
   Content& operator=(const Content&) = delete;
   virtual ~Content();
 
+  // The content's local-space extent, or `nullopt` for unbounded content (doc
+  // 01:68-77).
+  //
+  // ANY THREAD, and a kind with a MUTABLE extent must publish it atomically (issue
+  // #23). This is not a new freedom; it is the guarantee the shipped code already
+  // depends on. The compositor calls `bounds()` on the frame thread, once per visible
+  // layer per frame, to cull the layer and to enforce its extent in the tile
+  // (`tile_planning.cpp`, `pull_service.cpp`, `nested_content.cpp`), while the writer
+  // thread may be committing an edit; and a host following the prescribed architecture
+  // hit-tests off the writer thread through the lock-free `pin()` seam. It has been
+  // safe so far only because every shipped kind's extent is fixed at construction --
+  // an accident of the current kind set, not a contract.
+  //
+  // So the rule is stated in the direction the system already relies on. A kind whose
+  // extent CHANGES under an `Editable` edit -- a raster that grows when resampled, an
+  // image sequence that re-reads its extent -- must make the change visible as a single
+  // atomic publication, the way `pin()` and the binding table already do (issue #10);
+  // returning a torn or half-updated rect is a kind bug, not a caller error. Nothing is
+  // asked of the overwhelming majority of kinds, whose extent is a member written once
+  // in the constructor and never again.
+  //
+  // The alternative -- writer-thread-only -- was rejected: it would force every host to
+  // cache extents at publish time and re-source its hit-testing, to buy a freedom no
+  // kind has yet used.
   virtual std::optional<Rect> bounds() const = 0;
   virtual Stability stability() const = 0;
   // The temporal analog of `bounds()` (doc 03:77-78, doc 11:67-79): the local

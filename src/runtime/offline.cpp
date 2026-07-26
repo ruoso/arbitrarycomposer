@@ -10,7 +10,18 @@ namespace arbc {
 
 expected<std::unique_ptr<Surface>, SurfaceError>
 render_offline(const Document& document, const Viewport& viewport, Backend& backend) {
-  const DocStatePtr state = document.pin();
+  // Pin per call: correct for a one-shot render, and the reason the caller-pinned
+  // overload below exists for a BATCH (issue #27).
+  return render_offline(document, document.pin(), viewport, backend);
+}
+
+expected<std::unique_ptr<Surface>, SurfaceError> render_offline(const Document& document,
+                                                                const DocStatePtr& state,
+                                                                const Viewport& viewport,
+                                                                Backend& backend) {
+  if (!state) {
+    return unexpected(SurfaceError::UnsupportedFormat);
+  }
   // The frame target carries the composition's configured working space (doc 07
   // rule 2), read from the pinned version -- no longer a hardcode. A backend that
   // cannot store that format returns a SurfaceError (capability honesty, doc 07):

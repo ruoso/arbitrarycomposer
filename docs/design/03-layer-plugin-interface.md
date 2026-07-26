@@ -200,6 +200,21 @@ Points worth calling out:
   the worker pool and the per-content queue — is runtime policy (doc 02's
   threading model, doc 17:60, `runtime.threading`); the *declaration* lives
   here on the contract so the core can route without a downcast.
+- **Metadata is readable from ANY THREAD; a kind with mutable metadata must
+  publish it atomically.** `bounds()` in particular: the compositor reads it
+  on the frame thread once per visible layer per frame — to cull the layer and
+  to enforce its extent in the tile — while the writer thread may be
+  committing an edit, and a host following the prescribed architecture
+  hit-tests off the writer thread through the lock-free `pin()` seam. Every
+  kind shipped so far fixes its extent at construction, so this has been safe
+  by accident rather than by contract. A kind whose extent *changes* under an
+  edit — a raster that grows when resampled, an image sequence that re-reads
+  its extent — must make the change visible as one atomic publication, the way
+  the document's own version pointer and binding table already do. Returning a
+  torn rect is a kind bug, not a caller error. The alternative, confining
+  metadata reads to the writer thread, would force every host to cache extents
+  at publish time and re-source its hit-testing, to buy a freedom no kind has
+  yet used.
 - **`cancelled()`** lets long renders abandon work when the user has zoomed
   elsewhere. Cooperative, best-effort.
 - **`Exact` requests may take unbounded time but must be faithful.** A

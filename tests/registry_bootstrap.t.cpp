@@ -143,6 +143,37 @@ TEST_CASE("config-constructible factories build content matching the config") {
     CHECK(content.stability() == Stability::Static);
   }
 
+  SECTION("solid: r,g,b,a,x,y,w,h names the extent SolidContent always supported") {
+    // Issue #22: the four-field grammar could not express the optional extent the type
+    // takes, so a solid built through the `Registry` -- the only route a host has that
+    // does not bypass the factory to name the concrete type -- was ALWAYS unbounded.
+    // An unbounded solid fills everywhere, which makes its layer transform a no-op:
+    // placing, scaling or rotating it changed nothing on screen.
+    const Made made = make(registry, SolidContent::kind_id, "0.5,0.25,0.125,1,10,20,30,40");
+    REQUIRE(made.has_value());
+    Content& content = **made;
+    const auto* solid = dynamic_cast<const SolidContent*>(&content);
+    REQUIRE(solid != nullptr);
+    CHECK(solid->color().r == 0.5F); // the colour fields keep their meaning exactly
+    REQUIRE(content.bounds().has_value());
+    // Origin plus SIZE, not two corners: it is what an insert UI collects, and a typo
+    // cannot express an inverted rect.
+    CHECK(content.bounds()->x0 == 10.0);
+    CHECK(content.bounds()->y0 == 20.0);
+    CHECK(content.bounds()->x1 == 40.0);
+    CHECK(content.bounds()->y1 == 60.0);
+  }
+
+  SECTION("solid: a malformed or empty extent is an error value, never a silent default") {
+    // Wrong field count, and a non-positive size. The latter matters because an empty
+    // extent renders nothing, which on screen is indistinguishable from the unbounded
+    // bug this grammar exists to fix -- so it is refused rather than accepted.
+    CHECK_FALSE(make(registry, SolidContent::kind_id, "1,1,1,1,0,0").has_value());
+    CHECK_FALSE(make(registry, SolidContent::kind_id, "1,1,1,1,0,0,0,10").has_value());
+    CHECK_FALSE(make(registry, SolidContent::kind_id, "1,1,1,1,0,0,10,-1").has_value());
+    CHECK_FALSE(make(registry, SolidContent::kind_id, "1,1,1,1,0,0,x,10").has_value());
+  }
+
   SECTION("tone: frequency_hz,amplitude; audio facet present, empty visual bounds") {
     const Made made = make(registry, ToneContent::kind_id, "440,0.5");
     REQUIRE(made.has_value());
