@@ -19,6 +19,34 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-28
+
+The first release that is not purely additive, and the two breaks are worth
+naming up front: the untiled `arbc::render_frame` free function is **removed**,
+and `arbc::Backend` gains a `composite_windowed` virtual every implementation
+must supply. Both fall out of the same change — there is now ONE render path.
+`render_offline` renders through the tiled driver the interactive loop and the
+sequence exporter already ran, and `Exactness` is the only axis that separates
+them. The unification is what this release's rendering fixes ride on: the tile
+apron that makes an opaque fill opaque across tile boundaries at any fractional
+composite phase, the in-tile extent enforcement that antialiases a bounded
+layer's edge instead of clipping it to whole device pixels, and magnification
+that belongs to the kind rather than the compositor (issue #18).
+
+The other half is host surface. A reopened workspace gives back its *content*
+and not just its record graph (#19), with `rebind_content` as the repair seam
+for what reconstruction cannot cover; one user-visible action is one journal
+entry (#20); a kind describes its own insert config, so a host can offer
+"insert a cell of kind X" without a hardcoded per-kind grammar (#21); a History
+panel can draw the journal off the writer thread (#24); a viewport's settle
+hook installs apart from its lifetime (#25); and a batch export can hold one
+pin across every frame (#27). Removed content is now reclaimed once its removal
+leaves history (#26), so an insert/delete session stops growing monotonically.
+
+Every 0.3.0 call that neither implements `arbc::Backend` nor names
+`render_frame` compiles and behaves unchanged; the plugin surface stays
+same-toolchain and unversioned (the C ABI still arrives at 1.0).
+
 ### Added
 
 - **A workspace reopen gives back its CONTENT, not just its record graph**
