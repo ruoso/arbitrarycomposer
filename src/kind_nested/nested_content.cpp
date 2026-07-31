@@ -325,9 +325,32 @@ std::optional<TimeRange> NestedContent::time_extent() const {
 std::span<const ContentRef> NestedContent::inputs() const {
   const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
   ensure_memo();
-  // The storage is stable for the pinned revision (a fixed pin never re-keys);
-  // the span views the memo's own vector in declared order (content.hpp:287-289).
+  // The span views the memo's own vector in declared order (content.hpp:287-289).
+  //
+  // The storage is stable only for as long as the memo does not re-key, and the
+  // memo is keyed by (snapshot, revision) -- so it is stable for a caller that
+  // holds the ONE pin bound to this content, and NOT stable against a second
+  // binder. A `bind_operators` walk on another thread (a host sampling one cell
+  // through `render_offline` while the interactive renderer draws, say) attaches
+  // its own pin, `ensure_memo` re-keys, and this vector is freed under whoever
+  // still holds the span. That is why every walk that can run concurrently with a
+  // bind goes through `visit_inputs` instead; this accessor stays for the
+  // single-threaded callers (the serializer's save traversal, the kind's own
+  // tests) whose spans cannot be outlived that way.
   return d_memo.input_refs;
+}
+
+void NestedContent::visit_inputs(InputVisitor visit, void* context) const {
+  // The whole point of the override: the memo lock spans BOTH `ensure_memo` and
+  // the reader's traversal, so a concurrent re-key on another thread cannot free
+  // `input_refs` mid-walk. The lock is shared and recursive (see `memo_mutex`), so
+  // a visitor that recurses into a neighbour's metadata -- which the damage and
+  // aggregate-revision walks do -- re-enters it safely rather than deadlocking.
+  const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
+  ensure_memo();
+  for (std::size_t i = 0; i < d_memo.input_refs.size(); ++i) {
+    visit(context, i, d_memo.input_refs[i]);
+  }
 }
 
 Rect NestedContent::map_input_damage(std::size_t input, const Rect& rect) const {

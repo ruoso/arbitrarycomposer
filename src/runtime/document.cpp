@@ -122,7 +122,13 @@ ObjectId Document::mint_content(Model::Transaction& txn, Content& live, std::uin
       txn.set_content_identity(id, kind_id, params);
     }
   }
-  if (const std::span<const ContentRef> inputs = live.inputs(); !inputs.empty()) {
+  // Copy the edges out under the kind's storage lock (`for_each_input`) before the
+  // id mapping below, which is a linear scan of the bindings map and has no business
+  // running under that lock. This is the writer thread, concurrent with the render
+  // thread's own walks, so the unlocked span form would be a read of freed storage.
+  std::vector<ContentRef> inputs;
+  for_each_input(live, [&](std::size_t /*index*/, ContentRef in) { inputs.push_back(in); });
+  if (!inputs.empty()) {
     const std::shared_ptr<const ContentBindings> snap = d_contents.load();
     std::vector<ObjectId> input_ids;
     input_ids.reserve(inputs.size());
@@ -236,8 +242,12 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
   // knows them by. An operator is constructed over contents the host already added, so
   // those bindings are present; an input that is somehow unbound contributes an invalid
   // id, which reconstruction then reports rather than silently dropping (an operator
-  // rebuilt with a missing input is wrong content, not partial content).
-  if (const std::span<const ContentRef> inputs = live.inputs(); !inputs.empty()) {
+  // rebuilt with a missing input is wrong content, not partial content). Copied out
+  // under the kind's storage lock (`for_each_input`) for the same reason as
+  // `mint_content` above: this is the writer thread, racing the render thread's walks.
+  std::vector<ContentRef> inputs;
+  for_each_input(live, [&](std::size_t /*index*/, ContentRef in) { inputs.push_back(in); });
+  if (!inputs.empty()) {
     const std::shared_ptr<const ContentBindings> snap = d_contents.load();
     std::vector<ObjectId> input_ids;
     input_ids.reserve(inputs.size());

@@ -19,6 +19,49 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-31
+
+A memory-safety fix for one specific, entirely reachable host shape: two
+`bind_operators` walks over one document that are not serialized with each
+other. That is not an exotic arrangement — it is what a host does the moment it
+samples a single cell offline (`render_offline` over a pinned document, on its
+UI thread) while the interactive renderer is drawing that same document on the
+frame thread. Purely additive: one new `Content` virtual with a correct default,
+so a kind that does not override it is unaffected and every 0.4.0 call compiles
+and behaves unchanged.
+
+### Fixed
+
+- **Concurrent binds no longer free a nested content's input edges under a
+  graph walk.** `NestedContent::inputs()` returns a span into storage owned by
+  its metadata memo, and released the memo lock before returning it. The memo is
+  keyed by (snapshot, revision), so the storage is stable only for the single
+  binder holding that pin: a second binder attaching a *different* pin re-keys
+  the memo, rebuilds the edge vector, and frees the buffer under a walker still
+  iterating the span. The compositor's damage router and aggregate-revision fold
+  both hold one across a recursive descent, so this reproduced as a **data race
+  and a heap-use-after-free** in `map_damage_up` — a use-after-free, not a stale
+  read. The core's structural walks now read edges through the new
+  `Content::visit_inputs` (below); `inputs()` is unchanged for the
+  single-threaded callers (the serializer's save traversal, kinds' own tests).
+
+### Added
+
+- **`Content::visit_inputs(InputVisitor, void*)`** — the any-thread form of
+  `inputs()`, visiting the input edges in declared order with the kind's own
+  storage lock held across the visit, plus the `for_each_input(content, fn)`
+  helper that wraps a lambda into it so call sites still read as a range-for.
+  The visitor is a function pointer and an opaque context rather than a
+  `std::function`, so the per-frame damage and aggregate-revision walks stay
+  allocation-free. The default implementation iterates `inputs()`, which is
+  correct for every kind whose edge storage is a fixed member array (fade,
+  crossfade, placeholder) — only `org.arbc.nested`, whose edges are a projection
+  of its child composition's membership and are therefore rebuilt on every memo
+  re-key, needs the override. A kind outside this repository inherits the
+  default and is unaffected. The visit is a metadata-only walk: it may recurse
+  (the memo lock is recursive by design) but must never block on a pull or issue
+  a render, which is what keeps the lock off the pixel path.
+
 ## [0.4.0] - 2026-07-28
 
 The first release that is not purely additive, and the two breaks are worth

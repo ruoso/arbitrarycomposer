@@ -215,6 +215,25 @@ Points worth calling out:
   metadata reads to the writer thread, would force every host to cache extents
   at publish time and re-source its hit-testing, to buy a freedom no kind has
   yet used.
+- **Input EDGES are read through `visit_inputs()` from any thread; the raw
+  `inputs()` span is single-threaded.** The span `inputs()` returns views the
+  kind's own storage, and a kind whose edges are *derived* rather than stored —
+  `org.arbc.nested`, whose edges are a projection of its child composition's
+  membership at the pinned revision — rebuilds that storage whenever its memo
+  re-keys. A re-key is provoked by any `bind_operators` walk, and binds are not
+  serialized with each other: a host that samples one cell offline
+  (`render_offline` over a pinned document, on its UI thread) binds the whole
+  document while the interactive renderer is drawing it on the frame thread.
+  The second binder's re-key then frees the edge vector under the first walker's
+  span — a use-after-free, not a stale read. So the core's structural walks
+  (damage routing, the aggregate-revision fold, identity resolution, the binder's
+  own descent) go through `visit_inputs()`, which holds whatever lock the kind
+  guards its storage with across the visit; `inputs()` remains for
+  single-threaded callers such as the serializer's save traversal. A kind with
+  fixed edge storage — a `std::array` member, as fade and crossfade have —
+  inherits the default and pays nothing. The visit is a metadata-only walk: it
+  may recurse (the locks are recursive by design) but must never block on a pull
+  or issue a render, which is what keeps the lock off the pixel path.
 - **`cancelled()`** lets long renders abandon work when the user has zoomed
   elsewhere. Cooperative, best-effort.
 - **`Exact` requests may take unbounded time but must be faithful.** A

@@ -686,6 +686,15 @@ target_link_libraries(arbc_nested_concurrency_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_nested_concurrency_t)
 
+# org.arbc.nested input-edge concurrency stress (tier-6, tsan lane): the core's
+# structural `inputs()` walks (damage routing, aggregate revision) stay race-free
+# while a SECOND binder re-pins the same nested content and rebuilds its memo-backed
+# edge storage underneath -- the `Content::visit_inputs` locked-visit contract.
+add_executable(arbc_nested_bind_walk_concurrency_t nested_bind_walk_concurrency.t.cpp)
+target_link_libraries(arbc_nested_bind_walk_concurrency_t
+                      PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_nested_bind_walk_concurrency_t)
+
 # Raster editable-state runtime binding (kind_raster + runtime): a raster added to
 # a Document journals/budgets/undoes with no manual sink wiring. Cross-component,
 # so it lives here rather than src/runtime/t/ -- doc 17 keeps `runtime` free of a

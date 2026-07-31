@@ -167,6 +167,13 @@ public:
   // the core folds them for aggregate revision, cycle detection, and damage
   // routing. Non-empty (nested is a non-leaf operator).
   std::span<const ContentRef> inputs() const override;
+  // The thread-safe read of those same edges: the memo lock is HELD across the
+  // visit. Nested is the one kind that must override this, because its edge
+  // storage lives in the memo and is rebuilt whenever the memo re-keys -- and a
+  // re-key is provoked by any `bind_operators` walk, including one running on
+  // another thread against a different pin. The span `inputs()` returns dangles
+  // the instant that happens; visiting under the lock is what serializes the two.
+  void visit_inputs(InputVisitor visit, void* context) const override;
   // The child composition itself, surfaced to the core as graph structure (doc 08
   // Principle 7): the serializer walks it to reach in-document child compositions and
   // re-derives the core-owned `"composition"` reference from it on every save. Nested is

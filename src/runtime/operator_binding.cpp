@@ -158,7 +158,22 @@ OperatorBindingScope bind_operators(const Document& document, PullService& pull,
         }
       }
     }
-    for (const ContentRef in : c->inputs()) {
+    // SNAPSHOT the edges under the kind's storage lock (`for_each_input`), then
+    // recurse OUTSIDE it. This walk is the very thing that re-keys a nested memo,
+    // and a host can run a second bind (an offline sample through `render_offline`)
+    // while the renderer walks the same graph -- so reading the edges unlocked
+    // would race, and reading them from a span held ACROSS the recursion would let
+    // the recursion's own re-key free them underneath.
+    //
+    // Copied rather than visited-in-place -- unlike the compositor's metadata walks
+    // -- because the recursion below runs `try_attach` on every registered binder,
+    // including host PLUGIN binders whose code the library does not control. Calling
+    // out to a plugin while holding a shared library-global lock is a lock-order
+    // inversion waiting for the first plugin that takes a lock of its own. The copy
+    // is an operator's fan-in (small), once per content per bind, off the pixel path.
+    std::vector<ContentRef> edges;
+    for_each_input(*c, [&](std::size_t /*index*/, ContentRef in) { edges.push_back(in); });
+    for (const ContentRef in : edges) {
       walk(in);
     }
   };

@@ -623,7 +623,39 @@ public:
   // snapshot consistency, cycle detection, and damage routing (doc 13:48-51).
   // The returned span views the operator's own storage in declared order.
   // Default: an empty span -- leaf content is a graph leaf (doc 13:52).
+  //
+  // SINGLE-THREADED READS ONLY. The span views storage the content owns, and a
+  // kind whose input edges are MEMOIZED (nested, whose edges are a projection of
+  // its child composition's membership at the pinned revision) rebuilds that
+  // storage whenever the memo re-keys -- which a `bind_operators` walk on another
+  // thread provokes, freeing the buffer under a reader still holding the span.
+  // A caller that can run concurrently with a bind or a render walk must use
+  // `visit_inputs` instead, which reads the edges under whatever lock the kind
+  // guards its storage with.
   virtual std::span<const ContentRef> inputs() const { return {}; }
+
+  // The thread-safe form of `inputs()`: visit each input edge in declared order,
+  // with the kind's own storage lock (if it has one) HELD across the visit.
+  //
+  // The visitor is a plain function pointer plus an opaque context rather than a
+  // `std::function` so the seam stays allocation-free on the per-frame damage and
+  // aggregate-revision walks (`check_rt_safety`); `for_each_input` below wraps a
+  // lambda into it, so call sites read as an ordinary range-for.
+  //
+  // Default: iterate `inputs()` -- correct for every kind whose edge storage is a
+  // fixed member array (fade, crossfade, placeholder), which can never move under
+  // a reader. Nested overrides it because its storage is memo-backed.
+  //
+  // The visitor runs UNDER that lock, so it must stay a metadata-only walk: it may
+  // query neighbouring content metadata and recurse (the locks are shared and
+  // recursive by design), but it must never block on a pull or issue a render.
+  using InputVisitor = void (*)(void* context, std::size_t index, ContentRef input);
+  virtual void visit_inputs(InputVisitor visit, void* context) const {
+    const std::span<const ContentRef> ins = inputs();
+    for (std::size_t i = 0; i < ins.size(); ++i) {
+      visit(context, i, ins[i]);
+    }
+  }
 
   // A nested content's child composition (doc 05), the exact mirror of `inputs()`:
   // core-visible graph structure, but naming an `ObjectId` in the document model
@@ -733,6 +765,21 @@ public:
 protected:
   Content() = default;
 };
+
+// Visit `content`'s input edges in declared order, under the kind's own storage
+// lock -- the safe form of `for (const ContentRef in : content.inputs())` for any
+// walk that can run while another thread binds or renders the same graph.
+//
+// `fn` is invoked as `fn(index, input)`; `index` is the edge's position in
+// declared order, which is what `map_input_damage` and the identity index are
+// keyed by. The callable is taken BY VALUE so the trampoline has a non-const
+// object to address, and passed through as an opaque context, so the call
+// allocates nothing (a lambda closure is a stack temporary here).
+template <typename Fn> void for_each_input(const Content& content, Fn fn) {
+  content.visit_inputs([](void* context, std::size_t index,
+                          ContentRef input) { (*static_cast<Fn*>(context))(index, input); },
+                       static_cast<void*>(std::addressof(fn)));
+}
 
 // The abstract service through which an operator asks the core to render an
 // input, instead of calling `input->render()` directly (doc 13:69-89). A pull

@@ -47,11 +47,13 @@ std::uint64_t aggregate_revision(const Content* root,
     // everything the fold needs (order-independence, one visit per reachable node) and
     // destroys only the structured cancellation.
     acc += mix64(contribution(node));
-    for (const ContentRef input : node->inputs()) {
+    // Locked edge read (`for_each_input`): tile planning folds this per frame on
+    // the render thread, concurrently with any host-side bind.
+    for_each_input(*node, [&](std::size_t /*index*/, ContentRef input) {
       if (input != nullptr && visited.insert(input).second) {
         stack.push_back(input);
       }
-    }
+    });
   }
   return acc;
 }
@@ -79,11 +81,12 @@ std::optional<Rect> map_damage_up(const Content* node, const Content* damaged, c
     return std::nullopt; // budget backstop or cycle back-edge: contribute nothing
   }
   std::optional<Rect> result;
-  const std::span<const ContentRef> ins = node->inputs();
-  for (std::size_t i = 0; i < ins.size(); ++i) {
-    const ContentRef input = ins[i];
+  // `for_each_input`, not `inputs()`: this walk runs on the render thread while a
+  // host can be binding the same graph on another (`content.hpp` `visit_inputs`),
+  // and a memo-backed edge span would be freed under it mid-loop.
+  for_each_input(*node, [&](std::size_t i, ContentRef input) {
     if (input == nullptr) {
-      continue;
+      return;
     }
     const std::optional<Rect> sub =
         map_damage_up(input, damaged, rect, memo, on_stack, depth + 1, budget);
@@ -93,7 +96,7 @@ std::optional<Rect> map_damage_up(const Content* node, const Content* damaged, c
       const Rect mapped = node->map_input_damage(i, *sub);
       result = result.has_value() ? rect_union(*result, mapped) : mapped;
     }
-  }
+  });
   on_stack.erase(node);
   memo.emplace(node, result);
   return result;
@@ -153,14 +156,23 @@ IdentityResolution resolve_identity(const Content* content, const RenderRequest&
       res.terminal = nullptr;
       return res;
     }
-    const std::span<const ContentRef> ins = node->inputs();
+    // The identity edge, read under the kind's storage lock (`for_each_input`) --
+    // this resolution runs per request on the render thread, so an unlocked span
+    // could be freed by a concurrent bind between the bounds check and the follow.
     const std::size_t idx = *id;
-    if (idx >= ins.size() || ins[idx] == nullptr) {
-      // A broken identity index is not a usable pass-through: render this node.
+    ContentRef selected = nullptr;
+    for_each_input(*node, [&](std::size_t i, ContentRef input) {
+      if (i == idx) {
+        selected = input;
+      }
+    });
+    if (selected == nullptr) {
+      // A broken identity index (out of range, or a null edge) is not a usable
+      // pass-through: render this node.
       res.terminal = node;
       return res;
     }
-    node = ins[idx];
+    node = selected;
     ++depth;
   }
 }

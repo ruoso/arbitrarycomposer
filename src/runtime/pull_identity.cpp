@@ -59,9 +59,9 @@ build_pull_identity_map(const DocRoot& state, const std::function<Content*(Objec
   while (!frontier.empty()) {
     const Content* const c = frontier.back();
     frontier.pop_back();
-    for (const ContentRef child : c->inputs()) {
-      reach(child);
-    }
+    // Locked edge read (`for_each_input`): the identity map is rebuilt per bind,
+    // and a bind can run while another thread renders the same graph.
+    for_each_input(*c, [&](std::size_t /*index*/, ContentRef child) { reach(child); });
     // Descend the nesting boundary STRUCTURALLY, the same seam the serializer walks
     // (`writer.cpp:290`): a content naming a child composition (`composition_ref()`)
     // reaches that composition's member contents even while it is UNATTACHED and its
