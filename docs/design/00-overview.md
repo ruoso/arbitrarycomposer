@@ -230,7 +230,10 @@ Initially-open questions, now decided in their own docs:
   cache probe/insert and descent-depth accounting are render-thread-
   confined, so dispatching one to a worker is a data race on the tile
   cache — not a performance trade-off. Operators therefore render inline on
-  the driver thread and only leaves fan out. This bounds what the
+  the driver thread and only leaves fan out, and a *nesting* content counts as
+  an operator on its child edge rather than on its current inputs — an empty
+  child would otherwise make it look like a leaf while it still holds the
+  frame's borrowed pin. This bounds what the
   concurrency story can ever be (the parallelism lives at the leaves, and
   an operator-heavy scene parallelizes through its leaves, not its spine),
   so it is structural rather than advisory: the rule lives in one runtime

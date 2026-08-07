@@ -324,6 +324,9 @@ public:
       if (is_operator(content)) {
         d_operators.push_back(content);
       }
+      if (content != nullptr && content->composition_ref().valid()) {
+        ++d_nestings;
+      }
     }
     return content != nullptr && !content->render_thread_safe();
   }
@@ -336,11 +339,19 @@ public:
     const std::lock_guard<std::mutex> lock(d_mutex);
     return d_operators.size();
   }
+  // Admissions of a NESTING content (issue #29). Counted apart from `operator_admissions`
+  // precisely because `is_operator` can be FALSE for one: a nested content's inputs are a
+  // projection of its child's membership, so an empty child makes it look like a leaf.
+  std::size_t nesting_admissions() const {
+    const std::lock_guard<std::mutex> lock(d_mutex);
+    return d_nestings;
+  }
 
 private:
   mutable std::mutex d_mutex;
   std::size_t d_admissions{0};
   std::vector<const Content*> d_operators;
+  std::size_t d_nestings{0};
 };
 
 WorkerPoolConfig spied_pool(std::size_t workers, DispatchSpy& spy) {
@@ -588,6 +599,49 @@ TEST_CASE("the interactive driver fans out only leaves: fade, crossfade and nest
   CHECK(spy.admissions() > 0);
   REQUIRE(scene.leaf_renders() > 0);
   CHECK(scene.leaf_renders_off(driver) > 0);
+}
+
+// enforces: 02-architecture#worker-dispatch-is-leaf-only
+TEST_CASE("a nesting content over an EMPTY child never reaches a worker") {
+  // Issue #29. `org.arbc.nested` projects its input edges from its child composition's
+  // membership, so a child that is empty, not yet loaded, or unresolvable leaves
+  // `inputs()` empty -- and the leaf/operator test alone then says "leaf" and hands the
+  // render to a worker. The render dereferences the FRAME's borrowed `DocRoot`, which the
+  // per-frame `OperatorBindingScope` nulls at frame end while dropping the pin that kept
+  // the snapshot alive; a worker task outlives the frame by design, because a pending
+  // tile's arrival is what re-drives the next one. That is a data race and a
+  // use-after-free, and it is reachable from any host whose canvas shows a nested cell
+  // whose child is momentarily empty -- an overview panel, a freshly-placed nesting, a
+  // deferred external child.
+  //
+  // The witness is admission: the pool is the only thing in the tree that moves a render
+  // off the calling thread, and a content gets there only through `submit`.
+  CpuBackend backend;
+  const std::thread::id driver = std::this_thread::get_id();
+
+  auto leaf = std::make_shared<RecordingLeaf>(Rgba{0.25F, 0.50F, 0.75F, 1.0F});
+  Document doc;
+  const ObjectId root = doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  // The child composition exists but holds NO layers: `inputs()` is empty, exactly as it
+  // is for a child that has not arrived yet.
+  const ObjectId child =
+      doc.add_composition(static_cast<double>(k_dim), static_cast<double>(k_dim));
+  auto nested = std::make_shared<NestedContent>(child);
+  doc.attach_layer(root, doc.add_layer(doc.add_content(leaf), Affine::identity()));
+  doc.attach_layer(root, doc.add_layer(doc.add_content(nested), Affine::identity()));
+  REQUIRE(nested->inputs().empty()); // the premise: it LOOKS like a leaf
+
+  DispatchSpy spy;
+  InteractiveDriver view(doc, backend, spied_pool(4, spy), InteractiveRenderer::Clock{});
+  view.drive_to_quiescence(k_frame_budget);
+
+  // Never admitted -- so never rendered against a pin the frame is about to release.
+  CHECK(spy.nesting_admissions() == 0);
+  CHECK(spy.operator_admissions() == 0);
+  // And not vacuous: the pool really was used, by the leaf beside it.
+  CHECK(spy.admissions() > 0);
+  REQUIRE(leaf->log().renders() > 0);
+  CHECK(leaf->log().off_thread(driver) > 0);
 }
 
 // --- A2: byte-identical across worker counts, on both drivers --------------------

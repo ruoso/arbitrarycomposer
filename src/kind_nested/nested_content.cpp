@@ -31,8 +31,10 @@ namespace {
 //
 // Cheap enough to share: it covers only the metadata memo walk -- id lookups in the
 // pinned immutable snapshot, the lockless side-map resolve, and the children's memos.
-// `render`/`render_audio`, the heavy paths and the only ones that block on a pull, never
-// take it.
+// `render`/`render_audio`, the heavy paths and the only ones that block on a pull, take it
+// only to SNAPSHOT the borrowed services at entry (issue #29) and release it before the
+// first pull -- so the "held across a pull" hazard this lock is shaped around is untouched,
+// and an unsynchronized read of a pointer a detach is concurrently nulling is gone.
 std::recursive_mutex& memo_mutex() {
   static std::recursive_mutex s_mutex;
   return s_mutex;
@@ -525,9 +527,28 @@ bool NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
 
 std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
                                                   std::shared_ptr<RenderCompletion>) {
-  assert(d_pull != nullptr && d_backend != nullptr && d_doc != nullptr &&
-         "NestedContent rendered before attach");
-  Backend& backend = *d_backend;
+  // The borrowed services are read ONCE, under the same lock `attach`/`detach` take, and
+  // used through the locals for the rest of the render (issue #29). The binder detaches at
+  // the end of every frame, and reading the members unsynchronized while it does is a data
+  // race whose payload is a pointer this function immediately dereferences. Snapshotting
+  // under the lock removes the race; what keeps the SNAPSHOT valid is that a nesting content
+  // renders inline on the driver thread, inside the frame that bound it
+  // (`worker_dispatch.cpp`) -- these two facts are one fix, not two.
+  const DocRoot* doc = nullptr;
+  Backend* backend_ptr = nullptr;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
+    doc = d_doc;
+    backend_ptr = d_backend;
+  }
+  if (doc == nullptr || backend_ptr == nullptr || d_pull == nullptr) {
+    // Unbound. Unreachable through either shipped driver -- both bind before they render --
+    // so this is the fail-safe rather than a supported mode: report INEXACT so nothing
+    // caches these pixels as a fresh answer, and composite nothing at all.
+    assert(false && "NestedContent rendered before attach");
+    return RenderResult{request.scale, false};
+  }
+  Backend& backend = *backend_ptr;
   Surface& target = request.target;
 
   // The composed result is an ordinary content's pixels (doc 05:77-84): clear the
@@ -535,7 +556,7 @@ std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
   // descent is synchronous; the leaf renders are what the service may defer.
   backend.clear(target, 0.0F, 0.0F, 0.0F, 0.0F);
 
-  const CompositionRecord* comp = d_doc->find_composition(d_child);
+  const CompositionRecord* comp = doc->find_composition(d_child);
   if (comp == nullptr) {
     // Unresolved / not-yet-loaded child (doc 05:50-52): the placeholder is empty
     // pixels. Honest: no crash, no wrong pixels.
@@ -596,8 +617,8 @@ std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
   // to a worker leaves this render a transient placeholder, so the tile it produces
   // must NOT be cached as fresh-exact.
   bool exact = true;
-  d_doc->for_each_layer_in(d_child, [&](ObjectId layer_id) {
-    const LayerRecord* layer = d_doc->find_layer(layer_id);
+  doc->for_each_layer_in(d_child, [&](ObjectId layer_id) {
+    const LayerRecord* layer = doc->find_layer(layer_id);
     if (layer == nullptr) {
       return;
     }
@@ -873,8 +894,16 @@ std::optional<AudioResult>
 NestedContent::NestedAudioFacet::render_audio(const AudioRequest& request,
                                               std::shared_ptr<AudioCompletion>) {
   NestedContent& self = *d_owner;
-  assert(self.d_pull != nullptr && self.d_doc != nullptr &&
-         "NestedContent audio rendered before attach");
+  // The pinned snapshot, read once under the lock `attach`/`detach` take, exactly as the
+  // visual `render` reads it (issue #29). The audio facet's binding scope is long-lived
+  // where the frame loop's is per-frame, so this side was never the reported race -- but
+  // the member is written by another thread's detach either way, and one unsynchronized
+  // read of a pointer this function then dereferences is one too many.
+  const DocRoot* doc = nullptr;
+  {
+    const std::lock_guard<std::recursive_mutex> lock(memo_mutex());
+    doc = self.d_doc;
+  }
 
   // The composed block is an ordinary content's samples (doc 12:202-208): start
   // from silence, then additively mix each audible child layer. Settles INLINE --
@@ -886,7 +915,14 @@ NestedContent::NestedAudioFacet::render_audio(const AudioRequest& request,
     request.target.samples[i] = 0.0F;
   }
 
-  const CompositionRecord* comp = self.d_doc->find_composition(self.d_child);
+  if (doc == nullptr || self.d_pull == nullptr) {
+    // Unbound: the fail-safe, unreachable through either shipped monitor. A silent block
+    // is already this facet's honest answer for a child it cannot see.
+    assert(false && "NestedContent audio rendered before attach");
+    return AudioResult{request.sample_rate, true};
+  }
+
+  const CompositionRecord* comp = doc->find_composition(self.d_child);
   if (comp == nullptr) {
     // Unresolved / not-yet-loaded child (doc 05:50-52): a silent block, honest.
     return AudioResult{request.sample_rate, true};
@@ -902,8 +938,8 @@ NestedContent::NestedAudioFacet::render_audio(const AudioRequest& request,
   // -- membership read from the frozen `DocRoot`, so a Droste audio scene sees the
   // same revisions on every visit within the frame (the audio revision space is
   // the visual one, doc 12:208).
-  self.d_doc->for_each_layer_in(self.d_child, [&](ObjectId layer_id) {
-    const LayerRecord* layer = self.d_doc->find_layer(layer_id);
+  doc->for_each_layer_in(self.d_child, [&](ObjectId layer_id) {
+    const LayerRecord* layer = doc->find_layer(layer_id);
     if (layer == nullptr) {
       return;
     }

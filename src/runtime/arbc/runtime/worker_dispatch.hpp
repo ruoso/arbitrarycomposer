@@ -27,6 +27,20 @@ namespace arbc {
 //     single-writer invariant the pool relies on ("workers never touch the
 //     cache", `worker_pool.hpp:37-40`). TSan confirmed that race was latent for
 //     all three operator kinds (`kinds.nested_runtime_binding`).
+//   * A NESTING content (a valid `composition_ref()`) is rendered inline TOO, whether or
+//     not it currently has inputs (issue #29). `org.arbc.nested` projects its input edges
+//     from its child composition's membership, so a child that is empty, not yet loaded,
+//     or unresolvable makes `inputs()` empty and the leaf/operator test alone says "leaf"
+//     -- and the render then runs on a worker while holding the FRAME's borrowed
+//     services. Those services die with the frame: `OperatorBindingScope`'s destructor
+//     nulls the pinned `DocRoot` the nesting render dereferences and drops the pin that
+//     kept the snapshot alive, and a worker task outlives the frame by design (a pending
+//     tile's arrival is what re-drives the next one). That is a data race and a
+//     use-after-free, reachable from any host rendering a nested cell whose child is
+//     momentarily empty. The structural CHILD EDGE is the honest test, exactly as it
+//     already is for damage routing's operator-layer memo (`interactive.cpp`), which
+//     admits a nesting layer on `composition_ref()` for the same reason: pre-attach, a
+//     nesting content's `inputs()` say nothing about what it is.
 //
 // This is a policy layered ABOVE the pool, not a property of it: `WorkerPool`
 // stays a general `contract`-only executor with its own claims. It is also not a

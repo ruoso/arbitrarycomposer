@@ -19,6 +19,23 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+### Fixed
+
+- **A nested composition whose child is empty no longer renders on a worker thread**
+  (issue #29). `org.arbc.nested` projects its input edges from its child composition's
+  membership, so a child that is empty, not yet loaded, or unresolvable left `inputs()`
+  empty — and the leaf-only dispatch rule, which classifies on inputs alone, handed the
+  render to the pool. That render dereferences the frame's borrowed `DocRoot` pin, which
+  the per-frame `OperatorBindingScope` nulls and releases at frame end, while a worker
+  task outlives the frame by design: a **data race and a use-after-free**, reachable
+  from any host whose canvas shows a nested cell with a momentarily empty child (an
+  overview panel, a freshly-placed nesting, a deferred external child). Dispatch now
+  classifies a nesting content on its structural child edge (`composition_ref()`)
+  beside its inputs — the same edge damage routing's operator-layer memo already admits
+  a nesting layer on. `NestedContent::render` and `render_audio` additionally snapshot
+  their borrowed services once under the lock `attach`/`detach` take, releasing it
+  before any pull, so no unsynchronized read of a concurrently-nulled pointer remains.
+
 ### Added
 
 - **`install_external_composition(doc, bridge, registry, reference, base_uri, ...)`**

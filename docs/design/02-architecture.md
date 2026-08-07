@@ -415,7 +415,17 @@ current-revision entries qualify.
   `PullService` to fetch those inputs, and a pull probes and inserts into
   the tile cache and walks the service's own descent depth, both of which
   are render-thread-confined. Only *leaf* content, whose render touches
-  nothing but its own caller-owned target surface, fans out. This is what
+  nothing but its own caller-owned target surface, fans out.
+
+  **A nesting content is inline whether or not it currently has inputs.** Its
+  input edges are a *projection* of its child composition's membership, so an
+  empty, not-yet-loaded, or unresolvable child leaves `inputs()` empty and the
+  leaf/operator test alone would call it a leaf — while its render still
+  dereferences the frame's borrowed document pin, which the per-frame binding
+  scope nulls and releases at frame end, and a worker task outlives the frame by
+  design. So the classification reads the structural *child edge* beside the
+  inputs, exactly as damage routing's operator-layer memo already does. This is
+  what
   makes "workers never touch the cache" true rather than aspirational, and
   it costs no parallelism worth having: the leaves are where the pixels are
   made. The rule is not a convention each driver re-derives — it is
