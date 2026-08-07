@@ -244,6 +244,77 @@ TEST_CASE("a document that references ITSELF resolves to its own root compositio
   CHECK(nested.ref() == "a.arbc");
 }
 
+// enforces: 05-recursive-composition#external-child-installs-into-an-open-document
+TEST_CASE("an external composition installs into an OPEN document and the cell resolves at once") {
+  // Issue #32: the loader was reachable only at deserialize time, so a nested reference a user
+  // created DURING a session could not resolve until the project was reopened -- a host that
+  // lets a user drop one `.arbc` into another minted the cell and rendered the placeholder box
+  // until save-and-reopen, with the child sitting right there on disk.
+  MemoryAssetSource source;
+  source.put("mem/child.arbc", k_leaf);
+
+  // A plain open document with no external reference at all -- the state a session is in
+  // before the user drops anything.
+  Document doc;
+  KindBridge bridge;
+  const Registry registry;
+  REQUIRE(arbc::load_document(
+      R"({"arbc":{"format":1},"composition":{"canvas":[0,0,16,16],"layers":[]}})", doc, bridge,
+      registry, "mem/parent.arbc", &source));
+
+  // The drop: the host installs the child on its writer thread, then places the cell that
+  // names it. The source is the one the OPEN recorded -- the host does not pass it again.
+  const ObjectId child =
+      arbc::install_external_composition(doc, bridge, registry, "child.arbc", "mem/parent.arbc");
+  REQUIRE(child.valid());
+  CHECK(source.requests() == 1);
+
+  // RESOLVED, not pending: the id names a real composition, holding the child's own layer --
+  // so the cell the host places next composites the child on the very next frame.
+  {
+    const DocStatePtr pin = doc.pin();
+    REQUIRE(pin->find_composition(child) != nullptr);
+    std::size_t layers = 0;
+    pin->for_each_layer_in(child, [&layers](ObjectId) { ++layers; });
+    CHECK(layers == 1);
+  }
+
+  // The placement is the host's own edit, and it binds the id the install returned.
+  const ObjectId cell = doc.add_content(std::make_shared<NestedContent>(child, "child.arbc"),
+                                        bridge.intern(NestedContent::kind_id, "1"));
+  {
+    const DocStatePtr pin = doc.pin();
+    ObjectId root;
+    const arbc::CompositionRecord* rec = nullptr;
+    REQUIRE(pin->find_first_composition(root, rec));
+    doc.attach_layer(root, doc.add_layer(cell, arbc::Affine::identity(), 1.0));
+  }
+  CHECK(nested_at(doc, 0).child() == child);
+
+  // Document-wide dedup, durable across calls: the same file spelled differently returns THAT
+  // composition and fetches nothing further -- doc 05's shared-content semantics surviving a
+  // live placement exactly as they survive persistence.
+  CHECK(arbc::install_external_composition(doc, bridge, registry, "./child.arbc",
+                                           "mem/parent.arbc") == child);
+  CHECK(source.requests() == 1);
+
+  // Unavailable stays a value, not an error: the host still places a cell, which renders the
+  // placeholder and re-saves its `ref` verbatim.
+  CHECK_FALSE(
+      arbc::install_external_composition(doc, bridge, registry, "missing.arbc", "mem/parent.arbc")
+          .valid());
+
+  // And the session's own placement round-trips: saving now and reloading gives the shape the
+  // user was ALREADY looking at, rather than one a reopen had to repair.
+  const std::string saved = save(doc, bridge);
+  CHECK(saved.find(R"("ref": "child.arbc")") != std::string::npos);
+  Document reloaded;
+  KindBridge reload_bridge;
+  REQUIRE(
+      arbc::load_document(saved, reloaded, reload_bridge, registry, "mem/parent.arbc", &source));
+  CHECK(nested_at(reloaded, 0).child().valid());
+}
+
 // enforces: 05-recursive-composition#unresolvable-external-ref-renders-placeholder
 TEST_CASE("an unresolvable external reference is unavailable, not a read error") {
   const std::string parent = nesting_doc("missing.arbc");

@@ -95,6 +95,19 @@ by a load-time depth cap; exceeding it, like a missing or unreadable file,
 makes the reference **unavailable** — the embedding content keeps its `ref`
 and renders the placeholder.
 
+**A reference created during a session resolves during that session.** The
+loader is reachable from an already-open document, not only from a load, so a
+host that lets a user drop one project into another installs the child then and
+there and the new cell renders it on the next frame — rather than showing the
+placeholder until the project is saved and reopened. It is the same install a
+load and a late arrival drive, with the same three outcomes (resolved, pending,
+unavailable) and the same document-wide dedup: the resolved-identity map belongs
+to the document, so a live install of a URI the document already holds returns
+that composition and parses nothing. The install is **not undoable** — the child
+arriving is not the user's edit. The *placement* is, and it is the host's own
+transaction; undoing it leaves the child installed and ready, so a redo re-binds
+it without re-reading the file (which may by then have moved).
+
 Persistence follows the same split (doc 08): an in-document child
 serializes into the document-level `compositions` table, the nested
 content naming it by a core-owned id — the core reads the reference off

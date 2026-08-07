@@ -951,4 +951,39 @@ std::size_t settle_external_loads(Document& doc, KindBridge& bridge, const Regis
   return installed;
 }
 
+ObjectId install_external_composition(Document& doc, KindBridge& bridge, const Registry& registry,
+                                      std::string_view reference, std::string base_uri,
+                                      AssetSource* assets, RasterTileStore* tiles) {
+  // Same publish contract as `settle_external_loads`, and for the same reason: this opens
+  // model transactions and commits them, so it must originate from the document's one writer
+  // identity (doc 15 § Thread rules).
+  assert(doc.on_writer_thread() &&
+         "install_external_composition publishes: writer-thread only (doc 15 Thread rules)");
+  if (reference.empty()) {
+    return ObjectId{};
+  }
+
+  const std::shared_ptr<PendingExternalLoads>& state = DocumentSerializeAccess::pending(doc);
+  // A source passed here becomes the document's source, exactly as a load's does: a child that
+  // lands late may hold external refs of its own, and the settle that installs it fetches them
+  // through whatever the document last recorded. Passing none reuses what the open recorded.
+  if (assets != nullptr) {
+    state->set_source(assets);
+  }
+
+  // Not undoable (see the header): the child arriving is not the user's edit. Suspending the
+  // COMMIT sink is the same mechanism a load and a settle use; the damage sink stays installed,
+  // so a commit still flushes.
+  const InstallScope no_journal(doc);
+
+  LoadContext ctx{std::move(base_uri)};
+  ctx.set_asset_source(state->source());
+  // The loader is per-call, as everywhere else -- what is durable is the identity MAP, which
+  // the assembly borrows off the document. So this call dedups against the open document's
+  // whole history: its own root (seeded at load), every child the load installed, and every
+  // child an earlier call to this function installed.
+  LoadAssembly assembly(doc, bridge, registry, tiles, nullptr);
+  return assembly.loader().load(ctx, reference);
+}
+
 } // namespace arbc

@@ -313,4 +313,50 @@ load_document(std::string_view bytes, Document& doc, KindBridge& bridge, const R
 ARBC_API std::size_t settle_external_loads(Document& doc, KindBridge& bridge,
                                            const Registry& registry);
 
+// Install the external composition `reference` names into an ALREADY-OPEN document, and
+// return the child composition's `ObjectId` (issue #32). WRITER-THREAD ONLY.
+//
+// The loader that turns a `params.ref` into a child composition was reachable only at
+// deserialize time -- it is `LoadContext`-scoped, and a `LoadContext` belongs to one load. So a
+// nested reference a user created DURING a session could not resolve until the project was
+// reopened: a host that lets a user drop one `.arbc` into another minted the cell, and the
+// cell rendered the doc-05 placeholder box until save-and-reopen, even though the child was
+// sitting right there on disk. This is the seam that was missing, and it is the SAME machinery
+// a load and a settle drive -- not a second install path to keep in agreement with them.
+//
+// `reference` is authored, resolved against `base_uri` exactly as a load resolves a
+// `params.ref` (doc 08 Principle 3), so a host passes the same relative URI it will write into
+// the nested content's params and the project stays relocatable. `assets` defaults to the
+// source the document's own load recorded -- a host that opened the document through
+// `load_document` with its `FilesystemAssetSource` need not pass one again -- and an
+// explicitly-passed source replaces it for subsequent settles too.
+//
+// THREE outcomes, exactly as `ExternalCompositionLoader::load` has:
+//
+//  - RESOLVED: a valid id naming an installed `CompositionRecord`. The host binds it into an
+//    `org.arbc.nested` content and the cell renders the child on the very next frame.
+//  - UNAVAILABLE (`ObjectId{}`): no source, a source that answered absence, bytes that do not
+//    parse, or a depth-cap overrun. Not an error -- the host still places the cell, which
+//    renders the placeholder, and the reference survives the round trip.
+//  - PENDING: a valid id naming no record YET, because a deferring source has not answered.
+//    That is the doc-05 placeholder at the render layer, and `settle_external_loads` installs
+//    it when the bytes land, damaging the embedding content so the frame after replaces it.
+//
+// DEDUP IS DOCUMENT-WIDE and durable: the resolved-identity map lives on the `Document`, so
+// installing a URI the document already loaded -- at open time or by an earlier call -- returns
+// THAT id and parses nothing again. Two cells referencing one file share one child composition
+// and one set of warm tile caches, which is doc 05's shared-content semantics surviving a live
+// placement as it already survived persistence. A document referencing ITSELF dedups to its own
+// root for the same reason.
+//
+// NOT UNDOABLE, and deliberately: the install is the child arriving, not the user's edit. The
+// user's edit is the placement the host commits in its own transaction, and that transaction is
+// what an undo reverts -- leaving the child composition installed and ready, so a redo re-binds
+// it with no second parse. An install folded into the undo stack would instead have to re-load
+// the file on every redo, and would resolve differently if it had moved.
+ARBC_API ObjectId install_external_composition(Document& doc, KindBridge& bridge,
+                                               const Registry& registry, std::string_view reference,
+                                               std::string base_uri, AssetSource* assets = nullptr,
+                                               RasterTileStore* tiles = nullptr);
+
 } // namespace arbc

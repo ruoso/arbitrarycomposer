@@ -21,6 +21,21 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ### Added
 
+- **`install_external_composition(doc, bridge, registry, reference, base_uri, ...)`**
+  (issue #32) — the seam that installs an external composition into an ALREADY-OPEN
+  document. `ExternalCompositionLoader` was `LoadContext`-scoped and therefore
+  reachable only at deserialize time, so a nested reference a user created during a
+  session could not resolve until the project was reopened: a host that lets a user
+  drop one `.arbc` into another minted the cell and rendered the placeholder box, with
+  the child sitting right there on disk. It drives the same machinery a load and a
+  late arrival do — the same three outcomes (resolved / pending / unavailable, the
+  last a value and not an error), the same writer-thread rule, and the same
+  document-wide durable dedup, so installing a URI the document already holds returns
+  that composition and parses nothing. Not undoable, deliberately: the child arriving
+  is not the user's edit, the *placement* is, so an undo of the placement leaves the
+  child installed and a redo re-binds it without re-reading a file that may have moved.
+  `assets` defaults to the source the document's own load recorded.
+
 - **`HostViewport::attach_damage_sink()` / `detach_damage_sink()`, and
   `Config::install_damage_sink`** (issue #28) — the successor to `#25`'s settler
   split, and the half that actually unblocks it. With only the settler deferrable a
