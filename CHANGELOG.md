@@ -42,6 +42,17 @@ surface moves freely, and changelog honesty is what makes that safe
   picker; one that does not distinguish it collects the field exactly as an
   `Integer` and stays correct — the type narrows presentation, never parsing.
 
+- **The `Resampleable` facet and `Content::resampleable()`** (issue #31) — a generic
+  content-resample verb, so a host can ask a content to grow its working grid
+  ("resample to crisp" past a cell's detail floor) without naming a concrete kind or
+  owning the upsampling itself. The discovery half carries as much as the verb: a
+  painted `org.arbc.raster` returns the facet, a referenced `org.arbc.image` keeps the
+  `nullptr` default, and a host greys the action with an honest reason having named no
+  kind. Transactional like `RasterContent::paint` — one call, one journal entry,
+  undoable, `ObjectId` preserved — and its pixels are byte-identical to what a render
+  at that density produces, so there is one sampling policy rather than two.
+  `RasterContent` implements it; `RasterStore::resample` is the store-level verb.
+
 - **Asset GC sees project-owned image blobs** (issue #30) — `GcRoots`,
   `collect_referenced_assets`, `sweep_asset_store`, three defaulted `AssetReaper`
   virtuals (`list_asset_uris` / `asset_size` / `remove_asset`), the pure
@@ -58,6 +69,12 @@ surface moves freely, and changelog honesty is what makes that safe
   failing to recognise a live reference is data loss.
 
 ### Changed
+
+- **`RasterContent::bounds()` is derived from its live tile table** rather than cached
+  at construction (issue #31). The working grid is no longer fixed for the object's
+  lifetime, and a cached extent would be both stale after a resample and a data race
+  against the render thread; the store publishes its base under the same lock every
+  render already takes, so extent and pixels cannot disagree.
 
 - **A malformed `params.source` now fails the GC mark walk** (issue #30), where the
   image codec's *load* path still treats it leniently as absent. Leniency on a read

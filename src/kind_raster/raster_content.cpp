@@ -548,6 +548,63 @@ CoverageSampler round_dab(double cx, double cy, double inner_radius, double oute
   };
 }
 
+std::optional<StateHandle> RasterStore::resample(StateHandle base, int width, int height) {
+  if (width < 1 || height < 1) {
+    return std::nullopt;
+  }
+  TileTablePtr src = resolve(base);
+  if (!src) {
+    src = base_table();
+  }
+  if (!src) {
+    return std::nullopt;
+  }
+
+  const int edge = src->edge();
+  const int sw = src->width();
+  const int sh = src->height();
+  const int max_level = static_cast<int>(src->level_count()) - 1;
+  // The destination's density relative to the source, per axis. The MIP RUNG is chosen off the
+  // smaller of the two (`level_for_scale` takes one scale), which is the conservative pick: a
+  // rung chosen for the denser axis would alias along the sparser one, and the extra taps a
+  // finer rung costs are the cheaper mistake.
+  const double scale_x = static_cast<double>(width) / static_cast<double>(sw);
+  const double scale_y = static_cast<double>(height) / static_cast<double>(sh);
+  const int level = level_for_scale(std::min(scale_x, scale_y), max_level);
+  const double ls = static_cast<double>(1 << level);
+  const std::size_t l = static_cast<std::size_t>(level);
+
+  const int tiles_x = tiles_across(width, edge);
+  const std::optional<StateHandle> built =
+      build_from_tiles(width, height, edge, [&](std::size_t index, std::span<float> dst) {
+        const int tx = static_cast<int>(index % static_cast<std::size_t>(tiles_x));
+        const int ty = static_cast<int>(index / static_cast<std::size_t>(tiles_x));
+        for (int iy = 0; iy < edge; ++iy) {
+          for (int ix = 0; ix < edge; ++ix) {
+            const int gx = tx * edge + ix;
+            const int gy = ty * edge + iy;
+            if (gx >= width || gy >= height) {
+              continue; // padding stays at the pre-zeroed value (unobservable: reads clamp)
+            }
+            // The destination pixel CENTER, mapped back into source pixels and then into the
+            // chosen rung -- the identical mapping `RasterContent::render` uses, so a resample
+            // and a render at the same density agree by construction rather than by review.
+            const double u = (static_cast<double>(gx) + 0.5) / scale_x / ls - 0.5;
+            const double v = (static_cast<double>(gy) + 0.5) / scale_y / ls - 0.5;
+            const int x0 = static_cast<int>(std::floor(u));
+            const int y0 = static_cast<int>(std::floor(v));
+            const auto fx = static_cast<float>(u - static_cast<double>(x0));
+            const auto fy = static_cast<float>(v - static_cast<double>(y0));
+            const WorkingPixel sample = sample_bicubic(
+                x0, y0, fx, fy, [&](int sx, int sy) { return src->pixel(l, sx, sy); });
+            put(dst.data(), edge, ix, iy, sample);
+          }
+        }
+        return true;
+      });
+  return built;
+}
+
 void RasterStore::retain_version(StateHandle handle) {
   if (!handle.has_state()) {
     return;
@@ -606,13 +663,11 @@ std::uint32_t RasterStore::version_refcount(StateHandle handle) const {
 
 // --- RasterContent ----------------------------------------------------------
 
-RasterContent::RasterContent(const DecodedImage& image, int tile_edge)
-    : d_bounds{0.0, 0.0, static_cast<double>(image.width), static_cast<double>(image.height)} {
+RasterContent::RasterContent(const DecodedImage& image, int tile_edge) {
   d_base = d_store.build(image, tile_edge);
 }
 
-RasterContent::RasterContent(int width, int height, int tile_edge, const TileFill& fill, bool& ok)
-    : d_bounds{0.0, 0.0, static_cast<double>(width), static_cast<double>(height)} {
+RasterContent::RasterContent(int width, int height, int tile_edge, const TileFill& fill, bool& ok) {
   const std::optional<StateHandle> built = d_store.build_from_tiles(width, height, tile_edge, fill);
   ok = built.has_value();
   d_base = ok ? *built : StateHandle{k_state_none};
@@ -633,7 +688,18 @@ std::unique_ptr<RasterContent> RasterContent::from_tiles(int width, int height, 
   return content;
 }
 
-std::optional<Rect> RasterContent::bounds() const { return d_bounds; }
+// DERIVED from the live base table rather than cached at construction (issue #31): the working
+// grid is no longer fixed for the object's lifetime, and a cached extent would be both stale
+// after a resample and a data race against the render thread reading it. The store's base is
+// published under its own mutex, which is the same lock every render already takes to resolve
+// the version it samples -- so extent and pixels can never disagree.
+std::optional<Rect> RasterContent::bounds() const {
+  const TileTablePtr table = d_store.base_table();
+  if (!table) {
+    return std::nullopt; // only reachable on a half-built content `from_tiles` is destroying
+  }
+  return Rect{0.0, 0.0, static_cast<double>(table->width()), static_cast<double>(table->height())};
+}
 
 Stability RasterContent::stability() const { return Stability::Static; }
 
@@ -766,6 +832,35 @@ void RasterContent::paint(Model::Transaction& txn, ObjectId self, const Rect& re
   txn.add_damage(dmg);
   d_base = after;
   d_store.set_base(d_store.resolve(after));
+}
+
+Resampleable::Grid RasterContent::working_grid() const {
+  const TileTablePtr table = d_store.base_table();
+  if (!table) {
+    return Grid{};
+  }
+  return Grid{table->width(), table->height()};
+}
+
+std::optional<Resampleable::Grid> RasterContent::resample(Model::Transaction& txn, ObjectId self,
+                                                          Grid target) {
+  const std::optional<StateHandle> after = d_store.resample(d_base, target.width, target.height);
+  if (!after) {
+    return std::nullopt; // declined: nothing interned, nothing published, no damage
+  }
+  // The same transactional discipline as `paint` -- one call, one journal entry -- and the same
+  // ordering: assign the state, then damage. The damage is the WHOLE new extent, because every
+  // pixel of a resampled grid is a different sample of the source; there is no touched-tile
+  // subset here the way there is for a dab.
+  txn.set_content_state(self, *after);
+  Damage dmg;
+  dmg.object = self;
+  dmg.rect = Rect{0.0, 0.0, static_cast<double>(target.width), static_cast<double>(target.height)};
+  dmg.range = TimeRange::all(); // a Static image's pixels change at every instant
+  txn.add_damage(dmg);
+  d_base = *after;
+  d_store.set_base(d_store.resolve(*after));
+  return target;
 }
 
 } // namespace arbc

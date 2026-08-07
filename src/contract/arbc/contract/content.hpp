@@ -479,6 +479,11 @@ protected:
   Editable() = default;
 };
 
+// The resample facet's interface (issue #31), declared in `arbc/contract/resampleable.hpp`.
+// Forward-declared here so the discovery virtual below costs a consumer nothing: the facet
+// header names `Model::Transaction`, and a content that never resamples should not pull it in.
+class Resampleable;
+
 // The layer contract (doc 03). Walking-skeleton subset: the audio facet lands
 // with its system. The operator-graph members below are null/identity defaults,
 // so leaf content is behaviourally unchanged.
@@ -617,6 +622,15 @@ public:
   // video are two facets of one content object, a clip's samples and pixels can
   // never drift under editing (doc 12:37-41).
   virtual AudioFacet* audio() { return nullptr; }
+
+  // The resample facet, or `nullptr` for content that cannot change its working grid
+  // (issue #31, `arbc/contract/resampleable.hpp`). The third null-default discovery virtual,
+  // and the DISCOVERY is half its value: a painted `org.arbc.raster` owns its pixels and
+  // returns non-null, while a referenced `org.arbc.image` is limited by its source file and
+  // keeps the default -- so a host offers "resample to crisp" and greys it out with an honest
+  // reason without naming a single kind. Declared with a forward-declared return type so a
+  // consumer that never resamples does not pay for the facet's header.
+  virtual Resampleable* resampleable() { return nullptr; }
 
   // --- operator graph (doc 13:39-67) ---
   // The operator's input edges, visible to the core for aggregate revisions,

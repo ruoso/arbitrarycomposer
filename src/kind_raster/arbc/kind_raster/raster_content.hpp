@@ -2,12 +2,13 @@
 
 #include <arbc/arbc_api.h>
 #include <arbc/contract/content.hpp>
-#include <arbc/media/pixel_traits.hpp>   // WorkingPixel, PixelTraits
-#include <arbc/media/surface_format.hpp> // SurfaceFormat
-#include <arbc/model/model.hpp>          // Model::Transaction
-#include <arbc/model/records.hpp>        // StateHandle, k_state_none
-#include <arbc/pool/big_block_pool.hpp>  // BigBlockPool, BlockSlotRef (doc 15 bulk pool)
-#include <arbc/pool/chunk_source.hpp>    // ChunkSource, AnonymousChunkSource
+#include <arbc/contract/resampleable.hpp> // Resampleable (the working-grid facet, issue #31)
+#include <arbc/media/pixel_traits.hpp>    // WorkingPixel, PixelTraits
+#include <arbc/media/surface_format.hpp>  // SurfaceFormat
+#include <arbc/model/model.hpp>           // Model::Transaction
+#include <arbc/model/records.hpp>         // StateHandle, k_state_none
+#include <arbc/pool/big_block_pool.hpp>   // BigBlockPool, BlockSlotRef (doc 15 bulk pool)
+#include <arbc/pool/chunk_source.hpp>     // ChunkSource, AnonymousChunkSource
 
 #include <cstddef>
 #include <cstdint>
@@ -248,6 +249,18 @@ public:
   StateHandle paint(StateHandle base, const Rect& region, const WorkingPixel& color,
                     Rect& touched_out);
 
+  // Resample the version `base` resolves to onto a `width x height` grid, returning a NEW
+  // interned version (issue #31). Unlike `paint` this shares NOTHING with its predecessor --
+  // every level-0 tile is a different lattice, so every tile is fresh -- and it is why the
+  // verb is a deliberate user action rather than something a frame does.
+  //
+  // The pixels are the SAME ones a render at the target density produces: the mip rung is
+  // chosen by `level_for_scale` and sampled with the interpolating Catmull-Rom tap, exactly as
+  // `RasterContent::render` does, so a resample introduces no second sampling policy to keep
+  // in agreement with the render path. `nullopt` for a non-positive extent, an unresolvable
+  // base, or a build that could not allocate -- and then nothing is interned.
+  std::optional<StateHandle> resample(StateHandle base, int width, int height);
+
   // StateRefSink seam (writer/drain-thread only, doc 14:173-176).
   void retain_version(StateHandle handle);
   void release_version(StateHandle handle);
@@ -294,7 +307,7 @@ private:
 // A visual-only decoded-buffer raster content (Content + Editable facets). Owns
 // its RasterStore and a live "base" version; render is a pure read of the pinned
 // (or base) version's immutable tiles.
-class ARBC_API RasterContent final : public Content, public Editable {
+class ARBC_API RasterContent final : public Content, public Editable, public Resampleable {
 public:
   explicit RasterContent(const DecodedImage& image, int tile_edge = k_default_tile_edge);
 
@@ -313,6 +326,11 @@ public:
   std::optional<RenderResult> render(const RenderRequest& request,
                                      std::shared_ptr<RenderCompletion> done) override;
   Editable* editable() override { return this; }
+  // A painted raster OWNS its pixels, so it can grow its own grid (issue #31) -- unlike a
+  // referenced `org.arbc.image`, which is limited by its source file and keeps the null
+  // default. That difference is exactly what a host reads to decide whether to offer the
+  // action or grey it out with an honest reason.
+  Resampleable* resampleable() override { return this; }
 
   // --- Editable ---
   StateHandle capture() override;
@@ -340,6 +358,14 @@ public:
              const CoverageSampler& coverage);
   void paint(Model::Transaction& txn, ObjectId self, const Rect& region, const WorkingPixel& color);
 
+  // --- Resampleable (issue #31) ---
+  // The same transactional discipline as `paint`: one call is one journal entry, undoable,
+  // with the `ObjectId` preserved. `bounds()` follows the new grid, because a raster's local
+  // space IS its pixels -- see the facet's own note on the layer transform a host must scale
+  // in the same transaction to keep the cell where the user put it.
+  Grid working_grid() const override;
+  std::optional<Grid> resample(Model::Transaction& txn, ObjectId self, Grid target) override;
+
   // The live base version handle (what an unpinned render reads).
   StateHandle base_handle() const { return d_base; }
   RasterStore& store() { return d_store; }
@@ -357,7 +383,6 @@ private:
   TileTablePtr resolve_for_render(StateHandle snapshot) const;
 
   RasterStore d_store;
-  Rect d_bounds;
   StateHandle d_base;
 };
 

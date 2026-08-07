@@ -98,6 +98,10 @@ public:
   virtual Editable* editable() { return nullptr; }   // document-state
                                                      //  editing (doc 14);
                                                      //  Live content omits
+  virtual Resampleable* resampleable() { return nullptr; }
+                                                     // change the working grid
+                                                     //  (below); source-limited
+                                                     //  content omits
 
   // --- operator graph (doc 13) ---
   // Content may consume other content (effects, nested compositions).
@@ -253,6 +257,39 @@ Points worth calling out:
   `Editable` facet with cheap structurally-shared state capture). The
   render contract itself only needs mutation to be *visible* (damage +
   revision) and rendering to be pure over the pinned state.
+
+### The resample facet
+
+One verb is generic rather than kind-typed, because a host genuinely cannot
+express it otherwise: **changing a content's working grid** — the pixel lattice
+its render samples and its edits land on. A host that tells the user "this cell
+is magnified past its detail floor" wants to offer "resample to crisp" next, and
+without a facet it would have to name `RasterContent`, own the upsampling itself,
+and keep the per-kind allowlist the `Registry` seam exists to abolish.
+
+`Resampleable` is the third optional facet, discovered exactly as `editable()`
+and `audio()` are. **The discovery is half of it.** A painted `org.arbc.raster`
+owns its pixels and returns a facet; a *referenced* `org.arbc.image` is limited by
+its source file and keeps the `nullptr` default — so a host greys the action with
+an honest reason having named no kind at all. It is the `Registry::insert_schema`
+pattern applied to a verb instead of a config grammar.
+
+The verb is **writer-thread and transactional**, shaped exactly like
+`RasterContent::paint`: the kind builds the new version, assigns it with
+`set_content_state`, and adds its own damage, so one call is one journal entry,
+undoable, with the `ObjectId` preserved. Two consequences are contract, not
+implementation detail:
+
+- **The content's local extent follows its grid.** A content's local space is its
+  own pixels and it knows nothing of the layer transform placing it, so it cannot
+  preserve its world footprint. It reports the grid it achieved, and a host that
+  wants the cell to stay put scales the layer transform by the ratio *in the same
+  transaction*.
+- **A resample's pixels are a render's pixels.** The kind resamples through the
+  same mapping and the same filter its own `render` uses at that density, so
+  "resample to crisp" cannot disagree with what the user was already looking at.
+  A kind that introduced a second sampling policy here would have two answers for
+  one image.
 
 ## Plugin mechanism
 
