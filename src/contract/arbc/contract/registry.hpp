@@ -104,8 +104,13 @@ struct KindBinder {
 
 // One field of a kind's INSERT SCHEMA (issue #21): what a host must collect from the
 // user to build a valid `ContentConfig` for this kind.
+// `Type::ObjectId` is a REFERENCE, not a quantity (issue #33): the collected value is
+// still a decimal string a host hands back through `assemble`, but a host that knows the
+// field names another object in the same document can offer a PICKER instead of a number
+// box. A host that does not distinguish it collects it exactly as an `Integer` and stays
+// correct -- the extra type narrows presentation, never parsing.
 struct KindInsertField {
-  enum class Type { Integer, Number, Text };
+  enum class Type { Integer, Number, Text, ObjectId };
 
   std::string name;            // "width", "red" -- the label a host shows
   Type type{Type::Number};     // how to collect it

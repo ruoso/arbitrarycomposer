@@ -19,6 +19,22 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+### Added
+
+- **`org.arbc.nested` advertises an insert schema** (issue #33) — one labelled
+  `child` field of the new `KindInsertField::Type::ObjectId`, with a `min` of 1 and
+  no default. It was the last config-constructible builtin without a schema, so a
+  host driving its insert dialog off `Registry::insert_schema` with no per-kind
+  allowlist had to render it as an unlabelled box holding a bare decimal. The new
+  type says the value NAMES another object, so a host can offer a composition
+  picker; one that does not distinguish it collects the field exactly as an
+  `Integer` and stays correct — the type narrows presentation, never parsing.
+
+### Changed
+
+- **`KindInsertField::Type` gained an `ObjectId` enumerator.** Additive, but a host
+  that switches exhaustively over the enum gains a case to handle.
+
 ## [0.4.1] - 2026-07-31
 
 A memory-safety fix for one specific, entirely reachable host shape: two

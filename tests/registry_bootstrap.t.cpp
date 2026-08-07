@@ -383,6 +383,26 @@ TEST_CASE("a kind's insert schema describes its config without the host knowing 
   CHECK(*raster_config == "64x32");
   CHECK(make(registry, RasterContent::kind_id, *raster_config).has_value());
 
+  // Nested advertises one REFERENCE field (issue #33): it was the last
+  // config-constructible builtin without a schema, so a host enumerating schemas with no
+  // per-kind allowlist showed it as an unlabelled box holding a bare decimal ObjectId.
+  const arbc::KindInsertSchema* const nested = registry.insert_schema(NestedContent::kind_id);
+  REQUIRE(nested != nullptr);
+  REQUIRE(nested->fields.size() == 1);
+  CHECK(nested->fields[0].type == arbc::KindInsertField::Type::ObjectId);
+  CHECK(nested->fields[0].min == 1.0);
+  // No default: no child id is valid in every document, so a pre-filled one would name
+  // some other document's object. The field must actually be collected -- and the kind's
+  // own factory, not the schema, is what says so.
+  CHECK(nested->fields[0].default_value.empty());
+  const auto uncollected = nested->assemble(std::vector<std::string>{""});
+  REQUIRE(uncollected.has_value());
+  CHECK_FALSE(make(registry, NestedContent::kind_id, *uncollected).has_value());
+  const auto nested_config = nested->assemble(std::vector<std::string>{"7"});
+  REQUIRE(nested_config.has_value());
+  CHECK(*nested_config == "7");
+  CHECK(make(registry, NestedContent::kind_id, *nested_config).has_value());
+
   // A kind that registers none is unaffected: the host falls back to a raw config text
   // box exactly as it must today. Operator kinds refuse config construction outright,
   // so they advertise nothing to collect.

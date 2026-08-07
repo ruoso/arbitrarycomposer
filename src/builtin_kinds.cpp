@@ -267,7 +267,18 @@ void register_builtin_kinds(Registry& registry) {
       CrossfadeContent::kind_id,
       [](ContentConfig) { return refuse_config_construction(CrossfadeContent::kind_id); },
       "Crossfade", k_crossfade_kind_version);
-  add(NestedContent::kind_id, make_nested, "Nested Composition", k_nested_kind_version);
+  // One labelled reference field, not an untyped box (issue #33): nested was the last
+  // config-constructible builtin with no schema, so a host driving its insert dialog off
+  // `insert_schema` with no per-kind allowlist dropped to a raw config box for exactly
+  // the kind whose config is hardest to guess. `Type::ObjectId` says the value NAMES a
+  // composition, so a host can offer a picker; the grammar -- a bare decimal -- stays the
+  // kind's own, and `joined` over a single field is that decimal unchanged. The default is
+  // EMPTY deliberately -- unlike an extent or a colour there is no child id that is valid
+  // in every document, so a pre-filled one would name some other document's object; the
+  // `min` of 1 is what says "some object must be chosen", and the factory refuses the
+  // empty string with its own message if a host submits the field uncollected.
+  add(NestedContent::kind_id, make_nested, "Nested Composition", k_nested_kind_version,
+      KindInsertSchema{{Field{"child", Type::ObjectId, "", 1.0, {}, {}}}, joined(',')});
 }
 
 } // namespace arbc
