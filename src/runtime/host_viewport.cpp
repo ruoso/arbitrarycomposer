@@ -57,17 +57,17 @@ HostViewport::HostViewport(InteractiveRenderer& renderer, Model& model, ContentR
       d_budget(config.budget), d_viewport(config.viewport), d_transport(config.transport_start),
       d_settle_loads(std::move(config.settle_external_loads)),
       d_loads_ready(std::move(config.external_loads_ready)) {
-  // Subscribe to model damage for this object's lifetime (Constraint 5, RAII). Two
-  // mutually exclusive attach paths (`runtime.damage_router` Constraint 4): with a
-  // router supplied, register `&d_sink` with it and hold the move-only
-  // `Registration` (the router owns the single `set_damage_sink` slot and fans out
-  // to this sink unchanged, `damage.hpp:74-78`); without one, keep the direct
-  // single-slot install this object has always used.
-  if (config.router != nullptr) {
-    d_router = config.router;
-    d_registration = d_router->register_sink(d_sink);
-  } else {
-    d_model.set_damage_sink(&d_sink);
+  // Subscribe to model damage (Constraint 5, RAII). Two mutually exclusive attach paths
+  // (`runtime.damage_router` Constraint 4): with a router supplied, register `&d_sink` with
+  // it and hold the move-only `Registration` (the router owns the single `set_damage_sink`
+  // slot and fans out to this sink unchanged, `damage.hpp:74-78`); without one, keep the
+  // direct single-slot install this object has always used. WHICH path is a property of the
+  // configuration and is recorded unconditionally; WHETHER the constructor performs the
+  // install is `install_damage_sink` (issue #28), so a host on a render thread can defer
+  // both writer-thread-only branches to `attach_damage_sink()`.
+  d_router = config.router;
+  if (config.install_damage_sink) {
+    attach_damage_sink();
   }
   // Seed the viewport anchor to the document's root composition when the host did
   // not pin one explicitly (compositor.root_composition_frame_walk, doc 05:28-36,
@@ -136,12 +136,42 @@ void HostViewport::detach_settler() noexcept {
   d_settle_owner = nullptr;
 }
 
-HostViewport::~HostViewport() {
-  // Router path: `d_registration`'s destructor unregisters from the router (which
-  // outlives this viewport). Direct path: release the model's single slot.
-  if (d_router == nullptr) {
+void HostViewport::attach_damage_sink() {
+  // Idempotent, exactly as `attach_settler` is: a second call registers nothing further, so
+  // a host may pair attach/detach loosely without a double registration the router would
+  // then deliver to twice.
+  if (d_sink_attached) {
+    return;
+  }
+  if (d_router != nullptr) {
+    d_registration = d_router->register_sink(d_sink);
+  } else {
+    d_model.set_damage_sink(&d_sink);
+  }
+  d_sink_attached = true;
+}
+
+void HostViewport::detach_damage_sink() noexcept {
+  if (!d_sink_attached) {
+    return;
+  }
+  if (d_router != nullptr) {
+    // Move-assigning an inert handle releases the live one (`DamageRouter::Registration`,
+    // modeled on `CacheHold`), so the unregister stays the token's own business.
+    d_registration = DamageRouter::Registration{};
+  } else {
     d_model.set_damage_sink(nullptr);
   }
+  d_sink_attached = false;
+}
+
+HostViewport::~HostViewport() {
+  // Release the damage-sink install, whichever path took it -- and nothing when a host that
+  // deferred the install never made one (issue #28). Router path: the registration token
+  // unregisters from the router (which outlives this viewport). Direct path: release the
+  // model's single slot. Both are writer-thread-only, so a host constructing off the writer
+  // thread detaches before destroying and this is then a no-op.
+  detach_damage_sink();
   // Release the auto-settle install (issue #13): the hook captures this viewport's binding, so
   // it must not outlive the viewport. The document decrements; the slot survives while another
   // viewport still holds an install.

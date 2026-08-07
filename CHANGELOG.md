@@ -21,6 +21,18 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ### Added
 
+- **`HostViewport::attach_damage_sink()` / `detach_damage_sink()`, and
+  `Config::install_damage_sink`** (issue #28) — the successor to `#25`'s settler
+  split, and the half that actually unblocks it. With only the settler deferrable a
+  host still could not construct a viewport off its writer thread: the constructor
+  reached `DamageRouter::register_sink`, which mutates an unsynchronized registrant
+  vector that the writer thread's concurrent flushes iterate. Both installs — the
+  router registration and the direct `Model::set_damage_sink` slot — are now
+  deferrable through one flag and one idempotent pair, so every writer-thread-only
+  mutation in a viewport's lifetime is reachable from a closure the host can post,
+  and construction and destruction can happen on the thread that owns the object.
+  The default stays fused, which is right for a single-threaded host.
+
 - **`org.arbc.nested` advertises an insert schema** (issue #33) — one labelled
   `child` field of the new `KindInsertField::Type::ObjectId`, with a `min` of 1 and
   no default. It was the last config-constructible builtin without a schema, so a

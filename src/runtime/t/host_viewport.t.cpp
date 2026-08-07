@@ -629,6 +629,91 @@ TEST_CASE("host_viewport: one DamageRouter fans a commit out to two viewports, e
   CHECK(vp_a.frames_issued() == 2);
 }
 
+// enforces: 01-core-concepts#multiple-viewports-observe-one-composition
+TEST_CASE("host_viewport: the damage-sink install can be driven apart from the viewport's "
+          "lifetime, on both paths") {
+  // Issue #28, the successor to #25. Splitting the SETTLER out of the constructor was not
+  // enough to let a host build a viewport off its writer thread: the constructor still
+  // reached `DamageRouter::register_sink`, which mutates a bare registrant vector the writer
+  // thread's concurrent flushes iterate. `install_damage_sink = false` defers that too, so
+  // every writer-thread-only mutation in the viewport's lifetime is reachable from a closure
+  // the host can post.
+  MarkBackend backend;
+  arbc::Model model;
+  const Scene scene = add_single_layer(model);
+  SyncSolid content;
+  const auto resolve = [&](ObjectId id) -> arbc::Content* {
+    return id == scene.content ? &content : nullptr;
+  };
+  arbc::SurfacePool pool(backend);
+  arbc::TileCache cache(64u * 1024 * 1024);
+  auto target = backend.make_surface(256, 256, arbc::k_working_rgba32f);
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  arbc::HostViewport::Config cfg;
+  cfg.viewport = Viewport{256, 256, Affine::identity()};
+  cfg.budget = k_budget;
+  cfg.install_damage_sink = false;
+
+  {
+    // Router path. The router owns the model's single slot for this scope only -- the direct
+    // path below drives that same slot itself, and the two installs are mutually exclusive.
+    arbc::DamageRouter router(model);
+    arbc::HostViewport::Config routed = cfg;
+    routed.router = &router;
+    // Constructed, but registered with nothing -- the state a render thread's freshly-built
+    // viewport is in before the host posts its attach.
+    arbc::HostViewport vp(renderer, model, resolve, backend, pool, cache, **target, epoch_clock(),
+                          routed);
+    CHECK(router.registered() == 0);
+    const std::uint64_t before = router.deliveries();
+    bump_damage(model, scene.layer);
+    CHECK(router.deliveries() == before); // no registrant: nothing delivered
+
+    // The host posts the attach; from here the behaviour is the fused path's.
+    vp.attach_damage_sink();
+    CHECK(router.registered() == 1);
+    bump_damage(model, scene.layer);
+    CHECK(router.deliveries() == before + 1);
+
+    // Both are idempotent -- a host pairing them loosely must not end up registered twice
+    // (which the router would deliver to twice) nor unregistered while it thinks it is not.
+    vp.attach_damage_sink();
+    CHECK(router.registered() == 1);
+    vp.detach_damage_sink();
+    vp.detach_damage_sink();
+    CHECK(router.registered() == 0);
+    vp.attach_damage_sink();
+    vp.detach_damage_sink();
+    CHECK(router.registered() == 0);
+    // Destroying a DETACHED viewport releases nothing further, so a host that detached on
+    // its writer thread and destroyed on its render thread is not double-releasing. The
+    // router's own destructor, next, asserts an empty registrant list.
+  }
+
+  // Direct path: no router, so the same pair drives the model's single slot instead -- also
+  // writer-thread-only, and equally undeferrable before this.
+  arbc::HostViewport vp(renderer, model, resolve, backend, pool, cache, **target, epoch_clock(),
+                        cfg);
+  // Unattached, nothing reaches it: the model's slot holds no sink at all.
+  bump_damage(model, scene.layer);
+  vp.step();
+  CHECK(vp.frames_issued() == 1); // the bootstrap frame only: no damage reached it
+  vp.step();
+  CHECK(vp.frames_issued() == 1);
+
+  vp.attach_damage_sink();
+  bump_damage(model, scene.layer);
+  vp.step();
+  CHECK(vp.frames_issued() == 2); // the drained batch is the witness
+
+  vp.detach_damage_sink();
+  bump_damage(model, scene.layer);
+  vp.step();
+  CHECK(vp.frames_issued() == 2); // detached again: the idle gate holds
+}
+
 // enforces: 11-time-and-video#transports-observe-composition-independently
 TEST_CASE("host_viewport: two viewports over one document observe it at independent instants") {
   MarkBackend backend;

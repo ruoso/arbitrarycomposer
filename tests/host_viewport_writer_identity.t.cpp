@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -193,6 +194,13 @@ struct SolidScene {
 // always arrives, so there is no wall-clock deadline to flake on.
 void await(const std::atomic<int>& flag, int value) {
   while (flag.load(std::memory_order_acquire) < value) {
+    std::this_thread::yield();
+  }
+}
+
+// The same hand-off over a one-shot flag: spin until the partner thread sets it.
+void await(const std::atomic<bool>& flag) {
+  while (!flag.load(std::memory_order_acquire)) {
     std::this_thread::yield();
   }
 }
@@ -372,6 +380,84 @@ TEST_CASE("the settle install can be driven apart from the viewport's lifetime")
   source.put("mem/other.arbc", k_leaf);
   doc.add_composition(4.0, 4.0);
   CHECK(doc.external_loads_auto_settled() == 1); // nothing installed: nothing settled
+}
+
+// enforces: 15-memory-model#viewport-damage-handoff-crosses-writer-to-render
+TEST_CASE("a viewport is built and destroyed on the render thread while the writer commits") {
+  // Issue #28, and the reason #25 alone did not unblock the host: with the settler split out
+  // the constructor still registered the viewport's damage sink -- either into the router's
+  // unsynchronized registrant vector or into the model's single slot -- and both are
+  // writer-thread-only. So a render thread could not build a viewport, and every canvas add,
+  // remove and resize rebuild still cost a synchronous round trip to the writer.
+  //
+  // With BOTH installs deferred, construction and destruction touch nothing the writer owns.
+  // This is that claim under the TSan lane: the render thread builds a viewport, steps it,
+  // and destroys it while the writer thread commits damaging edits throughout, with no
+  // hand-off around the construction at all. The writer-thread-only half is what the host
+  // posts -- `attach_damage_sink()` here, on the writer thread, mid-race.
+  Document doc;
+  const SolidScene scene(doc); // binds THIS thread as the writer
+  KindBridge bridge;
+  const Registry registry;
+  arbc::register_builtin_operator_binders();
+
+  arbc::HostViewport::Config cfg = DocumentViewport::config(doc, SolidScene::k_dim);
+  cfg.install_settler = false;
+  cfg.install_damage_sink = false;
+
+  // The collaborators a viewport binds against, built here so the render thread's scope holds
+  // the VIEWPORT alone -- Catch2's assertion macros are main-thread-only, so the surface's
+  // `REQUIRE` cannot travel across the thread with it.
+  CpuBackend backend;
+  TileCache cache(64U * 1024 * 1024);
+  SurfacePool pool(backend);
+  DocumentViewport::Target target =
+      backend.make_surface(SolidScene::k_dim, SolidScene::k_dim, doc.pin()->working_space());
+  REQUIRE(target.has_value());
+  arbc::InteractiveRenderer renderer({}, epoch_clock());
+
+  constexpr int k_rounds = 500;
+  std::atomic<int> commits{0};
+  std::atomic<bool> constructed{false};
+  std::atomic<bool> stop{false};
+  std::atomic<std::uint64_t> frames{0};
+  std::optional<arbc::HostViewport> view;
+
+  std::thread render([&] {
+    // Construction, off the writer thread, with the writer already live and committing.
+    view.emplace(renderer, doc, arbc::HostViewport::DocumentBinding{&bridge, &registry}, backend,
+                 pool, cache, **target, epoch_clock(), cfg);
+    constructed.store(true, std::memory_order_release);
+    while (!stop.load(std::memory_order_acquire)) {
+      view->step();
+    }
+    frames.store(view->frames_issued(), std::memory_order_relaxed);
+    // ... and destruction on the same thread that built it, still off the writer's.
+    view.reset();
+  });
+
+  for (int round = 1; round <= k_rounds; ++round) {
+    doc.set_layer_transform(scene.layer, Affine::identity());
+    commits.store(round, std::memory_order_release);
+    if (round == 1) {
+      // The host's writer-thread work, posted while its render thread is mid-loop: from here
+      // the viewport observes damage. Attaching is the ONLY thing the writer does for it.
+      await(constructed);
+      view->attach_damage_sink();
+    }
+  }
+  // Release the install before the render thread destroys the object -- also writer-thread
+  // work, and the mirror of the attach above.
+  view->detach_damage_sink();
+  stop.store(true, std::memory_order_release);
+  render.join();
+
+  // Outcomes, not timings: the loop ran, the viewport composited at least its bootstrap
+  // frame, and every commit landed on the writer's own thread.
+  CHECK(commits.load() == k_rounds);
+  CHECK(frames.load() >= 1);
+  CHECK(doc.on_writer_thread());
+  CHECK_FALSE(view.has_value());
 }
 
 // enforces: 15-memory-model#writer-identity-is-queryable

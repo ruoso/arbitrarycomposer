@@ -68,9 +68,15 @@
 //
 // Everything else this object touches is either single-owner render-thread state or already
 // any-thread (`Model::current()`'s pinned read, `Document::resolve`'s published table).
-// Construction and destruction are NOT concurrency-safe against a live writer: they install
-// and clear the model's single damage-sink slot, so build and destroy viewports at wiring
-// time (or on the writer thread), as `Model::set_damage_sink`'s own contract already says.
+// Construction and destruction are not concurrency-safe against a live writer BY DEFAULT:
+// they install and clear the model's single damage-sink slot (or the router's registrant
+// list) and the document's settle hook, so a host that leaves both installs fused builds and
+// destroys viewports at wiring time or on the writer thread, as `Model::set_damage_sink`'s
+// own contract already says. Both installs are separable (issues #25 and #28): with
+// `Config::install_settler` and `Config::install_damage_sink` false, construction and
+// destruction touch nothing the writer thread owns, and the host posts `attach_settler()` /
+// `attach_damage_sink()` and their detaches to that thread instead -- so a viewport can be
+// created and destroyed on the render thread that steps it.
 
 namespace arbc {
 
@@ -112,6 +118,19 @@ public:
     // its writer thread -- rather than posting the whole constructor for the sake of the
     // one writer-thread line inside it. Inert on the `Model&` path, which has no document.
     bool install_settler{true};
+
+    // Whether the constructor installs this viewport's damage sink -- the router
+    // registration on the fan-out path, the `Model::set_damage_sink` slot on the direct one
+    // (issue #28). The successor to `install_settler` above, and for the same reason: BOTH
+    // installs are writer-thread-only (`damage_router.hpp` § Concurrency -- `register_sink`
+    // and unregister run on the single writer thread that owns `Model::set_damage_sink`,
+    // over an unsynchronized registrant vector a concurrent `flush` iterates), so leaving
+    // this one welded into the constructor kept a host from building a viewport off the
+    // writer thread even with `install_settler = false`. True keeps the fused behaviour;
+    // false leaves it to `attach_damage_sink()` / `detach_damage_sink()`. Unlike
+    // `install_settler` this is honoured on BOTH constructors -- the `Model&` path installs a
+    // damage sink too.
+    bool install_damage_sink{true};
 
     // The external-arrival settle hook (`runtime.async_external_load` Decision 7): the bytes
     // behind a nested content's `params.ref` may arrive from a deferring `AssetSource` long
@@ -195,7 +214,8 @@ public:
 
   // Binds the collaborators (references, not owned -- the interactive renderer, the
   // model whose damage this viewport subscribes to, and the caller-persisted render
-  // surfaces) and installs the damage sink on `model` for this object's lifetime.
+  // surfaces) and installs the damage sink on `model` for this object's lifetime -- unless
+  // `Config::install_damage_sink` is false, which defers it to `attach_damage_sink()`.
   // `resolve` serves `render_frame`'s content-vtable binding (`document.hpp`).
   //
   // This is the UNIT-TEST seam, and it stays: a test standing up a bare `Model` wants none of
@@ -263,6 +283,25 @@ public:
   // no-op, so a host may pair them loosely without leaking a count.
   void attach_settler();
   void detach_settler() noexcept;
+
+  // Install / release this viewport's damage sink, apart from this object's lifetime
+  // (issue #28) -- the router registration when `Config::router` was set, the model's single
+  // slot when it was not. WRITER-THREAD ONLY, as both of those are.
+  //
+  // The other half of the same split `attach_settler()` began. With only the settler
+  // deferrable a host STILL could not construct a viewport on its render thread: the
+  // constructor reached `DamageRouter::register_sink`, which mutates a bare registrant vector
+  // that the writer thread's concurrent flushes iterate. So every canvas add, remove and
+  // resize rebuild still cost a synchronous round trip to the writer thread for the sake of
+  // one line. Pass `install_damage_sink = false` and post these two calls instead, and the
+  // viewport's whole construction and destruction belong to the thread that owns it.
+  //
+  // Idempotent in the same way, and for the same reason: a second `attach` registers nothing
+  // further and a `detach` with nothing installed is a no-op, so a host may pair them
+  // loosely. A viewport detached from its sink still steps -- it simply observes no damage,
+  // which is what a canvas not yet wired up should see.
+  void attach_damage_sink();
+  void detach_damage_sink() noexcept;
 
   HostViewport(const HostViewport&) = delete;
   HostViewport& operator=(const HostViewport&) = delete;
@@ -407,10 +446,11 @@ private:
   Viewport d_viewport;                    // the persistent `(anchor, camera)` pair
   Transport d_transport;                  // the owned per-viewport playback clock
   std::vector<AnchorFrame> d_anchor_path; // the re-anchor stack (zoom-out pops)
-  DamageAccumulator d_sink;        // installed on d_model / d_router for this object's lifetime
-  DamageRouter* d_router{nullptr}; // set => registered via router; null => direct model slot
+  DamageAccumulator d_sink;               // installed on d_model / d_router while attached
+  DamageRouter* d_router{nullptr};        // set => registered via router; null => direct model slot
   DamageRouter::Registration
-      d_registration; // the RAII fan-out registration (inert when d_router null)
+      d_registration;          // the RAII fan-out registration (inert when d_router null)
+  bool d_sink_attached{false}; // do I owe a release? -- the direct path has no RAII token
   std::function<Time()> d_playhead_source;     // set => audio-mastered chase; empty => free-run
   std::function<std::size_t()> d_settle_loads; // set => drive external arrivals each step
   std::function<std::size_t()> d_loads_ready;  // the any-thread readiness probe beside it
