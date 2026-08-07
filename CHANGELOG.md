@@ -42,7 +42,27 @@ surface moves freely, and changelog honesty is what makes that safe
   picker; one that does not distinguish it collects the field exactly as an
   `Integer` and stays correct — the type narrows presentation, never parsing.
 
+- **Asset GC sees project-owned image blobs** (issue #30) — `GcRoots`,
+  `collect_referenced_assets`, `sweep_asset_store`, three defaulted `AssetReaper`
+  virtuals (`list_asset_uris` / `asset_size` / `remove_asset`), the pure
+  `unreferenced_assets` subtraction, and a `FilesystemAssetReaper` that takes named
+  asset bases beside the tiles one. `gc_project_directory` now marks `params.source`
+  URIs as well as `params.blobs` hashes and sweeps `assets/images/` as well as
+  `assets/tiles/`, so a host that mints owned image assets gets its
+  paste → undo → save → Clean-Up cycle to actually reclaim the orphaned blob. Both
+  halves landed together on purpose: a reaper that enumerated owned images without a
+  mark that rooted them would delete every one of them. A **referenced** image, whose
+  URI points outside the project's owned subtree, is never enumerated and so can never
+  be reclaimed. Matching an authored URI against an on-disk key is deliberately
+  over-approximate (a shared basename roots a blob) — retaining an orphan is a leak,
+  failing to recognise a live reference is data loss.
+
 ### Changed
+
+- **A malformed `params.source` now fails the GC mark walk** (issue #30), where the
+  image codec's *load* path still treats it leniently as absent. Leniency on a read
+  means "round-trip the key verbatim"; on a delete plan the same doubt has to stop the
+  sweep, which then deletes nothing.
 
 - **`KindInsertField::Type` gained an `ObjectId` enumerator.** Additive, but a host
   that switches exhaustively over the enum gains a case to handle.

@@ -27,6 +27,8 @@ container:
 project.arbc            # the JSON graph: small, diffable, hand-inspectable
 project.assets/
   bg.png                # imported encoded images  (org.arbc.image, Principle 3)
+  images/
+    pasted-01.png       # project-OWNED image blobs (copied in, GC-reclaimable)
   tiles/
     3f/3fa91c…          # painted raster tile blobs (org.arbc.raster, Principle 8)
 ```
@@ -55,14 +57,28 @@ of saving.
 That sweep is the **`AssetReaper`**, the third asset role symmetric to
 `AssetSource` (read) and `AssetSink` (write). Reclamation is an **explicit,
 caller-rooted mark-and-sweep**: the caller names the set of documents to preserve,
-GC unions every hash their `params.blobs` reference (the mark), enumerates the
-on-disk `tiles/**` blobs, and deletes present-minus-referenced (the sweep). It is
+GC unions every reference their bodies carry (the mark), enumerates the on-disk
+blobs, and deletes present-minus-referenced (the sweep). It is
 **fail-safe** — a mark that cannot be fully computed (an unparseable root, a
 `blobs` entry that is not a valid tile hash, a directory that will not enumerate)
 deletes **nothing**, because over-preservation is always safe and a partial mark
-that then deleted would be data loss. Its scope is **`tiles/**` only**: an imported
-image is referenced by URI, not by content hash, and is outside this reference
-model. The **safety contract is the caller's** — the root set must name every
+that then deleted would be data loss.
+
+Its scope is **two key spaces, not one**. Content-addressed tile blobs under
+`tiles/**` are keyed by hash and marked off `params.blobs`. **Project-owned
+asset blobs under `images/**`** — the bytes a host copies in when a user pastes
+or imports an image, so the project is self-contained — are keyed by the URI the
+document authors for them and marked off `params.source`, which is where the
+image codec keeps its asset reference. Both halves of the GC see both spaces, and
+that pairing is structural rather than incidental: a sweep that enumerated owned
+images without marking them would see every one as an orphan and delete it, so
+the mark and the reaper are one operation. A **referenced** image — one left where
+the user had it — has a URI outside the project's owned subtree, is therefore never
+enumerated, and cannot be reclaimed; owned and referenced separate themselves by
+location, with no flag to keep in sync. Matching an authored URI against an
+on-disk key is deliberately **over-approximate** (a shared basename roots a blob):
+retaining an orphan is a leak, while failing to recognise a live reference would be
+data loss. The **safety contract is the caller's** — the root set must name every
 document (including every in-memory-open document's current serialized state) that
 must survive; a document GC is not told about can have its unique blobs reclaimed,
 which is why GC is explicit and never inferred on save. The one forgiving case:

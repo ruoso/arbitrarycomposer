@@ -231,6 +231,109 @@ TEST_CASE("the mark walk is fail-safe on a malformed blobs reference") {
   }
 }
 
+TEST_CASE("the mark walk harvests params.source URIs beside params.blobs") {
+  // Issue #30: `params.source` is where the image codec keeps its asset reference, so an owned
+  // image blob's only handle is that URI -- and a walk that read only `blobs` left it unrooted.
+  const std::string h0 = std::string(k_tile_hash_chars, 'a');
+  json doc;
+  doc["composition"]["layers"][0]["params"]["blobs"] = json::array({h0});
+  doc["composition"]["layers"][1]["params"]["source"] = "assets/images/kept.png";
+  // A deeper body, and a spelling that needs normalizing to be one key with the above.
+  doc["compositions"][0]["layers"][0]["params"]["source"] = "assets/images/./nested.png";
+
+  const expected<GcRoots, ReaderError> roots = collect_referenced_assets(doc.dump());
+  REQUIRE(roots.has_value());
+  CHECK(roots->tiles.size() == 1);
+  CHECK(roots->tiles.count(h0) == 1);
+  CHECK(roots->assets.size() == 2);
+  CHECK(roots->assets.count("assets/images/kept.png") == 1);
+  CHECK(roots->assets.count("assets/images/nested.png") == 1); // the `./` normalized away
+
+  // And the tiles-only entry point is exactly this walk's tiles half -- one traversal, one
+  // fail-safe, no second copy of the harvest to drift.
+  const expected<std::unordered_set<std::string>, ReaderError> tiles =
+      collect_referenced_tiles(doc.dump());
+  REQUIRE(tiles.has_value());
+  CHECK(*tiles == roots->tiles);
+}
+
+TEST_CASE("the mark walk is fail-safe on a malformed source reference") {
+  // Harsher than the image CODEC, deliberately: on load a mistyped `source` is treated as
+  // absent so the key round-trips verbatim, but on a DELETE plan the same doubt has to stop
+  // the sweep -- an unrecognised reference that then deleted would be data loss.
+  json doc;
+  doc["composition"]["layers"][0]["params"]["source"] = 42;
+  const expected<GcRoots, ReaderError> roots = collect_referenced_assets(doc.dump());
+  REQUIRE_FALSE(roots.has_value());
+  CHECK(roots.error().kind == ReaderError::Kind::MalformedField);
+}
+
+TEST_CASE("an owned image blob is rooted by its source URI, and an orphaned one is reclaimed") {
+  // enforces: 08-serialization#asset-gc-roots-and-reclaims-owned-images
+  //
+  // Issue #30: the host's paste/import copies the bytes into the project so it is
+  // self-contained, and the design intent is that a paste -> undo -> save -> Clean-Up cycle
+  // reclaims what nothing references any more. Before this, neither half of the GC could see
+  // an owned image: the reaper enumerated only `assets/tiles/` and the mark walk harvested
+  // only `params.blobs`, so the blob was neither rooted nor reclaimed.
+  ProjectDir project("owned_images");
+  Scene scene(textured(16, 16, 0.0f), 8);
+  const std::string arbc = save_scene(scene, project.base_uri());
+
+  // A live image layer beside the raster one, and the two owned blobs: one it references and
+  // one an undone paste left behind.
+  json doc = json::parse(arbc);
+  json image_layer;
+  image_layer["kind"] = "org.arbc.image";
+  image_layer["kind_version"] = "1";
+  image_layer["params"]["source"] = "assets/images/kept.png";
+  doc["composition"]["layers"].push_back(image_layer);
+  project.write_text("project.arbc", doc.dump());
+  project.write_text("assets/images/kept.png", "kept-png-bytes");
+  project.write_text("assets/images/orphan.png", "orphan-png-bytes");
+
+  const expected<GcReport, GcError> report = gc_project_directory(project.root(), false);
+  REQUIRE(report.has_value());
+  CHECK(report->deleted == 1); // exactly the orphan; no tile is orphaned in this project
+  CHECK(report->bytes_reclaimed == std::string("orphan-png-bytes").size());
+  CHECK(std::filesystem::exists(project.root() / "assets" / "images" / "kept.png"));
+  CHECK_FALSE(std::filesystem::exists(project.root() / "assets" / "images" / "orphan.png"));
+  // The tile half is untouched by the named-asset half: every referenced blob is still there.
+  for (const std::string& h : blobs_of(arbc)) {
+    CHECK(project.blob_exists(h));
+  }
+
+  // Idempotent over both key spaces, exactly as over one.
+  const expected<GcReport, GcError> again = gc_project_directory(project.root(), true);
+  REQUIRE(again.has_value());
+  CHECK(again->deleted == 0);
+}
+
+TEST_CASE("a REFERENCED image outside the project is never enumerated and never reclaimed") {
+  // The other half of the discovery story (issue #30): a user who left an image where it was
+  // has a `source` pointing outside the project's owned subtree. GC enumerates only what the
+  // project owns, so a referenced image cannot be reclaimed by a sweep no matter what -- owned
+  // and referenced separate themselves by LOCATION, with no flag to keep in sync.
+  ProjectDir project("referenced_images");
+  ProjectDir elsewhere("referenced_images_src");
+  elsewhere.write_text("photo.png", "somebody-elses-bytes");
+
+  json doc;
+  doc["arbc"]["format"] = 1;
+  doc["composition"]["canvas"] = json::array({0, 0, 16, 16});
+  json layer;
+  layer["kind"] = "org.arbc.image";
+  layer["kind_version"] = "1";
+  layer["params"]["source"] = (elsewhere.root() / "photo.png").string();
+  doc["composition"]["layers"] = json::array({layer});
+  project.write_text("project.arbc", doc.dump());
+
+  const expected<GcReport, GcError> report = gc_project_directory(project.root(), false);
+  REQUIRE(report.has_value());
+  CHECK(report->deleted == 0);
+  CHECK(std::filesystem::exists(elsewhere.root() / "photo.png"));
+}
+
 TEST_CASE("gc_project_directory on a directory that does not exist is a MarkFailed value") {
   const std::filesystem::path missing =
       std::filesystem::temp_directory_path() / "arbc_asset_gc_nonexistent_dir_xyz";

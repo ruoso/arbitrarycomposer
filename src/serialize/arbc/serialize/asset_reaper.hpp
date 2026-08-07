@@ -66,6 +66,26 @@ public:
   // Delete the blob for `hash`; returns whether a file was actually removed (a re-run finds
   // it already gone -- removing a content-addressed blob is idempotent, Decision 3).
   virtual expected<bool, AssetReaperError> remove_tile(std::string_view hash) = 0;
+
+  // ---- The NAMED-asset half (issue #30) -------------------------------------------------
+  //
+  // A tile blob is content-addressed and keyed by its hash; every OTHER owned blob -- an
+  // imported image the host copied into the project so the project is self-contained -- is
+  // keyed by the URI the document authors for it (`params.source`), because that URI is the
+  // only handle the document has on it. So the reap seam carries two key spaces, not one.
+  //
+  // A key here is the AUTHORED-RELATIVE URI, base included (`assets/images/photo.png`), so it
+  // is directly comparable with what the mark walk harvests out of a document body and the
+  // store's own directory layout never leaks into the plan.
+  //
+  // All three DEFAULT to an empty store, so a reaper written against the tiles-only seam
+  // compiles and behaves exactly as it did -- it simply reclaims nothing new. `asset_size`
+  // and `remove_asset` default to an EnumerateFailed value rather than to a silent success:
+  // a store that lists named assets but cannot size or remove them must fail the sweep
+  // (which deletes nothing), never report a reclamation it did not perform.
+  virtual expected<std::vector<std::string>, AssetReaperError> list_asset_uris() const;
+  virtual expected<std::uint64_t, AssetReaperError> asset_size(std::string_view uri) const;
+  virtual expected<bool, AssetReaperError> remove_asset(std::string_view uri);
 };
 
 // The pure set subtraction at the heart of the sweep (Decision 3): the blobs present on disk
@@ -76,5 +96,24 @@ public:
 ARBC_API std::vector<std::string>
 unreferenced_tiles(const std::unordered_set<std::string>& referenced,
                    std::span<const std::string> present);
+
+// The same subtraction for the NAMED-asset key space (issue #30), and it is deliberately not
+// the same function: a tile hash is a canonical name that either matches or does not, while an
+// authored URI has SPELLINGS -- the same file is `assets/images/x.png` to a document at the
+// project root and `../proj/assets/images/x.png` to one beside it, and both must root it.
+//
+// A present key is referenced when some marked URI
+//   1. equals it, or
+//   2. ends with `/` + it (the same tail under a longer authored prefix), or
+//   3. shares its BASENAME.
+//
+// Rule 3 is the deliberate over-approximation. It can retain an orphan whose filename happens
+// to match some unrelated reference -- a leak. The alternative, deleting a blob whose URI this
+// module merely failed to recognise, is DATA LOSS, and this module's stated rule is
+// over-preservation on any doubt (Constraint 3, and the `assets/tiles/` half's own fail-safe).
+// Order-preserving over `present`, exactly as `unreferenced_tiles`.
+ARBC_API std::vector<std::string>
+unreferenced_assets(const std::unordered_set<std::string>& referenced,
+                    std::span<const std::string> present);
 
 } // namespace arbc
