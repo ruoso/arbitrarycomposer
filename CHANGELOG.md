@@ -19,6 +19,38 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-08
+
+Four host-reported gaps. Three of them share a shape, and it is the mirror of
+0.5.0's: that release was about things the library *knew* and a host could not
+ask; this one is about things the library *did* and never said.
+
+`render_offline` rendered a hole in an export and said nothing (#35). The
+registry described *how* to construct a kind and never *whether anyone should*,
+so a kind registered for round-trip only landed in an insert menu (#37). And the
+workspace arena replayed the params a content was **captured** with, never
+re-capturing, so a kind that mutated its own parameters reverted on a mapped
+reopen — a rule that held by construction and was written down nowhere (#38,
+answered as documentation and tests; no behaviour changed).
+
+The fourth is a real gap in the model rather than in its self-description:
+**layers had no blend mode** (#36), so the compositor was fixed source-over and a
+multiply shadow pass, a screen glow or an add for light could not be expressed at
+all. The three design questions the issue left open are answered in doc 07 — the
+separable PDF/CSS vocabulary, evaluated in the composition's `working_space`, and
+riding the *layer* rather than the kind, so an audio-only layer carries a mode the
+mix engine never reads exactly as a visual-only layer carries a `gain` the
+compositor never reads.
+
+**One breaking change**, and only for a third-party backend: `Backend`'s three
+composite operations take a `BlendMode` after `opacity`. Everything else is
+additive — `KindMetadata` gained a defaulted trailing field, `render_offline`
+gained a defaulted trailing out-param, and `BlendMode::Normal` is the zero value
+everywhere, so an untouched document renders and re-saves byte-for-byte as before.
+Two built-in kinds do change what a *registry-driven insert menu* shows:
+`org.arbc.fade` and `org.arbc.crossfade` now declare themselves non-insertable,
+because their factories refuse every config there is.
+
 ### Added
 
 - **Per-layer blend modes** (issue #36). A layer carried `opacity` — *how much* of it
