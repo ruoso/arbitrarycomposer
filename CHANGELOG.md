@@ -19,6 +19,40 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-08
+
+Seven host-reported gaps, closed together. The shape they share is worth naming:
+every one is a place where the library knew something a host could not ask it,
+or held a lifetime a host could not schedule.
+
+The **seams** are four. A viewport's damage-sink install now splits out of its
+constructor, so a host whose canvases live on a render thread can build and
+destroy them there and post only the two writer-thread calls (#28) — the half
+`#25` implied and did not deliver. An external composition installs into an
+already-open document, so a nested reference a user creates during a session
+resolves during that session instead of at the next reopen (#32). A content's
+persisted config is rewritten in place, keeping its `ObjectId`, so Consolidate
+and Relink are edits rather than delete-and-recreate (#34). And a content can be
+asked to grow its own working grid through a facet a host discovers rather than
+allowlists, so "resample to crisp" needs no per-kind knowledge (#31).
+
+The **fixes** are two, and both were reachable rather than theoretical. A nested
+composition whose child is momentarily empty looked like a leaf to worker
+dispatch and was rendered on a worker against the frame's borrowed pin — a data
+race and a use-after-free on any canvas showing such a cell (#29). And asset GC
+was blind to project-owned image blobs in both halves at once, so a paste, undo,
+save and Clean-Up cycle never reclaimed the orphan (#30); the mark and the
+reaper had to land together, because either alone is worse than neither.
+
+The **small one** completes `#21`: `org.arbc.nested` finally advertises an
+insert schema, with a new `ObjectId` field type that says a value names another
+object (#33).
+
+Additive except for one enumerator: a host switching exhaustively over
+`KindInsertField::Type` gains a case. Every other 0.4.1 call compiles and
+behaves unchanged, and both new `AssetReaper` virtuals default to an empty
+store.
+
 ### Fixed
 
 - **A nested composition whose child is empty no longer renders on a worker thread**

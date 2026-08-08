@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
   arbitrarycomposer
-  VERSION 0.4.1
+  VERSION 0.5.0
   DESCRIPTION "2D scene composer with pluggable layer kinds"
   LANGUAGES CXX)
 
