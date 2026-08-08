@@ -339,6 +339,31 @@ rendering 4K video of a mostly-static scene should not re-rasterize every
 layer every frame — but correctness rules are strict: only exact-scale,
 current-revision entries qualify.
 
+**An offline render never settles, and says what it could not resolve.** The
+interactive loop drives `settle_external_loads` every frame (step 1); the
+offline driver deliberately drives nothing. A reference whose bytes have not
+arrived stays unresolved for the whole render and composites the doc-05
+placeholder, because a path whose job is byte-exact reference output must
+render exactly the version it was handed and must not publish a revision
+underneath its caller. That is the right contract and the wrong *silence*: a
+host whose `AssetSource` genuinely defers — a network or content-store source,
+a WASM build whose fetch is inherently async — would export a transparent hole
+with no error, no warning, and no count.
+
+So the offline drivers **report** it. A render answers how many contents in the
+frame it drew name an external reference that is not there, counted against the
+rendered version and the contents the anchored frame walk actually reaches —
+never against the document's live pending maps, which describe the document
+*now* rather than the pin, and which a render thread must not read at all. A
+composition arrival installs on a *new* revision, so between the pin and the
+render the document's own count can fall to zero while the pin still draws the
+placeholder; asking the pin cannot under-report that way. Pending and
+unavailable count alike: they differ by whether the source answered, which is
+the loader's distinction, and from the exporter's side both are one hole. The
+caller decides what a non-zero count means — warn, settle and re-pin, or refuse
+— and a frame with a hole in it is still returned, because it is still exactly
+the frame that was asked for.
+
 ## Tile cache
 
 - Key: `(content id, revision, scale rung, tile coords)`.

@@ -3,11 +3,13 @@
 #include <arbc/compositor/tile_planning.hpp> // render_frame_interactive
 #include <arbc/contract/content.hpp>         // Deadline, Exactness
 #include <arbc/runtime/offline_sequence.hpp>
-#include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
-#include <arbc/runtime/pull_identity.hpp>    // make_pull_identity_of (child-distinct id_of)
-#include <arbc/runtime/worker_dispatch.hpp>  // worker_backed_dispatch (the leaf-only rule)
-#include <arbc/surface/surface.hpp>          // Surface
+#include <arbc/runtime/operator_binding.hpp>    // bind_operators, register_builtin_operator_binders
+#include <arbc/runtime/pull_identity.hpp>       // make_pull_identity_of (child-distinct id_of)
+#include <arbc/runtime/unresolved_contents.hpp> // count_unresolved_contents (issue #35)
+#include <arbc/runtime/worker_dispatch.hpp>     // worker_backed_dispatch (the leaf-only rule)
+#include <arbc/surface/surface.hpp>             // Surface
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -74,6 +76,14 @@ SequenceRenderer::SequenceRenderer(const Document& document, Viewport viewport, 
       d_viewport.anchor = root_id;
     }
   }
+}
+
+std::size_t SequenceRenderer::unresolved_contents() const {
+  // Against the export's ONE pin and the anchor the constructor resolved -- the same version
+  // and the same frame walk every `render_frame_at` draws, so the answer holds for all of them
+  // (issue #35).
+  const ContentResolver resolve = [this](ObjectId id) { return d_document.resolve(id); };
+  return count_unresolved_contents(*d_pinned, resolve, d_viewport.anchor);
 }
 
 expected<std::unique_ptr<Surface>, SurfaceError>

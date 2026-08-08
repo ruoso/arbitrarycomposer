@@ -1,24 +1,31 @@
 #include <arbc/compositor/pull_service.hpp>  // PullServiceImpl, PullConfig, direct_dispatch
 #include <arbc/compositor/tile_planning.hpp> // render_frame_interactive
 #include <arbc/runtime/offline.hpp>
-#include <arbc/runtime/operator_binding.hpp> // bind_operators, register_builtin_operator_binders
-#include <arbc/runtime/pull_identity.hpp>    // build_pull_identity_map, pull_identity_of
+#include <arbc/runtime/operator_binding.hpp>    // bind_operators, register_builtin_operator_binders
+#include <arbc/runtime/pull_identity.hpp>       // build_pull_identity_map, pull_identity_of
+#include <arbc/runtime/unresolved_contents.hpp> // count_unresolved_contents (issue #35)
 
 #include <utility>
 
 namespace arbc {
 
-expected<std::unique_ptr<Surface>, SurfaceError>
-render_offline(const Document& document, const Viewport& viewport, Backend& backend) {
+expected<std::unique_ptr<Surface>, SurfaceError> render_offline(const Document& document,
+                                                                const Viewport& viewport,
+                                                                Backend& backend,
+                                                                OfflineRenderReport* report) {
   // Pin per call: correct for a one-shot render, and the reason the caller-pinned
   // overload below exists for a BATCH (issue #27).
-  return render_offline(document, document.pin(), viewport, backend);
+  return render_offline(document, document.pin(), viewport, backend, report);
 }
 
-expected<std::unique_ptr<Surface>, SurfaceError> render_offline(const Document& document,
-                                                                const DocStatePtr& state,
-                                                                const Viewport& viewport,
-                                                                Backend& backend) {
+expected<std::unique_ptr<Surface>, SurfaceError>
+render_offline(const Document& document, const DocStatePtr& state, const Viewport& viewport,
+               Backend& backend, OfflineRenderReport* report) {
+  // Zeroed at entry so every early return leaves a defined report rather than whatever the
+  // caller's struct happened to hold from a previous frame.
+  if (report != nullptr) {
+    *report = OfflineRenderReport{};
+  }
   if (!state) {
     return unexpected(SurfaceError::UnsupportedFormat);
   }
@@ -82,6 +89,15 @@ expected<std::unique_ptr<Surface>, SurfaceError> render_offline(const Document& 
                            /*pending=*/nullptr, /*counters=*/nullptr, /*dirty=*/nullptr,
                            Time::zero(), /*visible_plans=*/nullptr, /*diagnostics=*/nullptr, &pull,
                            Exactness::Exact, /*wanted=*/nullptr, &contribution);
+  // The issue-#35 report, computed against the SAME pin and the SAME anchor the frame just
+  // drew -- so it describes the surface being returned and not the document as it stands.
+  // Read AFTER the render, not before: an asset install mutates the plugin-owned pyramid in
+  // place on no new revision (`settle_asset_arrival`, `document_serialize.cpp`), so a content
+  // whose bytes land while this frame is walking has its extent by the time the walk ends, and
+  // reporting it as a hole after the tiles picked it up would be the false alarm.
+  if (report != nullptr) {
+    report->unresolved_contents = count_unresolved_contents(*state, resolve, anchored.anchor);
+  }
   return std::move(*target);
 }
 

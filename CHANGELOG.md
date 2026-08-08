@@ -19,6 +19,30 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ## [Unreleased]
 
+### Added
+
+- **An offline render reports what it could not resolve** (issue #35).
+  `render_offline` renders a pinned snapshot and settles nothing — deliberately, since a
+  byte-exact reference path must render exactly the version it was handed and must not
+  publish a revision underneath its caller. The problem was never the contract; it was the
+  **silence**. A host whose `AssetSource` genuinely defers — a network or content-store
+  source, a WASM build whose fetch is inherently async — exported a transparent hole where
+  the picture should be, with no error, no warning, and no count. Both offline drivers now
+  answer the question: `render_offline` takes an optional trailing
+  `OfflineRenderReport*` whose `unresolved_contents` counts the contents in the frame it
+  drew that name an external reference which is not there, and `SequenceRenderer` answers
+  the same for its whole export through `unresolved_contents()` (one number, since the pin
+  is taken once). Both count against the **rendered pin**, never against
+  `Document::pending_external_loads()`: a composition arrival installs on a *new* revision,
+  so between the pin and the render the document's own count can fall to zero while the pin
+  still draws the placeholder — asking the pin cannot under-report that way. Pending and
+  unavailable count alike (they differ by whether the source answered, which is the
+  loader's distinction, not the exporter's), and the count is of blank *regions*, so two
+  contents sharing one unresolved URI count two. `count_unresolved_contents`
+  (`arbc/runtime/unresolved_contents.hpp`) is the walk itself, public for a host that wants
+  to ask before it renders. Purely additive: the new parameter defaults to null, which is
+  byte-for-byte the previous behaviour, and no driver settles anything to produce the count.
+
 ## [0.5.0] - 2026-08-08
 
 Seven host-reported gaps, closed together. The shape they share is worth naming:

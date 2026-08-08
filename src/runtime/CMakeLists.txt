@@ -7,7 +7,7 @@ arbc_add_component(
           external_composition_loader.cpp external_asset_loader.cpp filesystem_asset_source.cpp
           filesystem_asset_sink.cpp
           pending_external_loads.cpp
-          operator_binding.cpp pull_identity.cpp
+          operator_binding.cpp pull_identity.cpp unresolved_contents.cpp
           offline.cpp
           offline_sequence.cpp housekeeping.cpp housekeeping_thread.cpp
           worker_pool.cpp worker_dispatch.cpp
@@ -30,6 +30,7 @@ arbc_add_component(
                  arbc/runtime/asset_gc.hpp
                  arbc/runtime/operator_binding.hpp
                  arbc/runtime/pull_identity.hpp
+                 arbc/runtime/unresolved_contents.hpp
                  arbc/runtime/offline.hpp
                  arbc/runtime/offline_sequence.hpp arbc/runtime/housekeeping.hpp
                  arbc/runtime/housekeeping_targets.hpp

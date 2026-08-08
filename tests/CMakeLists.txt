@@ -1208,6 +1208,18 @@ target_compile_definitions(arbc_image_async_pending_t
                            PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
 catch_discover_tests(arbc_image_async_pending_t)
 
+# Issue #35: the offline drivers' unresolved-content report -- a deferring AssetSource can no
+# longer make an export silently transparent. Drives both external-reference seams (an image
+# asset and a nested project reference) through the real offline drivers, so it needs the image
+# plugin's impl archive beside the umbrella.
+add_executable(arbc_offline_unresolved_report_t offline_unresolved_report.t.cpp)
+target_link_libraries(
+  arbc_offline_unresolved_report_t
+  PRIVATE arbc-plugin-image-impl arbc Catch2::Catch2WithMain arbc_build_flags)
+target_compile_definitions(arbc_offline_unresolved_report_t
+                           PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
+catch_discover_tests(arbc_offline_unresolved_report_t)
+
 # The pixel half: the empty layer REPLACED BY THE PHOTOGRAPH, byte-identically to the same scene
 # loaded through an inline-firing FilesystemAssetSource -- plus the save-while-pending fixed
 # point, which names `params` and therefore nlohmann::json (PRIVATE to arbc_runtime, linked here

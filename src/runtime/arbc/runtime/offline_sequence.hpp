@@ -106,6 +106,16 @@ public:
 
   // The pinned version -- the single frozen `DocRoot` every frame renders against.
   const DocRoot& pinned_state() const noexcept { return *d_pinned; }
+
+  // How many contents in this export's frame name an external reference that is not there
+  // (issue #35) -- the sequence twin of `OfflineRenderReport::unresolved_contents`, and one
+  // number for the WHOLE export rather than one per frame, because the pin is taken once and
+  // no frame of a sequence can resolve what another could not.
+  //
+  // Non-zero means every exported frame has a hole. A host asks it once after construction --
+  // before it spends the minutes an N-frame export costs -- and warns, settles and
+  // re-constructs, or refuses. Cheap: an anchored metadata walk, no render, no cache probe.
+  std::size_t unresolved_contents() const;
   // The one revision the whole sequence is consistent at (the pin held).
   std::uint64_t revision() const noexcept { return d_pinned->revision(); }
 
