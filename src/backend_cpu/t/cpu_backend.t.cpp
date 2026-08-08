@@ -499,6 +499,37 @@ TEST_CASE("convert routes format -> working -> format (rgba8 <-> rgba32f round-t
   REQUIRE(out[3] == 255);
 }
 
+// The blend arm of the composite kernel, per format (issue #36). `composite_kernel` is a
+// template monomorphized on the pixel format, so a mode driven only through the float working
+// space leaves the other two instantiations compiled and never executed -- which is exactly
+// the shape of untested code that looks tested. Both surfaces are OPAQUE, so the reference
+// composite collapses to `B(cb, cs)` alone and the expected value is one multiply.
+//
+// The expectations are computed from what the format actually STORED, not from what was
+// written: an 8-bit sRGB surface round-trips a channel through an encode and a decode, so the
+// backdrop the kernel blends against is not the literal the test handed it.
+template <PixelFormat F> void check_blend_arm(arbc::SurfaceFormat fmt, float tol) {
+  arbc::CpuBackend backend;
+  arbc::CpuSurface src(1, 1, fmt);
+  write_px<F>(src, 0, {0.4F, 0.8F, 0.5F, 1.0F});
+  arbc::CpuSurface dst(1, 1, fmt);
+  write_px<F>(dst, 0, {0.6F, 0.3F, 0.2F, 1.0F});
+  const arbc::WorkingPixel s = read_px<F>(src, 0);
+  const arbc::WorkingPixel b = read_px<F>(dst, 0);
+
+  backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Multiply);
+
+  const arbc::WorkingPixel out = read_px<F>(dst, 0);
+  for (std::size_t k = 0; k < 3; ++k) {
+    CAPTURE(k, out[k], b[k], s[k], tol);
+    REQUIRE(std::fabs(out[k] - (b[k] * s[k])) <= tol);
+  }
+  REQUIRE(std::fabs(out[3] - 1.0F) <= tol);
+  // And it is genuinely NOT source-over, which an opaque layer would have made a plain
+  // replace: without this the assertion above would also pass for a blend that never ran.
+  REQUIRE(std::fabs(out[0] - s[0]) > tol);
+}
+
 TEST_CASE("Catmull-Rom magnification interpolates in premultiplied linear floats") {
   check_magnification<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f, 1e-6F);
   check_magnification<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f, 0.005F);
@@ -1071,3 +1102,10 @@ TEST_CASE("import faults as a value on an unstorable source and fires no release
 }
 
 } // namespace
+
+// enforces: 07-color-and-pixel-formats#layer-blend-mode-composites-in-working-space
+TEST_CASE("the composite kernel's blend arm runs in every storable working format") {
+  check_blend_arm<PixelFormat::Rgba32fLinearPremul>(arbc::k_working_rgba32f, 1e-6F);
+  check_blend_arm<PixelFormat::Rgba16fLinearPremul>(arbc::k_working_rgba16f, 0.005F);
+  check_blend_arm<PixelFormat::Rgba8Srgb>(arbc::k_fast_rgba8srgb, 0.02F);
+}

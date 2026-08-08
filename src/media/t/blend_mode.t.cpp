@@ -98,6 +98,12 @@ TEST_CASE("a blend mode's persistent name round-trips, and an unknown one is ref
   CHECK(blend_mode_name(BlendMode::Normal) == std::string_view("normal"));
   CHECK(blend_mode_name(BlendMode::ColorDodge) == std::string_view("color-dodge"));
 
+  // An out-of-range enumerator -- which only a corrupt record or a cast can produce -- reads
+  // as `normal` rather than off the end of the table, in both directions.
+  const auto bogus = static_cast<BlendMode>(200);
+  CHECK(blend_mode_name(bogus) == std::string_view("normal"));
+  CHECK(blend_channel(bogus, 0.6F, 0.4F) == 0.4F);
+
   BlendMode out = BlendMode::Multiply;
   CHECK_FALSE(blend_mode_from_name("hue", out)); // a real mode this build does not have
   CHECK_FALSE(blend_mode_from_name("", out));

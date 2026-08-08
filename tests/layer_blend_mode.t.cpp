@@ -32,6 +32,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -330,4 +331,17 @@ TEST_CASE("setting a blend mode disturbs no other placement state") {
   REQUIRE(doc.pin()->find_layer(layer) != nullptr);
   CHECK(doc.pin()->find_layer(layer)->blend() == BlendMode::Normal);
   CHECK_FALSE(doc.pin()->find_layer(layer)->visible());
+
+  // An id naming no object, and an id naming something that is not a layer, are both NO-OPS
+  // that publish nothing -- the walking-skeleton contract every sibling placement mutator
+  // keeps, and the reason a host may set a mode without first proving what it is setting it on.
+  const std::uint64_t before = doc.pin()->revision();
+  {
+    Model::Transaction txn = doc.transact();
+    txn.set_blend(ObjectId{999999}, BlendMode::Darken); // absent
+    txn.set_blend(comp, BlendMode::Darken);             // present, but a composition
+    REQUIRE(txn.commit().has_value());
+  }
+  CHECK(doc.pin()->find_layer(layer)->blend() == BlendMode::Normal);
+  CHECK(doc.pin()->revision() > before); // the commit published; the two mutations did nothing
 }
