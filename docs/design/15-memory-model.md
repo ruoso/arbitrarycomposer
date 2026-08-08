@@ -310,6 +310,34 @@ is the default for document arenas, because it buys four things at once:
    Never a default-constructed stand-in of the right kind: a black solid where
    the user left a red one is silent data loss that looks like a working
    feature, where an unbound record is a fact a host can act on.
+
+   **The params a reopen replays are the params that were CAPTURED, not the
+   params as of the last checkpoint** (issue #38). Capture happens at exactly
+   two points, both of them publishing transactions: when a content enters the
+   document (`add_content`, `create_content_and_attach`), and when its config is
+   rewritten in place (`update_content_config`). Nothing re-captures at
+   checkpoint time, and nothing could sensibly: re-capture means running every
+   kind's codec over every content, which for a raster means hashing its tiles,
+   on a cadence that is supposed to be cheap enough to run unattended.
+
+   The consequence is a rule, and it is the whole answer to "does my kind's
+   post-creation state survive a mapped reopen": **`update_content_config` is the
+   required path for a durable param edit.** A kind that mutates its own
+   parameters in place — and does not publish that through the record — leaves
+   the arena holding what it was built from, and a reopen through the workspace
+   map rebuilds the *original*. The edit is not lost from the user's point of
+   view until they notice the thing moved back, which is why this is stated here
+   rather than left implicit.
+
+   Two things this rule does *not* reach, and both are why the picture looks
+   inconsistent from outside. **Editable state is a different channel entirely**:
+   a kind whose post-creation state is a `StateHandle` (a raster's pixels) rides
+   the record's state slab, captured per edit, recovered through
+   `recovered_content_state()` — nothing about params applies to it. And the
+   **canonical `.arbc` save is not the workspace arena**: a save re-runs each
+   kind's codec at save time, so it always writes current params, and a document
+   that round-trips correctly through `save`/`load` can still revert through a
+   mapped reopen. A host testing only the canonical path will not see this.
 2. **Larger-than-RAM documents.** Residency is the kernel's problem:
    file-backed pages are demand-paged in and — unlike anonymous memory,
    which needs swap — *clean pages evict for free* under pressure. This is

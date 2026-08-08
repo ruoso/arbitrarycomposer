@@ -192,6 +192,28 @@ public:
   // identity and a reopen reports it as unreconstructable rather than guessing
   // (refinement Decision 1). WRITER-THREAD ONLY, and installed before any
   // `add_content` whose identity should be captured.
+  //
+  // CAPTURED AT TWO POINTS, AND NEVER RE-CAPTURED (issue #38). This hook runs when a
+  // content ENTERS the document -- `add_content`, `create_content_and_attach` -- and
+  // `update_content_config` publishes a rewritten identity through the same record. Nothing
+  // else writes it: not a checkpoint, not a commit, not a save. Re-capturing on a cadence
+  // would mean running every kind's codec over every content, which for a raster means
+  // hashing its tiles, on a tick that is supposed to be cheap enough to run unattended.
+  //
+  // So the rule a host needs, stated plainly: **`update_content_config` is the required path
+  // for a durable param edit.** A kind that mutates its own parameters in place and does not
+  // publish that through the record leaves the arena holding what it was BUILT from, and a
+  // reopen through the workspace map (`open_document`) rebuilds the ORIGINAL -- the edit
+  // silently reverts, and the user does not find out until they notice the thing moved back.
+  //
+  // Two things this does not reach, and they are why the picture can look inconsistent from
+  // a host's side. `Editable` state is a DIFFERENT CHANNEL -- a kind whose post-creation
+  // state is a `StateHandle` rides the record's state slab, captured per edit and recovered
+  // through `recovered_content_state()`, and nothing about params applies to it. And the
+  // canonical `.arbc` save is NOT this: `save_document` re-runs each kind's codec at save
+  // time, so it always writes current params. A document that round-trips correctly through
+  // save/load can therefore still revert through a mapped reopen, and a host testing only
+  // the canonical path will never see it.
   using ContentIdentityCapture = std::function<bool(const Content& content, std::uint64_t kind,
                                                     std::string& kind_id, std::string& params)>;
   void set_content_identity_capture(ContentIdentityCapture capture);
@@ -244,6 +266,13 @@ public:
   // record, so the journal already carries it) -- and `undo()`/`redo()` below then rebuild
   // the live object to match. A host that navigates through `journal()` directly instead
   // must call `reconcile_content_bindings()` itself. WRITER-THREAD ONLY.
+  //
+  // THIS IS ALSO THE DURABILITY PATH (issue #38). Because the identity is captured at
+  // `add_content` and never re-captured, this is the ONLY verb that makes a post-creation
+  // parameter change survive a reopen through the workspace map. A kind that mutates its own
+  // params in place instead leaves the arena describing the content it was built from; see
+  // `set_content_identity_capture` above for the full rule and for the two channels it does
+  // not govern.
   bool update_content_config(ObjectId id, std::string_view params, std::string name = {});
 
   // Navigate history AND keep the live contents consistent with it (issue #34).

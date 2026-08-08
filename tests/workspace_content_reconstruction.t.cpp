@@ -276,4 +276,102 @@ TEST_CASE("reconstruction survives a session that interns kinds in a different o
   CHECK(solid->color().r == colour.r);
 }
 
+// enforces: 15-memory-model#workspace-params-are-as-captured-not-as-of-checkpoint
+TEST_CASE("a config rewritten through update_content_config survives a mapped reopen") {
+  // Issue #38's first half, and the good news. `update_content_config` publishes a versioned
+  // params rewrite THROUGH THE RECORD (issue #34), so the arena holds the edited params and a
+  // reopen replays them. This is what makes it the required path for a durable param edit --
+  // and it holds by construction, not because a particular mutation sequence happens to work.
+  TempPath path;
+  const arbc::CodecTable codecs = arbc::builtin_codecs();
+  const arbc::Registry registry = builtin_registry();
+  const arbc::Rgba created{1.0F, 0.0F, 0.0F, 1.0F};
+  ObjectId cid{};
+  {
+    KindBridge bridge;
+    arbc::LoadContext ctx{std::string{}};
+    auto made = Document::create(path.str(), no_cadence());
+    REQUIRE(made.has_value());
+    Document& doc = **made;
+    doc.set_content_identity_capture(arbc::codec_identity_capture(codecs, bridge));
+    doc.set_content_reconstruct(arbc::codec_content_reconstruct(codecs, registry, ctx));
+    const ObjectId comp = doc.add_composition(8.0, 8.0);
+    cid = doc.add_content(std::make_shared<SolidContent>(created),
+                          bridge.intern(SolidContent::kind_id, "1"));
+    doc.attach_layer(comp, doc.add_layer(cid, arbc::Affine::identity()));
+
+    // The post-creation edit, published the supported way. Checkpointed, NOT saved: the
+    // canonical `.arbc` is a different path and re-runs the codec at save time, so it would
+    // hide exactly the question being asked here.
+    REQUIRE(doc.update_content_config(cid, R"({"color":[0.0,0.0,1.0,1.0]})", "Recolour"));
+    REQUIRE(doc.checkpoint().has_value());
+  }
+
+  arbc::LoadContext ctx{std::string{}};
+  KindBridge bridge;
+  auto reopened = arbc::open_document(path.str(), registry, codecs, ctx, bridge, no_cadence());
+  REQUIRE(reopened.has_value());
+  CHECK(reopened->reconstructed == 1);
+  const auto* const solid = dynamic_cast<const SolidContent*>(reopened->document->resolve(cid));
+  REQUIRE(solid != nullptr);
+  // The EDIT, not the creation. The arena carried the rewrite.
+  CHECK(solid->color().b == 1.0F);
+  CHECK(solid->color().r == 0.0F);
+}
+
+// enforces: 15-memory-model#workspace-params-are-as-captured-not-as-of-checkpoint
+TEST_CASE("a live object that diverged from its record is rebuilt from the record") {
+  // Issue #38's second half, and the limit worth stating loudly. Capture happens at
+  // `add_content` and at `update_content_config`, and NOWHERE else -- no checkpoint
+  // re-captures, because re-capture means running every kind's codec over every content on a
+  // cadence meant to be cheap enough to run unattended. So a kind that mutates its own params
+  // in place, and does not publish that through the record, leaves the arena describing what
+  // it was BUILT from.
+  //
+  // `rebind_content` stands in for that self-mutation exactly: it swaps the live object for a
+  // differently-parameterised one under the same id, publishing no version -- which is the
+  // same divergence, reached through a public seam and with no test-only kind needed. The
+  // point is not the seam; it is that the RECORD is what a mapped reopen replays.
+  TempPath path;
+  const arbc::CodecTable codecs = arbc::builtin_codecs();
+  const arbc::Rgba created{1.0F, 0.0F, 0.0F, 1.0F};
+  ObjectId cid{};
+  {
+    KindBridge bridge;
+    auto made = Document::create(path.str(), no_cadence());
+    REQUIRE(made.has_value());
+    Document& doc = **made;
+    doc.set_content_identity_capture(arbc::codec_identity_capture(codecs, bridge));
+    const ObjectId comp = doc.add_composition(8.0, 8.0);
+    cid = doc.add_content(std::make_shared<SolidContent>(created),
+                          bridge.intern(SolidContent::kind_id, "1"));
+    doc.attach_layer(comp, doc.add_layer(cid, arbc::Affine::identity()));
+
+    // The live object now says GREEN and the record still says RED.
+    REQUIRE(doc.rebind_content(cid, std::make_shared<SolidContent>(Rgba{0.0F, 1.0F, 0.0F, 1.0F})));
+    const auto* const live = dynamic_cast<const SolidContent*>(doc.resolve(cid));
+    REQUIRE(live != nullptr);
+    REQUIRE(live->color().g == 1.0F);
+
+    // A checkpoint does not reconcile them. This is the assertion the whole issue is about:
+    // the durable record is unchanged, so the divergence is not something the cadence heals.
+    REQUIRE(doc.checkpoint().has_value());
+    CHECK(doc.pin()->content_identity(cid).params == R"({"color":[1.0,0.0,0.0,1.0]})");
+  }
+
+  const arbc::Registry registry = builtin_registry();
+  arbc::LoadContext ctx{std::string{}};
+  KindBridge bridge;
+  auto reopened = arbc::open_document(path.str(), registry, codecs, ctx, bridge, no_cadence());
+  REQUIRE(reopened.has_value());
+  CHECK(reopened->reconstructed == 1);
+  const auto* const solid = dynamic_cast<const SolidContent*>(reopened->document->resolve(cid));
+  REQUIRE(solid != nullptr);
+  // RED: the captured params, replayed. Reconstruction SUCCEEDED and gave back the original,
+  // which is the shape that looks like success from every angle -- and is why the rule is
+  // documented rather than left to be discovered.
+  CHECK(solid->color().r == 1.0F);
+  CHECK(solid->color().g == 0.0F);
+}
+
 #endif // ARBC_HAS_WORKSPACE_FILES
