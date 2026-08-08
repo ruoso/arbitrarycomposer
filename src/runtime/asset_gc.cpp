@@ -265,13 +265,15 @@ std::optional<std::filesystem::path> FilesystemAssetReaper::asset_path(std::stri
     // The one irreversible operation in this file gets the one path check: a key that
     // normalizes its way OUT of its own base names something this reaper was never given, and
     // no `..` reaches `remove`.
-    const std::filesystem::path candidate = (base.root / tail).lexically_normal();
+    // Non-const so the return moves into the optional rather than copying the path
+    // (performance-no-automatic-move).
+    std::filesystem::path candidate = (base.root / tail).lexically_normal();
     const std::filesystem::path root = base.root.lexically_normal();
     const auto relative = candidate.lexically_relative(root);
     if (relative.empty() || *relative.begin() == "..") {
       return std::nullopt;
     }
-    return candidate;
+    return candidate; // implicitly moved: a non-const local returned as an optional
   }
   return std::nullopt;
 }

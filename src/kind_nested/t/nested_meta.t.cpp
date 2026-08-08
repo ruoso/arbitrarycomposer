@@ -6,6 +6,7 @@
 #include <arbc/model/model.hpp>
 #include <arbc/surface/backend.hpp>
 #include <arbc/surface/testing/stub_backend.hpp>
+#include <arbc/surface/testing/stub_surface.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -98,6 +99,48 @@ void build_scene(Scene& s, Content* a, Content* b, bool declare_canvas) {
 }
 
 } // namespace
+
+// enforces: 02-architecture#worker-dispatch-is-leaf-only
+TEST_CASE("an UNBOUND nested render answers inexact and composites nothing") {
+  // The fail-safe half of issue #29. A nesting content is never handed to a worker, so neither
+  // shipped driver can render one that has been detached -- but the answer to "render me with
+  // no services" has to be a VALUE, because the one thing this path must never do is
+  // dereference a `DocRoot` a binding scope has already released. Inexact, so nothing is ever
+  // served from it as a fresh answer.
+  Scene scene;
+  StubLeaf a(Rect{0.0, 0.0, 2.0, 2.0}, Stability::Static);
+  StubLeaf b(Rect{0.0, 0.0, 2.0, 2.0}, Stability::Static);
+  build_scene(scene, &a, &b, /*declare_canvas=*/true);
+  const DocStatePtr doc = scene.model.current();
+
+  NullPull pull;
+  NullBackend backend;
+  NestedContent nested(scene.comp);
+  CHECK_FALSE(nested.attached());
+
+  testing::StubSurface target(4, 4, k_working_rgba32f);
+  const RenderRequest request{
+      Rect{0.0, 0.0, 4.0, 4.0}, 1.0, Time::zero(), StateHandle{}, target, Exactness::Exact,
+      Deadline::none()};
+  const std::optional<RenderResult> unbound =
+      nested.render(request, std::make_shared<RenderCompletion>());
+  REQUIRE(unbound.has_value());
+  CHECK_FALSE(unbound->exact);
+
+  // Bound, the very same request answers exactly -- so the fail-safe is a state, not a defect.
+  nested.attach(pull, backend, scene.resolver(), *doc);
+  const std::optional<RenderResult> bound =
+      nested.render(request, std::make_shared<RenderCompletion>());
+  REQUIRE(bound.has_value());
+  CHECK(bound->exact);
+
+  // ... and detaching returns it to the fail-safe: the binder detaches every frame.
+  nested.detach();
+  const std::optional<RenderResult> again =
+      nested.render(request, std::make_shared<RenderCompletion>());
+  REQUIRE(again.has_value());
+  CHECK_FALSE(again->exact);
+}
 
 TEST_CASE("nested exposes its child layers as operator inputs in membership order") {
   StubLeaf a(Rect{0.0, 0.0, 2.0, 2.0}, Stability::Static);

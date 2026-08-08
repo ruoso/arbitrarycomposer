@@ -418,6 +418,9 @@ std::size_t Document::reconcile_content_bindings() {
     if (!rebind_content(id, std::move(rebuilt))) {
       continue;
     }
+    // `rebind_content` records the identity it just bound, and the key is one this loop is
+    // standing on -- an assignment to an EXISTING key, which rehashes nothing and invalidates
+    // no iterator. Restating it here keeps the invariant readable at the site that owns it.
     bound_params = identity.params;
     ++rebound;
   }

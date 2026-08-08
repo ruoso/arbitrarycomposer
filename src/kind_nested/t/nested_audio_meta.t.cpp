@@ -219,6 +219,38 @@ AudioResult render_mix(NestedContent& nested, std::uint32_t rate, ChannelLayout 
 
 } // namespace
 
+// enforces: 02-architecture#worker-dispatch-is-leaf-only
+TEST_CASE("an UNBOUND nested audio render answers a silent block") {
+  // The audio twin of the visual fail-safe (issue #29). The binder detaches every frame, and
+  // an audio render that arrived with no services must answer a value rather than dereference
+  // a released snapshot -- silence, which is already this facet's honest answer for a child it
+  // cannot see, over a target it has just zeroed.
+  ConstAudioLeaf a(1.0F);
+  ConstAudioLeaf b(1.0F);
+  Scene scene;
+  build_scene(scene, &a, &b);
+  const std::uint32_t rate = 48'000;
+  const std::uint32_t frames = 4;
+
+  NestedContent nested(scene.comp);
+  CHECK_FALSE(nested.attached());
+  std::vector<float> out;
+  const AudioResult unbound = render_mix(nested, rate, ChannelLayout::Mono, frames, out);
+  CHECK(unbound.achieved_rate == rate);
+  for (const float sample : out) {
+    CHECK(sample == 0.0F); // silence, and the target really was written
+  }
+
+  // Bound, the same request mixes the children -- so silence was the unbound STATE, not a
+  // scene that happens to be quiet.
+  RoutingAudioPull pull;
+  NullBackend backend;
+  const DocStatePtr doc = scene.model.current();
+  nested.attach(pull, backend, scene.resolver(), *doc);
+  render_mix(nested, rate, ChannelLayout::Mono, frames, out);
+  CHECK(out.front() != 0.0F);
+}
+
 TEST_CASE("nested audio mix culls inaudible, zero-gain, missing, and unresolved layers") {
   RoutingAudioPull pull;
   NullBackend backend;

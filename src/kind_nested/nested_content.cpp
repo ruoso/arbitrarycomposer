@@ -3,7 +3,6 @@
 #include <arbc/media/image_resampler.hpp>
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -542,10 +541,11 @@ std::optional<RenderResult> NestedContent::render(const RenderRequest& request,
     backend_ptr = d_backend;
   }
   if (doc == nullptr || backend_ptr == nullptr || d_pull == nullptr) {
-    // Unbound. Unreachable through either shipped driver -- both bind before they render --
-    // so this is the fail-safe rather than a supported mode: report INEXACT so nothing
-    // caches these pixels as a fresh answer, and composite nothing at all.
-    assert(false && "NestedContent rendered before attach");
+    // Unbound. Neither shipped driver can reach this -- both bind before they render -- but it
+    // is answered as a VALUE rather than asserted, because the one thing this must never do is
+    // dereference a service it does not have. INEXACT, and nothing composited: an inexact tile
+    // is never served as a fresh answer, so a frame that somehow got here re-renders once the
+    // binding exists instead of caching a blank.
     return RenderResult{request.scale, false};
   }
   Backend& backend = *backend_ptr;
@@ -916,9 +916,9 @@ NestedContent::NestedAudioFacet::render_audio(const AudioRequest& request,
   }
 
   if (doc == nullptr || self.d_pull == nullptr) {
-    // Unbound: the fail-safe, unreachable through either shipped monitor. A silent block
-    // is already this facet's honest answer for a child it cannot see.
-    assert(false && "NestedContent audio rendered before attach");
+    // Unbound, answered as a value for the same reason the visual path does: a silent block is
+    // already this facet's honest answer for a child it cannot see, and the target has just
+    // been zeroed above.
     return AudioResult{request.sample_rate, true};
   }
 

@@ -34,7 +34,9 @@ surface moves freely, and changelog honesty is what makes that safe
   beside its inputs — the same edge damage routing's operator-layer memo already admits
   a nesting layer on. `NestedContent::render` and `render_audio` additionally snapshot
   their borrowed services once under the lock `attach`/`detach` take, releasing it
-  before any pull, so no unsynchronized read of a concurrently-nulled pointer remains.
+  before any pull, so no unsynchronized read of a concurrently-nulled pointer remains,
+  and answer an unbound render as a value — an inexact frame, a silent block — rather
+  than dereferencing a service they do not have.
 
 ### Added
 

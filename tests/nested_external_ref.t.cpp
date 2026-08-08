@@ -299,10 +299,26 @@ TEST_CASE("an external composition installs into an OPEN document and the cell r
   CHECK(source.requests() == 1);
 
   // Unavailable stays a value, not an error: the host still places a cell, which renders the
-  // placeholder and re-saves its `ref` verbatim.
+  // placeholder and re-saves its `ref` verbatim. An EMPTY reference is the same answer -- there
+  // is nothing to resolve, and asking is not an error either.
   CHECK_FALSE(
       arbc::install_external_composition(doc, bridge, registry, "missing.arbc", "mem/parent.arbc")
           .valid());
+  CHECK_FALSE(
+      arbc::install_external_composition(doc, bridge, registry, "", "mem/parent.arbc").valid());
+
+  // A source passed EXPLICITLY replaces the one the open recorded, for this call and for the
+  // settles that follow it -- the shape a host takes when the file it just wrote lives
+  // somewhere its original source does not serve.
+  MemoryAssetSource other;
+  other.put("mem/second.arbc", k_leaf);
+  const std::size_t before = source.requests();
+  const ObjectId second = arbc::install_external_composition(doc, bridge, registry, "second.arbc",
+                                                             "mem/parent.arbc", &other);
+  REQUIRE(second.valid());
+  CHECK(second != child);
+  CHECK(other.requests() == 1);
+  CHECK(source.requests() == before); // the original source was not consulted again
 
   // And the session's own placement round-trips: saving now and reloading gives the shape the
   // user was ALREADY looking at, rather than one a reopen had to repair.
