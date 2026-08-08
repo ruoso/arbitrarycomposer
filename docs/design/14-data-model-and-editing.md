@@ -194,6 +194,34 @@ Reclaiming that retained content the moment its record leaves history — rather
 than at document close — is a bounded memory-hygiene follow-up, not a
 correctness requirement.
 
+**Rewriting a content's config is an edit, not a replacement.** The mutator
+surface mints contents and removes them; between those sits the case where a
+content's *parameters* change and everything else — its kind, its placement, its
+identity — is meant to survive. Consolidating a project (copying a borrowed image
+into it and repointing the cell at the copy) and relinking a moved file are both
+exactly one string changing. Expressed as delete-plus-insert they mint a **new
+`ObjectId`**, so every reference to the old one — a selection, another
+composition's nested reference, a host's per-cell state — silently names a dead
+id, and history records "recreate the thing" instead of "put the field back".
+
+So it is an in-place, versioned, journalled update of the record's **construction
+identity** (the persisted `{kind_id, params}` issue #19 gave it): one transaction,
+one entry, one undo press, `ObjectId` preserved, and the content damaged whole
+because a different config can change every pixel at every instant. The kind is
+*not* changeable — that is what add and remove are for — so the record's own
+`kind_id` is reused and a config the kind's codec cannot build is refused as a
+value, publishing nothing.
+
+The live object is rebuilt from the new text through the same routing a load and
+a reopen use, so three drivers cannot drift into three answers. That rebuild also
+makes undo whole: history restores the identity text structurally (it is an
+ordinary chunk record), and because the `Content` object lives in the runtime
+side-map *beside* the model, the navigation must then rebind the object the
+restored params describe. `undo()`/`redo()` on the document do that reconciliation
+— staleness compared as text against what each bound object was built from, never
+by re-capturing live objects, which would run every kind's codec on every
+navigation.
+
 ## Content state: the `Editable` facet
 
 Placement lives in core records, but content *internals* (the pixels, the

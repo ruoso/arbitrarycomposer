@@ -196,6 +196,79 @@ public:
                                                     std::string& kind_id, std::string& params)>;
   void set_content_identity_capture(ContentIdentityCapture capture);
 
+  // Rebuild a content from a persisted construction identity (issue #34), the exact
+  // inverse of `set_content_identity_capture`'s hook above and installed the same way and
+  // for the same reason: reconstructing means running the kind's registered codec, which
+  // lives behind a type this header must not name. The runtime bridge supplies a ready-made
+  // one (`codec_content_reconstruct` in `document_serialize.hpp`).
+  //
+  // `inputs` are the live objects the record's input edges resolve to, passed in rather than
+  // looked up, so the hook needs no `Document` of its own. Returns null to decline -- an
+  // unknown kind, a codec failure, params that do not parse -- and a decline is always
+  // answered as a value: nothing is published and nothing is rebound.
+  //
+  // A document with no hook installed keeps exactly its pre-issue-#34 behaviour:
+  // `update_content_config` refuses and `reconcile_content_bindings` rebinds nothing.
+  // WRITER-THREAD ONLY.
+  using ContentReconstruct = std::function<std::shared_ptr<Content>(
+      std::string_view kind_id, std::string_view params, std::span<const ContentRef> inputs)>;
+  void set_content_reconstruct(ContentReconstruct reconstruct);
+
+  // Rewrite one content's persisted CONFIG in place, preserving its `ObjectId` (issue #34).
+  //
+  // The mutator surface could mint a content and remove one, and nothing in between: a host
+  // that needed to change one field -- Consolidate rewriting an image's URI to the copy it
+  // just made inside the project, Relink repointing a cell at a moved file -- had to delete
+  // and re-insert, which mints a NEW id. Everything holding the old id (a selection, another
+  // composition's nested reference, the host's per-cell UI state) then silently names a dead
+  // one, and the journal records a delete/add pair rather than an edit -- for an operation
+  // whose whole user-facing meaning is "same picture, different file location".
+  //
+  // This is that edit. `params` is the kind's own canonical parameter text, exactly as the
+  // record stores it and the `.arbc` writes it. The kind is NOT changeable: the record's
+  // persisted `kind_id` is reused, so a config that the kind's codec cannot build declines
+  // rather than quietly becoming another kind.
+  //
+  // ONE transaction, so ONE journal entry and one undo press: the record's identity is
+  // rewritten and the content is damaged whole (its pixels changed everywhere, at every
+  // instant) in the same commit. The live object is rebuilt through the reconstruct hook and
+  // swapped into the id->Content side-map -- so a save writes the new params, a frame draws
+  // the new content, and the `ObjectId`, the record slot, the layer and every reference to it
+  // all survive.
+  //
+  // Returns false, having published NOTHING, if the id names no content record, the record
+  // carries no persisted identity to name its kind, an input edge resolves to nothing, no
+  // reconstruct hook is installed, or the hook declines.
+  //
+  // UNDO restores the record's params structurally (the identity text is an ordinary chunk
+  // record, so the journal already carries it) -- and `undo()`/`redo()` below then rebuild
+  // the live object to match. A host that navigates through `journal()` directly instead
+  // must call `reconcile_content_bindings()` itself. WRITER-THREAD ONLY.
+  bool update_content_config(ObjectId id, std::string_view params, std::string name = {});
+
+  // Navigate history AND keep the live contents consistent with it (issue #34).
+  //
+  // `journal().undo()` restores the RECORD graph, which is all history ever contained: the
+  // id->Content side-map is runtime state beside the model (doc 17:66-72), so a record whose
+  // construction identity moved leaves its live object behind. These wrap the navigation with
+  // `reconcile_content_bindings()`, so undoing an `update_content_config` puts back the
+  // content the params describe, not just the params.
+  //
+  // Identical to `journal().undo()`/`redo()` for a document that never rewrote a config --
+  // the reconcile finds nothing stale and rebinds nothing. WRITER-THREAD ONLY.
+  bool undo();
+  bool redo();
+
+  // Rebind every content whose live object no longer matches its record's persisted identity,
+  // returning how many were rebuilt (issue #34). The repair `undo()`/`redo()` run for you.
+  //
+  // Staleness is decided by comparing the record's identity text against the text the bound
+  // object was BUILT from, which this document remembers per id -- never by re-capturing the
+  // live object, which would mean running every kind's codec on every navigation (a raster's
+  // capture hashes its tiles). So a document that never rewrote a config pays one string
+  // compare per content and rebuilds nothing. WRITER-THREAD ONLY.
+  std::size_t reconcile_content_bindings();
+
   // Bind (or REBIND) `content` to an EXISTING content record, without minting one.
   //
   // The repair seam for a workspace reopen. `Document::open` restores the record
@@ -650,6 +723,17 @@ private:
   std::size_t d_settler_installs{0}; // install count: the last one out clears the slot
   bool d_settling{false};            // re-entrancy / load-in-flight suppression
   std::uint64_t d_auto_settled{0};   // arrivals installed ahead of a host edit
+
+  // The reconstruct hook (`set_content_reconstruct`, issue #34) and the identity text each
+  // bound object was BUILT from, keyed by content id. The map is what makes staleness a
+  // string compare rather than a re-capture; it is writer-thread-only state beside the model,
+  // exactly like the binding it describes, and an id whose record is gone is simply skipped.
+  ContentReconstruct d_content_reconstruct;
+  std::unordered_map<ObjectId, std::string> d_bound_params;
+  // The live objects a content record's input edges name; false if any edge resolves to
+  // nothing, which refuses the rebuild rather than producing an operator missing an input.
+  bool resolve_record_inputs(const DocStatePtr& pinned, ObjectId id,
+                             std::vector<ContentRef>& out) const;
 
   // The construction-identity capture (`set_content_identity_capture`): another
   // writer-thread-only plain value beside the settler, owning nothing.

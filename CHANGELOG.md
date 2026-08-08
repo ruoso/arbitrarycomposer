@@ -38,6 +38,23 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ### Added
 
+- **`Document::update_content_config`, `undo()`/`redo()`,
+  `reconcile_content_bindings()`, `set_content_reconstruct`, and
+  `codec_content_reconstruct`** (issue #34) — an in-place, versioned, journalled
+  rewrite of a content's persisted config that preserves its `ObjectId`. The mutator
+  surface could mint a content and remove one and nothing in between, so a host
+  changing one field — Consolidate repointing an image at the copy it just made inside
+  the project, Relink following a moved file — had to delete and re-insert, minting a
+  new id that every existing reference then silently missed. One call is now one
+  journal entry and one undo press, with the record slot, the layer binding and every
+  reference intact. The live object is rebuilt from the new params through the same
+  routing a load and a reopen use, and `undo()`/`redo()` rebind it to what the restored
+  params describe — history restores the identity text on its own, but the id→`Content`
+  side-map is runtime state beside the model and has to be reconciled. Staleness is a
+  string compare against what each object was built from, never a re-capture, so a
+  document that never rewrote a config pays nothing. The kind is not changeable, and
+  every failure is a value that publishes nothing.
+
 - **`install_external_composition(doc, bridge, registry, reference, base_uri, ...)`**
   (issue #32) — the seam that installs an external composition into an ALREADY-OPEN
   document. `ExternalCompositionLoader` was `LoadContext`-scoped and therefore

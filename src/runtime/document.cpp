@@ -120,6 +120,10 @@ ObjectId Document::mint_content(Model::Transaction& txn, Content& live, std::uin
     std::string params;
     if (d_identity_capture(live, kind, kind_id, params)) {
       txn.set_content_identity(id, kind_id, params);
+      // Remember what this object was BUILT from (issue #34): it is what makes a later
+      // staleness check a string compare instead of a re-capture, and a content added before
+      // any hook was installed simply has no entry and is never considered stale.
+      d_bound_params.insert_or_assign(id, params);
     }
   }
   // Copy the edges out under the kind's storage lock (`for_each_input`) before the
@@ -234,6 +238,10 @@ ObjectId Document::add_content(std::shared_ptr<Content> content, std::uint64_t k
     std::string params;
     if (d_identity_capture(live, kind, kind_id, params)) {
       txn.set_content_identity(id, kind_id, params);
+      // Remember what this object was BUILT from (issue #34): it is what makes a later
+      // staleness check a string compare instead of a re-capture, and a content added before
+      // any hook was installed simply has no entry and is never considered stale.
+      d_bound_params.insert_or_assign(id, params);
     }
   }
 
@@ -318,6 +326,120 @@ void Document::set_content_identity_capture(ContentIdentityCapture capture) {
   d_identity_capture = std::move(capture);
 }
 
+void Document::set_content_reconstruct(ContentReconstruct reconstruct) {
+  d_content_reconstruct = std::move(reconstruct);
+}
+
+// The live objects a content record's input edges name. Empty for every leaf; `false` when an
+// edge resolves to nothing, which refuses the whole operation rather than rebuilding an
+// operator with a missing input -- wrong content, not partial content (the same rule
+// `runtime.workspace_content_reconstruction` applies on the reopen path).
+bool Document::resolve_record_inputs(const DocStatePtr& pinned, ObjectId id,
+                                     std::vector<ContentRef>& out) const {
+  for (const ObjectId in : pinned->content_inputs(id)) {
+    Content* const live = resolve(in);
+    if (live == nullptr) {
+      return false;
+    }
+    out.push_back(live);
+  }
+  return true;
+}
+
+bool Document::update_content_config(ObjectId id, std::string_view params, std::string name) {
+  if (!d_content_reconstruct) {
+    return false; // no way to rebuild the object: refuse rather than publish a lie
+  }
+  const DocStatePtr pinned = d_model->current();
+  if (pinned->find_content(id) == nullptr) {
+    return false;
+  }
+  // The kind comes from the RECORD, never from the caller: this rewrites a config, and a
+  // config that names another kind is a different content, which is what `add_content` and
+  // `remove_content` are for.
+  const DocRoot::ContentIdentity identity = pinned->content_identity(id);
+  if (identity.kind_id.empty()) {
+    return false; // nothing persisted names this content's kind (a pre-issue-#19 record)
+  }
+  std::vector<ContentRef> inputs;
+  if (!resolve_record_inputs(pinned, id, inputs)) {
+    return false;
+  }
+  std::shared_ptr<Content> rebuilt = d_content_reconstruct(identity.kind_id, params, inputs);
+  if (rebuilt == nullptr) {
+    return false; // the codec declined: nothing published, nothing rebound
+  }
+
+  // ONE transaction: the record's new identity and the damage it implies, so one user action
+  // is one journal entry and one undo press (issue #20's rule, applied to an edit that did
+  // not exist when that landed). The damage is whole-object and all-time -- rebuilding a
+  // content from a different config can change every pixel at every instant, and the absorbing
+  // shape is what a frame needs to repaint the layers showing it.
+  auto txn = begin(std::move(name));
+  txn.set_content_identity(id, identity.kind_id, params);
+  Damage dmg;
+  dmg.object = id;
+  dmg.rect = Rect::infinite();
+  dmg.range = TimeRange::all();
+  txn.add_damage(dmg);
+  txn.commit();
+
+  // The live object follows the record. `rebind_content` publishes no version and appends no
+  // entry, which is exactly right here: the versioned change is the one just committed, and
+  // this is the side-map catching up to it.
+  static_cast<void>(rebind_content(id, std::move(rebuilt)));
+  d_bound_params.insert_or_assign(id, std::string(params));
+  return true;
+}
+
+std::size_t Document::reconcile_content_bindings() {
+  if (!d_content_reconstruct) {
+    return 0;
+  }
+  const DocStatePtr pinned = d_model->current();
+  std::size_t rebound = 0;
+  for (auto& [id, bound_params] : d_bound_params) {
+    if (pinned->find_content(id) == nullptr) {
+      continue; // the record is gone (an undone add, a removal still in history)
+    }
+    const DocRoot::ContentIdentity identity = pinned->content_identity(id);
+    if (identity.kind_id.empty() || identity.params == bound_params) {
+      continue; // the common case, and the reason staleness is a string compare
+    }
+    std::vector<ContentRef> inputs;
+    if (!resolve_record_inputs(pinned, id, inputs)) {
+      continue;
+    }
+    std::shared_ptr<Content> rebuilt =
+        d_content_reconstruct(identity.kind_id, identity.params, inputs);
+    if (rebuilt == nullptr) {
+      continue; // a decline leaves the previous object bound: stale, never null
+    }
+    if (!rebind_content(id, std::move(rebuilt))) {
+      continue;
+    }
+    bound_params = identity.params;
+    ++rebound;
+  }
+  return rebound;
+}
+
+bool Document::undo() {
+  if (!d_journal.undo()) {
+    return false;
+  }
+  reconcile_content_bindings();
+  return true;
+}
+
+bool Document::redo() {
+  if (!d_journal.redo()) {
+    return false;
+  }
+  reconcile_content_bindings();
+  return true;
+}
+
 bool Document::rebind_content(ObjectId id, std::shared_ptr<Content> content) {
   // The record must already exist. Binding an object to an id the document does not
   // have would leave a row nothing can ever reach through `resolve` (which is keyed by
@@ -356,6 +478,14 @@ bool Document::rebind_content(ObjectId id, std::shared_ptr<Content> content) {
   next->insert_or_assign(id, std::move(content));
   d_contents.store(std::move(next));
   d_binding.bind(id, live);
+  // Whatever was just bound is taken to BE what the record describes -- that is this seam's
+  // whole contract, and it is literally true on the reopen path, which builds the object from
+  // this very identity. Recording it keeps the staleness check (issue #34) honest: without
+  // this, every reconstructed content would read as stale on the first navigation.
+  const DocRoot::ContentIdentity identity = pinned->content_identity(id);
+  if (!identity.kind_id.empty()) {
+    d_bound_params.insert_or_assign(id, identity.params);
+  }
   return true;
 }
 

@@ -820,6 +820,12 @@ target_link_libraries(
   PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
 catch_discover_tests(arbc_workspace_content_reconstruction_t)
 
+add_executable(arbc_document_content_config_update_t document_content_config_update.t.cpp)
+target_link_libraries(
+  arbc_document_content_config_update_t
+  PRIVATE arbc nlohmann_json::nlohmann_json Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_document_content_config_update_t)
+
 add_executable(arbc_document_rebind_content_t document_rebind_content.t.cpp)
 target_link_libraries(arbc_document_rebind_content_t
                       PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)

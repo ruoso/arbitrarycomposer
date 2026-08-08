@@ -157,6 +157,27 @@ ARBC_API CodecTable builtin_codecs(const Registry& registry, RasterTileStore* ti
 ARBC_API Document::ContentIdentityCapture codec_identity_capture(const CodecTable& codecs,
                                                                  const KindBridge& bridge);
 
+// The codec-backed CONTENT RECONSTRUCT hook (issue #34), the mirror of the capture above:
+// it takes a persisted `{kind_id, params}` and the live objects the record's input edges name,
+// and builds the content back through exactly the routing `load_document` runs per content
+// body -- so an in-place config rewrite and a reopen and a load all produce the same object
+// from the same text, by construction rather than by three implementations staying in step.
+//
+// Install it on a `Document` (`set_content_reconstruct`) to enable `update_content_config` and
+// the `undo()`/`redo()` reconciliation behind it. Without it both are inert, which is exactly
+// the pre-issue-#34 document.
+//
+// `ctx` carries the base URI and `AssetSource` an asset-bearing kind's rebuild fetches through
+// -- which is the point for the motivating case: repointing an `org.arbc.image` at a file the
+// host just copied into the project has to actually READ that file. All three of `codecs`,
+// `registry` and `ctx` are borrowed and must outlive the document the hook is installed on.
+//
+// It declines (null) rather than approximating: an unregistered kind, params that are not a
+// JSON object, or a codec that fails. `Document::update_content_config` turns a decline into a
+// refused edit that publishes nothing.
+ARBC_API Document::ContentReconstruct
+codec_content_reconstruct(const CodecTable& codecs, const Registry& registry, LoadContext& ctx);
+
 // What a reconstructing reopen produced (`open_document` below).
 struct ReopenedDocument {
   std::unique_ptr<Document> document;

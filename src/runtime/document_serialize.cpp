@@ -266,6 +266,37 @@ Document::ContentIdentityCapture codec_identity_capture(const CodecTable& codecs
   };
 }
 
+Document::ContentReconstruct codec_content_reconstruct(const CodecTable& codecs,
+                                                       const Registry& registry, LoadContext& ctx) {
+  return
+      [&codecs, &registry, &ctx](std::string_view kind_id, std::string_view params,
+                                 std::span<const ContentRef> inputs) -> std::shared_ptr<Content> {
+        // The SAME `{kind, params}` frame the reader takes and the reopen rebuilds from, assembled
+        // here from the two halves the record persists (`reconstruct_contents` below builds the
+        // identical body). One reconstruction routing, three drivers.
+        nlohmann::json body;
+        body["kind"] = std::string(kind_id);
+        body["params"] = nlohmann::json::parse(params, nullptr, /*allow_exceptions=*/false);
+        if (body["params"].is_discarded() || !body["params"].is_object()) {
+          return nullptr; // params that do not parse as an object are a decline, never a guess
+        }
+        // A nesting kind names its child composition in the params frame its own codec wrote,
+        // exactly as the reopen path reads it -- `ObjectId{}` for every other kind, which is what
+        // the canonical reader passes for a non-nesting body.
+        ObjectId composition{};
+        if (const auto comp_field = body["params"].find("composition");
+            comp_field != body["params"].end() && comp_field->is_number_unsigned()) {
+          composition = ObjectId{comp_field->get<std::uint64_t>()};
+        }
+        expected<std::unique_ptr<Content>, ReaderError> rebuilt =
+            content_body_from_json(body, inputs, composition, codecs, registry, ctx);
+        if (!rebuilt.has_value()) {
+          return nullptr;
+        }
+        return std::shared_ptr<Content>(std::move(*rebuilt));
+      };
+}
+
 expected<ReopenedDocument, WorkspaceFileError>
 open_document(const std::string& path, const Registry& registry, const CodecTable& codecs,
               LoadContext& ctx, KindBridge& bridge,
