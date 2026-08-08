@@ -29,6 +29,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -408,4 +409,33 @@ TEST_CASE("a kind's insert schema describes its config without the host knowing 
   // so they advertise nothing to collect.
   CHECK(registry.insert_schema(arbc::FadeContent::kind_id) == nullptr);
   CHECK(registry.insert_schema("org.example.absent") == nullptr);
+}
+
+// enforces: 03-layer-plugin-interface#registry-distinguishes-not-insertable-from-no-schema
+TEST_CASE("the bootstrapped builtins declare which of them a user may actually mint") {
+  // Issue #37, against the library's OWN registrations -- which is where the gap it reports
+  // was already live. `org.arbc.fade` and `org.arbc.crossfade` refuse every `ContentConfig`
+  // there is (an operator's input edges cannot travel one), so a host enumerating
+  // `Registry::ids()` with no per-kind allowlist offered a raw-config box for a construction
+  // that could not succeed under any string a user typed.
+  Registry registry;
+  arbc::register_builtin_kinds(registry);
+
+  // Constructible builtins are offered, and the schema/raw-config split is untouched.
+  CHECK(registry.insert_offer(SolidContent::kind_id) == arbc::KindInsertOffer::Schema);
+  CHECK(registry.insert_offer(RasterContent::kind_id) == arbc::KindInsertOffer::Schema);
+  CHECK(registry.insert_offer(NestedContent::kind_id) == arbc::KindInsertOffer::Schema);
+
+  // The operator kinds are not.
+  CHECK(registry.insert_offer(arbc::FadeContent::kind_id) == arbc::KindInsertOffer::NotInsertable);
+  CHECK(registry.insert_offer(arbc::CrossfadeContent::kind_id) ==
+        arbc::KindInsertOffer::NotInsertable);
+
+  // Not-offered is not un-registered: both stay fully present, which is what keeps a document
+  // holding a fade loading, rendering and re-saving exactly as before.
+  CHECK(registry.factory(arbc::FadeContent::kind_id) != nullptr);
+  REQUIRE(registry.metadata(arbc::FadeContent::kind_id) != nullptr);
+  CHECK(registry.metadata(arbc::FadeContent::kind_id)->human_name == "Fade");
+  const std::vector<std::string_view> ids = registry.ids();
+  CHECK(std::find(ids.begin(), ids.end(), arbc::FadeContent::kind_id) != ids.end());
 }

@@ -36,6 +36,17 @@ const KindInsertSchema* Registry::insert_schema(std::string_view id) const {
   return (entry != nullptr && entry->insert_schema.has_value()) ? &*entry->insert_schema : nullptr;
 }
 
+KindInsertOffer Registry::insert_offer(std::string_view id) const {
+  const Entry* const entry = find(id);
+  if (entry == nullptr || entry->metadata.insertability == KindInsertability::Internal) {
+    // Unregistered and internal are one answer to the only question being asked: do not offer
+    // it. They are different FACTS, and a host that cares tells them apart with
+    // `metadata(id)`, which is null for exactly one of them.
+    return KindInsertOffer::NotInsertable;
+  }
+  return entry->insert_schema.has_value() ? KindInsertOffer::Schema : KindInsertOffer::RawConfig;
+}
+
 const ContentFactory* Registry::factory(std::string_view id) const {
   const Entry* entry = find(id);
   return entry != nullptr ? &entry->factory : nullptr;

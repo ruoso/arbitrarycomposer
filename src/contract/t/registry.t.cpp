@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 using namespace arbc;
 
@@ -182,4 +183,59 @@ TEST_CASE("Registry entries optionally carry a kind codec and an operator binder
     REQUIRE(empty.error() == RegistryError::EmptyId);
     REQUIRE(registry.size() == 1);
   }
+}
+
+// enforces: 03-layer-plugin-interface#registry-distinguishes-not-insertable-from-no-schema
+TEST_CASE("Registry says whether a kind should be OFFERED, not only how to build one") {
+  // Issue #37. `insert_schema(id) == nullptr` had to carry two incompatible meanings: issue
+  // #21 made "no schema, but DO offer it" first-class (the raw-config fallback), leaving no
+  // spelling for "registered, but not something a user mints from a menu" -- which a host's own
+  // camera kind, registered so its documents round-trip, needs. The host's only recourse was
+  // the per-kind allowlist the registry seam exists to abolish, and it would have fixed only
+  // the kinds that host happens to know.
+  Registry registry;
+
+  const KindInsertSchema schema{{KindInsertField{"width", KindInsertField::Type::Integer, "16"}},
+                                [](std::span<const std::string> values) {
+                                  return expected<std::string, std::string>(values[0]);
+                                }};
+
+  REQUIRE(registry
+              .add("org.test.described", ok_factory(), KindMetadata{"Described", "1"}, std::nullopt,
+                   std::nullopt, std::nullopt, schema)
+              .has_value());
+  REQUIRE(registry.add("org.test.opaque", ok_factory(), KindMetadata{"Opaque", "1"}).has_value());
+  REQUIRE(registry
+              .add("org.test.camera", ok_factory(),
+                   KindMetadata{"Camera", "1", KindInsertability::Internal})
+              .has_value());
+  // An Internal kind may still describe its config -- the declaration is about MINTING, not
+  // about whether the grammar is known.
+  REQUIRE(registry
+              .add("org.test.record", ok_factory(),
+                   KindMetadata{"Record", "1", KindInsertability::Internal}, std::nullopt,
+                   std::nullopt, std::nullopt, schema)
+              .has_value());
+
+  // The three answers, from one call, with no kind id known to the caller.
+  CHECK(registry.insert_offer("org.test.described") == KindInsertOffer::Schema);
+  CHECK(registry.insert_offer("org.test.opaque") == KindInsertOffer::RawConfig);
+  CHECK(registry.insert_offer("org.test.camera") == KindInsertOffer::NotInsertable);
+  CHECK(registry.insert_offer("org.test.record") == KindInsertOffer::NotInsertable);
+  // A host cannot construct what nobody registered, so the unregistered case folds into the
+  // same answer rather than needing a second null check.
+  CHECK(registry.insert_offer("org.test.absent") == KindInsertOffer::NotInsertable);
+
+  // The declaration constrains minting ALONE. Everything else about an Internal kind stays
+  // registered and stays readable -- which is what lets its documents keep round-tripping.
+  CHECK(registry.factory("org.test.record") != nullptr);
+  CHECK(registry.insert_schema("org.test.record") != nullptr);
+  REQUIRE(registry.metadata("org.test.record") != nullptr);
+  CHECK(registry.metadata("org.test.record")->human_name == "Record");
+  CHECK(registry.metadata("org.test.record")->insertability == KindInsertability::Internal);
+
+  // The default is host-insertable, so a registration written before the distinction existed
+  // means exactly what it meant -- and the raw-config fallback it relies on is untouched.
+  CHECK(registry.metadata("org.test.opaque")->insertability == KindInsertability::Host);
+  CHECK(registry.insert_schema("org.test.opaque") == nullptr);
 }

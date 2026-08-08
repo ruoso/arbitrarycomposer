@@ -28,12 +28,42 @@ enum class RegistryError {
   DuplicateId, // a kind with this id is already registered
 };
 
+// Whether a USER should be able to mint this kind out of an insert menu (issue #37).
+//
+// Registration answers "how do I construct this kind"; it never answered "should anyone".
+// Those are different questions and a host driving its UI off the registry needs both: a kind
+// is often registered so its documents ROUND-TRIP -- a host's own camera kind, a plugin that
+// owns a persisted record and nothing a user authors -- and registration was the only signal
+// available, so such a kind appeared in the insert dialog and a user could mint one that
+// skipped the host's real creation path. The alternative was a per-kind allowlist in the host,
+// which is exactly what the registry seam exists to avoid and which fixes only the kinds that
+// host happens to know.
+enum class KindInsertability {
+  // A user may create one. The DEFAULT, so no existing registration changes behaviour.
+  Host,
+  // Not something a user mints from a menu. Two different registrations want this and it
+  // deliberately covers both: a kind registered so its documents ROUND-TRIP (a host's camera,
+  // a plugin owning a persisted record), and a kind whose instances cannot be built from a
+  // `ContentConfig` AT ALL because their structure does not fit one -- the built-in operator
+  // kinds, whose input edges cannot travel a config string and whose factories therefore
+  // refuse outright.
+  //
+  // It says nothing about loading, rendering, or editing an instance that already exists --
+  // only about MINTING one from an insert UI. Such a kind is still fully registered: its
+  // factory, codec, binder and schema are all still there and all still consulted.
+  Internal,
+};
+
 // The human-facing metadata a kind advertises beside its factory (doc 03
 // §Registry: human name, version, capability flags). Deliberately minimal for
-// the v1 seam; capability flags arrive with the kinds that first need them.
+// the v1 seam; capability flags arrive with the kinds that first need them --
+// `insertability` is the first of them (issue #37).
 struct KindMetadata {
   std::string human_name;
   std::string version;
+  // Appended LAST and defaulted, so every positional `KindMetadata{"Image", "1"}` in every
+  // host and plugin keeps compiling and keeps meaning what it meant.
+  KindInsertability insertability{KindInsertability::Host};
 };
 
 // The config handed to a factory when instantiating a kind. For the v1 stage-1
@@ -141,6 +171,27 @@ struct KindInsertSchema {
   std::function<expected<std::string, std::string>(std::span<const std::string> values)> assemble;
 };
 
+// What a host's insert UI should do with a kind (issue #37) -- the one question a host asks,
+// answered so it cannot be misread.
+//
+// `insert_schema(id) == nullptr` had to carry two incompatible meanings at once. Issue #21
+// made "no schema, but DO offer it" first-class: the host falls back to a raw config text box,
+// which is how a kind with an opaque grammar stays insertable. Issue #37 needs "do not offer
+// it at all". Overloading one null pointer with both would make the raw-config fallback and
+// the codec-only kind indistinguishable, so the third answer gets its own enumerator rather
+// than a second null.
+enum class KindInsertOffer {
+  // Offer the advertised schema: render its fields and call `assemble`. `insert_schema(id)` is
+  // non-null.
+  Schema,
+  // Offer a raw `ContentConfig` text box: the kind is insertable and describes no fields.
+  // The issue-#21 fallback, unchanged.
+  RawConfig,
+  // Offer nothing. Either the kind is not registered at all, or it declared
+  // `KindInsertability::Internal`.
+  NotInsertable,
+};
+
 // A per-kind state-slab reachability walker (model.persistent_state_walk_hook,
 // issue #5). On a workspace fast-reopen the model's recovery walk collects every
 // reachable non-inert content `StateHandle` but cannot descend a kind-owned state
@@ -207,7 +258,23 @@ public:
   // or registered without one -- in which case a host falls back to a raw config text
   // box, exactly as it must today. Registered on the SAME atomic `add` as the factory,
   // so a plugin cannot describe another kind's config after the fact.
+  //
+  // A host driving an insert menu asks `insert_offer(id)` instead: this accessor cannot
+  // distinguish "no schema, still insertable" from "not insertable at all" (issue #37), and
+  // a null return has always meant the FORMER.
   const KindInsertSchema* insert_schema(std::string_view id) const;
+
+  // What an insert UI should do with this kind (issue #37): the schema, a raw-config box, or
+  // nothing. Derived from the registration -- `KindMetadata::insertability` plus whether a
+  // schema was advertised -- so a host asks one question, gets one answer, and needs to know
+  // no kind id to tell the three cases apart.
+  //
+  // An `Internal` kind answers `NotInsertable` whether or not it advertised a schema: the
+  // schema still describes the kind's config for anything else that wants it, and stays
+  // readable through `insert_schema(id)`. An UNREGISTERED id
+  // answers `NotInsertable` too -- a host cannot construct what nobody registered, and folding
+  // it in keeps the caller free of a second null check.
+  KindInsertOffer insert_offer(std::string_view id) const;
 
   // Number of registered kinds.
   std::size_t size() const noexcept { return d_entries.size(); }

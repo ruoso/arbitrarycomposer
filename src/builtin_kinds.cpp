@@ -210,9 +210,10 @@ void register_builtin_kinds(Registry& registry) {
   // kinds unregistered (refinement Decision 3).
   const auto add = [&registry](std::string_view id, ContentFactory factory, std::string human_name,
                                std::string version,
-                               std::optional<KindInsertSchema> schema = std::nullopt) {
+                               std::optional<KindInsertSchema> schema = std::nullopt,
+                               KindInsertability insertability = KindInsertability::Host) {
     (void)registry.add(id, std::move(factory),
-                       KindMetadata{std::move(human_name), std::move(version)},
+                       KindMetadata{std::move(human_name), std::move(version), insertability},
                        /*codec=*/std::nullopt, /*binder=*/std::nullopt,
                        /*state_walker=*/std::nullopt, std::move(schema));
   };
@@ -259,14 +260,22 @@ void register_builtin_kinds(Registry& registry) {
       KindInsertSchema{{Field{"width", Type::Integer, "1024", 1.0, {}, "px"},
                         Field{"height", Type::Integer, "1024", 1.0, {}, "px"}},
                        joined('x')});
+  // INTERNAL, not merely schema-less (issue #37). These two factories refuse every config
+  // there is -- an operator's input edges cannot travel a `ContentConfig` -- so a host driving
+  // its insert dialog off `Registry::ids()` with no per-kind allowlist offered a raw-config box
+  // for a construction that could not succeed under any string a user typed. "No schema" meant
+  // "offer a raw box" and had no way to say "offer nothing"; now it does, and these are the
+  // library's own instance of exactly the gap the issue reports. Both stay fully registered:
+  // their documents load, render and edit as before -- what changed is that a user is no longer
+  // invited to mint one.
   add(
       FadeContent::kind_id,
       [](ContentConfig) { return refuse_config_construction(FadeContent::kind_id); }, "Fade",
-      k_fade_kind_version);
+      k_fade_kind_version, /*schema=*/std::nullopt, KindInsertability::Internal);
   add(
       CrossfadeContent::kind_id,
       [](ContentConfig) { return refuse_config_construction(CrossfadeContent::kind_id); },
-      "Crossfade", k_crossfade_kind_version);
+      "Crossfade", k_crossfade_kind_version, /*schema=*/std::nullopt, KindInsertability::Internal);
   // One labelled reference field, not an untyped box (issue #33): nested was the last
   // config-constructible builtin with no schema, so a host driving its insert dialog off
   // `insert_schema` with no per-kind allowlist dropped to a raw config box for exactly

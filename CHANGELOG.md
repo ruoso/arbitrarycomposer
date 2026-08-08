@@ -21,6 +21,23 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ### Added
 
+- **A kind can say it is not host-insertable** (issue #37). `Registry` described *how* to
+  construct a kind and never *whether anyone should*, so a kind registered only so its
+  documents round-trip — a host's own camera kind, a plugin owning a persisted record —
+  was indistinguishable from one a user should be able to pick out of an insert menu. The
+  gap could not be closed with the existing lookup, because `insert_schema(id) == nullptr`
+  already means **"no schema, but do offer it"** (the issue-#21 raw-config fallback, which
+  is first-class and unchanged); making it also mean "offer nothing" would fuse the two
+  cases a host most needs to tell apart. So insertability is declared on the registration —
+  `KindMetadata::insertability`, a new trailing field defaulting to
+  `KindInsertability::Host` — and a host asks one derived question,
+  `Registry::insert_offer(id)`, which answers `KindInsertOffer::Schema`, `RawConfig`, or
+  `NotInsertable`. An unregistered id folds into the last. The declaration constrains
+  **minting alone**: an `Internal` kind's factory, metadata, codec, binder and schema all
+  stay registered and all stay consulted, and existing instances load, render and edit
+  unchanged. Additive for callers: `KindMetadata{"Name", "1"}` still compiles and still
+  means host-insertable.
+
 - **An offline render reports what it could not resolve** (issue #35).
   `render_offline` renders a pinned snapshot and settles nothing — deliberately, since a
   byte-exact reference path must render exactly the version it was handed and must not
@@ -42,6 +59,19 @@ surface moves freely, and changelog honesty is what makes that safe
   (`arbc/runtime/unresolved_contents.hpp`) is the walk itself, public for a host that wants
   to ask before it renders. Purely additive: the new parameter defaults to null, which is
   byte-for-byte the previous behaviour, and no driver settles anything to produce the count.
+
+### Changed
+
+- **`org.arbc.fade` and `org.arbc.crossfade` are no longer offered for insertion**
+  (issue #37). Both factories refuse every `ContentConfig` there is — an operator's input
+  edges cannot travel one — so a host enumerating `Registry::ids()` with no per-kind
+  allowlist was offering a raw-config box for a construction that could not succeed under
+  any string a user typed. They now declare `KindInsertability::Internal`, so
+  `Registry::insert_offer` answers `NotInsertable` for them. Nothing else about them
+  changed: both stay in `ids()`, keep their factory and metadata, and a document holding a
+  fade loads, renders and re-saves byte-identically. A host that builds its insert menu
+  from `insert_offer` (rather than from `ids()` alone) will stop listing them, which is the
+  intended effect.
 
 ## [0.5.0] - 2026-08-08
 

@@ -360,6 +360,34 @@ path. Factory-only registrations stay valid: an entry with no codec
 round-trips as a placeholder (doc 08 Principle 2), and an entry with no
 binder is attach-free.
 
+### Registered is not the same as insertable
+
+A registration says *how* to construct a kind. It never said *whether anyone
+should*, and a host driving an insert menu off `Registry::ids()` — which is the
+whole point of the registry seam, and the reason a host must keep no per-kind
+allowlist — needs both. Two ordinary registrations want to be excluded: a kind
+registered so its documents **round-trip** (a host's own camera kind, a plugin
+owning a persisted record nobody authors by hand), and a kind whose instances
+**cannot come from a `ContentConfig` at all** because their structure does not
+fit one. The library ships instances of the second: `org.arbc.fade` and
+`org.arbc.crossfade` refuse every config string, because an operator's input
+edges cannot travel one.
+
+`insert_schema(id) == nullptr` could not express it. Since a kind may legitimately
+have an opaque grammar, null has always meant *"no schema, but do offer it"* — the
+raw-config fallback, which is first-class and must keep working. Making it also
+mean "offer nothing" would fuse the two cases a host most needs to tell apart.
+
+So insertability is **declared on the registration** —
+`KindMetadata::insertability`, defaulting to host-insertable, so no existing
+registration changes meaning — and a host asks one derived question,
+`Registry::insert_offer(id)`, which answers with the three cases and not with a
+pointer: offer the **schema**, offer a **raw-config box**, or offer **nothing**.
+An unregistered id folds into the last, since a host cannot construct what nobody
+registered. Being non-insertable constrains *minting only*: such a kind's
+factory, codec, binder and schema all remain registered and all remain consulted,
+and an instance that already exists loads, renders and edits exactly as before.
+
 Built-in kinds present through this same surface. The L6 umbrella target's
 `register_builtin_kinds(Registry&)` (doc 17) adds each in-lib kind's factory
 and metadata to a host-supplied registry, so a host enumerates built-ins and
