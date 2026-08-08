@@ -271,7 +271,7 @@ std::optional<RenderResult> CrossfadeContent::render(const RenderRequest& reques
   // achieved == request.scale (mirrors fade_content.cpp:152-158).
   const Affine temp1_to_dst =
       Affine::scaling(request.scale / r1->achieved_scale, request.scale / r1->achieved_scale);
-  backend.composite(target, temp1, temp1_to_dst, w);
+  backend.composite(target, temp1, temp1_to_dst, w, BlendMode::Normal);
 
   return RenderResult{request.scale, r0.exact && r1->exact && !transient, request.time};
 }

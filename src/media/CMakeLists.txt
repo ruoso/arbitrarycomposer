@@ -5,10 +5,11 @@ arbc_add_component(
                  arbc/media/surface_format.hpp arbc/media/pixel_traits.hpp
                  arbc/media/audio_block.hpp arbc/media/audio_format.hpp
                  arbc/media/audio_resampler.hpp arbc/media/streaming_resampler.hpp
-                 arbc/media/image_resampler.hpp
+                 arbc/media/image_resampler.hpp arbc/media/blend_mode.hpp
   DEPENDS base)
 
-arbc_component_test(COMPONENT media SOURCES t/pixel_format.t.cpp
+arbc_component_test(COMPONENT media SOURCES t/blend_mode.t.cpp
+                                            t/pixel_format.t.cpp
                                             t/pixel_traits.t.cpp
                                             t/audio_format.t.cpp
                                             t/audio_resampler.t.cpp

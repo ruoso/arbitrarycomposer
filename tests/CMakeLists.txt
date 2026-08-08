@@ -1208,6 +1208,14 @@ target_compile_definitions(arbc_image_async_pending_t
                            PRIVATE ARBC_IMAGE_FIXTURE_DIR="${ARBC_IMAGE_FIXTURE_DIR}")
 catch_discover_tests(arbc_image_async_pending_t)
 
+# Issue #36: per-layer blend modes, end to end -- the model field, the compositor's evaluation
+# of it in the composition's working space against a hand-written reference oracle, the tiled
+# paint-once partition under a non-commutative blend, and the document round trip (which names
+# `save_document`/`load_document`, hence the umbrella link).
+add_executable(arbc_layer_blend_mode_t layer_blend_mode.t.cpp)
+target_link_libraries(arbc_layer_blend_mode_t PRIVATE arbc Catch2::Catch2WithMain arbc_build_flags)
+catch_discover_tests(arbc_layer_blend_mode_t)
+
 # Issue #35: the offline drivers' unresolved-content report -- a deferring AssetSource can no
 # longer make an export silently transparent. Drives both external-reference seams (an image
 # asset and a nested project reference) through the real offline drivers, so it needs the image

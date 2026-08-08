@@ -26,7 +26,8 @@ A **layer instance** is the pairing of:
   - `transform`: a 2D affine transform from the content's local space to the
     parent composition space,
   - `opacity`: scalar 0..1,
-  - `blend`: blend operation (v1: source-over only),
+  - `blend`: the separable blend mode combining the layer with its backdrop
+    (multiply, screen, overlay, ...; source-over by default — doc 07),
   - `visible`: flag,
   - `gain` and `audible`: the audio siblings of opacity and visible
     (doc 12),

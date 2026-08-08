@@ -101,7 +101,7 @@ void render_layer(const ContentResolver& resolve, const LayerRecord& layer, cons
   // the mapping above.
   const Affine placement = provided_placement(result.provided, region, result.achieved_scale);
   consume_render_result(result.provided, temp, [&](const Surface& src) {
-    backend.composite(target, src, compose(temp_to_dst, placement), layer.opacity);
+    backend.composite(target, src, compose(temp_to_dst, placement), layer.opacity, layer.blend());
   });
 }
 

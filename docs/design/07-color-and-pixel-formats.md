@@ -49,7 +49,7 @@ kernels.
 In the CPU backend this division of labour is explicit. Scale-ladder rung
 generation (`CpuBackend::downsample`) is the Lanczos-3 minification path — an
 exact 2:1 half-band step, one octave at a time. The composite tap
-(`source_over_kernel`) is the Catmull-Rom reconstruction of the ≤1-octave
+(`composite_kernel`) is the Catmull-Rom reconstruction of the ≤1-octave
 remainder (doc 04) from the *single* rung the compositor selected. That rung
 is already band-limited by the Lanczos decimation that built it, so the tap
 needs no second low-pass: it is single-rung reconstruction, deliberately not
@@ -59,6 +59,62 @@ integer-phase weights are exactly `(0, 1, 0, 0)` in float32 — an
 integer-aligned composite reproduces the source sample bit-for-bit, so the
 mild sub-octave aliasing the single-rung remainder can carry is the accepted
 cost of that cache reuse, not a filter defect.
+
+## Blend modes: the second half of a placement
+
+A layer's `opacity` says *how much* of it lands. A **blend mode** says *how what
+lands combines* with the backdrop, and a compositing editor cannot do without it:
+a multiply shadow pass, a screen glow, an add for light, a non-destructive colour
+grade over a photograph are all one control. Layers carried the first field and
+not the second, so the compositor was fixed source-over.
+
+**The vocabulary is the separable blend modes** — normal, multiply, screen,
+overlay, darken, lighten, colour-dodge, colour-burn, hard-light, soft-light,
+difference, exclusion — as specified by PDF 1.4 and restated by CSS Compositing
+and Blending Level 1. It is taken as a *reference*, not invented, so a document's
+`multiply` means what every other tool means by it.
+
+Compositing has two independent axes and this is only one. The **Porter-Duff
+operators** (over, in, out, atop, xor) change *coverage* arithmetic; the blend
+modes change the *colour function* applied where source and backdrop both are.
+Only the second is here. The first is a different question, it interacts with the
+tiled compositor's paint-once partition in ways the colour axis does not, and
+adding both at once would ship one of them untested by any real use. If it lands
+it lands as its own field — an operator and a blend mode *compose* (a multiply
+layer drawn atop), they do not exclude. The **non-separable** modes (hue,
+saturation, colour, luminosity) are deferred for a sharper reason: they are
+defined through a colour's luminosity, which is a function of the primaries, so
+their result depends on the working space in a way the separable modes' does not.
+
+**The mode is evaluated in the composition's working space** (rule 2 above), which
+is where the pixels already are when the composite kernel runs. That is a real
+choice with a visible consequence, not a formality: in a linear working space (the
+default) `multiply` is a light-transport multiply, while the same mode evaluated
+on sRGB-encoded values — what a canvas or a PDF viewer does — darkens differently.
+A document therefore says which answer it wants by saying what it works in, and
+one document stays internally consistent. The composite is the reference's:
+
+```
+co = (1 - αb)·αs·cs + αb·αs·B(cb, cs) + (1 - αs)·αb·cb
+αo = αs + αb·(1 - αs)
+```
+
+with `B` evaluated on **unpremultiplied** channel values — so opacity, which
+scales `αs`, divides back out of `cs` and never changes what colour the layer is.
+Turning a multiply layer down fades it toward the backdrop, not toward a different
+multiply. `normal` is `B(cb, cs) = cs`, which collapses the whole expression to
+premultiplied source-over; it is the zero value of the field, so a layer that never
+asked for a mode composites exactly the bytes it always did.
+
+**Which layers have one.** All of them, and the question does not arise: a blend
+mode is placement, not a kind capability, and it sits beside `opacity` and its
+audio twin `gain`. An audio-only layer carries a blend mode the mix engine never
+reads, exactly as a visual-only layer carries a `gain` the compositor never reads.
+No facet, no capability virtual, no error — a question that does not apply to a
+layer is answered by nobody asking it. Backends are the same: every backend
+implements every mode, because the modes are arithmetic on the premultiplied
+working floats a backend must already composite, so there is nothing for
+`capabilities()` to be honest about.
 
 Out of scope for v1 but kept structurally possible: full OCIO-style
 management, HDR output transforms/tone mapping, CMYK. These all slot in as

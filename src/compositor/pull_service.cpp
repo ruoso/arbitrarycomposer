@@ -154,7 +154,7 @@ void deliver_tile(Backend& backend, const Surface& tile, TileCoord coord, double
   // halves is 0.75, not 1.0. The apron puts real neighbour colour where the border
   // was; the window keeps each tile painting only what it owns.
   backend.composite_windowed(request.target, tile, compose(target_from_local, local_from_tile), 1.0,
-                             Rect::infinite(), window);
+                             BlendMode::Normal, Rect::infinite(), window);
 }
 
 } // namespace
@@ -438,7 +438,7 @@ void PullServiceImpl::pull(ContentRef input, const RenderRequest& request,
             provided_placement(result.provided, tile_region, result.achieved_scale);
         consume_render_result(result.provided, tile_surface, [&](const Surface& src) {
           if (&src != &tile_surface) {
-            d_backend.composite(tile_surface, src, placement, 1.0);
+            d_backend.composite(tile_surface, src, placement, 1.0, BlendMode::Normal);
           }
         });
         // Deliver the freshly-rendered tile into the caller's `request.target`

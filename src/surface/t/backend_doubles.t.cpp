@@ -51,8 +51,8 @@ public:
     clear_red = r;
   }
 
-  void composite(arbc::Surface&, const arbc::Surface&, const arbc::Affine&,
-                 double opacity) override {
+  void composite(arbc::Surface&, const arbc::Surface&, const arbc::Affine&, double opacity,
+                 arbc::BlendMode) override {
     ++composite_seen;
     composite_opacity = opacity;
   }
@@ -68,7 +68,7 @@ public:
   }
 
   void composite_clipped(arbc::Surface&, const arbc::Surface&, const arbc::Affine&, double,
-                         const arbc::Rect& device_clip) override {
+                         arbc::BlendMode, const arbc::Rect& device_clip) override {
     ++composite_clipped_seen;
     composite_clip = device_clip;
   }
@@ -122,9 +122,10 @@ TEST_CASE("a counting decorator forwards every Backend operation to its inner ba
 
   const arbc::Rect clip{2.0, 3.0, 11.0, 7.0};
   backend.clear(**surface, 0.25F, 0.5F, 0.75F, 1.0F);
-  backend.composite(**surface, other, arbc::Affine::identity(), 0.5);
+  backend.composite(**surface, other, arbc::Affine::identity(), 0.5, arbc::BlendMode::Normal);
   backend.clear_rect(**surface, clip, 0.25F, 0.5F, 0.75F, 1.0F);
-  backend.composite_clipped(**surface, other, arbc::Affine::identity(), 0.5, clip);
+  backend.composite_clipped(**surface, other, arbc::Affine::identity(), 0.5,
+                            arbc::BlendMode::Normal, clip);
   backend.downsample(**surface, other);
   backend.convert(**surface, other);
   backend.import_cpu_memory(arbc::CpuImport{});

@@ -172,7 +172,7 @@ std::optional<RenderResult> FadeContent::render(const RenderRequest& request,
   // achieved == request.scale this is the identity.
   const Affine temp_to_dst =
       Affine::scaling(request.scale / result.achieved_scale, request.scale / result.achieved_scale);
-  backend.composite(target, temp, temp_to_dst, e);
+  backend.composite(target, temp, temp_to_dst, e, BlendMode::Normal);
 
   // Scale/exactness pass through honestly (doc 13:108-113): fade adds only a
   // gain, so it reports the input's achieved scale and exactness. Time, however,

@@ -50,7 +50,7 @@ Why this over mutable-objects-plus-locks:
 Concretely: `DocState` is a persistent (path-copying) map from `ObjectId`
 to immutable object records — composition records (layer order, canvas,
 working spaces), layer records (placement: transform, opacity/gain,
-span/time map, flags, content reference), and content records (kind id +
+blend mode, span/time map, flags, content reference), and content records (kind id +
 a state handle, below, plus the construction identity and input edges a
 workspace reopen rebuilds the content from — doc 15 § File-backed arenas). The writer thread is the single mutator (doc 02's
 single-writer rule, unchanged); `Document` holds the current `DocState`
@@ -297,7 +297,9 @@ premultiplied colour scaled by the scalar `a` is a coverage-attenuated source, s
 no unpremultiply round-trip is needed), each output channel clamped to
 non-negative (RGB is *not* clamped to ≤ alpha — HDR headroom above alpha is
 legitimate), computed in a fixed operation order with no `libm` so the result is
-byte-exact. The blend op is source-over only (doc 01:29) and source-over is
+byte-exact. A paint dab's own blend op is source-over only -- the layer blend
+mode a placement carries (doc 07) is how a LAYER meets its backdrop, not how a
+brush stroke meets the pixels it lands in -- and source-over is
 non-idempotent for anything but fully-opaque content (doc 02:95-100), so a
 **fully-opaque, full-coverage dab is the special case** that reduces to a replace
 (`out = color`) — which is why the CoW/capture/coalesce/mip/damage discipline

@@ -40,17 +40,18 @@ public:
   expected<std::unique_ptr<Surface>, SurfaceError> make_surface(int width, int height,
                                                                 SurfaceFormat format) override;
   void clear(Surface& surface, float r, float g, float b, float a) override;
-  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                 double opacity) override;
+  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                 BlendMode blend) override;
   // The clip-scoped forms (doc 09). The unclipped ops above are defined as the
   // whole-destination-clip case of these, so the backend carries one kernel per
   // operation, not two.
   void clear_rect(Surface& dst, const Rect& device_rect, float r, float g, float b,
                   float a) override;
   void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
-                         const Rect& device_clip) override;
+                         BlendMode blend, const Rect& device_clip) override;
   void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                          double opacity, const Rect& device_clip, const Rect& src_window) override;
+                          double opacity, BlendMode blend, const Rect& device_clip,
+                          const Rect& src_window) override;
   void downsample(Surface& dst, const Surface& src) override;
   void convert(Surface& dst, const Surface& src) override;
   // Wrap-or-copy import of caller CPU memory (doc 09:59-61,114-120). Equal

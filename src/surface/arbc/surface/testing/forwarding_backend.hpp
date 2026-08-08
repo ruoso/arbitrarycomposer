@@ -47,9 +47,9 @@ public:
     d_inner.clear(surface, r, g, b, a);
   }
 
-  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                 double opacity) override {
-    d_inner.composite(dst, src, src_to_dst, opacity);
+  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                 BlendMode blend) override {
+    d_inner.composite(dst, src, src_to_dst, opacity, blend);
   }
 
   void clear_rect(Surface& dst, const Rect& device_rect, float r, float g, float b,
@@ -58,14 +58,14 @@ public:
   }
 
   void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
-                         const Rect& device_clip) override {
-    d_inner.composite_clipped(dst, src, src_to_dst, opacity, device_clip);
+                         BlendMode blend, const Rect& device_clip) override {
+    d_inner.composite_clipped(dst, src, src_to_dst, opacity, blend, device_clip);
   }
 
   void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                          double opacity, const Rect& device_clip,
+                          double opacity, BlendMode blend, const Rect& device_clip,
                           const Rect& src_window) override {
-    d_inner.composite_windowed(dst, src, src_to_dst, opacity, device_clip, src_window);
+    d_inner.composite_windowed(dst, src, src_to_dst, opacity, blend, device_clip, src_window);
   }
 
   void downsample(Surface& dst, const Surface& src) override { d_inner.downsample(dst, src); }

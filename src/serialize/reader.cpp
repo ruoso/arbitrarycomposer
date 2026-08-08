@@ -55,8 +55,8 @@ constexpr std::string_view k_composition_keys[] = {"canvas", "layers", "working_
                                                    "working_space"};
 constexpr std::string_view k_working_space_keys[] = {"format", "premultiplied", "transfer"};
 constexpr std::string_view k_working_audio_format_keys[] = {"channels", "sample_rate"};
-constexpr std::string_view k_layer_keys[] = {"audible",  "gain",      "opacity", "span",
-                                             "time_map", "transform", "visible"};
+constexpr std::string_view k_layer_keys[] = {"audible", "blend",    "gain",      "opacity",
+                                             "span",    "time_map", "transform", "visible"};
 constexpr std::string_view k_time_map_keys[] = {"in", "offset", "rate"};
 constexpr std::string_view k_body_keys[] = {"$ref", "composition",  "inputs",
                                             "kind", "kind_version", "params"};
@@ -194,6 +194,7 @@ struct LayerData {
   Affine transform{Affine::identity()};
   double opacity{1.0};
   bool visible{true};
+  BlendMode blend{BlendMode::Normal};
   double gain{1.0};
   bool audible{true};
   TimeRange span{TimeRange::all()};
@@ -263,6 +264,18 @@ LayerData parse_layer(const json& o) {
   ld.opacity = num_or(o, "opacity", 1.0);
   ld.visible = bool_or(o, "visible", true);
   ld.gain = num_or(o, "gain", 1.0);
+  // A blend name this build does not know is PRESERVED AND IGNORED -- doc 08 Principle 4,
+  // applied to a value rather than a key, because that is the case it exists for: a document
+  // written by a later version naming a mode this one cannot perform. Refusing the whole
+  // document would cost a user their project over one layer's appearance; dropping the name
+  // would lose it on the next save. So the layer renders source-over (the honest thing this
+  // build can do) and the token rides the residual verbatim, which is exactly the writer's
+  // omit-`normal` behaviour re-emitting it unchanged. A non-string `blend` takes the same
+  // path, the leniency `parse_layer` already applies to every mistyped placement key.
+  bool blend_known = false;
+  if (const auto bit = o.find("blend"); bit != o.end()) {
+    blend_known = bit->is_string() && blend_mode_from_name(bit->get<std::string>(), ld.blend);
+  }
   ld.audible = bool_or(o, "audible", true);
   ld.span = parse_span(o);
   ld.time_map = parse_time_map(o);
@@ -278,6 +291,12 @@ LayerData parse_layer(const json& o) {
   }
   if (json tm = unknown_residual_at(o, "time_map", k_time_map_keys); !tm.empty()) {
     ld.unknown["time_map"] = std::move(tm);
+  }
+  // The unrecognized blend token, stashed AFTER the residual sweep (which skips `blend`,
+  // now a known key). It cannot collide with anything the writer emits: `ld.blend` stayed
+  // `Normal`, and the writer omits `normal`.
+  if (const auto bit = o.find("blend"); bit != o.end() && !blend_known) {
+    ld.unknown["blend"] = *bit;
   }
   return ld;
 }
@@ -757,6 +776,9 @@ void install_graph(Model::Transaction& txn, DocumentGraph& g) {
       g.staged.set(UnknownScope::Layer, lid, to_unknown_fields(ld.unknown));
       // Re-apply exactly the omit-on-default twins the writer would have emitted; a
       // field left at its default stays diff-clean (Constraint 2).
+      if (ld.blend != BlendMode::Normal) {
+        txn.set_blend(lid, ld.blend);
+      }
       if (ld.gain != 1.0) {
         txn.set_gain(lid, ld.gain);
       }

@@ -21,6 +21,28 @@ surface moves freely, and changelog honesty is what makes that safe
 
 ### Added
 
+- **Per-layer blend modes** (issue #36). A layer carried `opacity` — *how much* of it
+  lands — and nothing saying *how what lands combines* with the backdrop, so the compositor
+  was fixed source-over and a host could not offer a multiply shadow pass, a screen glow, an
+  add for light, or a non-destructive grade over a photograph. `LayerRecord` now carries a
+  `BlendMode` (`arbc/media/blend_mode.hpp`), set through `Model::Transaction::set_blend` and
+  read through `LayerRecord::blend()`. The vocabulary is the **separable blend modes** of PDF
+  1.4 / CSS Compositing and Blending Level 1 — normal, multiply, screen, overlay, darken,
+  lighten, color-dodge, color-burn, hard-light, soft-light, difference, exclusion — taken as a
+  reference rather than invented, so a document's `multiply` means what every other tool means.
+  The mode is evaluated in the **composition's working space** (doc 07 rule 2), on
+  unpremultiplied channel values, so opacity divides back out and fading a multiply layer
+  fades it toward the backdrop rather than toward a different multiply. It rides the layer,
+  not the kind: an audio-only layer carries a mode the mix engine never reads, exactly as a
+  visual-only layer carries a `gain` the compositor never reads — no facet, no capability
+  virtual, no error. It persists by NAME (`"blend": "multiply"`), omitted when normal, and an
+  unknown name is preserved verbatim and rendered source-over rather than refusing the
+  document (doc 08 Principle 4). `BlendMode::Normal` is the zero value and is premultiplied
+  source-over exactly — the kernel keeps a separate arm for it, so every existing golden is
+  byte-identical. The Porter-Duff operators (a *coverage* axis, not a colour one) and the
+  non-separable modes (which depend on the primaries) are deliberately not included; doc 07
+  says why.
+
 - **A kind can say it is not host-insertable** (issue #37). `Registry` described *how* to
   construct a kind and never *whether anyone should*, so a kind registered only so its
   documents round-trip — a host's own camera kind, a plugin owning a persisted record —
@@ -61,6 +83,19 @@ surface moves freely, and changelog honesty is what makes that safe
   byte-for-byte the previous behaviour, and no driver settles anything to produce the count.
 
 ### Changed
+
+- **`Backend`'s three composite operations take a `BlendMode`** (issue #36).
+  `composite`, `composite_clipped` and `composite_windowed` each gained a `blend` parameter
+  immediately after `opacity`; `BlendMode::Normal` is the previous behaviour exactly. It is a
+  required parameter rather than a defaulted one because a default argument on a virtual binds
+  statically, which would let a backend and its caller silently disagree about what an omitted
+  mode meant — the same reason the clip-scoped operations are distinctly named rather than
+  overloaded. **A third-party `Backend` implementation must add the parameter to its three
+  overrides**; the shipped `arbc-testing` doubles (`StubBackend`, `ForwardingBackend`,
+  `CountingBackend`) already have. Blend support is not a capability: the modes are arithmetic
+  on premultiplied working floats a backend must already composite, so every backend
+  implements every mode, exactly as every backend implements `opacity`.
+
 
 - **`org.arbc.fade` and `org.arbc.crossfade` are no longer offered for insertion**
   (issue #37). Both factories refuse every `ContentConfig` there is — an operator's input

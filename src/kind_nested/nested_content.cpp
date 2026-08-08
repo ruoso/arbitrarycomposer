@@ -517,7 +517,7 @@ bool NestedContent::compose_child_layer(const LayerRecord& layer, const Affine& 
   const Affine temp_to_dst = compose(
       composed, compose(Affine::translation(grown.x0, grown.y0),
                         Affine::scaling(1.0 / result.achieved_scale, 1.0 / result.achieved_scale)));
-  backend.composite(target, temp, temp_to_dst, layer.opacity);
+  backend.composite(target, temp, temp_to_dst, layer.opacity, layer.blend());
 
   // Fold the pulled layer's OWN exactness (doc 09): a child served from a coarse
   // rung composites its pixels but leaves the composition inexact.

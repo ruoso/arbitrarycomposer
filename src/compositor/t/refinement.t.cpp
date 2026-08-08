@@ -82,7 +82,8 @@ public:
   void clear(arbc::Surface& /*surface*/, float /*r*/, float /*g*/, float /*b*/,
              float /*a*/) override {}
   void composite(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/,
-                 const arbc::Affine& /*src_to_dst*/, double /*opacity*/) override {}
+                 const arbc::Affine& /*src_to_dst*/, double /*opacity*/, arbc::BlendMode) override {
+  }
 };
 
 // A Content that always answers async: it returns `nullopt` (leaving the

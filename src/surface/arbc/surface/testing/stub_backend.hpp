@@ -39,7 +39,7 @@ public:
   void clear(Surface& /*surface*/, float /*r*/, float /*g*/, float /*b*/, float /*a*/) override {}
 
   void composite(Surface& /*dst*/, const Surface& /*src*/, const Affine& /*src_to_dst*/,
-                 double /*opacity*/) override {}
+                 double /*opacity*/, BlendMode /*blend*/) override {}
 
   // The clip-scoped operations (doc 09) DELEGATE to the unclipped ones rather than
   // no-oping like the operations above -- the one place this base departs from "stub
@@ -66,14 +66,14 @@ public:
   }
 
   void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
-                         const Rect& /*device_clip*/) override {
-    composite(dst, src, src_to_dst, opacity);
+                         BlendMode blend, const Rect& /*device_clip*/) override {
+    composite(dst, src, src_to_dst, opacity, blend);
   }
 
   void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                          double opacity, const Rect& /*device_clip*/,
+                          double opacity, BlendMode blend, const Rect& /*device_clip*/,
                           const Rect& /*src_window*/) override {
-    composite(dst, src, src_to_dst, opacity);
+    composite(dst, src, src_to_dst, opacity, blend);
   }
 
   void downsample(Surface& /*dst*/, const Surface& /*src*/) override {}

@@ -514,6 +514,19 @@ public:
     // the layer is absent or not a layer.
     void set_gain(ObjectId layer, double gain);
 
+    // Replace an existing layer's BLEND MODE (issue #36): how this layer's colour
+    // combines with what is under it, where `set_opacity` says how much of it lands.
+    // A visual placement change (doc 01:137, "transform, opacity, order") that
+    // auto-damages the whole layer, all time, once at commit, exactly as
+    // `set_opacity` does -- a mode change repaints every pixel the layer covers, and
+    // it cannot change what the layer SOUNDS like, but the damage shape is the
+    // record's, not the facet's. No-op if the layer is absent or not a layer.
+    //
+    // Stored in the flag word's upper bits (`k_layer_blend_shift`, `records.hpp`),
+    // which is why this is a set-the-field verb and not a flag toggle: the mode is a
+    // value from a closed set, not a predicate.
+    void set_blend(ObjectId layer, BlendMode blend);
+
     // Set or clear an existing layer's audibility (the `k_layer_audible` flag bit,
     // path-copies its record + its map path), the audio twin of the `visible`
     // flag (doc 12:89-92). Auto-damages the whole layer, all time, once at commit.

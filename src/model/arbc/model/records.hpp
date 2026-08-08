@@ -4,6 +4,7 @@
 #include <arbc/base/rational_time.hpp> // TimeMap (transitively TimeRange/Time) -- temporal placement
 #include <arbc/base/transform.hpp>
 #include <arbc/media/audio_format.hpp> // AudioFormat (per-composition working audio format, doc 12)
+#include <arbc/media/blend_mode.hpp>   // BlendMode (per-layer blend, doc 07 / issue #36)
 #include <arbc/media/surface_format.hpp> // SurfaceFormat (per-composition working space, doc 07)
 #include <arbc/pool/slot_store.hpp>      // SlotIndex
 
@@ -46,6 +47,22 @@ inline constexpr std::uint32_t k_layer_visible = 1u;
 // layer whose audio does not contribute to the mix clears it (the audio `visible`
 // cull). Default-set on every new layer, exactly as `k_layer_visible` is.
 inline constexpr std::uint32_t k_layer_audible = 1u << 1;
+
+// The layer's BLEND MODE (issue #36), carried in bits 8..15 of the same flag word
+// rather than in a field of its own -- and that is a compatibility decision, not a
+// space one. A record lives in a mmapped workspace arena and is read back BYTE FOR
+// BYTE by a later session, so a new field placed in the record's existing padding
+// would read that padding out of a file written before the field existed, and a new
+// field placed past it would change the size class. The flag word's upper bits, by
+// contrast, are provably ZERO in every file ever written -- no writer has ever set
+// one -- and `BlendMode::Normal` is 0, so an old layer reads back as source-over,
+// which is exactly what it was. No workspace format bump, no size change.
+//
+// Eight bits, which is `BlendMode`'s own width: the vocabulary is a closed,
+// core-owned set (doc 07's posture for the format set, applied to the blend set) and
+// twelve modes have no path to two hundred and fifty-six.
+inline constexpr std::uint32_t k_layer_blend_shift = 8;
+inline constexpr std::uint32_t k_layer_blend_mask = 0xFFu << k_layer_blend_shift;
 
 // A slab reference to a content object's editable state (doc 15:237-239). A
 // fixed-size, index-only handle -- SlotRef-shaped -- defined but INERT here: no
@@ -149,6 +166,20 @@ struct LayerRecord {
 
   bool visible() const noexcept { return (flags & k_layer_visible) != 0; }
   bool audible() const noexcept { return (flags & k_layer_audible) != 0; }
+
+  // The visual placement's third field, beside `transform` and `opacity` (issue #36):
+  // HOW this layer's colour combines with what is under it, where `opacity` says how
+  // much of it lands. `BlendMode::Normal` -- source-over, and what every layer written
+  // before this carried -- is the zero value, so the default costs nothing and changes
+  // nothing.
+  //
+  // Read by the visual composite alone. An audio-only layer carries it and the mix
+  // engine never looks at it, exactly as a visual-only layer carries `gain` and the
+  // compositor never looks at that: the model's existing answer to "what does this
+  // placement field mean for a layer of the other facet" is that nobody asks.
+  BlendMode blend() const noexcept {
+    return static_cast<BlendMode>((flags & k_layer_blend_mask) >> k_layer_blend_shift);
+  }
 };
 
 // A composition holds its ordered layer list inline up to this fixed cap; beyond

@@ -254,7 +254,7 @@ std::vector<Damage> poll_refinements(RefinementQueue& queue, TileCache& cache,
           provided_placement(result.provided, pending.local_rect, result.achieved_scale);
       consume_render_result(result.provided, *pending.surface, [&](const Surface& src) {
         if (&src != pending.surface.get() && backend != nullptr) {
-          backend->composite(*pending.surface, src, placement, 1.0);
+          backend->composite(*pending.surface, src, placement, 1.0, BlendMode::Normal);
         }
       });
       // Enforce the content's declared extent in the arriving tile's pixels before

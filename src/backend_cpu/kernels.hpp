@@ -12,6 +12,7 @@
 
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
+#include <arbc/media/blend_mode.hpp>
 #include <arbc/media/image_resampler.hpp>
 #include <arbc/media/pixel_traits.hpp>
 #include <arbc/surface/typed_span.hpp>
@@ -109,11 +110,18 @@ inline WorkingPixel fetch_texel(std::span<const typename PixelTraits<F>::Storage
 // apron and reads real colour there. `Rect::infinite()` is the unwindowed case
 // (`composite` / `composite_clipped`), where the test can never fail, so this
 // stays the one composite kernel.
+// `blend` is the layer's BLEND MODE (issue #36), and `BlendMode::Normal` takes a SEPARATE
+// ARM of the inner loop on purpose. Normal is algebraically the general formula with
+// `B(Cb, Cs) = Cs`, so one expression would serve both -- but "algebraically equal" is not
+// "bit-identical" in float32, and every composite golden in the tree pins the bytes the
+// two-term source-over expression produces. So Normal keeps that exact expression, evaluated
+// in that exact order, and the general arm is reached only by a layer that asked for a mode.
+// The default path is therefore provably unchanged rather than argued to be.
 template <PixelFormat F>
-void source_over_kernel(TypedSpan<F> dst, int dst_width,
-                        std::span<const typename PixelTraits<F>::Storage> src, int src_width,
-                        int src_height, const Affine& dst_to_src, float opacity,
-                        const PixelBox& clip, const Rect& window) {
+void composite_kernel(TypedSpan<F> dst, int dst_width,
+                      std::span<const typename PixelTraits<F>::Storage> src, int src_width,
+                      int src_height, const Affine& dst_to_src, float opacity, const PixelBox& clip,
+                      const Rect& window, BlendMode blend = BlendMode::Normal) {
   using Traits = PixelTraits<F>;
   const std::size_t stride = Traits::channels;
   for (int y = clip.y0; y < clip.y1; ++y) {
@@ -154,8 +162,36 @@ void source_over_kernel(TypedSpan<F> dst, int dst_width,
       const WorkingPixel d = Traits::decode(&dst.data[dst_at]);
       const float alpha = s[3] * opacity;
       WorkingPixel out{};
-      for (std::size_t k = 0; k < Traits::channels; ++k) {
-        out[k] = s[k] * opacity + (1.0F - alpha) * d[k];
+      if (blend == BlendMode::Normal) {
+        for (std::size_t k = 0; k < Traits::channels; ++k) {
+          out[k] = s[k] * opacity + (1.0F - alpha) * d[k];
+        }
+      } else {
+        // The reference composite with a blend function (PDF 1.4 / CSS Compositing and
+        // Blending Level 1), on premultiplied working floats:
+        //
+        //   co = (1 - ab)*as*cs  +  ab*as*B(cb, cs)  +  (1 - as)*ab*cb
+        //   ao = as + ab*(1 - as)
+        //
+        // The three terms are the three coverage regions -- source only, both, backdrop
+        // only -- and only the middle one consults the mode, which is why Normal (B = cs)
+        // collapses the first two back into plain source-over.
+        //
+        // `B` is defined on UNPREMULTIPLIED colour, so each channel is divided out first.
+        // OPACITY CANCELS in that division (`s[k]*opacity / (s[3]*opacity)`), which is the
+        // correct reading and not an accident of the algebra: opacity scales how much of
+        // the layer lands, never what colour it is, so turning a multiply layer down must
+        // fade it toward the backdrop rather than toward a different multiply.
+        const float ab = d[3];
+        const float inv_as = s[3] > 0.0F ? 1.0F / s[3] : 0.0F;
+        const float inv_ab = ab > 0.0F ? 1.0F / ab : 0.0F;
+        for (std::size_t k = 0; k + 1 < Traits::channels; ++k) {
+          const float cs = s[k] * inv_as;
+          const float cb = d[k] * inv_ab;
+          const float mixed = blend_channel(blend, cb, cs);
+          out[k] = ((1.0F - ab) * alpha * cs) + (ab * alpha * mixed) + ((1.0F - alpha) * ab * cb);
+        }
+        out[Traits::channels - 1] = alpha + (ab * (1.0F - alpha));
       }
       Traits::encode(out, &dst.data[dst_at]);
     }

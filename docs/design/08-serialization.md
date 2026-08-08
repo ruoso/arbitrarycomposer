@@ -112,6 +112,7 @@ depend on single-file-ness.
         "transform": [1, 0, 0, 1, 100.5, 20],      // a b c d tx ty (doc 04)
         "opacity": 1.0,
         "visible": true,
+        "blend": "multiply",                       // doc 07; omitted = source-over
         "name": "backdrop",                        // authoring metadata
         "params": { "source": "assets/bg.png" }    // kind-owned, opaque to core
       },
@@ -134,13 +135,24 @@ depend on single-file-ness.
 ```
 
 The example shows the common fields; the core also serializes a layer's
-temporal and audio placement — `span` (its parent-time extent, as an
-integer-flick `[start, end]` pair; doc 11), `time_map` (the parent→content-local
-time affine; doc 11), `gain` (the additive-mix audio scalar twinning `opacity`;
-doc 12), and `audible` (the audio twin of `visible`; doc 12) — each **omitted
-when at its still/identity default** (always-present span, identity time map,
-unit gain, audible set), exactly as `working_space` is omitted when default.
-These are core-owned placement, not `params`.
+blend, temporal and audio placement — `blend` (the separable blend mode combining
+the layer with its backdrop, by NAME: `"multiply"`, `"color-dodge"`; doc 07),
+`span` (its parent-time extent, as an integer-flick `[start, end]` pair; doc 11),
+`time_map` (the parent→content-local time affine; doc 11), `gain` (the
+additive-mix audio scalar twinning `opacity`; doc 12), and `audible` (the audio
+twin of `visible`; doc 12) — each **omitted when at its still/identity default**
+(source-over blend, always-present span, identity time map, unit gain, audible
+set), exactly as `working_space` is omitted when default. These are core-owned
+placement, not `params`.
+
+`blend` carries the mode's **name**, never an ordinal: the enumeration's order is
+an implementation detail and a document outlives it. A name this build does not
+know — a mode a later version added — is **preserved and ignored**, which is
+Principle 4 applied to a value rather than a key, and the case it exists for. The
+layer renders source-over, the honest thing this build can do, and the token rides
+the residual so the next save re-emits it unchanged. Refusing the document would
+cost a user their project over one layer's appearance; dropping the name would
+lose it silently at the next save.
 
 ## Principles
 

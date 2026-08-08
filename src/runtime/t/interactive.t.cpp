@@ -95,7 +95,7 @@ public:
     std::memset(bytes.data(), 0, bytes.size_bytes());
   }
   void composite(arbc::Surface& dst, const arbc::Surface& src, const arbc::Affine& /*m*/,
-                 double opacity) override {
+                 double opacity, arbc::BlendMode) override {
     const std::span<const std::byte> s = src.cpu_bytes();
     const unsigned seed = s.empty() ? 0u : std::to_integer<unsigned>(s[0]);
     const auto mark = (static_cast<unsigned>(opacity * 251.0) + 1u + seed) & 0xFFu;

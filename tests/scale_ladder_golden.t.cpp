@@ -192,7 +192,7 @@ TEST_CASE("prefer-downsample collapse: a power-of-two rung request pays no resam
 
   // Integer-aligned (identity) source-over onto transparent black: the result is
   // byte-identical to `src`, the un-resampled source-over.
-  backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+  backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
 
   for (int i = 0; i < 4; ++i) {
     require_px_eq(read_px(dst, i), read_px(src, i));

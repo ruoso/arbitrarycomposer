@@ -134,9 +134,10 @@ public:
     }
   }
 
-  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                 double opacity) override {
-    composite_windowed(dst, src, src_to_dst, opacity, Rect::infinite(), Rect::infinite());
+  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                 arbc::BlendMode) override {
+    composite_windowed(dst, src, src_to_dst, opacity, arbc::BlendMode::Normal, Rect::infinite(),
+                       Rect::infinite());
   }
 
   // The source-space paint window is modelled for the same reason `clear_rect` is: the
@@ -144,7 +145,7 @@ public:
   // double that ignored it would let each tile paint its neighbours' aprons too --
   // double-blending every tile boundary in the benchmark's own pixels.
   void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                          double opacity, const Rect& /*device_clip*/,
+                          double opacity, arbc::BlendMode, const Rect& /*device_clip*/,
                           const Rect& window) override {
     const std::optional<Affine> inv = src_to_dst.inverse();
     if (!inv.has_value()) {

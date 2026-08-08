@@ -118,12 +118,20 @@ std::uint64_t coord_key(TileCoord coord) {
 //
 // The counter bump stays once per clip entry -- counter-neutral, since a planned
 // tile overlaps its clip by construction (Constraint 3).
+//
+// `blend` is the LAYER's blend mode (issue #36), threaded beside its opacity because the two
+// are one placement: opacity says how much of the layer lands, the mode says how what lands
+// combines with what is under it. Per-TILE compositing stays correct under a non-Normal mode
+// for exactly the reason the apron window exists -- the windows partition the destination, so
+// every device pixel is blended against the backdrop once and only once. Two tiles each
+// blending the boundary pixel would apply the mode twice there, which for `multiply` is
+// visibly wrong in a way source-over's 0.75 seam merely hinted at.
 void composite_onto_target(Backend& backend, Surface& target, const Surface& src,
-                           const Affine& src_to_dst, double opacity,
+                           const Affine& src_to_dst, double opacity, BlendMode blend,
                            std::span<const Rect* const> clips, CompositorCounters* counters,
                            const Rect& window) {
   for (const Rect* clip : clips) {
-    backend.composite_windowed(target, src, src_to_dst, opacity,
+    backend.composite_windowed(target, src, src_to_dst, opacity, blend,
                                (clip != nullptr) ? *clip : Rect::infinite(), window);
     if (counters != nullptr) {
       counters->note_composite();
@@ -141,7 +149,7 @@ void composite_onto_target(Backend& backend, Surface& target, const Surface& src
 // per-rect, since that is the only step the clip scopes.
 void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
                        const PlannedTile& tile, const Affine& local_to_device, ScaleRung rung,
-                       double opacity, CompositorCounters* counters,
+                       double opacity, BlendMode blend, CompositorCounters* counters,
                        std::span<const Rect* const> clips, const Rect& window) {
   const double rung_px = rung_scale(rung);
   const int octave = rung.index - tile.source_rung.index;
@@ -169,15 +177,17 @@ void composite_coarser(Backend& backend, SurfacePool& pool, Surface& target,
   const Affine local_to_temp =
       compose(Affine::scaling(rung_px, rung_px),
               Affine::translation(-tile.local_rect.x0, -tile.local_rect.y0));
+  // The upscale into the temp is an internal FILL, not the layer's paint, so it is always
+  // source-over: the layer's mode is applied once, where the temp meets the target below.
   backend.composite(temp_surface, *tile.hold->surface, compose(local_to_temp, coarser_to_local),
-                    1.0);
+                    1.0, BlendMode::Normal);
   if (counters != nullptr) {
     counters->note_composite();
   }
 
   composite_onto_target(backend, target, temp_surface,
                         surface_to_device(local_to_device, tile.local_rect, rung_px), opacity,
-                        clips, counters, window);
+                        blend, clips, counters, window);
 }
 
 } // namespace
@@ -836,7 +846,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                     provided_placement(result.provided, tile.local_rect, result.achieved_scale);
                 consume_render_result(result.provided, tile_surface, [&](const Surface& src) {
                   if (&src != &tile_surface) {
-                    backend.composite(tile_surface, src, placement, 1.0);
+                    backend.composite(tile_surface, src, placement, 1.0, BlendMode::Normal);
                   }
                 });
                 // Enforce the declared extent IN THE TILE (`compositor.tile_apron`
@@ -919,7 +929,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
                 }
                 composite_onto_target(backend, target, tile_surface,
                                       surface_to_device(composed, tile.local_rect, rung_px),
-                                      layer.opacity, clips, counters, window);
+                                      layer.opacity, layer.blend(), clips, counters, window);
                 tile.hold = CacheHold<TileValue>{};
                 tile.display_source = TileSource::Fresh;
               }
@@ -941,7 +951,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, clips, counters, window);
+                                layer.opacity, layer.blend(), clips, counters, window);
         }
         break;
       // Composites exactly as the `Stale` arm below does -- same paint, same degraded count --
@@ -964,7 +974,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, clips, counters, window);
+                                layer.opacity, layer.blend(), clips, counters, window);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }
@@ -981,7 +991,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         if (tile.hold.valid()) {
           composite_onto_target(backend, target, *tile.hold->surface,
                                 surface_to_device(composed, tile.local_rect, rung_px),
-                                layer.opacity, clips, counters, window);
+                                layer.opacity, layer.blend(), clips, counters, window);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }
@@ -991,7 +1001,7 @@ void render_frame_interactive(const DocRoot& state, const ContentResolver& resol
         // A degraded display: a coarser-rung tile rescaled up (doc 02:64).
         if (tile.hold.valid()) {
           composite_coarser(backend, pool, target, tile, composed, selection.rung, layer.opacity,
-                            counters, clips, window);
+                            layer.blend(), counters, clips, window);
           if (counters != nullptr) {
             counters->note_degraded_composite();
           }

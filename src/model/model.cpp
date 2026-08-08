@@ -1375,6 +1375,44 @@ void Model::Transaction::set_audible(ObjectId layer, bool audible) {
   add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
 }
 
+void Model::Transaction::set_blend(ObjectId layer, BlendMode blend) {
+  if (!d_status) {
+    return;
+  }
+  SlotRef<ObjectRecord> old_edge;
+  if (!hamt_lookup(d_model->d_bundle, d_root, layer.value, old_edge)) {
+    return; // absent: no-op (matches the walking-skeleton contract)
+  }
+  const ObjectRecord* old = d_model->d_records.peek(old_edge);
+  if (old->kind != RecordKind::Layer) {
+    return;
+  }
+  expected<Ref<ObjectRecord>, PoolError> rec = d_model->d_records.create();
+  if (!rec) {
+    d_status = unexpected(rec.error());
+    return;
+  }
+  ObjectRecord& nr = **rec;
+  nr = *old; // trivial copy of the immutable old record, then override placement
+  stamp(nr);
+  // Replace the blend field in place, leaving every other bit of the flag word alone:
+  // visibility and audibility are independent placement state, and a mode change must
+  // not disturb them.
+  nr.as.layer.flags =
+      (nr.as.layer.flags & ~k_layer_blend_mask) |
+      ((static_cast<std::uint32_t>(blend) << k_layer_blend_shift) & k_layer_blend_mask);
+
+  expected<Ref<HamtNode>, PoolError> next =
+      hamt_insert(d_model->d_bundle, d_root, layer.value, rec->slot());
+  if (!next) {
+    d_status = unexpected(next.error());
+    return;
+  }
+  d_root = std::move(*next);
+  touch(layer);
+  add_damage(Damage{layer, Rect::infinite(), TimeRange::all()});
+}
+
 void Model::Transaction::set_visible(ObjectId layer, bool visible) {
   if (!d_status) {
     return;

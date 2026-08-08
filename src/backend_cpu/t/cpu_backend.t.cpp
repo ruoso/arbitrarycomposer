@@ -77,7 +77,7 @@ template <PixelFormat F> void check_magnification(arbc::SurfaceFormat fmt, float
   fill_red_ramp_2x2<F>(src);
   arbc::CpuSurface dst(4, 4, fmt);
 
-  backend.composite(dst, src, arbc::Affine::scaling(2.0, 2.0), 1.0);
+  backend.composite(dst, src, arbc::Affine::scaling(2.0, 2.0), 1.0, arbc::BlendMode::Normal);
 
   const arbc::WorkingPixel p11 = read_px<F>(dst, 1 * 4 + 1);
   const arbc::WorkingPixel p21 = read_px<F>(dst, 1 * 4 + 2);
@@ -101,7 +101,7 @@ template <PixelFormat F> void check_fractional_offset(arbc::SurfaceFormat fmt, f
   fill_red_ramp_2x2<F>(src);
   arbc::CpuSurface dst(2, 2, fmt);
 
-  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0);
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0, arbc::BlendMode::Normal);
 
   // dst(1,0) maps to texel-space x = 0.5: a reconstructed red between the taps,
   // not a snapped 0 or 1.
@@ -128,7 +128,7 @@ template <PixelFormat F> void check_integer_is_byte_exact(arbc::SurfaceFormat fm
 
   SECTION("identity reproduces the source bytes") {
     arbc::CpuSurface dst(3, 1, fmt);
-    backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+    backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
     const std::span<const Storage> dst_px = std::as_const(dst).span<F>();
     for (std::size_t i = 0; i < src_px.size(); ++i) {
       CAPTURE(i);
@@ -138,7 +138,7 @@ template <PixelFormat F> void check_integer_is_byte_exact(arbc::SurfaceFormat fm
 
   SECTION("integer translation snaps to the shifted texel, byte-exact") {
     arbc::CpuSurface dst(3, 1, fmt);
-    backend.composite(dst, src, arbc::Affine::translation(1.0, 0.0), 1.0);
+    backend.composite(dst, src, arbc::Affine::translation(1.0, 0.0), 1.0, arbc::BlendMode::Normal);
     const std::span<const Storage> dst_px = std::as_const(dst).span<F>();
     // dst(0) is fully off the shifted source (transparent, zero bytes); dst(x>=1)
     // reproduces src(x-1) byte-for-byte.
@@ -157,7 +157,7 @@ TEST_CASE("identity composite over transparent copies the source") {
   fill(src, 1.0F, 0.0F, 0.0F, 1.0F);
   arbc::CpuSurface dst(2, 2, arbc::k_working_rgba32f);
 
-  backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+  backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
 
   const std::span<const float> out = std::as_const(dst).span<PixelFormat::Rgba32fLinearPremul>();
   for (std::size_t i = 0; i + 3 < out.size(); i += 4) {
@@ -177,7 +177,7 @@ TEST_CASE("composite is source-over on premultiplied alpha") {
   arbc::CpuSurface dst(1, 1, arbc::k_working_rgba32f);
   fill(dst, 1.0F, 0.0F, 0.0F, 1.0F);
 
-  backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+  backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
 
   const std::span<const float> out = std::as_const(dst).span<PixelFormat::Rgba32fLinearPremul>();
   REQUIRE(out[0] == 0.5F); // 0 + (1 - 0.5) * 1
@@ -192,7 +192,7 @@ TEST_CASE("degenerate mappings composite nothing") {
   fill(src, 1.0F, 1.0F, 1.0F, 1.0F);
   arbc::CpuSurface dst(2, 2, arbc::k_working_rgba32f);
 
-  backend.composite(dst, src, arbc::Affine::scaling(0.0, 1.0), 1.0);
+  backend.composite(dst, src, arbc::Affine::scaling(0.0, 1.0), 1.0, arbc::BlendMode::Normal);
 
   for (const float value : std::as_const(dst).span<PixelFormat::Rgba32fLinearPremul>()) {
     REQUIRE(value == 0.0F);
@@ -293,7 +293,7 @@ TEST_CASE("composite refuses mismatched surface tags") {
 #ifdef NDEBUG
   // Release: the mismatch is a no-op cull (asserts compiled out), so dst is
   // left byte-for-byte unchanged -- mixed-tag compositing never happens.
-  backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+  backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
   const std::span<const float> out = std::as_const(dst).span<PixelFormat::Rgba32fLinearPremul>();
   REQUIRE(out[0] == 1.0F);
   REQUIRE(out[1] == 0.0F);
@@ -336,7 +336,7 @@ TEST_CASE("rgba16f composite: blend properties match the 32f reference within f1
 
     arbc::CpuSurface src(1, 1, arbc::k_working_rgba16f);
     fill(src, 0.0F, 0.0F, 0.0F, 0.0F);
-    backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+    backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
 
     const std::span<const std::uint16_t> after =
         std::as_const(dst).span<PixelFormat::Rgba16fLinearPremul>();
@@ -351,7 +351,7 @@ TEST_CASE("rgba16f composite: blend properties match the 32f reference within f1
     fill(dst, 0.6F, 0.2F, 0.1F, 1.0F);
     arbc::CpuSurface src(1, 1, arbc::k_working_rgba16f);
     fill(src, 0.3F, 0.15F, 0.05F, 1.0F);
-    backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+    backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
 
     const std::span<const std::uint16_t> d =
         std::as_const(dst).span<PixelFormat::Rgba16fLinearPremul>();
@@ -368,7 +368,7 @@ TEST_CASE("rgba16f composite: blend properties match the 32f reference within f1
     fill(dst, 0.6F, 0.2F, 0.1F, 1.0F);
     arbc::CpuSurface src(1, 1, arbc::k_working_rgba16f);
     fill(src, 0.3F, 0.15F, 0.05F, 0.5F);
-    backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+    backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
 
     // out = s + (1 - a_s) d, evaluated in linear working floats.
     const arbc::WorkingPixel reference{0.6F, 0.25F, 0.1F, 1.0F};
@@ -387,7 +387,7 @@ TEST_CASE("rgba8 sRGB composite: blend properties hold in linear working light")
 
     arbc::CpuSurface src(1, 1, arbc::k_fast_rgba8srgb);
     fill(src, 0.0F, 0.0F, 0.0F, 0.0F);
-    backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+    backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
 
     const std::span<const std::uint8_t> after = std::as_const(dst).span<PixelFormat::Rgba8Srgb>();
     REQUIRE(after[0] == saved[0]);
@@ -401,7 +401,7 @@ TEST_CASE("rgba8 sRGB composite: blend properties hold in linear working light")
     fill(dst, 0.6F, 0.2F, 0.1F, 1.0F);
     arbc::CpuSurface src(1, 1, arbc::k_fast_rgba8srgb);
     fill(src, 0.3F, 0.15F, 0.05F, 1.0F);
-    backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+    backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
 
     const std::span<const std::uint8_t> d = std::as_const(dst).span<PixelFormat::Rgba8Srgb>();
     const std::span<const std::uint8_t> s = std::as_const(src).span<PixelFormat::Rgba8Srgb>();
@@ -416,7 +416,7 @@ TEST_CASE("rgba8 sRGB composite: blend properties hold in linear working light")
     fill(dst, 0.6F, 0.2F, 0.1F, 1.0F);
     arbc::CpuSurface src(1, 1, arbc::k_fast_rgba8srgb);
     fill(src, 0.3F, 0.15F, 0.05F, 0.5F);
-    backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+    backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
 
     const arbc::WorkingPixel reference{0.6F, 0.25F, 0.1F, 1.0F};
     require_close(decode0<PixelFormat::Rgba8Srgb>(dst), reference, 0.03F);
@@ -445,7 +445,7 @@ TEST_CASE("rgba8 sRGB composite blends in linear light, not gamma space") {
     px[3] = 128;
   }
 
-  backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+  backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
   const std::span<const std::uint8_t> out = std::as_const(dst).span<PixelFormat::Rgba8Srgb>();
 
   // The linear-light expectation, derived through the very codec the kernel
@@ -512,7 +512,7 @@ TEST_CASE("Catmull-Rom magnification interpolates in premultiplied linear floats
   arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
   fill_red_ramp_2x2<PixelFormat::Rgba32fLinearPremul>(src);
   arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
-  backend.composite(dst, src, arbc::Affine::scaling(2.0, 2.0), 1.0);
+  backend.composite(dst, src, arbc::Affine::scaling(2.0, 2.0), 1.0, arbc::BlendMode::Normal);
   require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 1 * 4 + 1),
                 {0.247802734F, 0.0F, 0.0F, 1.196289F}, 1e-5F);
   require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 1 * 4 + 2),
@@ -531,7 +531,7 @@ TEST_CASE("a fractional composite offset reconstructs a genuine blend, not a sna
   arbc::CpuSurface src(2, 2, arbc::k_working_rgba32f);
   fill_red_ramp_2x2<PixelFormat::Rgba32fLinearPremul>(src);
   arbc::CpuSurface dst(2, 2, arbc::k_working_rgba32f);
-  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0);
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0, arbc::BlendMode::Normal);
   require_close(read_px<PixelFormat::Rgba32fLinearPremul>(dst, 1), {0.5625F, 0.0F, 0.0F, 1.125F},
                 1e-6F);
 }
@@ -554,7 +554,7 @@ TEST_CASE("edge taps blend toward the transparent border, no clamp smear") {
   }
   arbc::CpuSurface dst(4, 4, arbc::k_working_rgba32f);
 
-  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.5), 1.0);
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.5), 1.0, arbc::BlendMode::Normal);
 
   // dst(1,1) sits at texel-space (0.5,0.5): the in-range taps are opaque white, but
   // the cubic reconstructing the flat patch against the zero border overshoots
@@ -595,7 +595,8 @@ TEST_CASE("a composite whose whole Catmull-Rom footprint is out of range is cull
   // cubic tap footprint is entirely out of the source range, so the cull leaves
   // `dst` byte-for-byte untouched -- the widened cubic window did not change the
   // "fully-transparent sample contributes nothing" rule, only its reach.
-  backend.composite(dst, src, arbc::Affine::translation(100.0, 100.0), 1.0);
+  backend.composite(dst, src, arbc::Affine::translation(100.0, 100.0), 1.0,
+                    arbc::BlendMode::Normal);
 
   for (int i = 0; i < 16; ++i) {
     CAPTURE(i);
@@ -718,7 +719,7 @@ TEST_CASE("the composite tap resamples in linear light, not on the sRGB bytes") 
   }
   arbc::CpuSurface dst(2, 2, arbc::k_fast_rgba8srgb);
 
-  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.5), 1.0);
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.5), 1.0, arbc::BlendMode::Normal);
   const std::span<const std::uint8_t> out = std::as_const(dst).span<PixelFormat::Rgba8Srgb>();
 
   // dst(1,1) sits at texel-space (0.5,0.5): a 50/50 blend of black and white.
@@ -796,7 +797,7 @@ TEST_CASE("composite_clipped writes no pixel outside its clip") {
   arbc::CpuSurface src(4, 4, arbc::k_working_rgba32f);
   backend.clear(src, 0.0F, 1.0F, 0.0F, 1.0F);
 
-  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0,
+  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal,
                             arbc::Rect{1.0, 1.0, 3.0, 3.0});
 
   for (int y = 0; y < 4; ++y) {
@@ -866,11 +867,14 @@ TEST_CASE("an empty clip is a no-op for both clip-scoped operations") {
   backend.clear_rect(dst, arbc::Rect{}, 0.0F, 0.0F, 0.0F, 0.0F);
   REQUIRE(pixels(dst) == before);
 
-  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, degenerate);
+  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal,
+                            degenerate);
   REQUIRE(pixels(dst) == before);
-  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, inverted);
+  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal,
+                            inverted);
   REQUIRE(pixels(dst) == before);
-  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, arbc::Rect{});
+  backend.composite_clipped(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal,
+                            arbc::Rect{});
   REQUIRE(pixels(dst) == before);
 }
 
@@ -902,8 +906,8 @@ TEST_CASE("a whole-destination clip is byte-identical to the unclipped operation
   arbc::CpuSurface plain_composite(4, 4, arbc::k_working_rgba32f);
   paint_red(plain_composite);
   const arbc::Affine placement = arbc::Affine::translation(0.5, 0.5);
-  backend.composite_clipped(clipped_composite, src, placement, 0.6, whole);
-  backend.composite(plain_composite, src, placement, 0.6);
+  backend.composite_clipped(clipped_composite, src, placement, 0.6, arbc::BlendMode::Normal, whole);
+  backend.composite(plain_composite, src, placement, 0.6, arbc::BlendMode::Normal);
   REQUIRE(pixels(clipped_composite) == pixels(plain_composite));
 }
 

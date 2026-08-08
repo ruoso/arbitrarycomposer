@@ -4,6 +4,7 @@
 #include <arbc/base/expected.hpp>
 #include <arbc/base/geometry.hpp>
 #include <arbc/base/transform.hpp>
+#include <arbc/media/blend_mode.hpp>
 #include <arbc/surface/capabilities.hpp>
 #include <arbc/surface/import.hpp>
 #include <arbc/surface/surface.hpp>
@@ -37,10 +38,22 @@ public:
   // Premultiplied working-space color (doc 07).
   virtual void clear(Surface& surface, float r, float g, float b, float a) = 0;
 
-  // Source-over composite of `src` onto `dst` under the src->dst mapping,
-  // on premultiplied alpha, scaled by `opacity`.
-  virtual void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                         double opacity) = 0;
+  // Composite of `src` onto `dst` under the src->dst mapping, on premultiplied alpha,
+  // scaled by `opacity` and combined by `blend`.
+  //
+  // `blend` is the per-layer BLEND MODE (issue #36, `arbc/media/blend_mode.hpp`), and
+  // `BlendMode::Normal` -- the default every caller had before it existed -- is
+  // source-over exactly. It is a REQUIRED parameter rather than a defaulted one because a
+  // default argument on a virtual binds statically, which would let a backend and its
+  // caller disagree about what an omitted mode meant; the same reason the clip-scoped
+  // operations below are distinctly named rather than overloaded.
+  //
+  // Every backend implements every mode. This is not a capability: the modes are pure
+  // arithmetic on the premultiplied working floats a backend must already be able to
+  // composite, so there is nothing for `capabilities()` to be honest about, exactly as
+  // there is nothing for it to say about `opacity`.
+  virtual void composite(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                         BlendMode blend) = 0;
 
   // The clip-scoped operations (doc 09 "The clip-scoped operations"): `clear`
   // and `composite` in a second form carrying a device-space (destination-space)
@@ -65,7 +78,7 @@ public:
   virtual void clear_rect(Surface& dst, const Rect& device_rect, float r, float g, float b,
                           float a) = 0;
   virtual void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                                 double opacity, const Rect& device_clip) = 0;
+                                 double opacity, BlendMode blend, const Rect& device_clip) = 0;
 
   // The composite with a SOURCE-space paint window (`compositor.tile_apron`).
   // `device_clip` scopes it exactly as `composite_clipped` does; `src_window` is a
@@ -88,7 +101,7 @@ public:
   // `composite_clipped`, which is how that operation is defined -- one kernel,
   // not two. An empty window is a no-op.
   virtual void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                                  double opacity, const Rect& device_clip,
+                                  double opacity, BlendMode blend, const Rect& device_clip,
                                   const Rect& src_window) = 0;
 
   // Exact 2:1 minifying downsample of `src` into `dst` (doc 09:18's

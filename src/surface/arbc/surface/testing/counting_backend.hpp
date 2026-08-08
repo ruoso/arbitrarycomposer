@@ -42,10 +42,10 @@ public:
     ForwardingBackend::clear(surface, r, g, b, a);
   }
 
-  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                 double opacity) override {
+  void composite(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
+                 BlendMode blend) override {
     ++composite_calls;
-    ForwardingBackend::composite(dst, src, src_to_dst, opacity);
+    ForwardingBackend::composite(dst, src, src_to_dst, opacity, blend);
   }
 
   // The clip-scoped ops tally SEPARATELY from their unclipped forms: they are
@@ -59,9 +59,9 @@ public:
   }
 
   void composite_clipped(Surface& dst, const Surface& src, const Affine& src_to_dst, double opacity,
-                         const Rect& device_clip) override {
+                         BlendMode blend, const Rect& device_clip) override {
     ++composite_clipped_calls;
-    ForwardingBackend::composite_clipped(dst, src, src_to_dst, opacity, device_clip);
+    ForwardingBackend::composite_clipped(dst, src, src_to_dst, opacity, blend, device_clip);
   }
 
   // Counted separately from `composite_clipped` for the same reason that one is
@@ -69,10 +69,11 @@ public:
   // and a test asserting "this frame composited N times through the tile window"
   // must not be satisfied by N window-less clipped composites.
   void composite_windowed(Surface& dst, const Surface& src, const Affine& src_to_dst,
-                          double opacity, const Rect& device_clip,
+                          double opacity, BlendMode blend, const Rect& device_clip,
                           const Rect& src_window) override {
     ++composite_windowed_calls;
-    ForwardingBackend::composite_windowed(dst, src, src_to_dst, opacity, device_clip, src_window);
+    ForwardingBackend::composite_windowed(dst, src, src_to_dst, opacity, blend, device_clip,
+                                          src_window);
   }
 
   void downsample(Surface& dst, const Surface& src) override {

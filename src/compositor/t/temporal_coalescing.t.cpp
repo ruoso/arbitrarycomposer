@@ -155,7 +155,7 @@ public:
   void clear(arbc::Surface& /*surface*/, float /*r*/, float /*g*/, float /*b*/,
              float /*a*/) override {}
   void composite(arbc::Surface& /*dst*/, const arbc::Surface& /*src*/, const arbc::Affine& /*m*/,
-                 double /*opacity*/) override {}
+                 double /*opacity*/, arbc::BlendMode) override {}
 };
 
 const arbc::ObjectId k_content{7};

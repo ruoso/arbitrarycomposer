@@ -141,7 +141,7 @@ public:
     std::memset(bytes.data(), 0, bytes.size_bytes());
   }
   void composite(arbc::Surface& dst, const arbc::Surface& /*src*/, const arbc::Affine& /*m*/,
-                 double opacity) override {
+                 double opacity, arbc::BlendMode) override {
     const auto mark = static_cast<unsigned>(opacity * 251.0) + 1u;
     for (std::byte& b : dst.cpu_bytes()) {
       b = static_cast<std::byte>((std::to_integer<unsigned>(b) + mark) & 0xFFu);

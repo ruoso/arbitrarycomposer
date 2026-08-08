@@ -388,8 +388,16 @@ json layer_json(const LayerRecord& lr, ObjectId id, Emitter& em,
                                 em.real(t.d, id), em.real(t.tx, id), em.real(t.ty, id)});
   o["opacity"] = em.real(lr.opacity, id);
   o["visible"] = lr.visible();
-  // Temporal + audio twins -- omit-when-default (Decision 2): a still layer stays
-  // diff-clean; a non-still layer round-trips losslessly.
+  // Blend mode + temporal + audio twins -- omit-when-default (Decision 2): a still,
+  // source-over layer stays diff-clean; anything else round-trips losslessly.
+  //
+  // The NAME, never the enumerator's number: the enum's order is an implementation detail
+  // and a document outlives it (`arbc/media/blend_mode.hpp`). Omitting `normal` is what
+  // keeps every pre-issue-#36 golden byte-identical -- a layer that never asked for a mode
+  // emits exactly what it always did.
+  if (lr.blend() != BlendMode::Normal) {
+    o["blend"] = std::string(blend_mode_name(lr.blend()));
+  }
   if (lr.gain != 1.0) {
     o["gain"] = em.real(lr.gain, id);
   }

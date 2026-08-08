@@ -146,7 +146,7 @@ template <PixelFormat F> std::vector<std::byte> src_over_integer_bytes(arbc::Sur
     wr<F>(src, i, k_so_src[static_cast<std::size_t>(i)]);
     wr<F>(dst, i, k_so_dst[static_cast<std::size_t>(i)]);
   }
-  backend.composite(dst, src, arbc::Affine::identity(), 1.0);
+  backend.composite(dst, src, arbc::Affine::identity(), 1.0, arbc::BlendMode::Normal);
   return bytes_of(dst);
 }
 
@@ -157,7 +157,7 @@ template <PixelFormat F> std::vector<std::byte> src_over_fractional_bytes(arbc::
     wr<F>(src, i, k_ramp[static_cast<std::size_t>(i)]);
   }
   arbc::CpuSurface dst(2, 2, fmt); // fresh: transparent zero
-  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0);
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0, arbc::BlendMode::Normal);
   return bytes_of(dst);
 }
 
@@ -498,7 +498,7 @@ TEST_CASE("the Catmull-Rom composite tap clamps negative-lobe ringing to non-neg
   wr<PixelFormat::Rgba32fLinearPremul>(src, 2, {0.0F, 0.0F, 0.0F, 0.0F});
   wr<PixelFormat::Rgba32fLinearPremul>(src, 3, {0.0F, 0.0F, 0.0F, 0.0F});
   arbc::CpuSurface dst(4, 1, arbc::k_working_rgba32f);
-  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0);
+  backend.composite(dst, src, arbc::Affine::translation(0.5, 0.0), 1.0, arbc::BlendMode::Normal);
   const std::span<const float> out_px = std::as_const(dst).span<PixelFormat::Rgba32fLinearPremul>();
   for (std::size_t p = 0; p < out_px.size(); ++p) {
     CAPTURE(p);
